@@ -16,9 +16,12 @@ import Testing
     struct Literals {
         /// A complete key, with the files that spell it.
         var keys: [String: Set<String>] = [:]
-        /// A literal that ends in `_` or in an interpolation: a family filter
-        /// or the stem keys are built from.
-        var prefixes: [String: Set<String>] = [:]
+        /// A literal keys are built from: it ends in an interpolation, or in
+        /// `_` anywhere but as the argument of `hasPrefix(`.
+        var builtPrefixes: Set<String> = []
+        /// A literal ending in `_` that is the argument of `hasPrefix(`: it
+        /// selects a family from an environment and builds no key.
+        var filterPrefixes: Set<String> = []
         /// A literal that starts with a key and goes on with other text.
         var unclassified: [String] = []
         var files: Set<String> = []
@@ -26,6 +29,30 @@ import Testing
         /// The keys spelled in any file but `excluded`.
         func keys(outside excluded: Set<String>) -> Set<String> {
             Set(keys.filter { !$0.value.isSubset(of: excluded) }.keys)
+        }
+
+        /// An opening quote and the name after it. Held here so one scan
+        /// compiles it once, not once a file.
+        private let literal = #/"(DARKBLOOM_[A-Z0-9_]*)/#
+
+        /// Sorts each `"DARKBLOOM_..."` literal of one source file's text
+        /// into the sets above.
+        mutating func add(source text: String, file: String) {
+            for match in text.matches(of: literal) {
+                let name = String(match.output.1)
+                let rest = text[match.range.upperBound...]
+                if rest.hasPrefix("\\(") {
+                    builtPrefixes.insert(name)
+                } else if !rest.hasPrefix("\"") {
+                    unclassified.append("\(file): \"\(name)\(rest.prefix(24))")
+                } else if !name.hasSuffix("_") {
+                    keys[name, default: []].insert(file)
+                } else if text[..<match.range.lowerBound].hasSuffix("hasPrefix(") {
+                    filterPrefixes.insert(name)
+                } else {
+                    builtPrefixes.insert(name)
+                }
+            }
         }
     }
 
@@ -38,26 +65,12 @@ import Testing
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources")
             .standardizedFileURL
         let files = try #require(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
-        let literal = #/"(DARKBLOOM_[A-Z0-9_]*)/#
         var found = Literals()
         for case let url as URL in files where url.pathExtension == "swift" {
             let file = String(url.standardizedFileURL.path.dropFirst(sources.path.count + 1))
             found.files.insert(file)
             guard file != registryFile else { continue }
-            let text = try String(contentsOf: url, encoding: .utf8)
-            for match in text.matches(of: literal) {
-                let name = String(match.output.1)
-                let rest = text[match.range.upperBound...]
-                if rest.hasPrefix("\\(") {
-                    found.prefixes[name, default: []].insert(file)
-                } else if !rest.hasPrefix("\"") {
-                    found.unclassified.append("\(file): \"\(name)\(rest.prefix(24))")
-                } else if name.hasSuffix("_") {
-                    found.prefixes[name, default: []].insert(file)
-                } else {
-                    found.keys[name, default: []].insert(file)
-                }
-            }
+            found.add(source: try String(contentsOf: url, encoding: .utf8), file: file)
         }
         return found
     }
@@ -75,13 +88,13 @@ import Testing
         var stale: [String] = []
         /// Forwarded, and no provider source outside the forward list reads it.
         var forwardedWithoutReader: [String] = []
-        /// A prefix literal that is neither a declared key family nor a known
-        /// family filter.
+        /// A prefix keys are built from that is not a declared key family, or
+        /// a filter's prefix that is neither one nor a known family filter.
         var undeclaredPrefixes: [String] = []
     }
 
     static func audit(
-        spelled: Set<String>, read: Set<String>, prefixLiterals: Set<String>,
+        spelled: Set<String>, read: Set<String>, builtPrefixes: Set<String>, filterPrefixes: Set<String>,
         forwarded: Set<String>, unforwarded: [String], unforwardedPrefixes: Set<String>
     ) -> Audit {
         let declared = Set(unforwarded)
@@ -94,16 +107,19 @@ import Testing
         audit.declaredTwice = Set(repeated).union(declared.intersection(forwarded))
             .union(declared.union(forwarded).filter(covered))
             .union(declared.union(forwarded).intersection(notEnvironmentKeys)).sorted()
-        audit.stale = declared.subtracting(read).union(unforwardedPrefixes.subtracting(prefixLiterals))
-            .union(notEnvironmentKeys.subtracting(spelled)).union(familyFilters.subtracting(prefixLiterals)).sorted()
+        audit.stale = declared.subtracting(read)
+            .union(unforwardedPrefixes.subtracting(builtPrefixes).subtracting(filterPrefixes))
+            .union(notEnvironmentKeys.subtracting(spelled)).union(familyFilters.subtracting(filterPrefixes)).sorted()
         audit.forwardedWithoutReader = forwarded.subtracting(read).sorted()
-        audit.undeclaredPrefixes = prefixLiterals.subtracting(unforwardedPrefixes).subtracting(familyFilters).sorted()
+        // `familyFilters` excuses a filter only: a prefix that builds keys is a family to declare.
+        audit.undeclaredPrefixes = builtPrefixes.subtracting(unforwardedPrefixes)
+            .union(filterPrefixes.subtracting(unforwardedPrefixes).subtracting(familyFilters)).sorted()
         return audit
     }
 
     static func audit(_ literals: Literals, forwarded: Set<String> = LaunchAgent.forwardedEnvKeys) -> Audit {
         audit(spelled: Set(literals.keys.keys), read: literals.keys(outside: [forwardListFile]),
-              prefixLiterals: Set(literals.prefixes.keys), forwarded: forwarded,
+              builtPrefixes: literals.builtPrefixes, filterPrefixes: literals.filterPrefixes, forwarded: forwarded,
               unforwarded: LaunchAgent.unforwardedEnvKeyGroups.flatMap(\.keys),
               unforwardedPrefixes: Set(LaunchAgent.unforwardedEnvKeyPrefixes.keys))
     }
@@ -114,9 +130,10 @@ import Testing
     /// (`ClusterLinkIsolationPlan.manualDelimiter`), not a variable.
     static let notEnvironmentKeys: Set<String> = ["DARKBLOOM_CLUSTER_LINK"]
 
-    /// Prefixes the sources only filter an environment by (`hasPrefix`: the
+    /// Prefixes the sources filter an environment by (`hasPrefix`: the
     /// checkpoint identity, the calibration launch, the deadline and
-    /// performance profiles). None builds a key.
+    /// performance profiles). An entry excuses the filter, never a key built
+    /// from the same prefix.
     static let familyFilters: Set<String> = [
         "DARKBLOOM_", "DARKBLOOM_CBV2_", "DARKBLOOM_DIFFUSION_", "DARKBLOOM_GEMMA4_", "DARKBLOOM_GPTOSS_",
         "DARKBLOOM_MIMO_", "DARKBLOOM_MTP_", "DARKBLOOM_NEMOTRON35_", "DARKBLOOM_QWEN4_", "DARKBLOOM_QWEN_",
@@ -170,9 +187,10 @@ import Testing
         #expect(audit.declaredTwice.isEmpty, "declared more than once; keep one declaration: \(audit.declaredTwice)")
         #expect(audit.stale.isEmpty, "declared, but no source spells it any more; remove the entry: \(audit.stale)")
         #expect(audit.undeclaredPrefixes.isEmpty, """
-            a key prefix this scan does not know. If keys are built from it, declare the family in \
-            LaunchAgent.unforwardedEnvKeyPrefixes (or list the built keys); if it only filters an environment, add \
-            it to familyFilters here: \(audit.undeclaredPrefixes)
+            a key prefix this scan does not know. If keys are built from it (it ends in an interpolation, or in _ \
+            outside hasPrefix), declare the family in LaunchAgent.unforwardedEnvKeyPrefixes or spell each key as \
+            its own literal; if it is only a hasPrefix argument, add it to familyFilters here: \
+            \(audit.undeclaredPrefixes)
             """)
         #expect(Set(audit.forwardedWithoutReader) == Self.forwardedForTheSDK, """
             forwarded keys that no provider source reads changed: \
@@ -193,7 +211,7 @@ import Testing
         let audit = Self.audit(
             spelled: ["DARKBLOOM_A", "DARKBLOOM_B", "DARKBLOOM_NEW", "DARKBLOOM_FAMILY_X", "DARKBLOOM_CLUSTER_LINK"],
             read: ["DARKBLOOM_B", "DARKBLOOM_NEW", "DARKBLOOM_FAMILY_X", "DARKBLOOM_CLUSTER_LINK"],
-            prefixLiterals: Self.familyFilters.union(["DARKBLOOM_FAMILY_", "DARKBLOOM_BUILT_"]),
+            builtPrefixes: ["DARKBLOOM_FAMILY_", "DARKBLOOM_BUILT_"], filterPrefixes: Self.familyFilters,
             forwarded: ["DARKBLOOM_A", "DARKBLOOM_B"],
             unforwarded: ["DARKBLOOM_B", "DARKBLOOM_GONE", "DARKBLOOM_GONE", "DARKBLOOM_FAMILY_X"],
             unforwardedPrefixes: ["DARKBLOOM_FAMILY_", "DARKBLOOM_UNUSED_"])
@@ -203,6 +221,24 @@ import Testing
             stale: ["DARKBLOOM_GONE", "DARKBLOOM_UNUSED_"],
             forwardedWithoutReader: ["DARKBLOOM_A"],
             undeclaredPrefixes: ["DARKBLOOM_BUILT_"]))
+    }
+
+    /// A prefix is a filter only as the argument of `hasPrefix(`. Joined or
+    /// interpolated it builds keys the scan cannot read, so it is reported
+    /// even when the same text is a known family filter.
+    @Test func aPrefixThatBuildsKeysIsNotExcusedAsAFilter() {
+        var literals = Literals()
+        literals.add(source: #"""
+            for (key, value) in environment where key.hasPrefix("DARKBLOOM_CBV2_") { hash(key, value) }
+            let joined = environment["DARKBLOOM_" + name], spliced = environment["DARKBLOOM_CBV2_\(model)_CAP"]
+            let whole = environment["DARKBLOOM_WHOLE"]; print("DARKBLOOM_WHOLE is set")
+            """#, file: "Reader.swift")
+        #expect(literals.filterPrefixes == ["DARKBLOOM_CBV2_"])
+        #expect(literals.builtPrefixes == ["DARKBLOOM_", "DARKBLOOM_CBV2_"])
+        #expect(literals.keys == ["DARKBLOOM_WHOLE": ["Reader.swift"]])
+        #expect(literals.unclassified.count == 1)
+        #expect(Self.familyFilters.isSuperset(of: literals.builtPrefixes))
+        #expect(Self.audit(literals).undeclaredPrefixes == ["DARKBLOOM_", "DARKBLOOM_CBV2_"])
     }
 
     /// The declarations describe what `passthroughEnvironment` does: with
@@ -230,6 +266,18 @@ import Testing
             decided; remove it from openDecisions here: \(Self.openDecisions.subtracting(open).sorted())
             """)
         #expect(!LaunchAgent.unforwardedEnvKeyPrefixes.values.contains(.undecided))
+    }
+
+    /// `unforwardedReason(for:)` answers with a declared prefix the key starts
+    /// with. Were one declared prefix to start with another, a key under both
+    /// would get whichever the dictionary yields first.
+    @Test func noDeclaredPrefixCoversAnother() {
+        let prefixes = Array(LaunchAgent.unforwardedEnvKeyPrefixes.keys)
+        let covered = prefixes.filter { prefix in prefixes.contains { $0 != prefix && prefix.hasPrefix($0) } }
+        #expect(covered.isEmpty, """
+            a declared prefix lies under another, so a key under both has no one reason; keep the wider \
+            prefix or list the keys: \(covered.sorted())
+            """)
     }
 
     /// Which keys the service receives is a contract with every installed

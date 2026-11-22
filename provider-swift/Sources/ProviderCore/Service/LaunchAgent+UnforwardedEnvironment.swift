@@ -8,8 +8,8 @@ import ProviderAppAttest
 /// launchd does not inherit the installing shell, so a key in neither list
 /// works in a foreground run and is silently unset in an installed service.
 /// `ServiceEnvironmentReachTests` scans the sources and fails on such a key,
-/// on a key declared twice and on an entry nothing reads any more. The same
-/// plist environment reaches the cluster service job
+/// on a key declared twice and on an entry no other source spells any more.
+/// The same plist environment reaches the cluster service job
 /// (`ClusterServiceAgent.job`). The watchdog job has its own short list
 /// (`WatchdogAgent.passthroughEnvKeys`).
 extension LaunchAgent {
@@ -127,7 +127,9 @@ extension LaunchAgent {
             // `ClusterOnboardingTerminal`).
             "DARKBLOOM_NO_ANIMATION",
             // `darkbloom desktop` attaching a review build to an existing
-            // install (`DesktopCommand`).
+            // install (`Desktop.Serve.run`). The desktop launchd job runs the
+            // same command, but its plist carries no environment
+            // (`DesktopService`), so only a terminal run can set it.
             "DARKBLOOM_DESKTOP_ATTACH_ONLY",
         ]),
         (.debugOnly, [
@@ -165,7 +167,10 @@ extension LaunchAgent {
             "DARKBLOOM_DIFFUSION_COMPILED_SAMPLER",
             "DARKBLOOM_DIFFUSION_EXPERT_UNSORT",
             "DARKBLOOM_DIFFUSION_SOFT_EMBEDDING",
-            // The restart benchmark's persistent key inside a test root.
+            // The restart benchmark's persistent key. The serving path
+            // reads it in every build, but only inside a test root
+            // (`SSDPrefixCacheFactory.forceEphemeralKey`), which a service
+            // never has.
             "DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY",
             // Opt-ins of the physical qualification entries, which load no
             // launch agent (`NativeServeQualification`,

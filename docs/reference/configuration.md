@@ -268,8 +268,9 @@ forwarded or as not forwarded with a reason:
 `ServiceEnvironmentReachTests`
 (`provider-swift/Tests/ProviderCoreTests/Service/ServiceEnvironmentReachTests.swift`)
 scans the string literals of `provider-swift/Sources` and fails on a variable in
-neither declaration, in both, or declared after its last reader is gone. It
-pins the forwarded lists and the `undecided` set, which only loses variables.
+neither declaration, in both, or still declared when no other source spells it,
+and on an undeclared prefix that names are built from. It pins the forwarded
+lists and the `undecided` set, which only loses variables.
 It does not read `libs/`: a variable only the SDK reads is covered when the
 provider forwards it, not otherwise.
 

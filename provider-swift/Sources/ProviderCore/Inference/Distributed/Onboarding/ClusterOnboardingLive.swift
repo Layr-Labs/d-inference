@@ -350,8 +350,7 @@ final class OnboardingLive: @unchecked Sendable {
             let left = deadline.timeIntervalSince(now())
             guard left > 0 else { return failure() }
             if !said {
-                said = true
-                waiting?(line(Int(left.rounded(.up))))
+                said = true  // red control: the wait is not said
             }
             pause()
         }

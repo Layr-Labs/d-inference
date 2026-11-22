@@ -238,12 +238,20 @@ extension EngineV2Factory {
             Self.maxConcurrentPartialPrefills(environment: environment)
         if let gemmaText = gemma4TextModel(model), gemmaText.supportsBlockSDCM {
             let sdcm = Gemma4BlockSDCMConfig.resolve(environment: environment)
+            gemmaText.configureBlockSDCM(sdcm)
             if sdcm.mode != .off {
                 // Keep the scheduler floor aligned with `Gemma4BlockSDCM.canRun` so
                 // whole-prompt dispatch never falls back onto an exact paged sliding
                 // write exceeding `maxPrefillChunk`.
                 config.soloCompactionMinPromptTokens = max(
                     sdcm.minPromptTokens, sdcm.prefixKeep + sdcm.tailKeep + 1)
+                config.allowConcurrentCompaction = true
+                config.maxPackedCompactionBatch = sdcm.maxPackedBatch
+                config.maxPackedCompactionTokens = sdcm.maxPackedTokens
+                config.compactionEligibility = { tokens in
+                    !sdcm.densityGuardEnabled
+                        || Gemma4BlockSDCM.passesDensityGuard(tokens: tokens, config: sdcm)
+                }
             }
         }
         if let limit = calibratedPrefillTokenLimit(model: model) {
@@ -253,6 +261,10 @@ extension EngineV2Factory {
             config.prefillChunkSize = min(config.prefillChunkSize, limit)
             config.soloPrefillStripeTokens = nil
             config.soloCompactionMinPromptTokens = nil
+            config.allowConcurrentCompaction = false
+            config.maxPackedCompactionBatch = 1
+            config.maxPackedCompactionTokens = CBv2SchedulerConfig().maxPackedCompactionTokens
+            config.compactionEligibility = nil
             config.mixedStepPrefillTokenCap = min(config.mixedStepPrefillTokenCap ?? limit, limit)
         }
         return config

@@ -5933,7 +5933,9 @@ ends (`ClusterSetupRecord.updateReplan`), and the service's next run drops the m
 when the mark is under an hour old, this Mac still holds the control claim
 (`followsPeer`, not the onboarding's role), the start is still cleared and no stop was counted since
 (`ClusterService.resumeInterruptedRestart`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
-drop it first, under the record's lock, and fail when they cannot: `forgetInterruptedRestart`).
+drop it first, under the record's lock: `forgetInterruptedRestart`; `releaseForSingleMac` ends as not stopped when
+it cannot, and `darkbloom stop` goes on to stop this Mac's provider, a mark it could not drop staying for the next
+run).
 `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. Any other
 pair's coordinated update also installs before it restarts the services, so the old leader service's check could find
 the new workers on disk and begin a re-plan that the restart then ended, the start cleared (seen on a DevNet pair
@@ -5956,8 +5958,11 @@ restarting stop (`ClusterRestartingStop.run`), which does for all four what the 
 - It marks the setup record before the step's stop, in the write that reads, under the record's lock, whether the
   pair is started and how many stops were counted. A read outside that lock fails while another writer replaces the
   record. A step that cannot read where it starts from does not begin: it stops nothing, marks nothing and puts
-  nothing back, and its caller tries again as after a hold. The re-plan after an update keeps `updateReplan` and its two
-  switches. The other three write `ClusterSetupRecord.restartingStop` (the step's name, the stops counted, the time),
+  nothing back. The service's three steps are then tried again as after a hold: the update check at its next check,
+  the memory re-plan at the next refusals, and the approval check a minute on, still as the service run's first
+  check. A registration is not tried again by itself: it is left to the pair's next start or the service's next run,
+  since a pair that is not offered asks the coordinator once per run (`ClusterApprovalCheck.asks`). The re-plan
+  after an update keeps `updateReplan` and its two switches. The other three write `ClusterSetupRecord.restartingStop` (the step's name, the stops counted, the time),
   whatever the switches say. A build from before that field neither reads nor keeps it, so after a rollback it resumes
   its own re-plan after an update as before and does for the other steps what it always did. Only a step the cluster
   service runs is marked. A registration is, when the leading Mac's service runs it for a start on the other Mac's
@@ -5967,9 +5972,12 @@ restarting stop (`ClusterRestartingStop.run`), which does for all four what the 
 - When the step ends, whichever of its parts failed, one write saves the start again, drops the stop request a stop
   that failed midway keeps, and drops the mark. The start is put back only against the count read at the beginning: a
   stop counted since (`ClusterSetupRecord.stopsAsked`) stands, and a step run on a pair that is not started puts
-  nothing back. What a step does not know never becomes a start. The limit is the other way round: when that last
-  write fails in a service that lives on, the pair stays stopped with its mark until a restart of the service within
-  the hour puts the start back, and an unmarked step's pair stays stopped.
+  nothing back. What a step does not know never becomes a start. Two limits remain. The other way round: when that
+  last write fails in a service that lives on, the pair stays stopped with its mark until a restart of the service
+  within the hour puts the start back, and an unmarked step's pair stays stopped. And a stop that counts nothing: a
+  `darkbloom stop` run while a step is past its own stop finds the pair already stopped, so it counts no stop, and
+  the step's end still puts the start back (as before these steps ran as restarting stops). `darkbloom cluster
+  stop` waits for the step under the command lock and is counted, so it stands.
 - The service's next run puts the start back for a mark it finds (`ClusterRestartingStop.resume`), on the conditions
   above, and drops every mark. Its log line says so only once that write went through; when it fails, the marks stay
   for the run after. Before this, a service ended between the stop and the start of a memory re-plan, an

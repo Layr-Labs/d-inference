@@ -878,6 +878,46 @@ struct ClusterServiceRestartingStopTests {
         }
     }
 
+    /// The approval check found a change to make, and the change did not begin: the setup record could not be read
+    /// under its lock (`ClusterRestartingStop.run`; here another writer holds that lock for longer than an update
+    /// waits). That is a check that could not act, so it stays the service run's first, and the next check asks the
+    /// coordinator again. Marked done, a pair that is not offered asks nothing more until its service restarts
+    /// (`ClusterApprovalCheck.asks`). The actual service loop; the test moves the next check instead of waiting a
+    /// minute for it.
+    @Test func anApprovalChangeThatDidNotBeginDoesNotSpendTheServiceRunsFirstCheck() throws {
+        let coordinator = try CountingCoordinator()
+        defer { coordinator.close() }
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:\(coordinator.port)/ws/provider")
+        try withExtendedLifetime(macs) {
+            // The coordinator offers a model approval for the pair's setup, which carries none: a change to save.
+            coordinator.approvals = try ClusterApprovalMacs.body([macs.modelApproval()])
+            let service = try Self.service(macs)
+            // The pair does not serve: its change stops nothing, so it does not wait for the other Mac's answer.
+            _ = try service.store.updateRecord { $0.leadership?.serving = false }
+            try Self.confirmedLeader(service, macs)
+            let writer = try ClusterRecordLockHold(service.store)
+            let loop = Self.run(service)
+            // The first check asked, decided the change, and gave it up once its update had waited for the record's
+            // lock: only then is its next check set a minute on from that moment.
+            let asked = Self.waitUntil(seconds: 30) { !coordinator.requests.isEmpty }
+            let askedAt = Date()
+            let gaveUpAfter = ClusterOnboardingUpdate.checkEverySeconds + ClusterSetupStore.recordLockWaitSeconds - 0.5
+            let gaveUp = Self.waitUntil(seconds: 30) {
+                service.lock.withLock { service.nextApprovalCheck }.timeIntervalSince(askedAt) >= gaveUpAfter
+            }
+            writer.release()
+            let first = coordinator.requests.count
+            service.lock.withLock { service.nextApprovalCheck = .distantPast }
+            let again = Self.waitUntil(seconds: 15) { coordinator.requests.count > first }
+            // That check runs to its end (its change is refused: this Mac's pairing is elsewhere) before the loop stops.
+            _ = Self.waitUntil(seconds: 15) { service.lock.withLock { service.nextApprovalCheck }.timeIntervalSinceNow > 0 }
+            let lines = loop.stop()
+            #expect(asked && gaveUp, "the first check did not run: \(lines)")
+            #expect(first == 1, "the coordinator was asked \(first) times by the first check")
+            #expect(again, "the check that could not act was the last to ask the coordinator in this run: \(lines)")
+        }
+    }
+
     private static func sha256(_ url: URL) throws -> String {
         SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
     }

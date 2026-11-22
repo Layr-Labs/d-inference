@@ -140,8 +140,9 @@ struct ClusterRestartingStop: Sendable {
     /// A person stopped this Mac's pair while it was down, which counts no stop: no step is resumed. One write under
     /// the record's lock (a read outside the lock fails while another writer replaces the record); a record without
     /// marks whose bytes are this build's own takes no write. False when the record could not be read or written,
-    /// whether or not it held a mark: one left there would let the service's next run put a start back, so the stop
-    /// that asked for this is not done.
+    /// whether or not it held a mark. One left there stays for the service's next run, which would put the start
+    /// back for it. A caller may go on all the same, as `darkbloom stop` does: false is also the answer for a record
+    /// no build decodes, from which the next run puts nothing back.
     func forget() -> Bool {
         guard FileManager.default.fileExists(atPath: store.paths.record.path) else { return true }
         return (try? store.updateRecord { $0.dropRestartingStopMarks() }) != nil

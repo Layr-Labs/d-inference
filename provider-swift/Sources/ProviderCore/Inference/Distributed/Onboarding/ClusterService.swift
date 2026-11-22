@@ -1668,10 +1668,12 @@ public final class ClusterService: @unchecked Sendable {
                 say(ClusterUpdateReplanGuard.holdLine(hold, waiting: "the change of the cluster approval"))
                 return skipped()
             }
-            checked()
+            // A change that did not begin (this Mac's update began to restart this service since, or the setup record
+            // could not be read) is a check that could not act: `skipped`, so a service run's first check stays its first.
             guard let result = self.changeApproval(step, serving: serving, .init(stop: { live.localStop() },
                 drained: { live.drained(seconds: 300) }, serve: { live.localServe() },
                 sendToPeer: { request in _ = try live.command(request, seconds: 180) }), say: say) else { return skipped() }
+            checked()
             try? self.store.updateRecord { stored in
                 if let note = result.note { stored.approvalNote = note }
                 // The approval set aside is kept while the pair serves locally and dropped once one is saved again.

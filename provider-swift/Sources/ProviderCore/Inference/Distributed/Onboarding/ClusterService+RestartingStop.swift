@@ -139,7 +139,9 @@ extension ClusterService {
     /// A person stopped this Mac's pair while it was down (`darkbloom stop`, which counts no stop then, or `darkbloom
     /// start --solo` releasing this Mac's part, `releaseForSingleMac`): a step that a restart ended is not resumed.
     /// (Single-Mac serving started without a part to release holds the part back anyway.) False when this Mac's record
-    /// could not be written: the stop is not done (`ClusterRestartingStop.forget`).
+    /// could not be read or written (`ClusterRestartingStop.forget`). `darkbloom stop` goes on all the same: it has
+    /// this Mac's provider to drain and stop yet.
+    @discardableResult
     public static func forgetInterruptedRestart() -> Bool {
         guard let paths = try? ClusterUserPaths() else { return true }
         return ClusterRestartingStop(store: ClusterSetupStore(paths: ClusterSetupPaths(paths: paths))).forget()

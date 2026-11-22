@@ -1,6 +1,25 @@
+import Darwin
 import Foundation
 import Testing
 @testable import ProviderCore
+
+/// Another writer's hold of the setup record's lock (`ClusterConfigurationFiles.withLock`): reads outside the lock go
+/// on, and an update under it gives up after `ClusterSetupStore.recordLockWaitSeconds`.
+final class ClusterRecordLockHold: @unchecked Sendable {
+    private let descriptor: Int32
+
+    init(_ store: ClusterSetupStore) throws {
+        descriptor = open(store.paths.record.path + ".lock", O_RDWR | O_CLOEXEC)
+        guard descriptor >= 0, flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            throw ClusterConfigurationError.invalid("the record's lock could not be held")
+        }
+    }
+
+    func release() {
+        _ = flock(descriptor, LOCK_UN)
+        close(descriptor)
+    }
+}
 
 /// The setup record a restarting stop cannot read, or cannot write. A step puts the pair's start back when it ends, so
 /// what it does not know must never become a start: a pair a person stopped stays stopped whatever fails. The other
@@ -82,14 +101,90 @@ extension ClusterServiceRestartingStopTests {
             let store = started.store, service = Self.restarted(macs)
             let unreadable = Data("not a setup record".utf8)
             try unreadable.write(to: store.paths.record)
-            // The step through its own entry point, then the restarting stop alone.
-            let crash = Crash(at: .marked, store: store)
-            Self.drive(step, service, crash)
-            #expect(crash.passed.isEmpty, "\(step.rawValue) began on a record it could not read: \(crash.passed)")
+            // The step through its own entry point, where that reaches the restarting stop. The memory re-plan's and
+            // the registration's callers read the record outside its lock first and end there: for them the
+            // restarting stop alone, below, is what this record tests, and their entry points are run on a record that
+            // only its lock keeps from being read (`noStepBeginsWhileAnotherWriterHoldsTheRecordsLock`).
+            if step == .updateReplan || step == .approvalChange {
+                let crash = Crash(at: .marked, store: store)
+                Self.drive(step, service, crash)
+                #expect(crash.passed.isEmpty, "\(step.rawValue) began on a record it could not read: \(crash.passed)")
+            }
             let ran = ClusterApprovalRecorder<Bool>()
             let ended: Void? = service.restartingStops.run(step) { ran.append(true) }
             #expect(ended == nil && ran.values.isEmpty, "\(step.rawValue) ran on a record it could not read")
             #expect(try Data(contentsOf: store.paths.record) == unreadable, "\(step.rawValue) wrote over the record it could not read")
+        }
+    }
+
+    /// Another writer holds the record's lock for longer than an update waits, while reads outside the lock go on.
+    /// Each step's caller so finds the pair started and reaches the restarting stop, which cannot read where it starts
+    /// from: no step begins, nothing stops, and the record is as it was.
+    @Test(arguments: ClusterRestartingStop.Step.allCases)
+    func noStepBeginsWhileAnotherWriterHoldsTheRecordsLock(_ step: ClusterRestartingStop.Step) throws {
+        let (macs, coordinator) = try Self.offeredPair()
+        defer { coordinator.close() }
+        try withExtendedLifetime(macs) {
+            let started = try macs.startedLeaderService(powerAssertionReason: "Cluster restarting stop test " + UUID().uuidString)
+            let store = started.store, service = Self.restarted(macs), before = try Data(contentsOf: store.paths.record)
+            let writer = try ClusterRecordLockHold(store)
+            let crash = Crash(at: .marked, store: store)
+            let said = Self.drive(step, service, crash)
+            writer.release()
+            #expect(crash.passed.isEmpty, "\(step.rawValue) began on a record it could not read under its lock: \(crash.passed)")
+            #expect(try Data(contentsOf: store.paths.record) == before, "\(step.rawValue) wrote the record")
+            // The step's caller did go as far as the restarting stop.
+            if step == .memoryReplan {
+                #expect(said.count == 1 && said.first?.hasPrefix("a Mac's memory no longer holds its share") == true, "\(said)")
+            }
+            if step == .registration { #expect(!coordinator.requests.isEmpty, "the registration never asked the coordinator") }
+        }
+    }
+
+    /// The restarting stop adds no write where it changes nothing: a record in this build's own bytes that takes no
+    /// mark and loses none stays the file it was (the same bytes in the same file, last written when it was; a write
+    /// would replace the file). So for a step that is held, for every step on a pair that is not started, and for a
+    /// stop that finds no mark to drop, which says that nothing is left even in a directory that takes no write.
+    @Test func aRecordThatTakesNoMarkAndLosesNoneIsNotRewritten() throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            let store = service.store, directory = store.paths.directory.path
+            service.updateReplanGuard = true
+            func onDisk() throws -> (bytes: Data, file: UInt64, written: Date) {
+                let attributes = try FileManager.default.attributesOfItem(atPath: store.paths.record.path)
+                return (try Data(contentsOf: store.paths.record), try #require(attributes[.systemFileNumber] as? UInt64),
+                        try #require(attributes[.modificationDate] as? Date))
+            }
+            // A started pair, its step held by this Mac's update.
+            let progress = ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory)
+            let now = Date().timeIntervalSince1970
+            ClusterPairUpdate.writeProgress(.init(phase: .drained, target: "9.9.9", running: ProviderCore.version,
+                cycleStartedAt: now - 30, writtenAt: now), to: progress)
+            let started = try onDisk()
+            #expect(service.restartingStops.run(.memoryReplan) { true } == nil, "the step was not held")
+            #expect(try onDisk() == started, "a held step wrote the record")
+            try FileManager.default.removeItem(at: progress)
+            // A pair a person stopped.
+            guard case .success = service.controlLive.localStop(seconds: 1, asked: true, stopPeer: {}) else {
+                Issue.record("the person's stop failed"); return
+            }
+            let stopped = try onDisk()
+            for writable in [true, false] {
+                if !writable { try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory) }
+                for step in ClusterRestartingStop.Step.allCases {
+                    #expect(service.restartingStops.run(step) { true } == true, "\(step.rawValue) did not run (writable: \(writable))")
+                }
+                #expect(ClusterRestartingStop(store: store).forget(), "the stop found something to write (writable: \(writable))")
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
+                #expect(try onDisk() == stopped, "a step on a stopped pair, or a stop with no mark, wrote the record (writable: \(writable))")
+            }
+            // What the comparison tells: the same bytes written again, as the store writes (a new file in its place).
+            let again = store.paths.directory.appendingPathComponent("written-again")
+            try stopped.bytes.write(to: again)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: again.path)
+            try #require(rename(again.path, store.paths.record.path) == 0)
+            let rewritten = try onDisk()
+            #expect(rewritten.bytes == stopped.bytes && rewritten.file != stopped.file, "the comparison would miss a rewrite")
         }
     }
 

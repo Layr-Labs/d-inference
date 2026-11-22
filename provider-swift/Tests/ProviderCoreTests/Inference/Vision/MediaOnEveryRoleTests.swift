@@ -122,6 +122,25 @@ struct MediaOnEveryRoleTests {
         #expect(try Self.color(input.images[0]) == [255, 255, 255, 255])
     }
 
+    /// The scans that must agree with the built input (`mediaKind`, the video
+    /// budget, the pair's encoded bytes) read `messagesKeepingMedia`: its
+    /// images are the input's, with media in every role or only in user
+    /// messages, whatever the setting.
+    @Test func messagesKeepingMediaMatchTheBuiltInput() async throws {
+        let userOnly = try Self.decode([["role": "system", "content": [Self.text("Be brief.")]],
+                                        ["role": "user", "content": [Self.text("What is it?"), Self.image(Self.imageURL(.red))]]])
+        for request in try [Self.everyRoleRequest(), userOnly] {
+            let images = MediaIngest.messagesKeepingMedia(of: request).reduce(0) { count, message in
+                guard case .parts(let parts) = message.content else { return count }
+                return count + parts.filter { if case .imageURL = $0 { return true }; return false }.count
+            }
+            let input = try await MediaIngest.buildUserInput(from: request,
+                keepNonUserMedia: MediaIngest.placesNonUserMedia(request))
+            #expect(images == input.images.count)
+        }
+        #expect(MediaIngest.messagesKeepingMedia(of: userOnly).map(\.role) == [OpenAIRole.user])
+    }
+
     /// Media the template does not place is a client error on every provider:
     /// 400 `invalid_request` naming `media_role_not_rendered`, never the
     /// retriable 503 construction refusal.

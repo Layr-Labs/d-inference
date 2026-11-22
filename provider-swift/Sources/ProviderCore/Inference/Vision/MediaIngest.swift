@@ -180,6 +180,13 @@ public enum MediaIngest {
         everyRoleEnabled && hasNonUserMedia(request)
     }
 
+    /// The messages whose image and video parts the vision ingest keeps, in
+    /// request order: every message when `placesNonUserMedia(request)`, else
+    /// the user messages. Scans that must agree with the built input read these.
+    static func messagesKeepingMedia(of request: OpenAIChatCompletionRequest) -> [OpenAIChatMessage] {
+        placesNonUserMedia(request) ? request.messages : request.messages.filter { $0.role == .user }
+    }
+
     /// Classification only; the actual loaded native audio profile is still
     /// required. Generic text/vision/diffusion paths must not drop this part.
     public static func hasAudio(_ request: OpenAIChatCompletionRequest) -> Bool {
@@ -349,7 +356,6 @@ public enum MediaIngest {
         // placeholder, refuses the request (`EngineV2VisionPrefill.prepare`).
         // Without such media nothing below changes.
         let everyRole = keepNonUserMedia && hasNonUserMedia(request)
-        let templateFields = preserveTemplateFields || everyRole
         var totalPixels = 0
         var totalVideoPixels = 0
         var imageCount = 0
@@ -378,12 +384,13 @@ public enum MediaIngest {
                 chatMessages.append(.init(role: .tool, content: text,
                     images: keep ? images : [], videos: keep ? videos : []))
             }
-            if templateFields {
+            if preserveTemplateFields {
                 chatMessages[chatMessages.count - 1].templateFields = message.templateMessageDict()
             }
         }
-        if templateFields {
-            // Preserve the validated native Qwen4 request's interleaved order.
+        if preserveTemplateFields || everyRole {
+            // Preserve the interleaved order of the validated native Qwen4
+            // request, or of media outside user messages.
             // Only symbolic placeholders enter the template; decoded media
             // remains owned by UserInput, never rendered as URLs/base64 text.
             let generator = Qwen3VLMessageGenerator()

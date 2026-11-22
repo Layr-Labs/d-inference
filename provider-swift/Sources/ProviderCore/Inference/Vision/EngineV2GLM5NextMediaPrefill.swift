@@ -59,9 +59,7 @@ extension EngineV2VisionPrefill {
         for index in request.messages.indices {
             let message = request.messages[index]
             guard message.role == .user || everyRole, case .parts(let parts) = message.content else { continue }
-            // The policy's typed message (same indices as `messages`).
-            let rendered = prepared.messages[index + prefix].textContent
-            var media = try parts.map { part -> [String: String] in
+            var content = try parts.map { part -> [String: String] in
                 switch part {
                 case .text(let text): return ["type": "text", "text": text]
                 case .imageURL: return ["type": "image"]
@@ -71,12 +69,16 @@ extension EngineV2VisionPrefill {
                 }
             }
             // An instruction the text policy appended to a system message
-            // (tool_choice) stays after its parts.
-            if message.role != .user, rendered.count > message.textContent.count,
-                rendered.hasPrefix(message.textContent) {
-                media.append(["type": "text", "text": String(rendered.dropFirst(message.textContent.count))])
+            // (tool_choice) stays after its parts. The policy's typed messages
+            // have the same indices as `messages`.
+            if message.role != .user {
+                let original = message.textContent
+                let rendered = prepared.messages[index + prefix].textContent
+                if rendered.count > original.count, rendered.hasPrefix(original) {
+                    content.append(["type": "text", "text": String(rendered.dropFirst(original.count))])
+                }
             }
-            messages[index + prefix]["content"] = media
+            messages[index + prefix]["content"] = content
         }
         let decoded = try await MediaIngest.buildUserInput(from: request, templateControls: controls,
             keepNonUserMedia: everyRole)

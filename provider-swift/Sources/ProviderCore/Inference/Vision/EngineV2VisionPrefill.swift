@@ -97,8 +97,8 @@ public enum EngineV2MediaKind: String, Sendable {
 /// Construction failures of the v2 media-prefill submission. Every case is
 /// caught by the scheduler engine and REFUSED loudly (ERROR telemetry + a
 /// retriable 503; the coordinator reroutes) except deterministic request
-/// shapes (`noProcessedMedia` and `unsupportedMedia`), which map to 400
-/// (`EngineV2VisionPrefill.clientFault(for:)`).
+/// shapes (`noProcessedMedia`, `mediaRoleNotRendered` and `unsupportedMedia`),
+/// which map to 400 (`EngineV2VisionPrefill.clientFault(for:)`).
 /// Messages are operator-facing and must never embed prompt or media content.
 enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// The slot's loaded module is not a supported Gemma 4 or Qwen wrapper.
@@ -431,8 +431,8 @@ public enum EngineV2VisionPrefill {
         }
     }
 
-    /// Qwen's processor finding fewer vision placeholders than media
-    /// (`QwenVL.replacePaddingTokens`, before any tower work).
+    /// Qwen's processor finding a different number of vision placeholders
+    /// than media (`QwenVL.replacePaddingTokens`, before any tower work).
     static let qwenPlaceholderCountMismatch = "Number of placeholder tokens does not match number of frames"
 
     /// Whether the processor refused a request with media outside user
@@ -920,9 +920,8 @@ public enum EngineV2VisionPrefill {
     /// Coarse media shape of `request` (image / video / mixed), for
     /// telemetry tagging on paths where the processor never ran (refusals
     /// can fire before `prepare` produced anything). Scans the messages whose
-    /// media the processor consumes: user messages, and every message when
-    /// media outside user messages is placed (`MediaIngest.placesNonUserMedia`),
-    /// so refusal tags match the success path's `lmInput`-derived kind.
+    /// media the processor consumes (`MediaIngest.messagesKeepingMedia`), so
+    /// refusal tags match the success path's `lmInput`-derived kind.
     /// Callers only invoke this for requests that already passed `hasMedia`;
     /// with the switch off, a request whose media all sits on non-user roles
     /// reports `.image` here but never reaches refusal telemetry (it maps to
@@ -930,8 +929,7 @@ public enum EngineV2VisionPrefill {
     static func mediaKind(of request: OpenAIChatCompletionRequest) -> EngineV2MediaKind {
         var hasImage = false
         var hasVideo = false
-        let everyRole = MediaIngest.placesNonUserMedia(request)
-        for message in request.messages where message.role == .user || everyRole {
+        for message in MediaIngest.messagesKeepingMedia(of: request) {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
                 switch part {

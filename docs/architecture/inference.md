@@ -5006,25 +5006,26 @@ restores the refusal; it is read once per process and reaches the launchd job.
 ### Media in system, assistant and tool messages
 
 An image or video may sit in any message role. The single-Mac media path
-(`EngineV2VisionPrefill.prepare`: Gemma 4, Qwen 3.5–3.8) keeps every
-message's media, in message order, with its template fields (`tool_calls`,
+(`EngineV2VisionPrefill.prepare`: Gemma 4, Qwen 3.5–3.8) keeps every message's
+media, in message order, with its template fields (`tool_calls`,
 `tool_call_id`), and lets the model's chat template place it, as vLLM does (it
-collects media from every role). GLM-5.3-Flash, on one Mac and on a pair,
-places media parts in every role the same way. Before any tower work the
-provider checks that every image has its placeholder; video frames are paired
-when their spans are carved. A request whose media is only in user messages is built exactly as
-before (`MediaIngest.buildUserInput`, `keepNonUserMedia`). Where the template
-refuses such media or leaves it without a placeholder (Qwen 3.5–3.8 raise on a
-system-message image; Gemma 4 renders only the text of its first system message
-and of tool results), the request fails with HTTP 400 `invalid_request`,
-refusal reason `media_role_not_rendered`, on every such provider, matching
-vLLM's 400 for an item without a placeholder; other processor and tower
-faults keep their retriable refusal. Qwen pairs still refuse media outside
-user messages, Diffusion Gemma still refuses system and assistant media, and
-Nemotron Super already rendered every role with its pinned template. Before this, such media was dropped:
-alone it was refused as `invalid_media`, and beside a user image the model
-answered without seeing it. `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0` restores keeping
-only user-message media.
+collects media from every role). GLM-5.3-Flash, on one Mac and on a
+tensor-parallel pair, places media parts in every role the same way. Before
+any tower work the provider checks that every image has its placeholder; video
+frames are paired when their spans are carved. A request whose media is only
+in user messages is built exactly as before (`MediaIngest.buildUserInput`,
+`keepNonUserMedia`). Where the template refuses such media or leaves it
+without a placeholder (Qwen 3.5–3.8 raise on a system-message image; Gemma 4
+renders only the text of its first system message and of tool results), the
+request fails with HTTP 400 `invalid_request`, refusal reason
+`media_role_not_rendered`, on every such provider, matching vLLM's 400 for an
+item without a placeholder; other processor and tower faults keep their
+retriable refusal. Qwen pairs and the GLM still-image pair profile still
+refuse media outside user messages, Diffusion Gemma still refuses system and
+assistant media, and Nemotron Super already rendered every role with its
+pinned template. Before this, such media was dropped: alone it was refused as
+`invalid_media`, and beside a user image the model answered without seeing it.
+`DARKBLOOM_MEDIA_ON_EVERY_ROLE=0` restores keeping only user-message media.
 
 ### Chat-template render check
 

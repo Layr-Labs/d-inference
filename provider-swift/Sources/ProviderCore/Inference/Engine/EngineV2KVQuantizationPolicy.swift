@@ -31,16 +31,13 @@ extension PagedKVQuantizationPolicy {
     /// as a preparation fallback (`killSwitchDisabled`). The benchmark
     /// construction (`EngineV2Factory.makeProductionBuild`) keeps its
     /// attached-only rule.
-    ///
-    /// `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT` turns only the not-attached
-    /// case off and keeps MTP on (`gemmaNativeRowsBeforeAssistantEnabled`).
     static func gemmaAssistantAccessExpected(
         assistantAttached: Bool, mtpEnabled: Bool, status: MTPActivationStatus,
         processMTPEnabled: Bool = CBv2MTPConfig.envEnabled,
-        beforeAttach: Bool = gemmaNativeRowsBeforeAssistantEnabled
+        nativeRowsBeforeAssistant: Bool = gemmaNativeRowsBeforeAssistantEnabled
     ) -> Bool {
         if assistantAttached { return mtpEnabled }
-        return beforeAttach && processMTPEnabled && status.configured
+        return nativeRowsBeforeAssistant && processMTPEnabled && status.configured
             && status.reason != .killSwitchDisabled
     }
 

@@ -15,9 +15,11 @@ import Testing
 /// `DEBUG` condition becomes a value in one place.
 ///
 /// Nothing here is a copy of a list that grows: a switch, a location or a
-/// constant added later needs no entry in this file. Only `openDecisions` is
-/// exact: it is every developer-only variable production's release build
-/// honours, and it may only shrink.
+/// constant added later needs no entry in this file unless a signed build
+/// honours it. Two sets are exact, and are meant to need a second hand:
+/// `openDecisions`, every developer-only variable production's release build
+/// honours, which may only shrink; and `nonProduction`, what a signed DevNet
+/// or staging build honours beside it.
 @Suite struct DeveloperSwitchTests {
     // MARK: - The declarations
 

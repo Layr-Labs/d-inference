@@ -331,8 +331,10 @@ contain (a key file, a certificate pin, an extra signing identity) stay inside
 checks the reader against the declarations in all six postures, pins by name
 the variables that were gated before they became switches, and pins the
 `everyBuild(.undecided)` set, which only loses variables and is exactly what
-production's release build honours. A switch added later needs no entry in the
-tests unless production's release build honours it. With the same
+production's release build honours. A signed DevNet or staging build honours
+exactly that set and the one variable gated on the environment, also pinned by
+name. A switch added later needs no entry in the tests unless a signed build
+honours it. With the same
 source scan as `ServiceEnvironmentReachTests` it fails on a variable that is
 `debugOnly` or `pathOverride` above, or that does not reach the service and
 whose name has the word `DEBUG`, `DEV`, `DEVELOPER` or `TEST`, and is not a

@@ -3261,7 +3261,7 @@ exits 0), because the pair's next start sets it up again
 update pins an older worker than the kept copy: it is a ⚠ too when the setup
 names this Darkbloom's own worker, signed with the same certificate, and every
 other pinned file verifies (the line names no release). A worker not signed so,
-a setup naming another worker, or a build without the Developer ID, stays a ✗.
+a setup naming another worker, or a build without the Developer ID, stay a ✗.
 The
 saved-setup check counts a provider configuration that other users can open
 (the installer writes it so for a coordinator other than production's) as no

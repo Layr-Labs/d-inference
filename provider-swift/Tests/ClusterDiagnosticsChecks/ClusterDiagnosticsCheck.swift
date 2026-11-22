@@ -338,7 +338,7 @@ private func reject(_ body: () throws -> Void) throws {
             "an installed worker not signed like this provider")
         try require(!DistributedInstalledHelperSignature.current.signsWorker(installed) && doctor(other).map(\.outcome) == [.failed],
             "a build without this project's Developer ID vouched for a worker")
-        // A signed provider whose certificate didn't sign the worker refuses it (the launch's strict check).
+        // A signed provider refuses a worker its certificate didn't sign (here an unsigned one: the launch's strict check).
         let someoneElse = DistributedInstalledHelperSignature.signed(.init(leafSHA1: Data(repeating: 1, count: 20),
             identifier: "io.darkbloom.provider", cdhash: Data(repeating: 2, count: 20), team: DistributedInstalledHelperSignature.releaseTeam))
         try require(!someoneElse.signsWorker(installed), "a worker another certificate signed was vouched for")

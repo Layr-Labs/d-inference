@@ -326,7 +326,9 @@ public enum MediaIngest {
     /// inline image/video content parts. Inline MP4s are retained in memory by
     /// their `UserInput.Video` values for the lifetime of the returned input.
     /// Without `maxImagesPerRequest`, the image cap is the request's model's
-    /// (`imageCap(forModel:)`).
+    /// (`imageCap(forModel:)`). Serving callers pass
+    /// `keepNonUserMedia: placesNonUserMedia(request)`, so the scans that read
+    /// `messagesKeepingMedia(of:)` agree with the input built here.
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls = .init(),

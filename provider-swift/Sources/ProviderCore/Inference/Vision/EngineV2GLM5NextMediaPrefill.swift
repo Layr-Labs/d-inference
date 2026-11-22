@@ -23,7 +23,8 @@ extension EngineV2VisionPrefill {
     /// Decode with the existing bounded ingest, but preserve GLM's native
     /// tool/history values and interleaved symbolic media parts. No URL or media
     /// bytes enter the prompt; media in other roles is placed by the template
-    /// (`MediaIngest.everyRoleEnabled`), or rejected rather than lost when the switch is off.
+    /// (`MediaIngest.placesNonUserMedia`), or rejected rather than lost when
+    /// the switch is off.
     static func glm5NextUserInput(request: OpenAIChatCompletionRequest,
                                   controls: ChatTemplateControls) async throws -> UserInput {
         var textRequest = request
@@ -53,7 +54,7 @@ extension EngineV2VisionPrefill {
             prepared: prepared, controls: controls)
         var messages = normalized.messages
         let prefix = messages.count - request.messages.count
-        guard (0...1).contains(prefix) else {
+        guard (0...1).contains(prefix), prepared.messages.count == messages.count else {
             throw EngineV2VisionPrefillError.unsupportedMedia("GLM prompt alignment")
         }
         for index in request.messages.indices {

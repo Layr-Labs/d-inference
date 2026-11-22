@@ -130,13 +130,18 @@ struct MediaOnEveryRoleTests {
         let userOnly = try Self.decode([["role": "system", "content": [Self.text("Be brief.")]],
                                         ["role": "user", "content": [Self.text("What is it?"), Self.image(Self.imageURL(.red))]]])
         for request in try [Self.everyRoleRequest(), userOnly] {
-            let images = MediaIngest.messagesKeepingMedia(of: request).reduce(0) { count, message in
-                guard case .parts(let parts) = message.content else { return count }
-                return count + parts.filter { if case .imageURL = $0 { return true }; return false }.count
+            // The helper's images, in order, as the input decodes them.
+            var kept: [UserInput.Image] = []
+            for message in MediaIngest.messagesKeepingMedia(of: request) {
+                guard case .parts(let parts) = message.content else { continue }
+                for case .imageURL(let uri) in parts {
+                    kept.append(try MediaIngest.decodeImageData(try MediaIngest.dataFromDataURI(uri)))
+                }
             }
             let input = try await MediaIngest.buildUserInput(from: request,
                 keepNonUserMedia: MediaIngest.placesNonUserMedia(request))
-            #expect(images == input.images.count)
+            try #require(kept.count == input.images.count)
+            #expect(try kept.map(Self.color) == input.images.map(Self.color))
         }
         #expect(MediaIngest.messagesKeepingMedia(of: userOnly).map(\.role) == [OpenAIRole.user])
     }

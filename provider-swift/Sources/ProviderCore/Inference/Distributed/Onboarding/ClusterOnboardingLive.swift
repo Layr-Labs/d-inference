@@ -1513,8 +1513,8 @@ final class OnboardingLive: @unchecked Sendable {
     /// saved start is as it was when it ends, whichever of them failed, the stop included, and the cluster services
     /// start the parts again by themselves. It is marked for the service's next run only when this Mac's cluster
     /// service runs it (a command the other Mac forwarded); run by this Mac's own command, its end alone puts the
-    /// start back. While this Mac's update restarts its cluster service next, nothing stops: that service asks the
-    /// coordinator at its first approval check (`ClusterService.checkApproval`).
+    /// start back. While this Mac's update restarts its cluster service next, or its setup record cannot be read,
+    /// nothing stops: the service asks the coordinator at its next approval check (`ClusterService.checkApproval`).
     func localRegister() -> Result<[String], ClusterOnboardingFailure> {
         defer { clearRegistrationPending() }
         // A pair stopped since it was started (a stop someone asked for during its test took the command lock first, or

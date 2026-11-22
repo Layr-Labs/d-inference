@@ -48,28 +48,31 @@ extension ClusterServiceRestartingStopTests {
         }
     }
 
-    /// The record as it was on disk when the step passed `point`.
+    /// The record as it was on disk when the step passed `point`, and every point the step passed.
     final class Crash: @unchecked Sendable {
         let point: CrashPoint
         private let store: ClusterSetupStore
         private let lock = NSLock()
         private var taken: ClusterSetupRecord?
+        private var points: [CrashPoint] = []
 
         init(at point: CrashPoint, store: ClusterSetupStore) { self.point = point; self.store = store }
 
         func reached(_ passed: CrashPoint) {
+            lock.withLock { points.append(passed) }
             guard passed == point, let record = try? store.readRecord() else { return }
             lock.withLock { if taken == nil { taken = record } }
         }
 
         var record: ClusterSetupRecord? { lock.withLock { taken } }
+        var passed: [CrashPoint] { lock.withLock { points } }
     }
 
     private static let offered = ClusterOnboardingModelChoice(title: ClusterApprovalMacs.model, lines: ["fixture plan"], blocker: nil,
                                                               modelID: ClusterApprovalMacs.model)
 
     /// A pair whose coordinator serves a model approval for its setup, so a registration has one to save.
-    private static func offeredPair() throws -> (ClusterApprovalMacs, CountingCoordinator) {
+    static func offeredPair() throws -> (ClusterApprovalMacs, CountingCoordinator) {
         let coordinator = try CountingCoordinator()
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:\(coordinator.port)/ws/provider")
         coordinator.approvals = try ClusterApprovalMacs.body([macs.modelApproval()])
@@ -99,7 +102,7 @@ extension ClusterServiceRestartingStopTests {
     }
 
     /// A run of the leader's service over the home as it is, both switches of the re-plan after an update on.
-    private static func restarted(_ macs: ClusterApprovalMacs) -> ClusterService {
+    static func restarted(_ macs: ClusterApprovalMacs) -> ClusterService {
         let service = nextRun(macs)
         service.resumesInterruptedUpdateReplan = true
         service.updateReplanGuard = true
@@ -111,7 +114,7 @@ extension ClusterServiceRestartingStopTests {
     /// point. Its stop is the pair's real one (`OnboardingLive.localStop`), the other Mac answering at once; its start
     /// stands in for `OnboardingLive.localServe`'s first write. What the step said.
     @discardableResult
-    private static func drive(_ step: ClusterRestartingStop.Step, _ service: ClusterService, _ crash: Crash) -> [String] {
+    static func drive(_ step: ClusterRestartingStop.Step, _ service: ClusterService, _ crash: Crash) -> [String] {
         let store = service.store, said = ClusterApprovalRecorder<String>()
         let stop: () -> Result<[String], ClusterOnboardingFailure> = {
             crash.reached(.marked)
@@ -227,7 +230,7 @@ extension ClusterServiceRestartingStopTests {
             if arm == "control moved to the other Mac since" { ended.control = Self.claim(macs, leader: macs.follower.memberID) }
             if arm == "a step a later build named" { ended.restartingStop?.step = "aStepOfALaterBuild" }
             _ = try service.store.updateRecord { $0 = ended }
-            if arm == "a stop while the pair was down" { ClusterRestartingStop(store: service.store).forget() }
+            if arm == "a stop while the pair was down" { #expect(ClusterRestartingStop(store: service.store).forget()) }
             let now = arm == "a mark from long ago" ? began + 2 * 3600 : arm == "a mark from after now" ? began - 60 : began + 5
             let line = Self.restarted(macs).resumeInterruptedRestart(now: now)
             let record = try service.store.readRecord()

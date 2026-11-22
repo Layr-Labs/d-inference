@@ -514,7 +514,7 @@ struct ClusterServiceRestartingStopTests {
             if arm == "the owner stopped the pair since" {
                 _ = service.controlLive.localStop(seconds: 1, asked: true) {}
             }
-            if arm == "a stop while the pair was down" { ClusterRestartingStop(store: service.store).forget() }
+            if arm == "a stop while the pair was down" { #expect(ClusterRestartingStop(store: service.store).forget()) }
             // The derived control claim, not the onboarding's roles, says who re-plans (`ClusterControlLeadership`): the
             // mark of a Mac that leads by its recorded claim is resumed whatever its onboarding role (here the member
             // role naming the other Mac as leader, which alone would say it follows), and a Mac whose recorded claim names

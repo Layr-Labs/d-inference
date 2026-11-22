@@ -5933,7 +5933,8 @@ ends (`ClusterSetupRecord.updateReplan`), and the service's next run drops the m
 when the mark is under an hour old, this Mac still holds the control claim
 (`followsPeer`, not the onboarding's role), the start is still cleared and no stop was counted since
 (`ClusterService.resumeInterruptedRestart`; `darkbloom stop` while the pair is down and `releaseForSingleMac`
-drop it first, `forgetInterruptedRestart`). `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. Any other
+drop it first, under the record's lock, and fail when they cannot: `forgetInterruptedRestart`).
+`DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` turns both off. Any other
 pair's coordinated update also installs before it restarts the services, so the old leader service's check could find
 the new workers on disk and begin a re-plan that the restart then ended, the start cleared (seen on a DevNet pair
 during an update): while this Mac's update has drained or is restarting into a release this process doesn't run, its
@@ -5952,7 +5953,10 @@ restarting stop (`ClusterRestartingStop.run`), which does for all four what the 
   cluster service next: planning <model> again waits for that restart" and gives its 10-minute slot back; the
   approval change says the same of "the change of the cluster approval" and is tried at the next check; a
   registration stops nothing, and its screen goes on as when the coordinator offers no approval.
-- It marks the setup record before the step's stop. The re-plan after an update keeps `updateReplan` and its two
+- It marks the setup record before the step's stop, in the write that reads, under the record's lock, whether the
+  pair is started and how many stops were counted. A read outside that lock fails while another writer replaces the
+  record. A step that cannot read where it starts from does not begin: it stops nothing, marks nothing and puts
+  nothing back, and its caller tries again as after a hold. The re-plan after an update keeps `updateReplan` and its two
   switches. The other three write `ClusterSetupRecord.restartingStop` (the step's name, the stops counted, the time),
   whatever the switches say. A build from before that field neither reads nor keeps it, so after a rollback it resumes
   its own re-plan after an update as before and does for the other steps what it always did. Only a step the cluster
@@ -5961,10 +5965,14 @@ restarting stop (`ClusterRestartingStop.run`), which does for all four what the 
   would wait for the service's next start. That command's own end puts the start back, and a command killed between
   its stop and its start leaves the pair stopped, as before.
 - When the step ends, whichever of its parts failed, one write saves the start again, drops the stop request a stop
-  that failed midway keeps, and drops the mark. A stop counted since the step began (`ClusterSetupRecord.stopsAsked`)
-  stands, and a step run on a pair that is not started puts nothing back.
+  that failed midway keeps, and drops the mark. The start is put back only against the count read at the beginning: a
+  stop counted since (`ClusterSetupRecord.stopsAsked`) stands, and a step run on a pair that is not started puts
+  nothing back. What a step does not know never becomes a start. The limit is the other way round: when that last
+  write fails in a service that lives on, the pair stays stopped with its mark until a restart of the service within
+  the hour puts the start back, and an unmarked step's pair stays stopped.
 - The service's next run puts the start back for a mark it finds (`ClusterRestartingStop.resume`), on the conditions
-  above, and drops every mark. Before this, a service ended between the stop and the start of a memory re-plan, an
+  above, and drops every mark. Its log line says so only once that write went through; when it fails, the marks stay
+  for the run after. Before this, a service ended between the stop and the start of a memory re-plan, an
   approval change or a registration it ran left the pair stopped on both Macs until a person started it.
 
 A Mac that rolls a release back is

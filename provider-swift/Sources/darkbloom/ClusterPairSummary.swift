@@ -423,6 +423,13 @@ struct ClusterPairSummary: Sendable, Equatable {
             + "then `\(Self.cli) start`."]
     }
 
+    /// `stop` while the pair is down could not write this Mac's cluster record (`ClusterService.forgetInterruptedRestart`):
+    /// the cluster service could still put the pair's start back at its next run.
+    static var stopNotRecordedLines: [String] {
+        ["This Mac's cluster record could not be updated, so its pair could start again by itself.",
+         "Run `\(Self.cli) stop` again."]
+    }
+
     /// Said at once when stopping this Mac's leftover part waits for a cluster command that runs (it holds the command
     /// lock): nothing has been read or written yet.
     static let releaseWaitLine = "Waiting for the pair's running command to finish (up to 10 minutes; ^C stops waiting and "

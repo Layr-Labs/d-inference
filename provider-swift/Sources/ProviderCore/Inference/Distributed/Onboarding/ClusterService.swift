@@ -774,7 +774,8 @@ public final class ClusterService: @unchecked Sendable {
         // `held` is let go: every stop of the pair takes this lock, so an owner's stop can't land just before the start
         // is put back and be undone.
         guard let ended = stops.run(.memoryReplan, { steps.adopt(index).flatMap { _ in steps.serve() } }) else {
-            // This Mac's update began to restart this service since the re-plan began.
+            // Nothing began: this Mac's update began to restart this service since the re-plan began, or the setup
+            // record could not be read just now.
             lock.withLock { nextMemoryReplan = .distantPast }
             return
         }
@@ -1528,7 +1529,8 @@ public final class ClusterService: @unchecked Sendable {
                 reachMembers: { live.localReachMembers({ _ in }) }, stop: { live.localStop() },
                 awaitReleased: { live.awaitReleased() }, planModels: { live.localPlanModels(keeping: keeping) },
                 adopt: { live.localAdopt($0) }, serve: { live.localServe() })) else {
-                // This Mac's update began to restart this service since the check began: the next check says so and waits.
+                // Nothing began: this Mac's update began to restart this service since the check began (the next check
+                // says so and waits), or the setup record could not be read just now (the next check tries again).
                 self.lock.withLock {
                     self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.recheckWhileWaitingSeconds)
                 }
@@ -1948,12 +1950,14 @@ public final class ClusterService: @unchecked Sendable {
         }
         guard let held = taken else { return .commandStillRunning }
         defer { held.release() }
+        // The start cleared and the marks dropped in one write under the record's lock, which leaves a record that
+        // has neither as it is. A read outside the lock fails while another writer replaces the record, and a start
+        // left saved, or a mark left for the service's next run (`ClusterRestartingStop.resume`), starts the pair again.
         do {
-            if (try? store.readRecord())?.leadership?.serving == true {
-                try store.updateRecord { $0.leadership?.serving = false }
+            if FileManager.default.fileExists(atPath: store.paths.record.path) {
+                try store.updateRecord { $0.leadership?.serving = false; $0.dropRestartingStopMarks() }
             }
         } catch { return .partNotStopped }
-        ClusterRestartingStop(store: store).forget()
         return stopLocalPart(in: setup.directory, seconds: seconds) ? .released : .partNotStopped
     }
 

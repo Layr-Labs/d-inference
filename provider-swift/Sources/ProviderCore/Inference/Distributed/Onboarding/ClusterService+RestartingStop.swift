@@ -43,7 +43,8 @@ extension ClusterService {
     /// once their workers changed, and planned while they run, a tensor-parallel pair does not fit "now" and a pipeline is
     /// chosen in its place. One restarting stop: a failure, of its stop too, leaves the saved start as it was, so the
     /// next check tries again. The model's choice as planned, or why the cluster was not set up again; nil, with
-    /// nothing run, while this Mac's update restarts this service next (`ClusterRestartingStop.hold`).
+    /// nothing run, while this Mac's update restarts this service next or the setup record cannot be read
+    /// (`ClusterRestartingStop.run`).
     func replanAfterUpdate(model: String, _ steps: UpdateReplan) -> Result<ClusterOnboardingModelChoice, ClusterOnboardingFailure>? {
         restartingStops.run(.updateReplan) {
             // Nothing is stopped while the other Mac is not reached: the saved start is still as it was.
@@ -78,7 +79,8 @@ extension ClusterService {
     /// `checkApproval`'s change for `step` on both Macs (`ClusterApprovalSync.apply`), under the command lock. A pair
     /// that serves is stopped for it and started again as one restarting stop: when the stop or the start fails, the
     /// saved start is as it was, so the pair serves as before and the next check tries again. What the change did;
-    /// nil, with nothing run, while this Mac's update restarts this service next (`ClusterRestartingStop.hold`).
+    /// nil, with nothing run, while this Mac's update restarts this service next or the setup record cannot be read
+    /// (`ClusterRestartingStop.run`).
     func changeApproval(_ step: ClusterApprovalCheck.Step, serving: Bool, _ steps: ApprovalChange,
                         say: (String) -> Void) -> ClusterApprovalSync.Result? {
         restartingStops.run(.approvalChange) {
@@ -136,10 +138,11 @@ extension ClusterService {
 
     /// A person stopped this Mac's pair while it was down (`darkbloom stop`, which counts no stop then, or `darkbloom
     /// start --solo` releasing this Mac's part, `releaseForSingleMac`): a step that a restart ended is not resumed.
-    /// (Single-Mac serving started without a part to release holds the part back anyway.)
-    public static func forgetInterruptedRestart() {
-        guard let paths = try? ClusterUserPaths() else { return }
-        ClusterRestartingStop(store: ClusterSetupStore(paths: ClusterSetupPaths(paths: paths))).forget()
+    /// (Single-Mac serving started without a part to release holds the part back anyway.) False when this Mac's record
+    /// could not be written: the stop is not done (`ClusterRestartingStop.forget`).
+    public static func forgetInterruptedRestart() -> Bool {
+        guard let paths = try? ClusterUserPaths() else { return true }
+        return ClusterRestartingStop(store: ClusterSetupStore(paths: ClusterSetupPaths(paths: paths))).forget()
     }
 
     /// The control command lock for a re-plan of the pair (`checkForUpdate`, `replanForMemory`), taken within 5 s; nil

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -2698,7 +2698,12 @@ is cleared) and single-Mac serving. It never asks the other Mac. It takes the
 cluster command lock first, as `darkbloom cluster stop` does (waiting up to 10
 minutes for a cluster command that is running, and saying so at once, as
 `start` does), so no automatic step of the cluster service starts the pair
-again after it. While the
+again after it. It also drops the mark of such a step that a restart ended
+(`ClusterService.forgetInterruptedRestart`), which the service's next run
+would put the pair's start back for. When this Mac's cluster record cannot be
+written for that, the stop is not done: it says ``This Mac's cluster record
+could not be updated, so its pair could start again by itself.`` and ``Run
+`darkbloom stop` again.``, exit 1. While the
 other Mac answers but the pair hasn't served yet, plain `stop` stops the pair
 on both Macs, as while it runs.
 

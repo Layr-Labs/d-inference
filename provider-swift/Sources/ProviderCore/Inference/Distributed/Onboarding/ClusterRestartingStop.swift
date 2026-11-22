@@ -69,8 +69,9 @@ struct ClusterRestartingStop: Sendable {
     ///
     /// `marked` false: a command runs the step itself, not the cluster service. The service's next run follows the end
     /// of the service, not of that command, so a mark the command left when it was killed would stay until the service
-    /// next started, and put a start back then, long after and whatever was decided meanwhile. Such a step writes no
-    /// mark; its own end still saves the start.
+    /// next started. Up to `resumeSeconds` later, that run would put back a start that something else had cleared
+    /// since without counting a stop (a model change's own stop). Such a step writes no mark; its own end still saves
+    /// the start.
     func run<Outcome>(_ step: Step, marked: Bool = true, _ body: () -> Outcome) -> Outcome? {
         let before = try? store.readRecord()
         // A pair that is not started has no start to lose: the step runs as it is and nothing is put back after it.

@@ -493,7 +493,7 @@ struct ClusterServiceRestartingStopTests {
     /// The service that runs again after the restart finds the mark of the re-plan its previous run never ended: it puts
     /// the pair's start back, as the re-plan's own failure would have, so the pair sets itself up again. A stop a person
     /// asked for since is kept, counted (`stopsAsked`) or made while the pair was down (`darkbloom stop` then counts none:
-    /// `forgetInterruptedUpdateReplan`). A run ended before its stop left the start saved, and a mark older than an hour
+    /// `ClusterRestartingStop.forget`). A run ended before its stop left the start saved, and a mark older than an hour
     /// is one a failed write left behind: neither changes the start. Every mark is dropped, and
     /// `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` leaves the start as 0.10.13 did.
     @Test(arguments: ["ended in its re-plan", "the owner stopped the pair since", "a stop while the pair was down",

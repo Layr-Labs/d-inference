@@ -317,8 +317,9 @@ extension ClusterServiceRestartingStopTests {
 
     /// The mark is for the next run of the cluster service, which follows the end of the service. A registration that
     /// this Mac's own `darkbloom cluster` command runs is not in the service: a mark it left when it was killed would
-    /// wait for the service's next start, and put the pair's start back then, whatever was decided meanwhile. It
-    /// writes none, and its own end puts the start back.
+    /// wait for the service's next start, which within the hour would put back a start that something else had
+    /// cleared since without counting a stop (`ClusterRestartingStop.run`). It writes none, and its own end puts the
+    /// start back.
     @Test func aRegistrationThisMacsOwnCommandRunsWritesNoMark() throws {
         let (macs, coordinator) = try Self.offeredPair()
         defer { coordinator.close() }
@@ -419,14 +420,18 @@ extension ClusterServiceRestartingStopTests {
         let files = try #require(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
         var found: [String: Int] = [:]
         for case let file as URL in files where file.pathExtension == "swift" {
-            let unasked = try String(contentsOf: file, encoding: .utf8).components(separatedBy: "localStop()").count - 1
+            let text = try String(contentsOf: file, encoding: .utf8)
+            func count(_ call: String) -> Int { text.components(separatedBy: call).count - 1 }
+            // Every call of the pair's stop, with or without arguments, but its declarations and a person's stop.
+            let unasked = count("localStop(") - count("func localStop(") - count("localStop(asked: true)")
             if unasked > 0 { found[file.lastPathComponent] = unasked }
         }
         // `ClusterService.swift`: the stops of the re-plan after an update and of the approval change, each given to
         // its restarting stop (`replanAfterUpdate`, `changeApproval`). `ClusterOnboardingLive.swift`: the
-        // registration's, given to its own, and `localAdopt`'s, which the memory re-plan runs inside its restarting
-        // stop and a person's model change runs before their own start.
-        #expect(found == ["ClusterService.swift": 2, "ClusterOnboardingLive.swift": 2],
+        // registration's, given to its own; `localAdopt`'s, which the memory re-plan runs inside its restarting
+        // stop and a person's model change runs before their own start; and `localStop(asked:)` handing its
+        // caller's `asked` on to `localStop(seconds:asked:stopPeer:)`.
+        #expect(found == ["ClusterService.swift": 2, "ClusterOnboardingLive.swift": 3],
                 "an unasked stop of the pair was added or moved: run it inside `ClusterRestartingStop.run` and name it here")
     }
 }

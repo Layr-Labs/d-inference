@@ -3,14 +3,24 @@ import Testing
 @testable import ProviderCore
 
 /// Whose request a submission is (`ServingRoute`), and the one table of what each limit decides for it
-/// (`RoutePolicy`). `golden` is every cell of that table: a change to a cell is a change to what a client or the
-/// coordinator gets, and belongs in a review of its own. What the cells do to a request is `ServingRouteLimitTests`.
+/// (`RoutePolicy`). `golden` is a pin, not an oracle: a second copy of every cell, so that a change to a cell, which
+/// is a change to what a client or the coordinator gets, takes a second hand. It cannot say a cell is right.
+///
+/// The oracle is `ServingRouteLimitTests`, which drives real engine paths. It reaches memory on one Mac and on a
+/// pair, one Mac's engine queue, and a pair's first-token allowance, request deadline and context. It does not reach:
+/// - `mediaMemory`, which `EngineV2VisionRoutingTests` exercises for the owner's request and for any other;
+/// - a loop exit's continuation on a pair, refused for its priority before a limit matters. Only its `context` is
+///   seen, through `EngineV2Bridge.outputTokens` (`PairOwnerContextTests`);
+/// - a pair's `engineQueue`, and one Mac's `firstToken`, `requestDeadline` and `context`: the same for every route,
+///   with nothing on that front end for them to change.
 @Suite("The serving route and its policy table")
 struct ServingRoutePolicyTests {
     typealias Limits = RouteLimits
 
     /// One request of each route, by name. The switch in `name(of:)` has no default: a new route does not compile
-    /// here until it has a name, and `everyCellIsDecided` fails until it has rows.
+    /// here until it has a name. Its rows are added by hand: the routes carry values and cannot be enumerated, so
+    /// `everyCellIsDecidedAsToday` fails when a route listed here loses its rows, not when a new one has none yet.
+    /// What the compiler holds to every route is `RoutePolicy`'s own switches (`thePolicyTableNamesEveryCase`).
     static let routes: [(name: String, route: ServingRoute)] = [
         ("coordinator", .coordinator(nil)),
         ("coordinator, with a first-content budget", .coordinator(FirstContentDeadline(relativeBudgetMilliseconds: 60_000))),
@@ -29,10 +39,9 @@ struct ServingRoutePolicyTests {
         }
     }
 
-    static func row(_ memory: Limits.Memory, _ engineQueue: Limits.EngineQueue, _ slot: Limits.Slot,
-                    _ firstToken: Limits.FirstToken, _ requestDeadline: Limits.RequestDeadline,
-                    _ context: Limits.Context) -> Limits {
-        Limits(memory: memory, engineQueue: engineQueue, slot: slot, mediaMemory: .refusedAtOnce,
+    static func row(_ memory: Limits.Memory, _ engineQueue: Limits.EngineQueue, _ firstToken: Limits.FirstToken,
+                    _ requestDeadline: Limits.RequestDeadline, _ context: Limits.Context) -> Limits {
+        Limits(memory: memory, engineQueue: engineQueue, mediaMemory: .refusedAtOnce,
                firstToken: firstToken, requestDeadline: requestDeadline, context: context)
     }
 
@@ -40,41 +49,25 @@ struct ServingRoutePolicyTests {
     /// pair's first-token allowance and the setup's request timeout, and is held to what the pair reports.
     static let golden: [ServingFrontEnd: [String: Limits]] = [
         .oneMac: [
-            "coordinator": row(.refusedAtOnce, .endsWithTheEnginesLease, .none, .noAllowance, .enginesOwn, .modelWindow),
+            "coordinator": row(.refusedAtOnce, .endsWithTheEnginesLease, .noAllowance, .enginesOwn, .modelWindow),
             "coordinator, with a first-content budget":
-                row(.refusedAtOnce, .endsWithTheEnginesLease, .none, .noAllowance, .enginesOwn, .modelWindow),
-            "owner": row(.waitsWithinOwnersBound, .heldAndSubmittedAgain, .none, .noAllowance, .enginesOwn, .modelWindow),
+                row(.refusedAtOnce, .endsWithTheEnginesLease, .noAllowance, .enginesOwn, .modelWindow),
+            "owner": row(.waitsWithinOwnersBound, .heldAndSubmittedAgain, .noAllowance, .enginesOwn, .modelWindow),
             "owner, first-token allowance restored":
-                row(.waitsWithinOwnersBound, .heldAndSubmittedAgain, .none, .noAllowance, .enginesOwn, .modelWindow),
+                row(.waitsWithinOwnersBound, .heldAndSubmittedAgain, .noAllowance, .enginesOwn, .modelWindow),
             "owner's continuation":
-                row(.refusedAtOnce, .endsWithTheEnginesLease, .none, .noAllowance, .enginesOwn, .modelWindow),
-            "internal": row(.refusedAtOnce, .endsWithTheEnginesLease, .none, .noAllowance, .enginesOwn, .modelWindow),
+                row(.refusedAtOnce, .endsWithTheEnginesLease, .noAllowance, .enginesOwn, .modelWindow),
+            "internal": row(.refusedAtOnce, .endsWithTheEnginesLease, .noAllowance, .enginesOwn, .modelWindow),
         ],
         .pair: [
-            "coordinator": row(.refusedAtOnce, .noQueue, .none, .pairAllowance, .setupRequestTimeout, .pairServed),
+            "coordinator": row(.refusedAtOnce, .noQueue, .pairAllowance, .setupRequestTimeout, .pairServed),
             "coordinator, with a first-content budget":
-                row(.refusedAtOnce, .noQueue, .none, .pairAllowance, .setupRequestTimeout, .pairServed),
-            "owner": row(.waitsWithinOwnersBound, .noQueue, .pairLaneCeiling, .noAllowance, .protocolHour, .pairOwnerServed),
+                row(.refusedAtOnce, .noQueue, .pairAllowance, .setupRequestTimeout, .pairServed),
+            "owner": row(.waitsWithinOwnersBound, .noQueue, .noAllowance, .protocolHour, .pairOwnerServed),
             "owner, first-token allowance restored":
-                row(.waitsWithinOwnersBound, .noQueue, .pairLaneCeiling, .pairAllowance, .protocolHour, .pairOwnerServed),
-            "owner's continuation": row(.refusedAtOnce, .noQueue, .none, .pairAllowance, .protocolHour, .pairOwnerServed),
-            "internal": row(.refusedAtOnce, .noQueue, .none, .pairAllowance, .setupRequestTimeout, .pairServed),
-        ],
-        // Nemotron Super's own admission, the same for every route: nothing waits for memory, and a busy slot is
-        // waited for at most its short settling waits.
-        .nemotronSuper: [
-            "coordinator":
-                row(.refusedAtOnce, .endsWithTheEnginesLease, .nemotronSuperSettling, .noAllowance, .enginesOwn, .modelWindow),
-            "coordinator, with a first-content budget":
-                row(.refusedAtOnce, .endsWithTheEnginesLease, .nemotronSuperSettling, .noAllowance, .enginesOwn, .modelWindow),
-            "owner":
-                row(.refusedAtOnce, .endsWithTheEnginesLease, .nemotronSuperSettling, .noAllowance, .enginesOwn, .modelWindow),
-            "owner, first-token allowance restored":
-                row(.refusedAtOnce, .endsWithTheEnginesLease, .nemotronSuperSettling, .noAllowance, .enginesOwn, .modelWindow),
-            "owner's continuation":
-                row(.refusedAtOnce, .endsWithTheEnginesLease, .nemotronSuperSettling, .noAllowance, .enginesOwn, .modelWindow),
-            "internal":
-                row(.refusedAtOnce, .endsWithTheEnginesLease, .nemotronSuperSettling, .noAllowance, .enginesOwn, .modelWindow),
+                row(.waitsWithinOwnersBound, .noQueue, .pairAllowance, .protocolHour, .pairOwnerServed),
+            "owner's continuation": row(.refusedAtOnce, .noQueue, .pairAllowance, .protocolHour, .pairOwnerServed),
+            "internal": row(.refusedAtOnce, .noQueue, .pairAllowance, .setupRequestTimeout, .pairServed),
         ],
     ]
 
@@ -85,7 +78,7 @@ struct ServingRoutePolicyTests {
                         "\(name) at \(frontEnd)")
             }
         }
-        // Every route has a row.
+        // No route was dropped from the list above.
         #expect(Set(Self.routes.map { Self.name(of: $0.route) })
                 == ["coordinator", "owner", "owner's continuation", "internal"])
     }

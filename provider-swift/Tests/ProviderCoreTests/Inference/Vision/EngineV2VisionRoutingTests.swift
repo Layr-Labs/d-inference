@@ -1291,7 +1291,10 @@ struct EngineV2VisionRoutingTests {
     /// memory gate at once as well: the owner's memory wait (`OwnerMemoryWait`,
     /// with no bound here) covers the engine's memory, not this gate. Today's
     /// behaviour, named here so that it is a decision rather than an accident.
-    @Test("the owner's vision request the media memory gate can't hold is refused at once too")
+    /// The time limit ends a request that waited instead: nothing here would
+    /// ever free the memory it waited for.
+    @Test("the owner's vision request the media memory gate can't hold is refused at once too",
+          .timeLimit(.minutes(1)))
     func mediaGateRefusesTheOwnersRequestAtOnce() async throws {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             GlobalKVCacheBudget.MemorySnapshot(

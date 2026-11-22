@@ -49,18 +49,19 @@ enum ServingRoute: Sendable {
     }
 }
 
-/// What serves a request. A bridge tells `.oneMac` from `.pair` by its engine. Nemotron Super's bridges are built as
-/// any Mac's, and its admission runs before them, so only Super's own route could state `.nemotronSuper`. It does
-/// not yet: that row of `RoutePolicy` says what Super's admission does today, and no code reads it.
+/// What serves a request: a bridge tells `.oneMac` from `.pair` by its engine. Nemotron Super's local route is not
+/// one. Its bridges are built as any Mac's, and its own admission runs before them and reads none of this
+/// (`NemotronSuperLocalImageHTTP.streamChatCompletion`).
 enum ServingFrontEnd: CaseIterable, Sendable {
     case oneMac
     case pair
-    case nemotronSuper
 }
 
 /// What each limit that depends on the route decides for one request. One stored property per limit, none with a
 /// default: a new limit does not compile until `RoutePolicy.limits(for:at:)` decides it, in a switch over every
-/// route and front end.
+/// route and front end. Every limit here is read where it applies. A place to run taken before the engine is not
+/// here: a pair's lane queue and Nemotron Super's admission decide their own waits
+/// (`docs/architecture/inference.md`, "The serving route and its policy table").
 struct RouteLimits: Equatable, Sendable {
     /// The memory that requests already running hold, when the request can't start for it.
     enum Memory: Equatable, Sendable {
@@ -83,24 +84,10 @@ struct RouteLimits: Equatable, Sendable {
         case noQueue
     }
 
-    /// A place to run, taken before the engine. Its front ends decide it themselves and do not read this value
-    /// (`DistributedLocalServer.waitForTurn`, `ProviderLoop.takeClusterPairLane`,
-    /// `NemotronSuperLocalImageHTTP.streamChatCompletion`): it states what they do, so that changing either is a
-    /// decision made here.
-    enum Slot: Equatable, Sendable {
-        /// Nothing before the engine.
-        case none
-        /// A pair's lane queue: in arrival order, until `DistributedRequestQueue.Limits.waitCeiling`, then 503. The
-        /// ceiling counts in the setup's request timeout, though each of the owner's requests ahead may run for
-        /// the protocol's hour (`RequestDeadline.protocolHour`).
-        case pairLaneCeiling
-        /// Nemotron Super's admission: at most `NemotronSuperServingPolicy.finishingWait` (1 s) once every admitted
-        /// answer has ended, a media request at most `stackedMediaWait` (3 s) behind media answers already
-        /// streaming, one waiter at a time; otherwise 429 at once.
-        case nemotronSuperSettling
-    }
-
-    /// The media memory gate (`VisionMemoryGate`), where one is bound, and Nemotron Super's own media charge.
+    /// The media memory gate (`VisionMemoryGate`), where one is bound. Every route decides the same today. The
+    /// cell exists because the owner's request waits for the engine's memory and not for this gate: letting it wait
+    /// here would be a new case, and the switch where the gate refuses (`MultiModelBatchSchedulerEngine`) would not
+    /// compile until it handled it.
     enum MediaMemory: Equatable, Sendable {
         /// Refused at once as `media_memory_unavailable`.
         case refusedAtOnce
@@ -146,7 +133,6 @@ struct RouteLimits: Equatable, Sendable {
 
     let memory: Memory
     let engineQueue: EngineQueue
-    let slot: Slot
     let mediaMemory: MediaMemory
     let firstToken: FirstToken
     let requestDeadline: RequestDeadline
@@ -155,12 +141,16 @@ struct RouteLimits: Equatable, Sendable {
 
 /// The one table of what each limit decides per route and front end. Every switch names every case, so a new
 /// route or front end does not compile until every limit decides it.
+///
+/// A loop exit's continuation on a pair is decided here and has no effect today: a pair refuses a request with a
+/// priority (`DistributedRequestRefusal.priorityUnsupported`) before any of its limits matters. Its cells carry the
+/// owner's limits, as the flag they replaced did, so a pair that came to serve continuations would hold them to
+/// what it serves its owner.
 enum RoutePolicy {
     static func limits(for route: ServingRoute, at frontEnd: ServingFrontEnd) -> RouteLimits {
         RouteLimits(memory: memory(route, frontEnd), engineQueue: engineQueue(route, frontEnd),
-                    slot: slot(route, frontEnd), mediaMemory: mediaMemory(route, frontEnd),
-                    firstToken: firstToken(route, frontEnd), requestDeadline: requestDeadline(route, frontEnd),
-                    context: context(route, frontEnd))
+                    mediaMemory: mediaMemory(route, frontEnd), firstToken: firstToken(route, frontEnd),
+                    requestDeadline: requestDeadline(route, frontEnd), context: context(route, frontEnd))
     }
 
     private static func memory(_ route: ServingRoute, _ frontEnd: ServingFrontEnd) -> RouteLimits.Memory {
@@ -169,11 +159,6 @@ enum RoutePolicy {
             switch route {
             case .owner: return .waitsWithinOwnersBound
             case .coordinator, .ownerContinuation, .internal: return .refusedAtOnce
-            }
-        case .nemotronSuper:
-            // Not a decision yet: Super's local route binds no owner's wait, so nothing waits there.
-            switch route {
-            case .coordinator, .owner, .ownerContinuation, .internal: return .refusedAtOnce
             }
         }
     }
@@ -189,37 +174,12 @@ enum RoutePolicy {
             switch route {
             case .coordinator, .owner, .ownerContinuation, .internal: return .noQueue
             }
-        case .nemotronSuper:
-            switch route {
-            case .coordinator, .owner, .ownerContinuation, .internal: return .endsWithTheEnginesLease
-            }
-        }
-    }
-
-    private static func slot(_ route: ServingRoute, _ frontEnd: ServingFrontEnd) -> RouteLimits.Slot {
-        switch frontEnd {
-        case .oneMac:
-            switch route {
-            case .coordinator, .owner, .ownerContinuation, .internal: return .none
-            }
-        case .pair:
-            switch route {
-            case .owner: return .pairLaneCeiling
-            // A Darkbloom request never queues for a lane (with none free it is refused at once, `memory`), and a
-            // continuation runs in its request's lane.
-            case .coordinator, .ownerContinuation, .internal: return .none
-            }
-        case .nemotronSuper:
-            // One admission for Darkbloom and local requests alike.
-            switch route {
-            case .coordinator, .owner, .ownerContinuation, .internal: return .nemotronSuperSettling
-            }
         }
     }
 
     private static func mediaMemory(_ route: ServingRoute, _ frontEnd: ServingFrontEnd) -> RouteLimits.MediaMemory {
         switch frontEnd {
-        case .oneMac, .pair, .nemotronSuper:
+        case .oneMac, .pair:
             // Not a decision yet for the owner's: its memory wait covers the engine's memory, not the media gate.
             switch route {
             case .coordinator, .owner, .ownerContinuation, .internal: return .refusedAtOnce
@@ -236,7 +196,7 @@ enum RoutePolicy {
             case .owner(let wait): return wait.waitsForFirstToken ? .noAllowance : .pairAllowance
             case .coordinator, .ownerContinuation, .internal: return .pairAllowance
             }
-        case .oneMac, .nemotronSuper:
+        case .oneMac:
             switch route {
             case .coordinator, .owner, .ownerContinuation, .internal: return .noAllowance
             }
@@ -251,7 +211,7 @@ enum RoutePolicy {
             case .owner, .ownerContinuation: return .protocolHour
             case .coordinator, .internal: return .setupRequestTimeout
             }
-        case .oneMac, .nemotronSuper:
+        case .oneMac:
             switch route {
             case .coordinator, .owner, .ownerContinuation, .internal: return .enginesOwn
             }
@@ -265,7 +225,7 @@ enum RoutePolicy {
             case .owner, .ownerContinuation: return .pairOwnerServed
             case .coordinator, .internal: return .pairServed
             }
-        case .oneMac, .nemotronSuper:
+        case .oneMac:
             switch route {
             case .coordinator, .owner, .ownerContinuation, .internal: return .modelWindow
             }

@@ -8276,25 +8276,21 @@ values and applies `ServingRoute.resolve`:
 | `internal` | Neither: a calibration probe, a warm-up, a preload. Also the owner's request on Nemotron Super's local route, which binds no owner's wait |
 
 `RoutePolicy.limits(for:at:)` returns a `RouteLimits`, one field per limit,
-for a route and a front end (`ServingFrontEnd`: `oneMac`, `pair`,
-`nemotronSuper`). `coordinator` and `internal` decide the same in every cell.
+for a route and a front end (`ServingFrontEnd`: `oneMac`, `pair`).
+`coordinator` and `internal` decide the same in every cell.
 
 | Limit (`RouteLimits` field) | Front end | `coordinator`, `internal` | `owner` | `ownerContinuation` |
 |---|---|---|---|---|
 | `memory`: memory that running requests hold | one Mac, pair | Refused at once | Waits within the owner's bound, then is submitted again | Refused at once |
 | `engineQueue`: a request the engine queued and ended before admitting it | one Mac | Ends with the engine's lease | Its head is held; it waits and is submitted again | Ends with the engine's lease |
-| `slot`: a place taken before the engine | pair | None | The lane queue, until its ceiling | None |
-| `mediaMemory`: the media memory gate | any | Refused at once | Refused at once | Refused at once |
+| `mediaMemory`: the media memory gate | one Mac, pair | Refused at once | Refused at once | Refused at once |
 | `firstToken` | pair | The pair's allowance | None; the allowance with `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` | The pair's allowance |
 | `requestDeadline` | pair | The setup's request timeout | The protocol's hour | The protocol's hour |
 | `context` | pair | `served` | `ownerServed` | `ownerServed` |
 
 Where the table has no row for a front end, the decision is the same for
-every route: a pair has no engine queue; one Mac has no `slot`, no first-token
-allowance, the engine's own request ceiling and the model window. At
-`nemotronSuper` every route is refused at once for memory, ends with the
-engine's lease, and waits for a slot only within Super's own short waits
-(`NemotronSuperServingPolicy.finishingWait`, `stackedMediaWait`).
+every route: a pair has no engine queue; one Mac has no first-token
+allowance, the engine's own request ceiling and the model window.
 
 The readers:
 
@@ -8310,10 +8306,9 @@ The readers:
   where they size an output.
 - `MultiModelBatchSchedulerEngine` reads `mediaMemory` where its media gate
   refuses.
-- No code reads `slot` or the `nemotronSuper` row. A pair's lane queue
-  (`DistributedLocalServer.waitForTurn`, `ProviderLoop.takeClusterPairLane`)
-  and Super's admission (`NemotronSuperLocalImageHTTP`) decide for
-  themselves; the cells state what they do.
+
+Every field has a reader. A wait that no code would read from the table is
+not a cell ([what the table does not decide](#what-the-table-does-not-decide)).
 
 Invariants:
 
@@ -8331,24 +8326,46 @@ Invariants:
    anywhere: the bridge sets it from `RouteLimits.Context.servesOwner`, a
    submission with no context of its own says `false`, and a restriction
    passes the request's own.
-4. `ServingRoutePolicyTests` holds every cell; `ServingRouteLimitTests` holds
-   what each cell does to a request on fabricated engines.
+4. `ServingRoutePolicyTests` pins every cell: a second copy, so that changing
+   one takes a second hand. It cannot say a cell is right. The oracle is
+   `ServingRouteLimitTests`, which drives real engine paths on fabricated
+   engines. It does not reach `mediaMemory` (`EngineV2VisionRoutingTests`
+   does), a continuation's cells on a pair, a pair's `engineQueue`, or one
+   Mac's `firstToken`, `requestDeadline` and `context`.
 
 Cells that state today's behaviour rather than a decision:
 
-- The owner's request on Nemotron Super's local route resolves as `internal`:
-  it never waits for memory, and a busy slot is waited for at most 1 s (a
-  media request at most 3 s, one waiter at a time) before 429.
 - The owner's media request is refused at once by the media memory gate
   (`mediaMemory`): the owner's memory wait covers the engine's memory only.
-  The local API answers 503 without `Retry-After`.
-- A pair's lane queue ends a waiter at `DistributedRequestQueue.Limits.waitCeiling`,
-  which counts in the setup's request timeout, though each of the owner's
-  requests ahead may run for the protocol's hour.
+  The local API answers 503 without `Retry-After`. Every route decides the
+  same; the cell is there so that letting the owner's request wait is a new
+  case that its reader must handle.
+- A loop exit's continuation on a pair carries the owner's `requestDeadline`
+  and `context` and the pair's `firstToken` allowance, with no effect: a pair
+  refuses a request with a priority first
+  (`DistributedRequestRefusal.priorityUnsupported`).
 
-How a local request at its overall deadline is answered is not in the table:
-the transport that binds `LocalDeadlineOutcome` decides it, Nemotron Super's
-local route included.
+### What the table does not decide
+
+These are decided by their own front ends, which read no cell. They are
+open decisions, not rows:
+
+- A pair's lane queue (`DistributedLocalServer.waitForTurn`,
+  `ProviderLoop.takeClusterPairLane`): a request on the pair's local API
+  takes a lane at once when one is free and nobody waits, otherwise waits in
+  arrival order until `DistributedRequestQueue.Limits.waitCeiling`, then is
+  refused with 503. The ceiling counts in the setup's request timeout, though
+  each of the owner's requests ahead may run for the protocol's hour.
+- Nemotron Super's local route
+  (`NemotronSuperLocalImageHTTP.streamChatCompletion`): its own admission
+  runs before its bridges and binds no owner's wait, so the owner's request
+  resolves as `internal` and never waits for memory. A busy slot is waited
+  for at most `NemotronSuperServingPolicy.finishingWait` (1 s), a media
+  request at most `stackedMediaWait` (3 s) behind media answers already
+  streaming, one waiter at a time; then 429.
+- A local request at its overall deadline: the transport that binds
+  `LocalDeadlineOutcome` decides how it is answered, Nemotron Super's local
+  route included.
 
 ## A GLM pipeline pair serves its owner 262,144 tokens
 

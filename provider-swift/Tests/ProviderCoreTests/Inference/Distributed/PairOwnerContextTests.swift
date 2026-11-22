@@ -132,7 +132,6 @@ struct PairOwnerContextTests {
         #expect(restricted.ownerRequest && restricted.generationDeadline == shorter.generationDeadline)
         #expect(restricted.firstTokenDeadline == shorter.firstTokenDeadline)
         #expect(!shorter.restricted(to: owner).ownerRequest)
-        #expect(!DistributedRequestDeadlineContext(generationDeadline: now, ownerRequest: false).ownerRequest)
     }
 
     /// A pair at a GLM pipeline's limits, with no capability: the profile's, Darkbloom's and the owner's.
@@ -191,6 +190,12 @@ struct PairOwnerContextTests {
         let reported = engine.requestLimits()
         #expect(reported.maxPromptTokens == 32_768 && reported.maxOutputTokens == 32_768
             && reported.maxContextTokens == 65_536)
+        // A submission that names no context of its own is a Darkbloom request's: the engine refuses, before either
+        // rank is asked, a request it would serve its owner.
+        #expect(throws: DistributedEngineError.refused(.contextLengthExceeded)) {
+            _ = try engine.submit(Self.request(prompt: 200_000, maxTokens: 50_000))
+        }
+        #expect(owner.reservedRequests.isEmpty)
         await bridge.shutdown()
     }
 

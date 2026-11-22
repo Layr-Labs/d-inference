@@ -234,10 +234,17 @@ extension EngineV2Bridge {
             if waits {
                 let queued = try queueOwnerRequest()
                 ticket = queued
-                if deadline == nil, glmSoloGrant != nil,
-                   let bytes = requestReservationBytes(tokenCount: worstCaseTokens),
-                   bytes > admissionCapacityBytes(), await fitsGLMSoloGrant(bytes) == true {
-                    deadline = start.advanced(by: wait.sharedGrantLimit)
+                if deadline == nil, glmSoloGrant != nil, let bytes = requestReservationBytes(tokenCount: worstCaseTokens) {
+                    while !ownerMemoryWaiters.isFirst(queued) {
+                        try Task.checkCancellation()
+                        if bytes > admissionCapacityBytes(), await fitsGLMSoloGrant(bytes) == true {
+                            deadline = start.advanced(by: wait.sharedGrantLimit)
+                            break
+                        }
+                        // Resizing and a change of queue head both wake this ticket. A wake
+                        // during the quote is remembered, so neither transition can be missed.
+                        await parkOwnerRequest(queued, for: nil)
+                    }
                 }
                 try await waitForOwnerMemory(queued, until: deadline, retry: wait.retryInterval, retrying: false)
                 origin = .now

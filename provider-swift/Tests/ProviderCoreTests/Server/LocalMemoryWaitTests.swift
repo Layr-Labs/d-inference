@@ -89,17 +89,32 @@ struct LocalMemoryWaitTests {
         await bridge.shutdown()
     }
 
-    @Test func aSharedGrantWaitIsBoundedBehindAnotherOwner() async throws {
+    @Test(arguments: [false, true])
+    func aSharedGrantWaitIsBoundedBehindAnotherOwner(peerLoadsLater: Bool) async throws {
         let bridge = EngineV2Bridge(engine: InertStubEngine(kvBytesCapacity: 40), modelId: Self.model,
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [], kvBytesPerToken: 1)
-        await bridge.installGLMSoloGrant { 100 }
+        let quoted = WaitCounter()
+        let peer = WaitCounter()
+        if !peerLoadsLater { peer.add() }
+        await bridge.installGLMSoloGrant {
+            let available = peer.value > 0
+            quoted.add()
+            return available ? 100 : nil
+        }
         let head = Task {
             try await bridge.submittingOwnerRequest(OwnerMemoryWait(limit: .seconds(5)),
                 model: Self.model, worstCaseTokens: 80, origin: nil) { _, _ in
-                    throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 80)
+                    throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: false, reservedTokens: 80)
                 }
         }
         #expect(await eventually { await bridge.ownerMemoryWaiters.waiting.count == 1 })
+        let shrink = Task {
+            if peerLoadsLater {
+                #expect(await eventually { quoted.value > 0 })
+                peer.add()
+                await bridge.updateKVBytesCapacity(20)
+            }
+        }
         do {
             _ = try await bridge.submittingOwnerRequest(OwnerMemoryWait(sharedGrantLimit: .milliseconds(40)),
                 model: Self.model, worstCaseTokens: 80, origin: nil) { _, _ in
@@ -111,6 +126,7 @@ struct LocalMemoryWaitTests {
             #expect(Self.refusal(of: error) == OwnerMemoryWait.busyRefusal)
         }
         #expect(await bridge.ownerMemoryWaiters.waiting.count == 1)
+        await shrink.value
         head.cancel()
         _ = await head.result
         await bridge.shutdown()

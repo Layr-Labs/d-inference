@@ -7098,6 +7098,25 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSec
 `provider-swift/Sources/ProviderCore/Update/ClusterLinkKeyRollback.swift` and
 `provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift`.
 
+## The doctor after this Mac updated with its pair stopped
+
+The cluster service sets a pair up again after an update only while the pair
+runs (`ClusterService.checkForUpdate`). A pair that was stopped while its Macs
+updated keeps a saved setup that pins the previous release's worker until its
+next start, so `DistributedInstalledValidation.validate` fails its worker check.
+`cluster doctor` reports that as a `warning`, not a failure, only when all of
+these hold (`DistributedInstalledValidation.pinsEarlierReleaseWorker`):
+
+- the installed worker differs from the pin;
+- the pin is the worker in the kept rollback copy, the release this Mac updated
+  from (`SelfUpdater.keptRollbackWorker`, read without the update lease);
+- every other pinned file verifies, in `validate`'s order (`verifyPinnedFiles`).
+
+Anything else that differs stays a failure. `darkbloom doctor` shows the warning
+as WARN, and `cluster doctor` exits 0
+(`ClusterInstalledMetadataChecks.localInstalledMetadata`,
+`ClusterDiagnosticsReport.Outcome.warning`).
+
 ## A paired cable port's own address
 
 `darkbloom cluster link`, `darkbloom cluster doctor` and the guided setup judge

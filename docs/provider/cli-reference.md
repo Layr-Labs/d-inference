@@ -3251,7 +3251,13 @@ ProviderCore checks and the explicit `--clear-backend-guard` action
 On a Mac paired for a two-Mac cluster, the detailed checks also list the
 checks `darkbloom cluster doctor` runs (installed metadata, trust files, the
 Thunderbolt RDMA link, the saved setup), each named `cluster <check>`; a failed
-one fails the run and points to `darkbloom cluster doctor` for its details. The
+one fails the run and points to `darkbloom cluster doctor` for its details. A
+pair set up before this Mac updated, and stopped since, still pins the worker
+of the release the update replaced: when that pin is the worker in the kept
+rollback copy and every other pinned file verifies, `cluster
+localInstalledMetadata` is a ⚠ (`warning` in `cluster doctor --json`, which
+exits 0), because the pair's next start sets it up again
+(`ClusterInstalledMetadataChecks`). The
 saved-setup check counts a provider configuration that other users can open
 (the installer writes it so for a coordinator other than production's) as no
 saved setup until a setup is saved, which makes the file private; one that

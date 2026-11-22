@@ -123,8 +123,8 @@ private final class ProviderLogRecorder: @unchecked Sendable {
     }
 }
 
-/// A single Mac's update steps are public fixed lines at the level unified logging keeps on disk: `darkbloom logs`
-/// showed no update at all, because the progress lines are private info lines kept only in memory.
+/// A single Mac's update steps are public fixed lines at the level unified logging keeps on disk; the progress lines
+/// beside them are private info lines, which unified logging keeps only in memory.
 @Test func autoUpdateStepsArePublicNoticeLinesOfTheirOwn() {
     let recorder = ProviderLogRecorder()
     let logger = ProviderLogger(subsystem: "test", category: "loop", sink: { level, visibility, message in

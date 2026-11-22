@@ -84,7 +84,7 @@ public struct AutoUpdateController: Sendable {
         public var log: @Sendable (String) -> Void
         /// Each step of a cycle that changes something or explains why nothing changed, without versions or reasons,
         /// for the line `darkbloom logs` keeps (`ProviderLoop.autoUpdateNotice`). A check that finds this Mac up to
-        /// date is no step: it would add a line every 30 minutes.
+        /// date is no step: it would add a line on every check.
         public var step: @Sendable (Step) -> Void
 
         public init(
@@ -132,9 +132,13 @@ public struct AutoUpdateController: Sendable {
         case deferred
         /// The latest release is quarantined on this Mac; nothing changes.
         case quarantined
+        /// The release check failed.
         case checkFailed
+        /// Downloading, verifying or staging failed; serving never stopped.
         case stageFailed
+        /// Installing the staged release failed after the drain; serving resumed.
         case installFailed
+        /// Preparing or issuing the restart failed; serving resumed.
         case restartFailed
     }
 

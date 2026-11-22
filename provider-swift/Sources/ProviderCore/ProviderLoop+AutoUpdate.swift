@@ -176,9 +176,8 @@ extension ProviderLoop {
         return outcome
     }
 
-    /// The line `darkbloom logs` keeps for a step of a single Mac's update cycle. The progress lines beside it name
-    /// the versions and reasons but are private and kept only in memory, so a person reading the log later saw no
-    /// update at all.
+    /// The line `darkbloom logs` keeps for a step of a single Mac's update cycle: fixed public text at a level unified
+    /// logging keeps on disk. The versions and reasons stay in the private progress lines beside it.
     static func autoUpdateNotice(_ step: AutoUpdateController.Step) -> ProviderOperationalMessage {
         switch step {
         case .available: .autoUpdateAvailable

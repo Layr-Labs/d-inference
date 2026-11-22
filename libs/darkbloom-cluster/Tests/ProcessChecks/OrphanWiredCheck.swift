@@ -109,12 +109,13 @@ private func copy(_ name: String, into directory: URL) throws -> String {
         defer { kill(sleeping, SIGTERM); var s: Int32 = 0; waitpid(sleeping, &s, 0) }
         let exited = try spawn(zombie, ["--exit"])
         // A zombie from here on, unreaped until below. A fixed 0.5 s wait was not always long enough for the copy to
-        // start and exit on a loaded CI Mac, which then listed it as running.
+        // start and exit on a 4-vCPU CI Mac, and the probe then listed it as running.
         try awaitExitUnreaped(exited)
         let seen = ClusterOrphanWiredGuard.otherDarkbloomProcesses()
         try require(seen.contains("darkbloom-orphan-check-sleeper"), "a running darkbloom process was missed: \(seen)")
         try require(!seen.contains("darkbloom-orphan-check-zombie"), "a zombie counted as running: \(seen)")
-        var status: Int32 = 0; waitpid(exited, &status, 0)
+        var status: Int32 = 0
+        try require(waitpid(exited, &status, 0) == exited, "the exited copy was reaped before the probe")
 
         // Seen from a worker whose ancestor is a darkbloom process: the ancestor
         // and the lister itself are excluded, the unrelated sleeper is not.

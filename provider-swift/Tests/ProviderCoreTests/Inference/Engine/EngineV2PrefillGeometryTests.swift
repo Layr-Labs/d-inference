@@ -437,7 +437,7 @@ struct EngineV2PrefillGeometryEngineTests {
         #expect(media.prefillChunkTokensMax >= UInt32(span.length))
     }
 
-    @Test("Gemma 4 Block-SDCM sets soloCompactionMinPromptTokens only for capable Gemma 4 MoE without widening stripes")
+    @Test("Gemma 4 Block-SDCM sets compaction config and density guard only for capable Gemma 4 MoE without widening stripes")
     func gemmaBlockSDCMSchedulerConfig() throws {
         let gemmaMoE = try geometryGemma4MoEText()
         let gemmaDensePLE = try geometryGemma4Text()
@@ -446,15 +446,51 @@ struct EngineV2PrefillGeometryEngineTests {
         let offConfig = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 4, model: gemmaMoE, environment: [:])
         #expect(offConfig.soloCompactionMinPromptTokens == nil)
+        #expect(!offConfig.allowConcurrentCompaction)
+        #expect(offConfig.maxPackedCompactionBatch == 1)
+        #expect(offConfig.compactionEligibility == nil)
+
+        let defaultOnConfig = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 8, model: gemmaMoE,
+            environment: [Gemma4BlockSDCMConfig.envKey: "fast"])
+        #expect(defaultOnConfig.soloCompactionMinPromptTokens == 3072)
+        #expect(defaultOnConfig.soloPrefillStripeTokens == nil)
+        #expect(defaultOnConfig.allowConcurrentCompaction)
+        #expect(defaultOnConfig.maxPackedCompactionBatch == 8)
+        #expect(defaultOnConfig.maxPackedCompactionTokens == 32_768)
+        let eligibility = try #require(defaultOnConfig.compactionEligibility)
+
+        // Deterministic 20-AA protein stream is vetoed; 4K structured code stream passes.
+        var rngState: UInt64 = 0x1234_5678_9ABC_DEF0
+        func nextRand() -> UInt64 {
+            rngState &+= 0x9E37_79B9_7F4A_7C15
+            var z = rngState
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+        let proteinPrompt = (0 ..< 4096).map { _ in Int(100 + nextRand() % 20) }
+        let codePrompt = (0 ..< 4096).map { i in
+            (i % 16 < 8) ? (500 + (i % 8)) : Int(600 + nextRand() % 256)
+        }
+        #expect(!eligibility(proteinPrompt))
+        #expect(eligibility(codePrompt))
 
         let lcEnv = [
             Gemma4BlockSDCMConfig.envKey: "lightcone",
             Gemma4BlockSDCMConfig.minTokensEnvKey: "2048",
+            Gemma4BlockSDCMConfig.maxBatchEnvKey: "4",
+            Gemma4BlockSDCMConfig.maxTokensEnvKey: "16384",
+            Gemma4BlockSDCMConfig.densityGuardEnvKey: "0",
         ]
         let onConfig = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 4, model: gemmaMoE, environment: lcEnv)
         #expect(onConfig.soloCompactionMinPromptTokens == 2048)
         #expect(onConfig.soloPrefillStripeTokens == nil)
+        #expect(onConfig.allowConcurrentCompaction)
+        #expect(onConfig.maxPackedCompactionBatch == 4)
+        #expect(onConfig.maxPackedCompactionTokens == 16_384)
+        #expect(onConfig.compactionEligibility?(proteinPrompt) == true)
 
         // Min-token override below prefixKeep+tailKeep must be clamped so SchedulerV2
         // never dispatches a whole prompt that Gemma4BlockSDCM.canRun rejects.
@@ -473,9 +509,15 @@ struct EngineV2PrefillGeometryEngineTests {
         let densePLEConfig = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 4, model: gemmaDensePLE, environment: lcEnv)
         #expect(densePLEConfig.soloCompactionMinPromptTokens == nil)
+        #expect(!densePLEConfig.allowConcurrentCompaction)
+        #expect(densePLEConfig.maxPackedCompactionBatch == 1)
+        #expect(densePLEConfig.compactionEligibility == nil)
 
         let nonGemmaConfig = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 4, model: gptoss, environment: lcEnv)
         #expect(nonGemmaConfig.soloCompactionMinPromptTokens == nil)
+        #expect(!nonGemmaConfig.allowConcurrentCompaction)
+        #expect(nonGemmaConfig.maxPackedCompactionBatch == 1)
+        #expect(nonGemmaConfig.compactionEligibility == nil)
     }
 }

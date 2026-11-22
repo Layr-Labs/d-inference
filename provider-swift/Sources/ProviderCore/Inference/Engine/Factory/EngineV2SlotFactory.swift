@@ -27,6 +27,16 @@ import ProviderCoreFoundation
 
 enum EngineV2SlotFactory {
 
+    static let suffixMTPEnvironmentKey = "DARKBLOOM_CBV2_SUFFIX_MTP"
+
+    /// Opt-in switch for the zero-extra-RAM CPU suffix-automaton drafter when
+    /// no external neural assistant is configured.
+    static func isSuffixMTPEnabled(environment: [String: String]) -> Bool {
+        guard let raw = environment[suffixMTPEnvironmentKey] else { return false }
+        return ["1", "true", "yes", "on"].contains(
+            raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
     static func shouldLogPrefillDeadlineProjectionBypass(
         configuredMode: PrefillDeadlineMode?,
         environment: [String: String]
@@ -277,7 +287,28 @@ enum EngineV2SlotFactory {
         let flintContextTokens = (servingModel as? FlintModel)?.configuration.maxPositionEmbeddings
         let maxContextLength = flintContextTokens ?? sizing.maxContextLength
         let assistantHandle = prepared.assistant
-        let mtpStatus = prepared.mtpStatus
+        let modelCapabilities =
+            (servingModel as? any CBv2ModelCapabilityProviding)?.cbv2Capabilities ?? .attentionOnly
+        let suffixDrafter: CBv2SuffixTreeDrafter? =
+            (assistantHandle == nil && makeEngineOverride == nil
+                && CBv2MTPConfig.envEnabled
+                && isSuffixMTPEnabled(environment: environment)
+                && modelCapabilities.supportsMTP
+                && !(servingModel is any CBv2RecurrentLanguageModelForwardable)
+                && EngineV2Factory.glm5NextTarget(model: servingModel) == nil)
+            ? CBv2SuffixTreeDrafter() : nil
+        let effectiveDrafter: (any CBv2MTPDrafter)? = assistantHandle?.drafter ?? suffixDrafter
+        let mtpStatus: MTPActivationStatus =
+            suffixDrafter != nil
+            ? MTPActivationStatus(
+                configured: true,
+                active: true,
+                reason: nil,
+                source: nil,
+                revision: "suffix-sam",
+                artifactBytes: 0,
+                assistantBytes: 0)
+            : prepared.mtpStatus
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
             environment: environment, modelID: modelId)
         let mtpVerification = providerMTPVerificationPolicy(
@@ -300,13 +331,31 @@ enum EngineV2SlotFactory {
                 "engine_v2: \(modelId) MTP acceptance typical delta=\(delta) "
                     + "(sampled output is not distribution-exact; greedy rows unchanged)")
         }
-        var mtpConfig = CBv2MTPConfig(
-            enabled: assistantHandle != nil,
-            maxDraftTokens: draftDepth.maximum,
-            fixedDraftTokens: draftDepth.fixed,
-            verificationMode: mtpVerification.mode,
-            maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
-            acceptance: mtpAcceptance.acceptance)
+        var mtpConfig: CBv2MTPConfig
+        if suffixDrafter != nil {
+            let suffixRectTokens =
+                environment["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS"] != nil
+                ? mtpVerification.automaticRectangularTokens
+                : max(mtpVerification.automaticRectangularTokens, 64)
+            mtpConfig = CBv2MTPConfig(
+                enabled: true,
+                maxDraftTokens: 7,
+                maxSpeculativeBatch: 16,
+                verificationMode: mtpVerification.mode,
+                maxAutomaticRectangularTokens: suffixRectTokens,
+                acceptance: mtpAcceptance.acceptance)
+            logInfo(
+                "engine_v2: \(modelId) suffix-automaton MTP enabled "
+                    + "(max_draft=7, max_batch=16, mode=\(mtpVerification.mode), max_rect_tokens=\(suffixRectTokens), assistant_bytes=0)")
+        } else {
+            mtpConfig = CBv2MTPConfig(
+                enabled: assistantHandle != nil,
+                maxDraftTokens: draftDepth.maximum,
+                fixedDraftTokens: draftDepth.fixed,
+                verificationMode: mtpVerification.mode,
+                maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
+                acceptance: mtpAcceptance.acceptance)
+        }
         // Per-build SDK switches this release turns on where they were measured;
         // the operator's value (read above by the SDK) wins.
         let sdkDefaults = SDKFeatureDefaults.applyMTPDefaults(
@@ -316,7 +365,7 @@ enum EngineV2SlotFactory {
         }
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
-                to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)
+                to: mtpConfig, target: servingModel, drafter: effectiveDrafter)
         }
         let mtpPerformanceConfiguration = ServingMTPConfiguration.resolve(
             config: mtpConfig, artifact: prepared.mtpArtifact)
@@ -480,7 +529,7 @@ enum EngineV2SlotFactory {
                     completePrefixCache: ssdHybridCheckpointStore,
                     checkpointQuantization: completePreparation?.checkpointQuantization,
                     maxConcurrentRequests: maxConcurrentRequests,
-                    mtpDrafter: assistantHandle?.drafter,
+                    mtpDrafter: effectiveDrafter,
                     mtpConfig: mtpConfig,
                     preparedBackend: preparedBackend,
                     kvBudget: kvBudget,
@@ -647,7 +696,23 @@ enum EngineV2SlotFactory {
 
         if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }
-        await bridge.configureMTPStatus(mtpStatus,
+        let effectiveMTPStatus: MTPActivationStatus
+        if suffixDrafter != nil,
+            let v2Engine = await bridge.ownedEngine as? EngineV2,
+            v2Engine.mtpMetricsSnapshot() == nil
+        {
+            effectiveMTPStatus = MTPActivationStatus(
+                configured: true,
+                active: false,
+                reason: .targetUnsupported,
+                source: nil,
+                revision: "suffix-sam",
+                artifactBytes: 0,
+                assistantBytes: 0)
+        } else {
+            effectiveMTPStatus = mtpStatus
+        }
+        await bridge.configureMTPStatus(effectiveMTPStatus,
             metricsInterval: startServingTelemetry ? .seconds(60) : .zero)
         reportGemmaOptimizations(
             model: servingModel, modelId: modelId,

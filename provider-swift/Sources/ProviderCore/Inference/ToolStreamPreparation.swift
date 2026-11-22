@@ -66,7 +66,7 @@ enum ToolStreamPreparation {
         prepared: ToolChoicePromptPolicy.Prepared,
         modelType: String?,
         parser: ToolCallFormat,
-        switches: ToolCallExposure.Switches = .current
+        switches: ToolCallExposure.Switches
     ) -> ToolCallExposure {
         ToolCallExposure.resolve(
             family: .of(ChatTemplateFixContext(modelId: request.model, modelType: modelType)),
@@ -118,7 +118,7 @@ enum ToolStreamPreparation {
         }
 
         /// The families, one per switch above.
-        enum Family: Equatable, Sendable, CaseIterable { case gemma, qwen, gptOSS, native, glm }
+        enum Family: Equatable, Sendable { case gemma, qwen, gptOSS, native, glm }
 
         subscript(family: Family) -> Bool {
             switch family {

@@ -4615,7 +4615,8 @@ a client that streams, except the cells it lists. `ToolCallPathConformanceTests`
 (`provider-swift/Tests/ProviderCoreTests/Inference/Streaming/ToolCallPathConformanceTests.swift`)
 serves the same output (a complete call, one the token limit cut, one the
 model stopped inside, a frame its parser refuses, one that repeats an
-argument, text before a call, a call to an undeclared function) to a client
+argument, text before a call, a call to an undeclared function, a call that
+breaks only its schema) to a client
 that streams and to one that does not, through each owner's production
 wiring, and requires the same finished calls, finish reason, answer text and
 refusal. The cells where the two paths differ today are listed there
@@ -4629,6 +4630,10 @@ choice with the client body's own facts (`Prepared.serving`), the tool
 handler, and the channel set-up `prepareCompletion` passes its forwarder
 (`TextOutputRouting.resolve`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/TextOutputRouting.swift`).
+The output is canned text, so no token constraint samples it, and the
+forwarder's other inputs (the Harmony final-header rewrite, MiMo's thinking
+flag, diffusion Gemma's reasoning flag, a Flint answer stop, a constrained JSON
+answer's format and withheld reasoning) keep their defaults there.
 
 MiMo V2.6 (`.mimoV2`), Nemotron 3.5 (`.nemotron`: Lightning on this path,
 Super through its own owner, `NemotronSuperLocalOutput`) and the admitted

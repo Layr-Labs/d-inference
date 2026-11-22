@@ -51,7 +51,7 @@ enum ToolCallExposure: Equatable, Sendable {
         case family(String)
     }
 
-    enum Switch: Equatable, Sendable, CaseIterable {
+    enum Switch: Equatable, Sendable {
         /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS`.
         case toolCalls
         /// `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS`, or the family's own
@@ -205,9 +205,10 @@ extension ToolCallExposure {
     }
 
     /// The exposure of one request's calls. `parser` is the format its tool
-    /// handler parses (`ServerToolParser.resolve`).
+    /// handler parses (`ServerToolParser.resolve`). `switches` has no default:
+    /// each owner states the ones it serves under.
     static func resolve(
-        family: Family, parser: ToolCallFormat, request: Request, switches: Switches = .current
+        family: Family, parser: ToolCallFormat, request: Request, switches: Switches
     ) -> ToolCallExposure {
         guard switches.toolCalls else { return .withheld(.switchedOff(.toolCalls)) }
         guard request.rendersFragments else { return .withheld(.surfaceRendersNoFragments) }

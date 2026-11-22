@@ -249,11 +249,11 @@ struct ToolCallPathConformanceTests {
         var all: [String] { lock.withLock { calls } }
     }
 
-    /// One owner's production event stream for `output`, recorded.
+    /// One owner's production event stream for `output`, recorded. Whether
+    /// the client streams is read from `body`, as each owner reads it.
     struct WiredEngine: MLXServerEngine {
         let family: Family
         let body: Data
-        let clientStreams: Bool
         let output: String
         let finishReason: String
         let finished: FinishedCalls
@@ -302,7 +302,8 @@ struct ToolCallPathConformanceTests {
             let modelType = family.type.rawValue
             let controls = try JSONDecoder().decode(ChatTemplateControls.self, from: body)
             let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType).serving(
-                declaredTools: controls.declaredTools, clientStreams: clientStreams,
+                declaredTools: controls.declaredTools,
+                clientStreams: controls.clientStreams ?? (request.stream == true),
                 returnsStrictCallsAsGenerated: StrictToolCallPolicy.returnsAsGenerated)
             let handler = try ToolStreamPreparation.makeHandler(
                 request: request, prepared: prepared, modelType: modelType)
@@ -311,9 +312,11 @@ struct ToolCallPathConformanceTests {
                 reasoningParser: request.reasoningParser, stream: request.stream, promptTokens: [0],
                 modelType: modelType, decodeTail: { _ in promptTail })
             let withholdsGLMOutput = GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType)
+            // These requests ask for no JSON answer, so none is constrained.
             let routing = TextOutputRouting.resolve(
                 request: request, prepared: prepared, modelType: modelType, toolParser: handler?.format,
-                withholdsGLMOutput: withholdsGLMOutput, glmWithholdsReasoning: false,
+                jsonAnswerChannelPrefix: nil, withholdsGLMOutput: withholdsGLMOutput,
+                glmWithholdsReasoning: GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType),
                 reasoningPrefix: promptReasoningPrefix, promptReasoningPrefix: promptReasoningPrefix,
                 promptThinkState: { ReasoningPromptProbe.streamingPrefix(forPromptTail: promptTail) })
             let events = upstream
@@ -363,9 +366,8 @@ struct ToolCallPathConformanceTests {
             if family.owner == .scheduler {
                 request.reasoningParser = ProviderLoop.inferReasoningParser(for: family.type.rawValue)
             }
-            let engine = WiredEngine(family: family, body: body, clientStreams: clientStreams,
-                output: scenario.output(family.dialect), finishReason: scenario.finishReason, finished: finished,
-                usage: usage)
+            let engine = WiredEngine(family: family, body: body, output: scenario.output(family.dialect),
+                finishReason: scenario.finishReason, finished: finished, usage: usage)
             for try await frame in try await MLXOpenAIService(engine: engine).streamChatCompletionFrames(
                 request: request)
             {
@@ -468,13 +470,26 @@ struct ToolCallPathConformanceTests {
         }
     }
 
+    /// Forced choices a family refuses before any output: its default parser
+    /// admits no forced call (`ToolChoiceEnforcementPolicy.validateParser`).
+    /// Their cells agree above without output, so they are listed here, never
+    /// counted as served.
+    static let refusedBeforeOutput: Set<String> = ["Qwen3-VL / required", "Qwen3-VL / named"]
+
     @Test("a complete call is one finished call on both paths", arguments: families)
     func completeCallsFinish(family: Family) async {
-        for clientStreams in [true, false] {
-            let served = await Self.serve(family, .auto, .complete, clientStreams: clientStreams)
-            #expect(served == Outcome(calls: [#"get_weather{"city":"Paris"}"#], finishReason: "tool_calls")
-                    && served.refusal == nil,
-                "\(family.name), client streams: \(clientStreams)")
+        for choice in Choice.allCases {
+            let refused = Self.refusedBeforeOutput.contains("\(family.name) / \(choice.rawValue)")
+            for clientStreams in [true, false] {
+                let served = await Self.serve(family, choice, .complete, clientStreams: clientStreams)
+                let cell = "\(family.name) / \(choice.rawValue), client streams: \(clientStreams): \(served)"
+                if refused {
+                    #expect(served.refusal == "invalidToolPayload", "\(cell)")
+                } else {
+                    #expect(served == Outcome(calls: [#"get_weather{"city":"Paris"}"#], finishReason: "tool_calls")
+                            && served.refusal == nil, "\(cell)")
+                }
+            }
         }
     }
 

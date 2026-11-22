@@ -26,8 +26,6 @@ struct NemotronSuperLocalOutput {
 
     let plan: NemotronSuperRequestPlan
     let streaming: Bool
-    /// Whether this response's calls leave while generated, and why not.
-    let exposure: ToolCallExposure
     /// Nil when content carries no tool frames to parse.
     private let handler: BatchedToolStreamHandler?
     /// Streamed calls: content passes this router (no channel of its own),
@@ -57,15 +55,14 @@ struct NemotronSuperLocalOutput {
         var switches = ToolCallExposure.Switches.current
         switches.native = streamNativeToolCalls
         switches.forced.native = streamForcedToolCalls
-        exposure = ToolCallExposure.resolve(
+        let streamsCalls = ToolCallExposure.resolve(
             family: .superOwner, parser: .nemotron,
             request: .init(
                 mode: plan.toolPolicy.mode, clientStreams: plan.toolPolicy.clientStreams,
                 rendersFragments: streaming && plan.request.streamToolCallDeltas,
                 offersTools: !offersNoTools,
                 withholdsJSONAnswer: plan.request.responseFormat?.requiresJSONOutput == true),
-            switches: switches)
-        let streamsCalls = exposure.streams
+            switches: switches).streams
         let allowed = plan.toolPolicy.allowedToolNames
         handler = offersNoTools ? nil : BatchedToolStreamHandler(format: .nemotron,
             tools: plan.toolPolicy.tools?.map { $0.toolSpec() },

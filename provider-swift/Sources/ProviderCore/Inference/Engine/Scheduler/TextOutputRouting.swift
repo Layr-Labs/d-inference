@@ -36,7 +36,7 @@ struct TextOutputRouting: Equatable, Sendable {
         prepared: ToolChoicePromptPolicy.Prepared,
         modelType: String?,
         toolParser: ToolCallFormat?,
-        jsonAnswerChannelPrefix: String? = nil,
+        jsonAnswerChannelPrefix: String?,
         withholdsGLMOutput: Bool,
         glmWithholdsReasoning: Bool,
         reasoningPrefix: String?,

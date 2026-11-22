@@ -36,6 +36,8 @@ struct LocalIngressTests {
     /// A body no route may hand to a parser or a model.
     enum OverLimit: String, CaseIterable, Sendable {
         case nestedPastTheLimit, nulByte, pastTheBodyCeiling
+        /// Nested past the limit behind a UTF-8 byte-order mark, which the parsers skip: the scan reads every byte.
+        case nestedPastTheLimitBehindAByteOrderMark
         /// One request more than a list may hold: left unchecked, it reaches the model.
         case tooManyItems
         /// As many values that are no requests: refused for their count, so counted before any is decoded.
@@ -45,7 +47,8 @@ struct LocalIngressTests {
 
         var isAListTooLong: Bool {
             switch self {
-            case .nestedPastTheLimit, .nulByte, .pastTheBodyCeiling: return false
+            case .nestedPastTheLimit, .nulByte, .pastTheBodyCeiling, .nestedPastTheLimitBehindAByteOrderMark:
+                return false
             case .tooManyItems, .tooManyItemsThatDoNotDecode, .tooManyItemsBehindAByteOrderMark,
                  .tooManyItemsThatDoNotDecodeBehindAByteOrderMark: return true
             }
@@ -118,6 +121,8 @@ struct LocalIngressTests {
         switch overLimit {
         case .nestedPastTheLimit:
             return ByteBuffer(string: nested(JSONNestingLimit.maximumDepth + 1))
+        case .nestedPastTheLimitBehindAByteOrderMark:
+            return ByteBuffer(bytes: byteOrderMark + Array(nested(JSONNestingLimit.maximumDepth + 1).utf8))
         case .nulByte:
             // Foundation's parsers read UTF-16 JSON, every byte pair of which here holds a NUL.
             return ByteBuffer(data: try #require(("{" + members + "}").data(using: .utf16LittleEndian)))
@@ -187,7 +192,7 @@ struct LocalIngressTests {
                                                               headers: Self.headers, body: body, testCallback: Self.answer)
                         let row: Comment = "\(route) \(spelling.rawValue) \(overLimit.rawValue): \(answer)"
                         switch overLimit {
-                        case .nestedPastTheLimit, .nulByte:
+                        case .nestedPastTheLimit, .nulByte, .nestedPastTheLimitBehindAByteOrderMark:
                             #expect(answer.status == 400, row)
                             #expect(answer.message == JSONNestingLimit.refusalMessage, row)
                         case .tooManyItems, .tooManyItemsThatDoNotDecode, .tooManyItemsBehindAByteOrderMark,
@@ -462,11 +467,10 @@ struct LocalIngressTests {
         }
         // The parsers do read a list behind a mark: without that the rows above would say nothing of one.
         #expect(readBehindAMark > 0)
+        // Whatever the parsers of the day read: a list behind a mark has its own length.
         let overTheBound = "[" + Array(repeating: "1", count: 65).joined(separator: ",") + "]"
+        #expect(LocalIngress.itemCount(ByteBuffer(bytes: Self.byteOrderMark + Array("[1,1,1]".utf8))) == 3)
         #expect(LocalIngress.itemCount(ByteBuffer(bytes: Self.byteOrderMark + Array(overTheBound.utf8))) == 65)
-        // The nesting scan reads every byte and has no such blind spot.
-        #expect(JSONNestingLimit.refuses(ByteBuffer(bytes: Self.byteOrderMark
-            + Array(Self.nested(JSONNestingLimit.maximumDepth + 1).utf8))))
     }
 }
 

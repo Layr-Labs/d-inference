@@ -194,6 +194,7 @@ enum ClusterConsoleContent {
     private static func style(_ outcome: ClusterDiagnosticsReport.Outcome) -> ClusterConsoleLine.Style {
         switch outcome {
         case .passed: return .good
+        case .warning: return .warning
         case .failed: return .bad
         case .notRun, .notObserved: return .dim
         }

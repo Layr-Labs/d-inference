@@ -41,12 +41,22 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
     smaller = hardware
     smaller.memoryGb = 128
     #expect(resolve(machine: smaller) == nil)
-    #expect(ServingPerformanceProfiles.concurrency(configured: 16) == 8)
-    #expect(ServingPerformanceProfiles.concurrency(configured: 16, profile: profile) == 16)
-    #expect(ServingPerformanceProfiles.concurrency(configured: 2, profile: profile) == 2)
+    #expect(ServingPerformanceProfiles.concurrency(configured: 16, environment: [:]) == 8)
+    #expect(ServingPerformanceProfiles.concurrency(configured: 16, profile: profile, environment: [:]) == 16)
+    #expect(ServingPerformanceProfiles.concurrency(configured: 2, profile: profile, environment: [:]) == 2)
     var invalid = profile
     invalid.batchCurve[1].decodeP10Tps = 29
-    #expect(ServingPerformanceProfiles.concurrency(configured: 16, profile: invalid) == 8)
+    #expect(ServingPerformanceProfiles.concurrency(configured: 16, profile: invalid, environment: [:]) == 8)
+    let capKey = ServingPerformanceProfiles.maxConcurrencyCapEnvironmentKey
+    #expect(ServingPerformanceProfiles.concurrency(configured: 32, environment: [capKey: "32"]) == 32)
+    #expect(ServingPerformanceProfiles.concurrency(configured: 100, environment: [capKey: "999"]) == 64)
+    #expect(ServingPerformanceProfiles.concurrency(configured: 16, environment: [capKey: "4"]) == 4)
+    #expect(ServingPerformanceProfiles.concurrency(
+        configured: 32, profile: profile, environment: [capKey: "32"]) == 16)
+    #expect(ServingPerformanceProfiles.requestedConcurrency(32, environment: [capKey: "32"]) == 32)
+    #expect(!ServingPerformanceProfiles.runtimeOverridesAreAbsent([capKey: "32"]))
+    #expect(!ServingPerformanceProfiles.runtimeOverridesAreAbsent(["DARKBLOOM_GEMMA4_DECODE_MOE_BATCH_UNION": "40"]))
+    #expect(ServingPerformanceProfiles.concurrency(configured: 16, environment: [capKey: "invalid"]) == 8)
     let encoded = try JSONEncoder().encode(profile)
     let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
     #expect(object["artifact_sha256"] as? String == profile.artifactSha256)

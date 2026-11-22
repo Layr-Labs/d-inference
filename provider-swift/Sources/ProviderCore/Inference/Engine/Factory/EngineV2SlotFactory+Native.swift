@@ -283,7 +283,8 @@ extension EngineV2SlotFactory {
             do { prepared = try await DiffusionGemmaProviderBridge.make(
                 container: target, modelID: modelId, kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: ServingPerformanceProfiles.concurrency(
-                    configured: UInt64(max(1, maxConcurrentRequests))), sharedBudget: kvBudget,
+                    configured: UInt64(max(1, maxConcurrentRequests)),
+                    environment: environment), sharedBudget: kvBudget,
                 prefixCache: prefix.snapshots, completePrefixCache: prefix.store,
                 retainMemoryPrefixes: prefix.retainMemory, prefillChunkSize: diffusionPrefillChunkSize,
                 prefixCacheStatus: .init(modelId: modelId, backend: pageBacked ? .paged : .contiguous,
@@ -526,7 +527,8 @@ extension EngineV2SlotFactory {
                         maxConcurrentRequests: scheduler.maxConcurrentRequests,
                         performanceProfile: policy.performanceProfile,
                         unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
-                            configured: UInt64(max(1, maxConcurrentRequests))),
+                            configured: UInt64(max(1, maxConcurrentRequests)),
+                            environment: environment),
                         prefillDeadlineMode: prefillDeadlineMode,
                         advertisedContextTokens: config.maxPositionEmbeddings, runtimePolicyEnvironment: environment,
                         kvBytesPerToken: geometry.fullKVBytesPerToken, kvBudget: kvBudget,
@@ -736,7 +738,8 @@ extension EngineV2SlotFactory {
                         maxConcurrentRequests: scheduler.maxConcurrentRequests,
                         performanceProfile: policy.performanceProfile,
                         unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
-                            configured: UInt64(max(1, maxConcurrentRequests))),
+                            configured: UInt64(max(1, maxConcurrentRequests)),
+                            environment: environment),
                         prefillDeadlineMode: prefillDeadlineMode,
                         advertisedContextTokens: config.maxPositionEmbeddings,
                         runtimePolicyEnvironment: environment, kvBytesPerToken: geometry.fullKVBytesPerToken,

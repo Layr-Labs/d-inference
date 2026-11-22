@@ -462,7 +462,8 @@ enum EngineV2SlotFactory {
             ?? EngineV2Factory.nativeConcurrentRequestLimit(
                 requested: constructionPurpose == .benchmark ? max(1, maxConcurrentRequests)
                     : ServingPerformanceProfiles.concurrency(
-                        configured: UInt64(max(1, maxConcurrentRequests))),
+                        configured: UInt64(max(1, maxConcurrentRequests)),
+                        environment: environment),
                 model: servingModel, environment: environment)
 
         // SSD staging reserves transient RAM through GlobalKVCacheBudget;
@@ -643,7 +644,8 @@ enum EngineV2SlotFactory {
                 promptContractID.map { PromptWorkIdentity(modelArtifactHash: hash, promptContractID: $0) }
             },
             unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
-                configured: UInt64(max(1, maxConcurrentRequests))),
+                configured: UInt64(max(1, maxConcurrentRequests)),
+                environment: environment),
             prefillDeadlineMode: prefillDeadlineMode,
             advertisedContextTokens: glm5NextTarget != nil ? sizing.maxContextLength
                 : flintContextTokens ?? Qwen4SupportPolicy.contextLimit(

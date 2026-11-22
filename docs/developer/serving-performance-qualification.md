@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-22
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -8,8 +8,14 @@ is empty; enabling a profile requires independent qualification with continuous
 power observations. Historical reports and raw runs are kept in a local archive.
 The separate concurrency/chunk catalogs remain empty. On M5 Pro, Max and Ultra,
 models on the native `auto` paged allowlist start at the unqualified legacy
-ceiling of 8 without a profile; any width above 8, including the M5 Ultra B16
-target, still requires a reviewed profile. Six qualified prompt-count fallback records
+ceiling of 8 without a profile; any reviewed width above 8, including the M5 Ultra
+B16 target, still requires a reviewed profile. High-memory hosts testing explicit
+unqualified concurrency above 8 may opt in via `DARKBLOOM_ENGINE_V2_MAX_CONCURRENCY_CAP`
+(`1...64`), which disqualifies reviewed profile matching (`runtimeOverridesAreAbsent`,
+alongside `DARKBLOOM_GEMMA4_*`), scales the `UnifiedMemoryCap` activation floor by
+`+256 MiB` per slot above 8, and widens unqualified `WholeMacServiceBudget` admission
+to `max(legacyWholeMacConcurrency, maxConcurrentRequests)` without altering reviewed
+profiles or the default legacy ceiling of 8. Six qualified prompt-count fallback records
 cover bounded Qwen3.8 text/tool shapes and grant no hardware scheduling authority.
 The ordinary admission path uses its resolved rates without the former fixed
 50% reduction; this change needs no timing-catalog entry. Neither do its

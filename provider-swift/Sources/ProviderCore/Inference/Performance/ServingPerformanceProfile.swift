@@ -98,6 +98,7 @@ public enum ServingPerformanceProfiles {
     public static let legacyMaximumConcurrency = 8
     public static let maximumQualifiedConcurrency = 16
     public static let legacyWholeMacConcurrency = 24
+    static let maximumConcurrencyCapOverride = 64
     /// No M5 expansion is certified by the historical M4 B8 evidence. Add
     /// reviewed records alongside the coordinator mirror and measured report.
     static let reviewed: [ServingPerformanceProfile] = []
@@ -139,8 +140,14 @@ public enum ServingPerformanceProfiles {
     /// Carries explicit widths to final backend resolution. No expansion is
     /// admitted here: unknown profiles are clamped again after artifact/backend
     /// identity is available, before constructing the engine or advertising it.
-    static func requestedConcurrency(_ configured: UInt64) -> Int {
-        Int(min(max(1, configured), UInt64(maximumQualifiedConcurrency)))
+    static func requestedConcurrency(
+        _ configured: UInt64,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        let ceiling = max(
+            maximumQualifiedConcurrency,
+            concurrencyCapOverride(environment: environment) ?? 0)
+        return Int(min(max(1, configured), UInt64(ceiling)))
     }
 
     /// Engine overrides change the measured runtime. MTP is matched separately
@@ -155,7 +162,10 @@ public enum ServingPerformanceProfiles {
                 return (try? EngineV2KVQuantizationPolicy.parseSelection(
                     environment[key] ?? "", purpose: .checkpoint)) == nil
             }
-            return key.hasPrefix("DARKBLOOM_CBV2_") || key.hasPrefix("DARKBLOOM_QWEN4_")
+            return key == maxConcurrencyCapEnvironmentKey
+                || key.hasPrefix("DARKBLOOM_CBV2_")
+                || key.hasPrefix("DARKBLOOM_QWEN4_")
+                || key.hasPrefix("DARKBLOOM_GEMMA4_")
         }
     }
 
@@ -167,8 +177,33 @@ public enum ServingPerformanceProfiles {
         !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
     }
 
-    public static func concurrency(configured: UInt64, profile: ServingPerformanceProfile? = nil) -> Int {
-        let ceiling = profile?.isValid == true ? profile!.maxConcurrency : legacyMaximumConcurrency
+    /// Optional operator cap override (`DARKBLOOM_ENGINE_V2_MAX_CONCURRENCY_CAP`)
+    /// allowing high-memory Apple Silicon hosts (e.g. 512 GB M3 Ultra) to qualify
+    /// `B = 16..32` continuous batching without widening the default legacy ceiling (`8`).
+    /// Never expands a reviewed profile; only governs unqualified serving.
+    public static let maxConcurrencyCapEnvironmentKey = "DARKBLOOM_ENGINE_V2_MAX_CONCURRENCY_CAP"
+
+    static func concurrencyCapOverride(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int? {
+        guard let raw = environment[maxConcurrencyCapEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            let parsed = Int(raw), parsed >= 1
+        else { return nil }
+        return min(parsed, maximumConcurrencyCapOverride)
+    }
+
+    public static func concurrency(
+        configured: UInt64,
+        profile: ServingPerformanceProfile? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        let ceiling: Int
+        if let profile, profile.isValid {
+            ceiling = profile.maxConcurrency
+        } else {
+            ceiling = concurrencyCapOverride(environment: environment) ?? legacyMaximumConcurrency
+        }
         return Int(min(max(1, configured), UInt64(ceiling)))
     }
 

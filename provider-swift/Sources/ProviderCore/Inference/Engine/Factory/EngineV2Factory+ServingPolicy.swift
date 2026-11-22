@@ -32,7 +32,8 @@ extension EngineV2Factory {
             : ServingPerformanceProfiles.concurrency(
                 configured: UInt64(max(1, automaticallySelectConcurrency
                     ? automaticWidth : maxConcurrentRequests)),
-                profile: profile)
+                profile: profile,
+                environment: environment)
         return (productionSchedulerConfig(
             maxConcurrentRequests: concurrency, model: model, modelID: modelID,
             performanceProfile: profile, chipIdentity: chipIdentity, environment: environment),

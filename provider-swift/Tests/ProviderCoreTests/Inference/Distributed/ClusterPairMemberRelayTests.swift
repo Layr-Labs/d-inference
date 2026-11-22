@@ -1196,7 +1196,7 @@ struct ClusterPairMemberRelayTests {
             throw error
         }
         await leader.stopLocalEndpoint()
-        #expect(await leader.retireClusterPairSlot(reason: "test"))
+        #expect(await leader.retireClusterPairSlot(cause: .memberStopping))
     }
 
     /// How every pair 503 ends, the relay's and the pair's API's own: how to serve this Mac alone, and exactly when
@@ -1249,7 +1249,7 @@ struct ClusterPairMemberRelayTests {
             for _ in 0..<8 { hold.signal() }
             _ = try? await publication?.value
             await leader.stopLocalEndpoint()
-            await leader.retireClusterPairSlot(reason: "test")
+            await leader.retireClusterPairSlot(cause: .memberStopping)
         }
         do {
             #expect(await clusterPairWait { LocalEndpoint.readInfo() != nil })

@@ -3361,7 +3361,8 @@ import Darwin
         let log = "darkbloom 0.10.7 (registered cluster member; solo inference disabled)\n" + offeredLogLine + "\n"
             + R.startingLine + "\n" + R.servingLine(warmupSeconds: 0.8412) + "\n"
         expect(R.latest(inLog: log) == .serving(test: "in 0.84 s"), "report: serving with the first request's time")
-        expect(R.latest(inLog: log + R.stoppedLine("memory_gate_refused") + "\n") == .stopped("memory_gate_refused"), "report: stopped")
+        expect(R.latest(inLog: log + R.stoppedLine(.guidance(.memoryGateRefused)) + "\n") == .stopped(.guidance(.memoryGateRefused)),
+               "report: stopped")
         expect(R.latest(inLog: "no pair line\n") == nil, "report: none")
         expect(R.state("serving") == .serving(test: nil) && R.state("starting") == .starting && R.state("other") == nil, "report: states")
         expect(R.state(R.text(.serving(test: "in 0.84 s"))) == .serving(test: "in 0.84 s"), "report: the status's text reads back")
@@ -3377,11 +3378,13 @@ import Darwin
         expect(N.words(reason: "unknown_failure", mac: other) == "The pair stopped (unknown_failure)", "words: an unclassified stop")
         // A rank's load-gate refusal with its figures (a DevNet pair: 73.57 GiB needed, 66.6-70.5 GiB admissible) names
         // the Mac and both figures.
-        let short = R.memoryRefusal(rank: 1, said: "its owner exited with status 0: darkbloom-cluster-worker: Tensor-parallel shard load "
-            + "needs 73.57 GiB of admissible memory and has 68.20 GiB: 22.5 GiB free plus 45.7 GiB of file cache")
+        let refusal = ClusterPairStopCause.MemoryRefusal(rank: 1, said: "its owner exited with status 0: darkbloom-cluster-worker: "
+            + "Tensor-parallel shard load needs 73.57 GiB of admissible memory and has 68.20 GiB: 22.5 GiB free plus 45.7 GiB of file cache")
+        let short = refusal.map { ClusterPairStopCause.memoryRefused($0).logText }
         expect(short == "memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB", "report: memory figures: \(String(describing: short))")
-        expect(R.memoryRefusal(rank: 1, said: "its owner exited with status 0") == nil, "report: no figures, no memory line")
-        expect(R.state(R.text(.stopped(short ?? ""))) == .stopped(short ?? ""), "report: the memory line reads back")
+        expect(ClusterPairStopCause.MemoryRefusal(rank: 1, said: "its owner exited with status 0") == nil, "report: no figures, no memory line")
+        expect(R.state(R.text(.stopped(ClusterPairStopCause(logText: short ?? "")))) == refusal.map { .stopped(.memoryRefused($0)) },
+               "report: the memory line reads back")
         expect(N.words(reason: short ?? "", mac: other, viewerRank: 0)
                == "The other Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, read on rank 0")
         expect(N.words(reason: short ?? "", mac: other, viewerRank: 1)

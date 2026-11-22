@@ -236,7 +236,7 @@ struct ClusterAPIParityTests {
             #expect(stops == expected, "\(family.name): pair slot \(stops.sorted()) single-Mac \(expected.sorted())")
             #expect(defaults == EngineV2SamplingDefaults.resolve(
                 modelId: family.modelID, modelType: family.modelType, modelDirectory: directory), "\(family.name)")
-            #expect(await loop.retireClusterPairSlot(reason: "test"))
+            #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
         }
     }
 }

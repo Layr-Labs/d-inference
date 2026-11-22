@@ -156,7 +156,7 @@ extension ProviderLoop: NativePairMemberServingHost {
         }
         let epoch = start.membershipEpoch
         // Its session's stop can reach this actor before its serve does.
-        guard epoch != clusterPairServingEndedEpoch else {
+        guard epoch != clusterPairServingEnded?.epoch else {
             throw ClusterPairSlotError.notServing("the committed start already ended")
         }
         guard clusterPairServingEpoch == nil else { throw ClusterPairSlotError.notServing("a committed start is already served") }
@@ -167,8 +167,7 @@ extension ProviderLoop: NativePairMemberServingHost {
         catch {
             // S24: a pair that could not form is a launch failure with a reason.
             let guidance = recordClusterPairIncident(.activationLaunchFailed, error: error, context: context, start: start)
-            Self.reportPair(ClusterOnboardingPairReport.stoppedLine(
-                ClusterOnboardingPairReport.stoppedWords(guidance: guidance, error: String(describing: error))))
+            Self.reportPair(ClusterOnboardingPairReport.stoppedLine(.failedStart(guidance: guidance, error: String(describing: error))))
             endClusterPairServing(epoch); throw error
         }
         // A stop that arrived while the pair formed wins: nothing publishes,
@@ -194,28 +193,33 @@ extension ProviderLoop: NativePairMemberServingHost {
             modelDirectory: context.modelDirectory, pairTelemetry: telemetry)
         do { try await publishClusterPairSlot(specification, owner: owner) }
         catch { await owner.shutdown(); endClusterPairServing(epoch); throw error }
-        // A stop during the publication hops retires what was just published.
-        if clusterPairServingEpoch != epoch { await retireCommittedStartSlot(epoch) }
+        // A stop during the publication hops retires what was just published, and says how that session ended when
+        // it is still the last one that stopped.
+        if clusterPairServingEpoch != epoch {
+            await retireCommittedStartSlot(epoch, end: clusterPairServingEnded.flatMap { $0.epoch == epoch ? $0.end : nil })
+        }
     }
 
-    public func stopServingCommittedStart(epoch: UUID) async {
+    public func stopServingCommittedStart(epoch: UUID, end: NativePairSessionEnd) async {
         // The start ends with its session, now: not when the slot's drain or
         // a serve still under way ends, which can outlast the session's own
         // bounded wait (its receipt then lets the coordinator commit the next
         // start). A serve that lost its start stands down by itself, and the
         // retirement below closes the slot's admission before it suspends.
-        clusterPairServingEndedEpoch = epoch
+        clusterPairServingEnded = (epoch, end.cause)
         endClusterPairServing(epoch)
         // The session sends its release receipt once this returns, so every
         // call waits until the slot retired, even while the serve still forms
         // the pair (its publication and warmup canary can take minutes).
         // Retirement is idempotent and the publication stops at a retired slot.
-        await retireCommittedStartSlot(epoch)
+        await retireCommittedStartSlot(epoch, end: end.cause)
     }
 
-    private func retireCommittedStartSlot(_ epoch: UUID) async {
+    /// Retires the slot this start published because its session ended (`end`: how; nil when that is no longer
+    /// known). The line says the cause, never the error an early end carried: that stays in this Mac's log.
+    private func retireCommittedStartSlot(_ epoch: UUID, end: ClusterPairStopCause.SessionEnd?) async {
         guard let handle = clusterPairSlot, handle.membershipEpoch == epoch else { return }
-        await retireClusterPairSlot(handle.id, reason: "committed start ended")
+        await retireClusterPairSlot(handle.id, cause: .sessionEnded(end))
     }
 
     /// One incident about a committed start this leader serves (S24), with

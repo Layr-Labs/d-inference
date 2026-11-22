@@ -2338,9 +2338,9 @@ final class OnboardingLive: @unchecked Sendable {
         // Apple's warning, only once it is real: with when this Mac's key-generation safeguard lets it try again, when it
         // says.
         if case .slow(let reason) = apple { return (false, nil, progress, reason) }
-        if case .stopped(let why)? = rankZero {
+        if case .stopped(let cause)? = rankZero {
             // Apple verification is named only when a Mac reports it missing.
-            return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs",
+            return (false, nil, progress, ClusterOnboardingNotServing.words(cause, mac: "one of the Macs",
                                                                               anyUnverified: apple != .verified,
                                                                               viewerRank: viewerRank(localRankZero: localRankZero)))
         }

@@ -186,7 +186,7 @@ struct ClusterPairSlotTests {
         #expect(capacity.freeForLoadGb == 0)
         #expect(await loop.clusterPairSlotServes(clusterPairFixtureModel))
         #expect(!(await loop.clusterPairSlotServes("other/model")))
-        #expect(await loop.retireClusterPairSlot(reason: "test"))
+        #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
     }
 
     /// The leader's local `/v1/models` lists the pair's own limits: the context and the output its mode serves, as
@@ -211,7 +211,7 @@ struct ClusterPairSlotTests {
         // A request sized to the listed output is one the pair serves.
         let listed = try #require(limits.maxOutputLength)
         #expect(profile.refusal(for: distributedTestRequest(maxTokens: listed)) == nil)
-        #expect(await loop.retireClusterPairSlot(reason: "test"))
+        #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
     }
 
     /// The leader lists what its pair takes, not what the model takes on one Mac: a model whose files declare vision
@@ -225,7 +225,7 @@ struct ClusterPairSlotTests {
         let owner = ScriptedPairOwner()
         _ = try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
         #expect(await loop.localModelLimits(clusterPairFixtureModel)?.inputModalities == ["text"])
-        #expect(await loop.retireClusterPairSlot(reason: "test"))
+        #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
     }
 
     /// The slot's MTP posture follows the pair's readiness: ranks that loaded the resident assistant report it
@@ -242,7 +242,7 @@ struct ClusterPairSlotTests {
             let bridge = try #require(await loop.slotBridgeForTesting(modelId: clusterPairFixtureModel))
             let snapshot = await bridge.mtpStatusSnapshot()
             #expect(snapshot.configured == assisted && !snapshot.active && snapshot.rounds == 0, "assisted \(assisted)")
-            #expect(await loop.retireClusterPairSlot(reason: "test"))
+            #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
         }
     }
 
@@ -258,7 +258,7 @@ struct ClusterPairSlotTests {
         #expect(await clusterPairWait { owner.lastLease?.releaseCount == 1 })
         let snapshot = await loop.clusterPairSlotSnapshot
         #expect(snapshot.model == clusterPairFixtureModel && !snapshot.refusing)
-        #expect(await loop.retireClusterPairSlot(reason: "test"))
+        #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
     }
 
     @Test func aFailedWarmupRetiresTheSlotWithoutOpeningAdmission() async throws {
@@ -272,14 +272,14 @@ struct ClusterPairSlotTests {
         let snapshot = await loop.clusterPairSlotSnapshot
         #expect(snapshot.slots.isEmpty && snapshot.refusing)
         #expect(await clusterPairWait { owner.shutdownCount == 1 })
-        #expect(!(await loop.retireClusterPairSlot(id, reason: "late")))
+        #expect(!(await loop.retireClusterPairSlot(id, cause: .memberStopping)))
         // The next formation warms up and serves.
         let next = ScriptedPairOwner()
         let nextID = try await loop.publishClusterPairSlot(clusterPairSpecification(next), owner: next)
         #expect(await loop.clusterPairWarmup?.succeeded == true)
         let reopened = await loop.clusterPairSlotSnapshot
         #expect(reopened.id == nextID && !reopened.refusing)
-        #expect(await loop.retireClusterPairSlot(nextID, reason: "test"))
+        #expect(await loop.retireClusterPairSlot(nextID, cause: .memberStopping))
     }
 
     @Test func aWarmupThatNeverGeneratesTimesOutAndRetiresTheSlot() async throws {
@@ -315,7 +315,7 @@ struct ClusterPairSlotTests {
             try await loop.publishClusterPairSlot(clusterPairSpecification(second), owner: second)
         }
         #expect(second.shutdownCount == 0)
-        #expect(await loop.retireClusterPairSlot(reason: "test"))
+        #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
 
         let unready = ScriptedPairOwner(); unready.losePeer()
         await #expect(throws: ClusterPairSlotError.ownerUnavailable) {
@@ -361,13 +361,13 @@ struct ClusterPairSlotTests {
         #expect(owner.shutdownCount == 1)
         // A stale retirement for the old slot does nothing; a fresh pair
         // publishes a new slot with a new identity.
-        #expect(!(await loop.retireClusterPairSlot(id, reason: "late")))
+        #expect(!(await loop.retireClusterPairSlot(id, cause: .memberStopping)))
         let next = ScriptedPairOwner()
         let nextID = try await loop.publishClusterPairSlot(clusterPairSpecification(next), owner: next)
         #expect(nextID != id)
-        #expect(!(await loop.retireClusterPairSlot(id, reason: "stale")))
+        #expect(!(await loop.retireClusterPairSlot(id, cause: .memberStopping)))
         #expect(await loop.clusterPairSlotSnapshot.id == nextID)
-        #expect(await loop.retireClusterPairSlot(nextID, reason: "test"))
+        #expect(await loop.retireClusterPairSlot(nextID, cause: .memberStopping))
         #expect(next.shutdownCount == 1)
     }
 
@@ -385,7 +385,7 @@ struct ClusterPairSlotTests {
             request: ChatCompletionRequest(model: clusterPairFixtureModel, messages: [], temperature: 0, max_tokens: 3),
             requestId: "pair-drain", cacheEnabled: false)
         #expect(await clusterPairWait { owner.reserveCount == 1 })
-        let retirement = Task { await loop.retireClusterPairSlot(reason: "test") }
+        let retirement = Task { await loop.retireClusterPairSlot(cause: .memberStopping) }
         #expect(await clusterPairWait { await loop.state.refusingNewWork })
         #expect(await clusterPairWait { owner.lastLease?.cleanStopCount == 1 })
         try await Task.sleep(for: .milliseconds(100))

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -150,13 +150,18 @@ A follower's "leader lost" fence also says which of its two cases it was:
 leader's new incarnation (`ClusterLinkControlEvent.peerRestarted`), or
 `leader lost: this Mac's committed session ended: <reason>` when the
 follower's own coordinator session ends the start it serves
-(`DistributedMemberLinkFollower.stopServingCommittedStart(epoch:reason:)`,
-`ClusterLinkWorkerServer.sessionEnded`). The session names its reason
-(`NativePairMemberSession.cancel(notify:reason:)`): the coordinator cancelled
-it, the coordinator's grant expired, its connection to the coordinator closed
-or stayed closed past the grace, this Mac could not serve it, its owner ended
-early or was invalidated before the prelude completed, this Mac's member is
-stopping, or its owner ended cleanly. Both used to read `leader lost` alone.
+(`DistributedMemberLinkFollower.stopServingCommittedStart(epoch:end:)`,
+`ClusterLinkWorkerServer.sessionEnded`). The session names how it ended
+(`NativePairMemberSession.cancel(notify:end:)`, a `NativePairSessionEnd`): the
+coordinator cancelled it, the coordinator's grant expired, its connection to
+the coordinator closed or stayed closed past the grace, this Mac could not
+serve it, its owner ended early or was invalidated before the prelude
+completed, this Mac's member is stopping, or its owner ended cleanly. Both used
+to read `leader lost` alone. `cancel` has no default end and the serving host
+has one stop method, which takes it (`NativePairMemberServingHost`), so a
+session cannot end a start without saying how. The fence carries the session's
+own words (`ClusterPairStopCause.SessionEnd.words`), which are fixed: the
+follower's report of that fence reaches the leading Mac over the link.
 
 A coordinator-formed pair whose start did not become ready is recorded by the
 leading Mac with rank 1's own words when the follower gave them
@@ -166,16 +171,81 @@ leading Mac says the follower's clean exit as "its owner ended cleanly" there
 (`cleanEndWords`), so the incident rules don't read it as a crash. A follower
 whose load gate refused its share then makes the leading Mac's pair line read
 `Pair: stopped (memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB)`
-(`ClusterOnboardingPairReport.stoppedWords`, `memoryRefusal`), and both Macs'
+(`ClusterPairStopCause.failedStart`, `MemoryRefusal`), and both Macs'
 status reads "The other Mac doesn't have enough free memory for its share (needs
 73.6 GiB, has 68.2 GiB)" (or "This Mac", on the Mac that follows;
-`ClusterOnboardingNotServing.words(reason:mac:viewerRank:)`, the rank of the Mac
+`ClusterOnboardingNotServing.words`, with the rank of the Mac
 whose screen the words reach: the leading Mac answers the other Mac's status and
 `darkbloom cluster`, `OnboardingLive.viewerRank`). Before, the leading Mac
 recorded only that rank 1's owner exited, its guidance stayed `unknown_failure`,
 and the status read "The coordinator didn't accept the pair (unknown_failure)",
 though the coordinator had committed the start. Any other stopped start now
 reads "The pair stopped (<guidance>)".
+
+The cause of a coordinator-formed pair's stop is one value,
+`ClusterPairStopCause`
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift`).
+The leading Mac's part makes it where the stop happens and writes it once, as
+the text between the parentheses of its `Pair: stopped (…)` line (`logText`,
+`ClusterOnboardingPairReport.stoppedLine`). The cluster service reads that
+line into the status both Macs read (`ClusterServiceStatus.Child.pair`), and
+each reader takes the text back to the same value (`init(logText:)`,
+`ClusterOnboardingPairReport.State.stopped`) and says it from the value
+(`ClusterOnboardingNotServing.words`, a switch that decides every case).
+
+| Cause | Made by | Text in the line |
+|---|---|---|
+| `memoryRefused` | `failedStart`, from the follower's words in the leader's failure | `memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB` |
+| `guidance` | `failedStart`, from the incident recorded for the failed start | the incident's guidance code (`ClusterPairStopCause.Guidance`) |
+| `didNotForm` | `failedStart`, when no incident was recorded | `the pair did not form` |
+| `readinessLost` | the slot's owner losing a rank (`ProviderLoop.publishClusterPairSlot`) | `pair readiness lost` |
+| `firstRequestFailed` | the warm-up canary failing | `its first request failed` |
+| `memberStopping` | a stopping member with no session left (`releaseClusterMemberSessionBeforeClose`) | `member stopping` |
+| `sessionEnded` | `ProviderLoop.stopServingCommittedStart(epoch:end:)` | `committed start ended: <how>` |
+| `other` | `init(logText:)` only, for text no case writes | that text, unchanged |
+
+Invariants of that text, since the two Macs of a pair can run different builds
+and it crosses the cable in the status:
+
+1. The text of a cause an earlier build wrote is byte for byte what that build
+   wrote, and its words are that build's, except the three corrected below.
+   `ClusterPairStopGoldenTests` holds both to strings recorded from the build
+   before the value existed.
+2. Text no case writes is `other`: written back unchanged and said by the words
+   it contains, as before (what the coordinator says when it refuses a pair:
+   `liveness:trust_floor`, `serves_model`, ...).
+3. New text is only what an earlier build shows as it is. The leading Mac's
+   line now says how its session ended after `committed start ended`
+   (`ClusterPairStopCause.SessionEnd.logWords`): fixed words in lower case that
+   name no Mac, at most 80 characters with the prefix, and none of the words an
+   earlier build chooses its sentence by. The error an early end carried stays
+   in that Mac's log. Before, the leading Mac's host dropped the session's
+   reason and every such line read `committed start ended`.
+4. `ClusterPairStopCause.Guidance` lists the incident log's guidance codes,
+   because this file is compiled without `DarkbloomClusterRemote` by the
+   onboarding checks. `ClusterPairStopCauseTests` holds the two lists equal, so
+   a new `ClusterFailureReason` fails that test until it is listed, and then
+   does not compile until `words` decides what it says.
+
+Three guidance codes were said as something else, because the words were
+chosen by letters the code happened to contain. `device_busy` (an unresolved
+device journal) read "is busy with other work" and now reads "An earlier
+session still holds the cluster device of one of the Macs". `version_mismatch`
+read "The pair stopped (version_mismatch)" and now reads "The two Macs run
+different Darkbloom versions", which ends a start's wait as a version split
+does. `worker_runtime_unverified` (the installed worker differs from the saved
+setup) read "isn't verified by Apple yet", or "The coordinator didn't accept
+the pair yet" with both Macs verified, and now reads "The pair stopped
+(worker_runtime_unverified)".
+
+A reader that holds only the sentence (the status line the leading Mac answers
+the other Mac with, an outcome block) reads a stopped pair's remedy back in one
+place, `ClusterOnboardingNotServing.stopRemedy(saidBy:)`: free memory, run
+`darkbloom cluster recover`, or update both Macs. The remedy under the reason
+(`remedy(forReason:)`), whether a start's wait ends on it
+(`ClusterPairSummary.isFinalReason`) and the next step of
+`darkbloom cluster status` all use it. The status line itself stays text: it
+crosses the cable, and a field for the cause would change that status.
 
 A pair request whose consumer goes away (a client that closes its connection,
 or a coordinator cancel) ends with the clean client-stop handshake at its next
@@ -5921,7 +5991,11 @@ builds (`0.10.13-dev.branch.N`) included (`ClusterOnboardingVersionSplit.order`,
 which the joined Mac's "different builds" lines use too through
 `ClusterOnboardingLeaderStep.isOlder`). That reason outranks the pair's 15-min
 line (`ClusterPairWatch.line`, `ClusterPairSummary.startedButNotRunningLine`):
-a split never clears by itself.
+a split never clears by itself. So does every other reason a start's wait ends
+on because only a person mends it (`ClusterPairSummary.isFinalReason`: a
+missing login, a Mac's clock, a model the coordinator doesn't let a Mac serve,
+different builds or versions, a pair not offered to Darkbloom, single-Mac
+serving on a Mac); a reason the pair is waited through keeps the 15-min line.
 A copy or download of the chosen model shows its progress on the console's
 live line (`ClusterOnboardingDriver.move`, `ClusterOnboardingProgress.live`),
 laid out by `TransferProgressLine` through `ClusterTransferReports`; a

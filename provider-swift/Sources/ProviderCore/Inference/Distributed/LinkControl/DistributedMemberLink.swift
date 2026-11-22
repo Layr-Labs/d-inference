@@ -134,19 +134,15 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
         }
     }
 
-    public func stopServingCommittedStart(epoch: UUID) async {
-        await stopServingCommittedStart(epoch: epoch, reason: "it ended")
-    }
-
-    public func stopServingCommittedStart(epoch: UUID, reason: String) async {
+    public func stopServingCommittedStart(epoch: UUID, end: NativePairSessionEnd) async {
         let fence = lock.withLock { () -> Bool in
             pending[epoch] = nil
             guard servedEpoch == epoch else { return false }
             servedEpoch = nil; return true
         }
-        // Fences the leader's session of this start, saying why this Mac's session ended it: its owner's cleanup
-        // follows and the session waits for the release before its receipt.
-        if fence { box.value?.sessionEnded(reason: reason) }
+        // Fences the leader's session of this start, saying why this Mac's session ended it, in the session's own
+        // words: its owner's cleanup follows and the session waits for the release before its receipt.
+        if fence { box.value?.sessionEnded(reason: end.words) }
     }
 
     /// The leader's open of a start this member holds: the epoch, rank and

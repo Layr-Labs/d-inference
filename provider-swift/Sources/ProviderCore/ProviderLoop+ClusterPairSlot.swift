@@ -235,7 +235,7 @@ extension ProviderLoop {
         clusterPairSlot = handle
         let id = handle.id
         owner.setSlotInvalidationHandler { [weak self] in
-            Task { await self?.retireClusterPairSlot(id, reason: Self.readinessLostReason) }
+            Task { await self?.retireClusterPairSlot(id, cause: .readinessLost) }
         }
         await engineV2Runtime.register(modelId: specification.publicModelID, bridge: bridge)
         // A loss or stop during the registration hop retires this slot; do
@@ -250,7 +250,8 @@ extension ProviderLoop {
             logger.info("Cluster pair warmup canary \(warmup.description)")
             guard clusterPairSlotIsLive(handle) else { return id }
             guard warmup.succeeded else {
-                await retireClusterPairSlot(id, reason: "warmup canary failed: \(warmup.detail ?? "no detail")")
+                // The engine's detail is in the canary's log line above; the pair line says fixed words.
+                await retireClusterPairSlot(id, cause: .firstRequestFailed)
                 return id
             }
         }
@@ -269,8 +270,6 @@ extension ProviderLoop {
         if let client = coordinatorClient { await client.sendEventHeartbeat() }
         return id
     }
-
-    static let readinessLostReason = "pair readiness lost"
 
     /// Whether `handle` is still the published slot and no retirement of it
     /// has begun. A retirement can start during any publication hop.
@@ -292,9 +291,10 @@ extension ProviderLoop {
     /// Retire the pair slot: close admission, drain the request in flight,
     /// then shut the bridge, whose engine shuts down the owner. Idempotent; a
     /// call for an older slot id does nothing. Returns whether this call
-    /// retired a slot.
+    /// retired a slot. `cause`: why, which the part's pair line says
+    /// (`ClusterOnboardingPairReport.stoppedLine`).
     @discardableResult
-    func retireClusterPairSlot(_ id: UUID? = nil, reason: String) async -> Bool {
+    func retireClusterPairSlot(_ id: UUID? = nil, cause: ClusterPairStopCause) async -> Bool {
         guard let handle = clusterPairSlot, id == nil || handle.id == id else { return false }
         let modelID = handle.modelID
         guard !modelsUnloading.contains(modelID) else {
@@ -306,10 +306,9 @@ extension ProviderLoop {
         // local requests in flight drain below with the Darkbloom ones.
         clusterPairAdmissionOpenSlotID = nil
         wakeClusterPairLocalWaiters()
-        logger.info("Cluster pair slot retiring (\(handle.id.uuidString.prefix(8))): \(reason)")
-        // Fixed words only: a warm-up failure's detail is the engine's own text.
-        Self.reportPair(ClusterOnboardingPairReport.stoppedLine(reason.hasPrefix("warmup canary failed") ? "its first request failed" : reason))
-        if reason == Self.readinessLostReason {
+        logger.info("Cluster pair slot retiring (\(handle.id.uuidString.prefix(8))): \(cause.logText)")
+        Self.reportPair(ClusterOnboardingPairReport.stoppedLine(cause))
+        if cause == .readinessLost {
             // S24: serving ended without being asked to. A planned stop
             // retires the slot first with its own reason and records nothing.
             ClusterObservability.current().record(.init(severity: .error, source: "leader", stateCode: .sessionFailed,
@@ -366,7 +365,7 @@ extension ProviderLoop {
             logger.warning("Cluster member stopping: the pair session did not release within \(Int(memberSessionReleaseTimeout)) s; closing the control connection anyway")
         }
         // A slot whose session already ended, or a member without a session.
-        await retireClusterPairSlot(reason: "member stopping")
+        await retireClusterPairSlot(cause: .memberStopping)
     }
     /// The bound on a stopping member's wait for its release receipt. An owner
     /// releases within about 0.6 s of a cancel on hardware (DevNet,

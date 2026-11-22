@@ -19,43 +19,19 @@ public enum ClusterOnboardingPairReport {
         logPrefix + "serving" + (warmupSeconds.map { " (first request in \(String(format: "%.2f", $0)) s)" } ?? "")
     }
 
-    /// The committed start ended or never formed. `guidance` is the incident's guidance code (`ClusterGuidance`, such as
-    /// `memory_gate_refused`), or a few fixed words.
-    public static func stoppedLine(_ guidance: String) -> String { logPrefix + "stopped (" + guidance + ")" }
-
-    /// The guidance code of a rank's load-gate refusal (`ClusterGuidance`).
-    public static let memoryRefusedCode = "memory_gate_refused"
-
-    /// What a stopped line says for a start that failed (`error`, the leader's failure as it was recorded) with the
-    /// incident's guidance code: a load-gate refusal the follower reported says that rank and both of its figures
-    /// (`memoryRefusal`); anything else is the guidance code, or "the pair did not form" without one.
-    public static func stoppedWords(guidance: String?, error: String) -> String {
-        if guidance == memoryRefusedCode, let marker = error.range(of: followerSaidMarker),
-           let words = memoryRefusal(rank: 1, said: String(error[marker.upperBound...])) {
-            return words
-        }
-        return guidance ?? "the pair did not form"
-    }
+    /// The committed start ended or never formed, and why: the cause's text between the parentheses
+    /// (`ClusterPairStopCause.logText`).
+    public static func stoppedLine(_ cause: ClusterPairStopCause) -> String { logPrefix + "stopped (" + cause.logText + ")" }
 
     /// Where the leader's failure carries rank 1's own words (the follower's reason over the link).
     public static let followerSaidMarker = "; rank 1 said: "
-
-    /// A rank's load-gate refusal in a stopped line: "memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB", from
-    /// that rank's words ("… needs 73.57 GiB of admissible memory and has 68.20 GiB …"); nil unless they give both.
-    public static func memoryRefusal(rank: Int, said: String) -> String? {
-        let pattern = #"needs ([0-9]+(?:\.[0-9]+)?) GiB of admissible memory and has ([0-9]+(?:\.[0-9]+)?) GiB"#
-        guard let match = said.range(of: pattern, options: .regularExpression) else { return nil }
-        let numbers = said[match].split(separator: " ").filter { Double($0) != nil }
-        guard numbers.count == 2 else { return nil }
-        return "\(memoryRefusedCode): rank \(rank) needs \(numbers[0]) GiB, has \(numbers[1]) GiB"
-    }
 
     public enum State: Sendable, Equatable {
         case starting
         /// The first request's time ("in 0.84 s") when the warm-up ran.
         case serving(test: String?)
-        /// Why, as the part wrote it (a guidance code or a few fixed words).
-        case stopped(String)
+        /// Why, read back from the text the part wrote.
+        case stopped(ClusterPairStopCause)
     }
 
     /// The latest pair line the part that began writing `log` at `offset` wrote, however many lines follow it
@@ -81,7 +57,7 @@ public enum ClusterOnboardingPairReport {
             return .serving(test: "in " + text[open.upperBound..<close.lowerBound])
         }
         if text.hasPrefix("stopped ("), text.hasSuffix(")") {
-            return .stopped(String(text.dropFirst("stopped (".count).dropLast()))
+            return .stopped(ClusterPairStopCause(logText: String(text.dropFirst("stopped (".count).dropLast())))
         }
         return nil
     }
@@ -92,8 +68,216 @@ public enum ClusterOnboardingPairReport {
         case .starting: return String(startingLine.dropFirst(logPrefix.count))
         case .serving(let test):
             return String(servingLine(warmupSeconds: nil).dropFirst(logPrefix.count)) + (test.map { " (first request \($0))" } ?? "")
-        case .stopped(let why): return String(stoppedLine(why).dropFirst(logPrefix.count))
+        case .stopped(let cause): return String(stoppedLine(cause).dropFirst(logPrefix.count))
         }
+    }
+}
+
+/// Why a pair the coordinator formed stopped, or never formed, as the part that leads it (rank 0) knows it. That part
+/// makes the value where the stop happens and writes it once, as the text between the parentheses of its
+/// `Pair: stopped (…)` line (`logText`). Every reader takes that text back to the same value (`init(logText:)`) and
+/// says it from the value (`ClusterOnboardingNotServing.words`): no reader looks for letters in the text of a cause
+/// that has a case.
+///
+/// The text crosses the cable in the status both Macs read (`ClusterServiceStatus.Child.pair`), and the other Mac may
+/// run another build. So the text of a cause an earlier build wrote never changes. A new cause's text is one that
+/// build shows as it is ("The pair stopped (…)": lower case, at most `earlierBuildShownCharacters`, and none of the
+/// words it looks for). Text this build has no case for is `other`: written back and said exactly as before.
+public enum ClusterPairStopCause: Sendable, Equatable {
+    /// A rank's load gate refused its share of the model.
+    case memoryRefused(MemoryRefusal)
+    /// The start failed and its incident was classified: the incident's guidance code.
+    case guidance(Guidance)
+    /// The start failed and no incident was recorded for it.
+    case didNotForm
+    /// A rank ended, or its lease lapsed, while the pair's slot was published.
+    case readinessLost
+    /// Both ranks loaded, and the pair's own first request (the warm-up) failed. The engine's detail stays in this
+    /// Mac's log: the line carries fixed words only.
+    case firstRequestFailed
+    /// This Mac's part is stopping (a stop, a drain, an update) and no session of its own ended the start first.
+    case memberStopping
+    /// The member session that committed the start ended, and how; nil in a line that does not say how: an earlier
+    /// build's, or this build's for a slot retired after a later session's stop replaced the record of its own
+    /// (`ProviderLoop.serveCommittedStart`).
+    case sessionEnded(SessionEnd?)
+    /// Text no case names: a later build's cause, or what an earlier build wrote. Only `init(logText:)` makes it, so it
+    /// never holds text a case writes.
+    case other(String)
+
+    /// The longest reason an earlier build shows as it is; a longer one reads "no reason given" there.
+    public static let earlierBuildShownCharacters = 80
+
+    /// A rank's load-gate refusal: the rank, and both figures in GiB as that rank said them ("73.57").
+    public struct MemoryRefusal: Sendable, Equatable {
+        public let rank: Int
+        public let needs: String
+        public let has: String
+
+        /// From that rank's words ("… needs 73.57 GiB of admissible memory and has 68.20 GiB …"); nil unless they give
+        /// both figures.
+        public init?(rank: Int, said: String) {
+            let pattern = #"needs ([0-9]+(?:\.[0-9]+)?) GiB of admissible memory and has ([0-9]+(?:\.[0-9]+)?) GiB"#
+            guard let match = said.range(of: pattern, options: .regularExpression) else { return nil }
+            let numbers = said[match].split(separator: " ").filter { Double($0) != nil }
+            guard numbers.count == 2 else { return nil }
+            self.rank = rank; needs = String(numbers[0]); has = String(numbers[1])
+        }
+
+        /// From a stopped line's text ("memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB"), whatever the
+        /// spacing between its words, as every build has read it; nil for any other text.
+        init?(reading text: String) {
+            let prefix = Guidance.memoryGateRefused.rawValue + ": rank "
+            guard text.hasPrefix(prefix) else { return nil }
+            let parts = text.dropFirst(prefix.count).split(separator: " ")
+            guard parts.count == 7, let rank = Int(parts[0]), parts[1] == "needs", Double(parts[2]) != nil,
+                  parts[4] == "has", Double(parts[5]) != nil else { return nil }
+            self.rank = rank; needs = String(parts[2]); has = String(parts[5])
+        }
+
+        var logText: String { "\(Guidance.memoryGateRefused.rawValue): rank \(rank) needs \(needs) GiB, has \(has) GiB" }
+
+        /// Both figures as the screens say them, one decimal each.
+        var shown: (needs: String, has: String) {
+            (String(format: "%.1f", Double(needs) ?? 0), String(format: "%.1f", Double(has) ?? 0))
+        }
+    }
+
+    /// The guidance code of a failed start's incident (`ClusterGuidance.code` in `DarkbloomClusterRemote`). This file is
+    /// compiled alone by the onboarding checks and cannot import that module, so the codes are listed here;
+    /// `ClusterPairStopCauseTests` holds the two lists equal, and a code added here must be given its words
+    /// (`ClusterOnboardingNotServing.words`) before this file compiles.
+    public enum Guidance: String, Sendable, CaseIterable {
+        case orphanedWiredMemory = "orphaned_wired_memory"
+        case deviceBusy = "device_busy"
+        case localProviderRunning = "local_provider_running"
+        case memoryGateRefused = "memory_gate_refused"
+        case followerNotConnected = "follower_not_connected"
+        case localNetworkDenied = "local_network_denied"
+        case loginRejected = "login_rejected"
+        case hostKeyUnknown = "host_key_unknown"
+        case hostIdentityChanged = "host_identity_changed"
+        case noMatchingHostKey = "no_matching_host_key"
+        case addressUnresolved = "address_unresolved"
+        case peerUnreachable = "peer_unreachable"
+        case bootstrapStalled = "bootstrap_stalled"
+        case linkNotReady = "link_not_ready"
+        case rdmaCompletionError = "rdma_completion_error"
+        case collectiveStall = "collective_stall"
+        case rankLeaseExpired = "rank_lease_expired"
+        case workerRuntimeUnverified = "worker_runtime_unverified"
+        case versionMismatch = "version_mismatch"
+        case modelIdentityMismatch = "model_identity_mismatch"
+        case modelStageIncomplete = "model_stage_incomplete"
+        case planChanged = "plan_changed"
+        case unsupportedMode = "unsupported_mode"
+        case peerLost = "peer_lost"
+        case workerCrashed = "worker_crashed"
+        case peerTimeout = "peer_timeout"
+        case launchInterrupted = "launch_interrupted"
+        case configurationInvalid = "configuration_invalid"
+        case cleanupUnresolved = "cleanup_unresolved"
+        case modelBusy = "model_busy"
+        case listenerFailed = "listener_failed"
+        case requestFailed = "request_failed"
+        case runtimeError = "runtime_error"
+        case unknownFailure = "unknown_failure"
+    }
+
+    /// How the member session that committed a start ended (`NativePairMemberSession`), without the error an early end
+    /// carries: that stays in the session's own words (`NativePairSessionEnd.words`).
+    public enum SessionEnd: Sendable, Equatable, CaseIterable {
+        case coordinatorCancelled
+        case grantExpired
+        case connectionClosed
+        case connectionStayedClosed
+        case couldNotServe
+        case endedEarly
+        case ownerInvalidated
+        case memberStopping
+        case ownerEndedCleanly
+
+        /// The session's own words. The Mac that follows fences the leading Mac's session with them
+        /// (`ClusterLinkWorkerServer.sessionEnded`), and its report of that fence reaches the leading Mac over the
+        /// link: never reword one.
+        public var words: String {
+            switch self {
+            case .coordinatorCancelled: return "the coordinator cancelled it"
+            case .grantExpired: return "the coordinator's grant expired"
+            case .connectionClosed: return "its connection to the coordinator closed"
+            case .connectionStayedClosed: return "its connection to the coordinator stayed closed past the grace"
+            case .couldNotServe: return "this Mac could not serve it"
+            case .endedEarly: return "it ended early"
+            case .ownerInvalidated: return "its owner was invalidated before the prelude completed"
+            case .memberStopping: return "this Mac's member is stopping"
+            case .ownerEndedCleanly: return "its owner ended cleanly"
+            }
+        }
+
+        /// What a stopped line says after "committed start ended: ". Both Macs' screens show the line's text, so
+        /// these name no Mac ("this Mac" would be the wrong one on the other screen). They are short and in lower
+        /// case, so an earlier build shows the whole reason byte for byte (`earlierBuildShownCharacters`).
+        var logWords: String {
+            switch self {
+            case .coordinatorCancelled: return "the coordinator cancelled it"
+            case .grantExpired: return "the coordinator's grant expired"
+            case .connectionClosed: return "its connection to the coordinator closed"
+            case .connectionStayedClosed: return "its coordinator connection stayed closed"
+            case .couldNotServe: return "it could not be served"
+            case .endedEarly: return "it ended early"
+            case .ownerInvalidated: return "its owner was invalidated before the prelude completed"
+            case .memberStopping: return "its part is stopping"
+            case .ownerEndedCleanly: return "its owner ended cleanly"
+            }
+        }
+    }
+
+    /// Every cause that has no figure, code or text of its own. `init(logText:)` finds a line's cause here by the text
+    /// each writes, so a case this list lacks is written but reads back as `other`, and no switch fails to compile
+    /// for it: `ClusterPairStopCauseTests.noCaseIsLeftOutOfTheTables` fails until a new case is listed.
+    static let fixed: [ClusterPairStopCause] = [.didNotForm, .readinessLost, .firstRequestFailed, .memberStopping, .sessionEnded(nil)]
+        + SessionEnd.allCases.map { .sessionEnded($0) }
+
+    /// The text between the parentheses of the part's `Pair: stopped (…)` line, and of the status's pair text.
+    public var logText: String {
+        switch self {
+        case .memoryRefused(let refusal): return refusal.logText
+        case .guidance(let code): return code.rawValue
+        case .didNotForm: return "the pair did not form"
+        case .readinessLost: return "pair readiness lost"
+        case .firstRequestFailed: return "its first request failed"
+        case .memberStopping: return "member stopping"
+        // An earlier build wrote the first three words alone. What follows them is new, and that build shows it as
+        // it is.
+        case .sessionEnded(let end): return "committed start ended" + (end.map { ": " + $0.logWords } ?? "")
+        case .other(let text): return text
+        }
+    }
+
+    /// The cause a line's text says. Only text a case writes, byte for byte, is that case; any other text is `other`,
+    /// so it is written back unchanged.
+    public init(logText text: String) {
+        if let refusal = MemoryRefusal(reading: text), refusal.logText == text {
+            self = .memoryRefused(refusal)
+        } else if let code = Guidance(rawValue: text) {
+            self = .guidance(code)
+        } else {
+            self = Self.fixed.first { $0.logText == text } ?? .other(text)
+        }
+    }
+
+    /// The cause of a start that failed with `error` (the leader's failure as it was recorded) and the guidance code of
+    /// the incident recorded for it (`guidance`; nil: none was). A load-gate refusal the Mac that follows reported
+    /// (`ClusterOnboardingPairReport.followerSaidMarker`) is that rank's, with both of its figures.
+    public static func failedStart(guidance: String?, error: String) -> ClusterPairStopCause {
+        guard let guidance else { return .didNotForm }
+        // A code `Guidance` lacks is written as it is, like any text no case names.
+        guard let code = Guidance(rawValue: guidance) else { return ClusterPairStopCause(logText: guidance) }
+        if code == .memoryGateRefused, let marker = error.range(of: ClusterOnboardingPairReport.followerSaidMarker),
+           let refusal = MemoryRefusal(rank: 1, said: String(error[marker.upperBound...])) {
+            return .memoryRefused(refusal)
+        }
+        return .guidance(code)
     }
 }
 
@@ -214,17 +398,56 @@ public enum ClusterOnboardingNotServing {
 
     public static func lacksMemory(_ mac: String) -> String { "\(ClusterOnboardingMacName.sentence(mac)) lacks free memory for its share" }
 
-    /// The plain words for a reason one of the Macs knows: a coordinator refusal word (`liveness:trust_floor`,
-    /// `private_text`, `serves_model`, …) or an incident's guidance code (`memory_gate_refused`, …), about `mac`. A
-    /// rank's load-gate refusal with its figures (`ClusterOnboardingPairReport.memoryRefusal`) names that Mac when
-    /// `viewerRank` (the rank of the Mac whose screen the words are for) is known, and both figures. Any other stopped start is the pair's,
-    /// never the coordinator's: the coordinator committed it, and a Mac's part ended it.
-    public static func words(reason: String, mac: String, viewerRank: Int? = nil) -> String {
-        if let short = memoryShort(reason) {
-            let who = viewerRank.map { $0 == short.rank ? "this Mac" : "the other Mac" } ?? mac
-            return "\(ClusterOnboardingMacName.sentence(who)) doesn't have enough free memory for its share "
-                + "(needs \(short.needs) GiB, has \(short.has) GiB)"
+    /// The plain words for why a pair's start stopped, about `mac`. A rank's load-gate refusal names that Mac when
+    /// `viewerRank` (the rank of the Mac whose screen the words are for) is known, and both figures. Every case is
+    /// decided here: a cause without words of its own is said with its text ("The pair stopped (peer_lost)"), which
+    /// is the pair's, never the coordinator's: the coordinator committed the start, and a Mac's part ended it.
+    public static func words(_ cause: ClusterPairStopCause, mac: String, viewerRank: Int? = nil) -> String {
+        switch cause {
+        case .memoryRefused(let refusal): return words(refusal, mac: mac, viewerRank: viewerRank)
+        case .guidance(let code): return words(code, mac: mac)
+        case .didNotForm, .readinessLost, .firstRequestFailed, .memberStopping, .sessionEnded:
+            return pairStopped(cause.logText)
+        case .other(let text): return words(unnamed: text, mac: mac, viewerRank: viewerRank)
         }
+    }
+
+    private static func words(_ refusal: ClusterPairStopCause.MemoryRefusal, mac: String, viewerRank: Int?) -> String {
+        let who = viewerRank.map { $0 == refusal.rank ? "this Mac" : "the other Mac" } ?? mac
+        return "\(ClusterOnboardingMacName.sentence(who)) doesn't have enough free memory for its share "
+            + "(needs \(refusal.shown.needs) GiB, has \(refusal.shown.has) GiB)"
+    }
+
+    private static func words(_ code: ClusterPairStopCause.Guidance, mac: String) -> String {
+        switch code {
+        case .memoryGateRefused: return lacksMemory(mac)
+        case .deviceBusy: return deviceHeldWords + mac
+        case .versionMismatch: return versionsDifferWords
+        case .modelBusy: return busy(mac)
+        case .orphanedWiredMemory, .localProviderRunning, .followerNotConnected, .localNetworkDenied, .loginRejected,
+             .hostKeyUnknown, .hostIdentityChanged, .noMatchingHostKey, .addressUnresolved, .peerUnreachable, .bootstrapStalled,
+             .linkNotReady, .rdmaCompletionError, .collectiveStall, .rankLeaseExpired, .workerRuntimeUnverified,
+             .modelIdentityMismatch, .modelStageIncomplete, .planChanged, .unsupportedMode, .peerLost, .workerCrashed,
+             .peerTimeout, .launchInterrupted, .configurationInvalid, .cleanupUnresolved, .listenerFailed, .requestFailed,
+             .runtimeError, .unknownFailure:
+            return pairStopped(code.rawValue)
+        }
+    }
+
+    /// An unresolved device journal (`device_busy`): the words up to the Mac.
+    static let deviceHeldWords = "An earlier session still holds the cluster device of "
+    /// Two ranks whose workers speak different versions (`version_mismatch`), in the version split's words
+    /// (`ClusterOnboardingVersionSplit`), which name the versions after them.
+    static let versionsDifferWords = "The two Macs run different Darkbloom versions"
+
+    private static func busy(_ mac: String) -> String { "\(ClusterOnboardingMacName.sentence(mac)) is busy with other work" }
+    private static func pairStopped(_ text: String) -> String { "The pair stopped (\(text))" }
+
+    /// The words for text no cause names, chosen as every build has chosen them, by the words the text contains: what
+    /// the coordinator says when it refuses a pair (`liveness:trust_floor`, `private_text`, `serves_model`, …), or
+    /// another build's text. Text it does not know is shown as it is when it is short and plain.
+    private static func words(unnamed reason: String, mac: String, viewerRank: Int?) -> String {
+        if let refusal = ClusterPairStopCause.MemoryRefusal(reading: reason) { return words(refusal, mac: mac, viewerRank: viewerRank) }
         let reason = reason.lowercased()
         let trust = ["trust_floor", "private_text", "app_attest", "no_trust_evidence", "runtime_unverified", "challenge_stale",
                      "attestation", "untrusted", "private_only"]
@@ -236,33 +459,68 @@ public enum ClusterOnboardingNotServing {
         if reason.contains("offline") || reason.contains("heartbeat") || reason.contains("not_logged_in") {
             return "\(ClusterOnboardingMacName.sentence(mac)) isn't connected to Darkbloom"
         }
-        if reason.contains("idle:") || reason.contains("busy") { return "\(ClusterOnboardingMacName.sentence(mac)) is busy with other work" }
+        if reason.contains("idle:") || reason.contains("busy") { return busy(mac) }
         if reason.contains("release") || reason.contains("build_hash") { return "The two Macs run different Darkbloom builds" }
         if reason.contains("clock") { return "The clock of \(mac) is off; turn on Set time automatically there" }
-        let shown = reason.count <= 80 && ClusterOnboardingDeployment.shownPlainly(reason) ? reason : "no reason given"
-        return "The pair stopped (\(shown))"
+        return pairStopped(shown(reason))
     }
 
-    /// The rank and both figures, one decimal each, of a load-gate refusal a stopped line says
-    /// (`ClusterOnboardingPairReport.memoryRefusal`); nil for any other reason.
-    static func memoryShort(_ reason: String) -> (rank: Int, needs: String, has: String)? {
-        let prefix = ClusterOnboardingPairReport.memoryRefusedCode + ": rank "
-        guard reason.hasPrefix(prefix) else { return nil }
-        let parts = reason.dropFirst(prefix.count).split(separator: " ")
-        // "1 needs 73.57 GiB, has 68.20 GiB"
-        guard parts.count == 7, let rank = Int(parts[0]), parts[1] == "needs", let needs = Double(parts[2]),
-              parts[4] == "has", let has = Double(parts[5]) else { return nil }
-        return (rank, String(format: "%.1f", needs), String(format: "%.1f", has))
+    /// `reason` when it is short and plain enough to show, else "no reason given".
+    private static func shown(_ reason: String) -> String {
+        reason.count <= ClusterPairStopCause.earlierBuildShownCharacters && ClusterOnboardingDeployment.shownPlainly(reason)
+            ? reason : "no reason given"
     }
 
-    /// `words(reason:mac:)` for a coordinator refusal on a pair whose Macs report their App Attest authorization:
-    /// Apple verification is named only when a Mac reports it missing (`anyUnverified`); otherwise a trust word is the
-    /// coordinator's, said as such (DevNet, 2026-11-05: `private_text` on two authorized Macs read "isn't verified").
+    /// `words` for a cause as text: the pair text of a status, from either build.
+    public static func words(reason: String, mac: String, viewerRank: Int? = nil) -> String {
+        words(ClusterPairStopCause(logText: reason), mac: mac, viewerRank: viewerRank)
+    }
+
+    /// `words` on a pair whose Macs report their App Attest authorization: Apple verification is named only when a Mac
+    /// reports it missing (`anyUnverified`); otherwise a trust word is the coordinator's, said as such (DevNet,
+    /// 2026-11-05: `private_text` on two authorized Macs read "isn't verified"). Only text no cause names can be a
+    /// trust word.
+    public static func words(_ cause: ClusterPairStopCause, mac: String, anyUnverified: Bool, viewerRank: Int? = nil) -> String {
+        let said = words(cause, mac: mac, viewerRank: viewerRank)
+        guard !anyUnverified, case .other(let reason) = cause, said.contains("isn't verified by Apple yet") else { return said }
+        return "The coordinator didn't accept the pair yet (\(shown(reason))); both Macs are verified by Apple, and it retries by itself"
+    }
+
+    /// The same for a cause as text.
     public static func words(reason: String, mac: String, anyUnverified: Bool, viewerRank: Int? = nil) -> String {
-        let said = words(reason: reason, mac: mac, viewerRank: viewerRank)
-        guard !anyUnverified, said.contains("isn't verified by Apple yet") else { return said }
-        let code = reason.count <= 80 && ClusterOnboardingDeployment.shownPlainly(reason) ? reason : "no reason given"
-        return "The coordinator didn't accept the pair yet (\(code)); both Macs are verified by Apple, and it retries by itself"
+        words(ClusterPairStopCause(logText: reason), mac: mac, anyUnverified: anyUnverified, viewerRank: viewerRank)
+    }
+
+    /// What a person does about a stopped pair, for the causes where something they do mends it sooner than the pair's
+    /// own retries.
+    public enum StopRemedy: Sendable, Equatable, CaseIterable {
+        /// A Mac lacks free memory for its share: quit apps there, or change the model.
+        case freeMemory
+        /// An earlier session's device journal is unresolved: `darkbloom cluster recover` clears it.
+        case recoverDevice
+        /// The two Macs run different versions: `darkbloom update`. It never clears by itself.
+        case updateBothMacs
+    }
+
+    /// What mends the stopped pair a reason's words say (`words`), nil for any other reason. A reader holds only the
+    /// words: the status line the leading Mac answers the other Mac with, an outcome block. This is the one place a
+    /// stopped pair's sentence is read back: for the remedy under it (`remedy(forReason:)`), for whether a start's wait
+    /// ends on it and for the next step `darkbloom cluster status` names (`ClusterPairSummary`).
+    public static func stopRemedy(saidBy line: String) -> StopRemedy? {
+        if isMemoryShort(line) { return .freeMemory }
+        if line.hasPrefix(deviceHeldWords) { return .recoverDevice }
+        // The whole sentence: the version split's title begins with the same words and brings its own remedies.
+        if line == versionsDifferWords { return .updateBothMacs }
+        return nil
+    }
+
+    /// The remedy as the setup's outcome block says it, above its choices (Retry, Change model, Diagnostics).
+    static func words(_ remedy: StopRemedy) -> String {
+        switch remedy {
+        case .freeMemory: return "Quit apps on that Mac, then Retry; or change the model."
+        case .recoverDevice: return "Run `\(ClusterOnboardingCommand.name) cluster recover` on each Mac, then Retry."
+        case .updateBothMacs: return "Run `\(ClusterOnboardingCommand.name) update` on both Macs, then Retry."
+        }
     }
 
     /// What to do next, said under the reason (the choices follow it, and through Darkbloom the line that names
@@ -270,7 +528,7 @@ public enum ClusterOnboardingNotServing {
     public static func remedy(forReason line: String) -> String? {
         if isMissingLogin(line) { return "Run `\(ClusterOnboardingCommand.name) login` on each Mac named, then Retry." }
         if line.contains("isn't verified by Apple yet") { return "Then choose Retry." }
-        if isMemoryShort(line) { return "Quit apps on that Mac, then Retry; or change the model." }
+        if let remedy = stopRemedy(saidBy: line) { return words(remedy) }
         return notPublicRemedy(forReason: line)
     }
 

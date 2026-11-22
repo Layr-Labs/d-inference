@@ -308,7 +308,7 @@ struct ClusterPairLocalTests {
         #expect(!gate.pairRefuses, "the gate opens with admission")
         let served = try await loop.acquireModelForLocal(clusterPairFixtureModel)
         await served.releaseToken.fire()
-        #expect(await loop.retireClusterPairSlot(id, reason: "test"))
+        #expect(await loop.retireClusterPairSlot(id, cause: .memberStopping))
         #expect(gate.pairRefuses, "and closes when the slot retires")
         let late = try #require(await refusal())
         #expect(late is MultiModelBatchSchedulerEngineError && localStatus(late) == 503, "\(late)")
@@ -352,7 +352,7 @@ struct ClusterPairLocalTests {
         #expect(await loop.clusterPairLocalCounts == (0, 1, 1))
         await thirdAcquired.releaseToken.fire()
         #expect(await loop.clusterPairLocalCounts == (0, 0, 0))
-        #expect(await loop.retireClusterPairSlot(reason: "test"))
+        #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
     }
 
     /// The queue is bounded as `cluster local`'s is: a request that finds it
@@ -428,7 +428,7 @@ struct ClusterPairLocalTests {
         let admitted = try await early.task.value
         #expect(admitted.queueExitedAt != nil && owner.reserveCount == 1)
         await admitted.releaseToken.fire()
-        #expect(await loop.retireClusterPairSlot(reason: "test"))
+        #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
 
         // A rank lost during the canary retires the slot: the waiter hears 503.
         let lost = ScriptedPairOwner()
@@ -536,7 +536,7 @@ struct ClusterPairLocalTests {
         #expect(admitted.queueExitedAt != nil)
         for acquired in running + [admitted] { await acquired.releaseToken.fire() }
         #expect(await leader.clusterPairLocalCounts == (0, 0, 0))
-        #expect(await leader.retireClusterPairSlot(reason: "test"))
+        #expect(await leader.retireClusterPairSlot(cause: .memberStopping))
 
         for rank in 1...2 {
             let member = try memberLoop(name: "cluster-rank-\(rank)", localEndpoint: keyedLocalAPI)

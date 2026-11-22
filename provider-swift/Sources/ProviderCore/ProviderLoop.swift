@@ -812,10 +812,11 @@ public actor ProviderLoop {
     internal var clusterPairWedgedSince: ContinuousClock.Instant?
     /// The leader's serving context for committed starts (S10), the one
     /// start it serves (held from its serve until its session's stop), and
-    /// the last start whose session stopped, which is never served after.
+    /// the last start whose session stopped, which is never served after,
+    /// with how that session ended.
     internal var clusterPairServing: ClusterPairServingContext?
     internal var clusterPairServingEpoch: UUID?
-    internal var clusterPairServingEndedEpoch: UUID?
+    internal var clusterPairServingEnded: (epoch: UUID, end: ClusterPairStopCause.SessionEnd)?
     /// The follower member's link serving of its committed starts; retained
     /// here because the session control holds its serving host weakly.
     internal var clusterPairFollower: DistributedMemberLinkFollower?

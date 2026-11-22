@@ -291,15 +291,19 @@ private func reject(_ body: () throws -> Void) throws {
         let pair = try InstalledFixture.make(root: root.appendingPathComponent("setup"), probe: installed, owner: f.owner, worker: f.worker)
         // `signed` stands in for this provider's signature check of the installed worker (nil: this check binary's own,
         // which has no Developer ID and so never vouches for a worker).
+        // `own`: this build's own worker, the one in the running app (the installed one here, as on a Mac whose setup
+        // the app planned).
         var asked: [URL] = []
-        func doctor(_ earlier: ClusterInstalledMetadataChecks.EarlierRelease?, signed: Bool? = nil) -> [ClusterDiagnosticsReport.Check] {
+        func doctor(_ earlier: ClusterInstalledMetadataChecks.EarlierRelease?, signed: Bool? = nil,
+                    own: URL? = installed) -> [ClusterDiagnosticsReport.Check] {
             let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000, chip = ClusterChipClass(chipName: "Apple M3 Ultra")
             guard let signed else {
                 return ClusterInstalledMetadataChecks.localInstalledMetadata(reference: pair.reference, paths: pair.paths,
-                    deadline: deadline, localChipClass: chip, earlier: earlier)
+                    deadline: deadline, localChipClass: chip, earlier: earlier, thisBuildsWorker: own)
             }
             return ClusterInstalledMetadataChecks.localInstalledMetadata(reference: pair.reference, paths: pair.paths,
-                deadline: deadline, localChipClass: chip, earlier: earlier, signedWorker: { asked.append($0); return signed })
+                deadline: deadline, localChipClass: chip, earlier: earlier, thisBuildsWorker: own,
+                signedWorker: { asked.append($0); return signed })
         }
         let release = ClusterInstalledMetadataChecks.EarlierRelease(version: "0.10.17", worker: earlier)
         try require(doctor(release).map(\.outcome) == [.passed], "a setup on the installed worker: \(doctor(release).map(\.detail))")
@@ -334,6 +338,14 @@ private func reject(_ body: () throws -> Void) throws {
             "an installed worker not signed like this provider")
         try require(!DistributedInstalledHelperSignature.current.signsWorker(installed) && doctor(other).map(\.outcome) == [.failed],
             "a build without this project's Developer ID vouched for a worker")
+        // A signed provider whose certificate didn't sign the worker refuses it (the launch's strict check).
+        let someoneElse = DistributedInstalledHelperSignature.signed(.init(leafSHA1: Data(repeating: 1, count: 20),
+            identifier: "io.darkbloom.provider", cdhash: Data(repeating: 2, count: 20), team: DistributedInstalledHelperSignature.releaseTeam))
+        try require(!someoneElse.signsWorker(installed), "a worker another certificate signed was vouched for")
+        // The setup names a worker other than this build's own (a second app, a worker outside the app): the next start
+        // would pin that one, so no warning, signed or not.
+        try require(doctor(other, signed: true, own: kept.appendingPathComponent("darkbloom-cluster-worker")).map(\.outcome) == [.failed]
+            && doctor(other, signed: true, own: nil).map(\.outcome) == [.failed], "a worker that isn't this build's own was vouched for")
         // The kept copy's rule comes first: it names the release.
         try require(doctor(release, signed: true).map(\.detail) == [ClusterInstalledMetadataChecks.earlierWorkerDetail("0.10.17")],
             "the kept copy's release was not named")

@@ -14,6 +14,9 @@ struct DistributedInstalledValidation: Sendable {
     let model: DistributedInstalledModel
     let workerFeatures: DistributedInstalledWorkerFeatures
 
+    /// The largest worker executable read (`validate`, `pinsEarlierReleaseWorker`).
+    private static let workerMaximumBytes = 256 * 1024 * 1024
+
     static func validate(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
                          deadline: UInt64) throws -> Self {
         let saved = try ClusterConfigurationStore(paths: paths).load(reference: reference)
@@ -21,7 +24,7 @@ struct DistributedInstalledValidation: Sendable {
         let local = plan.localPeer
         var inputs = [DistributedInstalledFiles.Identity]()
         let executable = try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.workerExecutable),
-            expectedSHA256: plan.capability.runtimeBinarySHA256, maximumBytes: 256 * 1024 * 1024,
+            expectedSHA256: plan.capability.runtimeBinarySHA256, maximumBytes: workerMaximumBytes,
             executable: true, deadline: deadline)
         inputs.append(executable)
         // The pinned worker must carry the collective progress guard. A pin
@@ -32,14 +35,13 @@ struct DistributedInstalledValidation: Sendable {
         try features.requireGLMImageCandidate(required: plan.capability.glmImages != nil)
         let pinned = try verifyPinnedFiles(&plan, paths: paths, deadline: deadline)
         inputs += pinned.inputs
-        let manifest = pinned.manifest, model = pinned.model
         // Recompute native profile/Plan/arithmetic metadata using the verified
         // installed worker. The command does not construct a model or request.
         try DistributedCapabilityProbe.verify(plan: plan, executable: executable, deadline: deadline)
         for input in inputs { try input.requireUnchanged() }
 
-        let result = Self(plan: plan, verifiedInputs: inputs, workerExecutable: executable, manifest: manifest, model: model,
-            workerFeatures: features)
+        let result = Self(plan: plan, verifiedInputs: inputs, workerExecutable: executable, manifest: pinned.manifest,
+            model: pinned.model, workerFeatures: features)
         try result.requireUnchanged()
         try DistributedInstalledFiles.check(deadline)
         return result
@@ -92,11 +94,12 @@ struct DistributedInstalledValidation: Sendable {
                                          earlier: URL, deadline: UInt64) -> Bool {
         guard let saved = try? ClusterConfigurationStore(paths: paths).load(reference: reference),
               var plan = try? DistributedInstalledPlan(saved: saved, paths: paths) else { return false }
-        let pin = plan.capability.runtimeBinarySHA256, bound = 256 * 1024 * 1024
+        let pin = plan.capability.runtimeBinarySHA256
         guard let installed = try? DistributedInstalledFiles.digest(URL(fileURLWithPath: plan.localPeer.workerExecutable),
-                                                                    maximumBytes: bound, executable: true, deadline: deadline),
+                                                                    maximumBytes: workerMaximumBytes, executable: true, deadline: deadline),
               installed.sha256 != pin,
-              let previous = try? DistributedInstalledFiles.digest(earlier, maximumBytes: bound, executable: true, deadline: deadline),
+              let previous = try? DistributedInstalledFiles.digest(earlier, maximumBytes: workerMaximumBytes, executable: true,
+                                                                   deadline: deadline),
               previous.sha256 == pin,
               (try? verifyPinnedFiles(&plan, paths: paths, deadline: deadline)) != nil else { return false }
         return true

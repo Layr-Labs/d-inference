@@ -289,10 +289,17 @@ private func reject(_ body: () throws -> Void) throws {
         try FileManager.default.copyItem(at: f.probe, to: installed)
         try FileManager.default.copyItem(at: f.probe, to: earlier)
         let pair = try InstalledFixture.make(root: root.appendingPathComponent("setup"), probe: installed, owner: f.owner, worker: f.worker)
-        func doctor(_ earlier: ClusterInstalledMetadataChecks.EarlierRelease?) -> [ClusterDiagnosticsReport.Check] {
-            ClusterInstalledMetadataChecks.localInstalledMetadata(reference: pair.reference, paths: pair.paths,
-                deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, localChipClass: ClusterChipClass(chipName: "Apple M3 Ultra"),
-                earlier: earlier)
+        // `signed` stands in for this provider's signature check of the installed worker (nil: this check binary's own,
+        // which has no Developer ID and so never vouches for a worker).
+        var asked: [URL] = []
+        func doctor(_ earlier: ClusterInstalledMetadataChecks.EarlierRelease?, signed: Bool? = nil) -> [ClusterDiagnosticsReport.Check] {
+            let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000, chip = ClusterChipClass(chipName: "Apple M3 Ultra")
+            guard let signed else {
+                return ClusterInstalledMetadataChecks.localInstalledMetadata(reference: pair.reference, paths: pair.paths,
+                    deadline: deadline, localChipClass: chip, earlier: earlier)
+            }
+            return ClusterInstalledMetadataChecks.localInstalledMetadata(reference: pair.reference, paths: pair.paths,
+                deadline: deadline, localChipClass: chip, earlier: earlier, signedWorker: { asked.append($0); return signed })
         }
         let release = ClusterInstalledMetadataChecks.EarlierRelease(version: "0.10.17", worker: earlier)
         try require(doctor(release).map(\.outcome) == [.passed], "a setup on the installed worker: \(doctor(release).map(\.detail))")
@@ -315,11 +322,28 @@ private func reject(_ body: () throws -> Void) throws {
         let missing = ClusterInstalledMetadataChecks.EarlierRelease(version: "0.10.17", worker: kept.appendingPathComponent("absent"))
         try require(doctor(missing).map(\.outcome) == [.failed], "a kept copy without a worker")
 
+        // More than one update while the pair was stopped: the kept copy is a later release than the pinned one. With
+        // the installed worker signed like this provider, a warning that names no release; unsigned (foreign or
+        // changed), or in a build that can't tell, a failure.
+        let several = doctor(other, signed: true)
+        try require(several.map(\.outcome) == [.warning] && several[0].detail == ClusterInstalledMetadataChecks.anotherBuildsWorkerDetail,
+            "a pin older than the kept copy, the installed worker signed: \(several.map { "\($0.outcome) \($0.detail)" })")
+        try require(asked.map(\.standardizedFileURL) == [installed.standardizedFileURL], "the installed worker was not the one checked: \(asked)")
+        try require(doctor(nil, signed: true).map(\.outcome) == [.warning], "no kept copy, the installed worker signed")
+        try require(doctor(other, signed: false).map(\.outcome) == [.failed] && doctor(nil, signed: false).map(\.outcome) == [.failed],
+            "an installed worker not signed like this provider")
+        try require(!DistributedInstalledHelperSignature.current.signsWorker(installed) && doctor(other).map(\.outcome) == [.failed],
+            "a build without this project's Developer ID vouched for a worker")
+        // The kept copy's rule comes first: it names the release.
+        try require(doctor(release, signed: true).map(\.detail) == [ClusterInstalledMetadataChecks.earlierWorkerDetail("0.10.17")],
+            "the kept copy's release was not named")
+
         // Another pinned file differs as well: the setup is not only an earlier release's.
         let tokenizer = URL(fileURLWithPath: pair.configuration.peers[0].modelDirectory).appendingPathComponent("tokenizer.json")
         let original = try Data(contentsOf: tokenizer)
         try Data("{\"changed\":true}".utf8).write(to: tokenizer)
         try require(doctor(release).map(\.outcome) == [.failed], "a changed tokenizer beside the earlier worker: \(doctor(release).map(\.detail))")
+        try require(doctor(other, signed: true).map(\.outcome) == [.failed], "a changed tokenizer beside a signed worker")
         try original.write(to: tokenizer)
         try require(doctor(release).map(\.outcome) == [.warning], "the warning after the tokenizer was put back")
 
@@ -328,6 +352,7 @@ private func reject(_ body: () throws -> Void) throws {
         try FileManager.default.copyItem(at: f.probe, to: installed)
         try Data("{\"changed\":true}".utf8).write(to: tokenizer)
         try require(doctor(release).map(\.outcome) == [.failed], "a changed tokenizer on the pinned worker")
+        try require(doctor(other, signed: true).map(\.outcome) == [.failed], "a changed tokenizer on the pinned, signed worker")
         try original.write(to: tokenizer)
     }
 

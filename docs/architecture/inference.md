@@ -7149,6 +7149,15 @@ these hold (`DistributedInstalledValidation.pinsEarlierReleaseWorker`):
   from (`SelfUpdater.keptRollbackWorker`, read without the update lease);
 - every other pinned file verifies, in `validate`'s order (`verifyPinnedFiles`).
 
+A pair left stopped across more than one update pins an older worker than the
+kept copy. It is a `warning` too when, instead of the kept copy's match, the
+installed worker is signed like this provider: its Developer ID and the worker's
+identifier, every architecture strictly
+(`DistributedInstalledValidation.pinsAnotherBuildsWorker`,
+`DistributedInstalledHelperSignature.signsWorker`). So it is neither foreign nor
+changed, and the next start re-plans with it whatever the pin was. A build
+without this project's certificate can't tell, and reports the failure.
+
 Anything else that differs stays a failure. `darkbloom doctor` shows the warning
 as WARN, and `cluster doctor` exits 0
 (`ClusterInstalledMetadataChecks.localInstalledMetadata`,

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
-import DarkbloomClusterRemote
 
+@testable import DarkbloomClusterRemote
 @testable import ProviderCore
 
 /// The words for a stopped pair were chosen by looking for a few letters anywhere in the cause's text, so a cause
@@ -118,6 +118,32 @@ struct ClusterPairStopCauseTests {
     static let macs = ["one of the Macs", "this Mac", "the other Mac (Apple M5 Max, 128 GB)"]
     static let viewerRanks: [Int?] = [nil, 0, 1]
 
+    /// One name per case of `ClusterPairStopCause`. `kind` decides every case, so a case added to the enum does not
+    /// compile here until it has a name, and `noCaseIsLeftOutOfTheTables` then fails until `everyCause` holds it.
+    enum Kind: CaseIterable {
+        case memoryRefused, guidance, didNotForm, readinessLost, firstRequestFailed, memberStopping, sessionEnded, other
+    }
+
+    static func kind(_ cause: Cause) -> Kind {
+        switch cause {
+        case .memoryRefused: return .memoryRefused
+        case .guidance: return .guidance
+        case .didNotForm: return .didNotForm
+        case .readinessLost: return .readinessLost
+        case .firstRequestFailed: return .firstRequestFailed
+        case .memberStopping: return .memberStopping
+        case .sessionEnded: return .sessionEnded
+        case .other: return .other
+        }
+    }
+
+    /// Every table below runs over `everyCause`, which takes its causes with no figure or code from `Cause.fixed`. A
+    /// case that list lacks is written, reads back as `other` and is said by the letters its text contains, and every
+    /// table passes without it. No part writes `other`, so it is the one kind left out.
+    @Test func noCaseIsLeftOutOfTheTables() {
+        #expect(Set(Self.everyCause.map(Self.kind)) == Set(Kind.allCases).subtracting([.other]))
+    }
+
     /// The codes are the incident log's own: every reason's guidance and each SSH guidance has a case here, and no
     /// case here is unknown there. A reason added there fails this until it is listed, and then it needs its words.
     @Test func theGuidanceCodesAreTheIncidentLogs() {
@@ -135,6 +161,10 @@ struct ClusterPairStopCauseTests {
         }
         let recorded = Set(ClusterFailureReason.allCases.map { ClusterGuidance.guidance(for: $0).code } + sshCodes)
         #expect(Set(Cause.Guidance.allCases.map(\.rawValue)) == recorded)
+        // The incident log's own tables. The SSH guidances belong to no reason and are reached above only through
+        // those four messages, so one added there is caught here alone.
+        let listed = ClusterGuidance.table.values.map(\.code) + ClusterGuidance.ssh.values.map(\.code) + [ClusterGuidance.fallback.code]
+        #expect(Set(Cause.Guidance.allCases.map(\.rawValue)) == Set(listed))
     }
 
     /// The text a cause writes is its own, and reads back as that cause: from the line, and from the status's text.

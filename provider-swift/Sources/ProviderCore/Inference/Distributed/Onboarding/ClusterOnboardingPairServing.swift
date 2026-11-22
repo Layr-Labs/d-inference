@@ -97,7 +97,9 @@ public enum ClusterPairStopCause: Sendable, Equatable {
     case firstRequestFailed
     /// This Mac's part is stopping (a stop, a drain, an update) and no session of its own ended the start first.
     case memberStopping
-    /// The member session that committed the start ended, and how; nil in the line of a build that did not say how.
+    /// The member session that committed the start ended, and how; nil in a line that does not say how: an earlier
+    /// build's, or this build's for a slot retired after a later session's stop replaced the record of its own
+    /// (`ProviderLoop.serveCommittedStart`).
     case sessionEnded(SessionEnd?)
     /// Text no case names: a later build's cause, or what an earlier build wrote. Only `init(logText:)` makes it, so it
     /// never holds text a case writes.
@@ -230,7 +232,9 @@ public enum ClusterPairStopCause: Sendable, Equatable {
         }
     }
 
-    /// Every cause that has no figure or code of its own, with the text it writes.
+    /// Every cause that has no figure, code or text of its own. `init(logText:)` finds a line's cause here by the text
+    /// each writes, so a case this list lacks is written but reads back as `other`, and no switch fails to compile
+    /// for it: `ClusterPairStopCauseTests.noCaseIsLeftOutOfTheTables` fails until a new case is listed.
     static let fixed: [ClusterPairStopCause] = [.didNotForm, .readinessLost, .firstRequestFailed, .memberStopping, .sessionEnded(nil)]
         + SessionEnd.allCases.map { .sessionEnded($0) }
 

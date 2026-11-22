@@ -197,15 +197,16 @@ struct GenerationLoopGuardTests {
             tokenConstraint: nil, setting: setting)
     }
 
-    @Test("on by default for the text chat families, off for the others")
+    @Test("on by default for the text chat families, off for every other served type and for an unserved one")
     func defaultModelTypes() throws {
-        for modelType in ["gemma4", "gemma4_text", "qwen3_5", "qwen3_5_moe", "qwen4_exp", "gpt_oss",
-                          "nemotron_h", "nemotron_h_omni", "glm5_next", "mimo_v2"] {
-            #expect(try resolve(modelType, request()) != nil, "\(modelType)")
+        let guarded: Set<ServedModelType> = [
+            .gemma4, .gemma4Text, .qwen35, .qwen35MoE, .qwen4Exp, .qwen4ExpText, .gptOSS,
+            .nemotronH, .nemotronHOmni, .glm5Next, .mimoV2,
+        ]
+        for type in ServedModelType.allCases {
+            #expect((try resolve(type.rawValue, request()) != nil) == guarded.contains(type), "\(type)")
         }
-        for modelType in ["diffusion_gemma", "flint", "prism_hadamard_qwen35", "qwen3_vl_moe", "llama"] {
-            #expect(try resolve(modelType, request()) == nil, "\(modelType)")
-        }
+        #expect(try resolve("llama", request()) == nil)
         #expect(try resolve(nil, request()) == nil)
     }
 

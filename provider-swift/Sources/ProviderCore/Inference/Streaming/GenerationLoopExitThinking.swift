@@ -103,7 +103,8 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// that asked for logprobs (the forced tokens have none), a pair's request.
 /// Nemotron 3.5 Super (`nemotron_h_omni`) has the marker and is off by default
 /// until its A/B; it takes its owner's own route (`NemotronSuperLocalBinding`),
-/// which continues the answer the same way.
+/// which continues the answer the same way. These defaults are each served
+/// model type's decision (`GenerationLoopGuardPolicy.Decision.Exit`).
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
@@ -128,16 +129,18 @@ enum GenerationLoopExitThinkingPolicy {
         var answerStopScope: CBv2StopStringScope?
     }
 
-    /// The families whose thought this can end, by `model_type`.
-    static let markersByModelType: [String: Markers] = [
-        "gpt_oss": harmonyAnalysis,
-        "gemma4": .init(open: "<|channel>", close: "<channel|>"),
-        "gemma4_text": .init(open: "<|channel>", close: "<channel|>"),
-        "qwen3_5": qwenThink,
-        "qwen3_5_moe": qwenThink,
-        // Super's template writes `reasoning + "</think>" + content`: nothing around the marker.
-        "nemotron_h_omni": .init(open: "<think>", close: "</think>"),
-    ]
+    /// The families whose thought this can end, by `model_type`: every type
+    /// whose decision carries markers (`GenerationLoopGuardPolicy.decision(_:)`).
+    static let markersByModelType: [String: Markers] = Dictionary(
+        uniqueKeysWithValues: ServedModelType.allCases.compactMap { type in
+            GenerationLoopGuardPolicy.decision(type).exit?.markers.map { (type.rawValue, $0) }
+        })
+
+    /// Gemma 4's thought channel, which one special token closes.
+    static let gemmaChannel = Markers(open: "<|channel>", close: "<channel|>")
+
+    /// Super's template writes `reasoning + "</think>" + content`: nothing around the marker.
+    static let superThink = Markers(open: "<think>", close: "</think>")
 
     /// GPT-OSS's Harmony analysis message (`<|channel|>analysis<|message|>` …
     /// `<|end|>`). The exit ends that message and starts the next assistant
@@ -165,16 +168,20 @@ enum GenerationLoopExitThinkingPolicy {
     /// `<think>\n…\n</think>\n\n` before the answer.
     static let qwenThink = Markers(open: "<think>", close: "</think>", before: "\n", after: "\n\n")
 
-    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "gpt_oss", "qwen3_5", "qwen3_5_moe"]
+    /// The model types whose decision turns the exit on, for every build or
+    /// for proven builds.
+    static let defaultModelTypes: Set<String> = Set(ServedModelType.allCases.filter {
+        GenerationLoopGuardPolicy.decision($0).exit?.isOnByDefault == true
+    }.map(\.rawValue))
 
     /// Families whose exit takes only some of their builds: the builds the GPU
     /// A/B proved, by catalog id, each with its own `model_type` (as
-    /// `EngineV2SamplingDefaults.qwen35CardModelTypes`).
-    static let provenBuilds: [String: String] = [
-        "Qwen3.5-9B": "qwen3_5",
-        "qwen3.5-35b-a3b": "qwen3_5_moe",
-        "qwen3.6-35b-a3b-vl-mtp-mxfp8": "qwen3_5_moe",
-    ]
+    /// `EngineV2SamplingDefaults.qwen35CardModelTypes`). Read from the
+    /// decisions that name proven builds.
+    static let provenBuilds: [String: String] = Dictionary(
+        uniqueKeysWithValues: ServedModelType.allCases.flatMap { type in
+            (GenerationLoopGuardPolicy.decision(type).exit?.provenBuildIDs ?? []).map { ($0, type.rawValue) }
+        })
 
     /// Whether this build's loops keep ending as `length` although its family
     /// is on: a family with proven builds (`provenBuilds`) takes the exit on

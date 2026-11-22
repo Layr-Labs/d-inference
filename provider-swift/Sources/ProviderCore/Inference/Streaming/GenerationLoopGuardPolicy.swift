@@ -12,11 +12,13 @@ import MLXLMServer
 /// the owner's own route, which resolves the same guard from its request plan
 /// (`NemotronSuperRequestPlan.loopGuard()`), its image and video requests
 /// included. One Mac's image and video requests (`EngineV2VisionPrefill`) take
-/// the same rule as text; the pairs' media routes and MiMo's native media pass
-/// none.
+/// the same rule as text. A route that passes none names its exemption where
+/// it submits (`RouteExemption`): the pairs' media routes, MiMo's native and
+/// decoded media, the bridge's direct submission and model calibration.
 /// Off for every other family (diffusion Gemma, exact Flint, Bonsai,
 /// Qwen3-VL), and for any request whose output is a constrained or JSON value:
 /// a token constraint, a forced tool call, or a JSON `response_format`.
+/// Each served model type's default is one explicit decision (`decision(_:)`).
 ///
 /// `DARKBLOOM_LOOP_GUARD`: unset, `1` or `on` keeps the default list; `0` or
 /// `off` turns the guard off; any other value is the comma-separated list of
@@ -24,14 +26,9 @@ import MLXLMServer
 enum GenerationLoopGuardPolicy {
     static let environmentKey = "DARKBLOOM_LOOP_GUARD"
 
-    static let defaultModelTypes: Set<String> = [
-        "gemma4", "gemma4_text",
-        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text",
-        "gpt_oss",
-        "nemotron_h", "nemotron_h_omni",
-        "glm5_next",
-        "mimo_v2",
-    ]
+    /// The model types `decision(_:)` guards.
+    static let defaultModelTypes: Set<String> = Set(
+        ServedModelType.allCases.filter { decision($0).exit != nil }.map(\.rawValue))
 
     /// Text that opens a tool call in any served family's output (Qwen, GLM,
     /// MiMo, Nemotron, Gemma 4, Harmony). The request's own parser adds its tags.

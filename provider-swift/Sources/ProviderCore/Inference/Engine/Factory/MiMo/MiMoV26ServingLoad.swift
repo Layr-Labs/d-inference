@@ -344,7 +344,8 @@ final class MiMoV26ServingLoad: @unchecked Sendable {
                     let upstream = try await bridge.submitTokenized(
                         promptTokens: prepared.request.promptTokens, request: request,
                         requestId: id, cacheEnabled: false,
-                        multimodal: prepared.request.multimodal, firstContentDeadline: firstContentDeadline)
+                        multimodal: prepared.request.multimodal, firstContentDeadline: firstContentDeadline,
+                        loopGuard: GenerationLoopGuardPolicy.exempt(.mimoDecodedMedia))
 
                     // Register BEFORE the preparation task returns. Even close
                     // before registration gets an owned terminal drainer and

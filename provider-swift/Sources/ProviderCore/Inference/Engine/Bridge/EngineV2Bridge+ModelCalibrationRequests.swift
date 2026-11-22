@@ -57,7 +57,8 @@ extension EngineV2Bridge {
         let stream = await LocalPrefillProgress.$current.withValue(nil) {
             await MeFirstOwnerRequest.$makeRoom.withValue(nil) {
                 await OwnerMemoryWait.$current.withValue(nil) {
-                    await submitTokenized(promptTokens: tokens, request: request, requestId: id, cacheEnabled: false)
+                    await submitTokenized(promptTokens: tokens, request: request, requestId: id, cacheEnabled: false,
+                        loopGuard: GenerationLoopGuardPolicy.exempt(.modelCalibration))
                 }
             }
         }

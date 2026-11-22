@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-22
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -242,6 +242,38 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 ## Provider CLI (`darkbloom`)
 
 Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --local --here`, to `darkbloom start --foreground` in a debug build, and to the benchmark and test binaries.
+
+Every `DARKBLOOM_*` variable the provider sources read is declared once, as
+forwarded or as not forwarded with a reason:
+
+| Declaration | Code | Meaning |
+|---|---|---|
+| Forwarded | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`passthroughEnvKeys`, `inferencePassthroughEnvKeys`); `provider-swift/Sources/ProviderCore/Service/LaunchAgent+UnforwardedEnvironment.swift` (`valueConditionalPassthroughEnvKeys`, `forwardedEnvKeys`) | Written into the provider job's plist, and the cluster service job's, by `passthroughEnvironment` |
+| Not forwarded | `provider-swift/Sources/ProviderCore/Service/LaunchAgent+UnforwardedEnvironment.swift` (`unforwardedEnvKeyGroups`, `unforwardedEnvKeyPrefixes`, `unforwardedReason(for:)`) | Stays out of the plist for one `UnforwardedReason` |
+
+`UnforwardedReason` is closed:
+
+| Reason | A variable with this reason |
+|---|---|
+| `cliOnly` | is read only by a command run in a terminal |
+| `debugOnly` | is compiled or honoured only in a debug build |
+| `harness` | is read only by a benchmark, test harness or qualification diagnostic |
+| `pathOverride` | moves a state file, socket or directory for tests and development |
+| `configBacked` | is set or replaced by the process from `provider.toml` |
+| `processHandoff` | is written by a `darkbloom` process into the environment of a process it starts |
+| `engineeringControl` | is a candidate, tuning, diagnosis or hardware-test control on code the service also runs, read in every build; not for a variable only a developer's build should honour |
+| `retired` | is recognised only so startup can warn |
+| `undecided` | is presented to operators as a limit, kill switch, rollback or start setting, is read by the service's own code, and does not reach the service; forwarding it is an open maintainer decision |
+
+`ServiceEnvironmentReachTests`
+(`provider-swift/Tests/ProviderCoreTests/Service/ServiceEnvironmentReachTests.swift`)
+scans the string literals of `provider-swift/Sources` and fails on a variable in
+neither declaration, in both, or still declared when no other source spells it,
+and on an undeclared prefix that names are built from. It pins the `undecided`
+set, which only loses variables. It keeps no second copy of the forwarded
+lists: a change that forwards a new variable adds it in one place.
+It does not read `libs/`: a variable only the SDK reads is covered when the
+provider forwards it, not otherwise.
 
 ### Gemma 4 row-mapped NAX
 

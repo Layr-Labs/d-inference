@@ -99,12 +99,16 @@ struct DistributedInstalledValidation: Sendable {
     }
 
     /// The same state after more than one update while the pair was stopped, when the kept rollback copy is a later
-    /// release than the one the setup pins: the installed worker differs from the pin, it is signed like this provider
-    /// (`signedWorker`: this project's Developer ID and the worker's identifier, so neither foreign nor changed), and
-    /// every other pinned file verifies.
-    static func pinsAnotherBuildsWorker(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
-                                        deadline: UInt64, signedWorker: (URL) -> Bool) -> Bool {
-        pinsOnlyAnotherWorker(reference: reference, paths: paths, deadline: deadline) { installed, _ in signedWorker(installed) }
+    /// release than the one the setup pins: the setup names this build's own worker (`thisBuildsWorker`, the one in
+    /// the running app, which the next start's re-plan pins), that worker differs from the pin and is signed like this
+    /// provider (`signedWorker`: the same certificate and the worker's identifier, so neither foreign nor changed),
+    /// and every other pinned file verifies.
+    static func pinsAnotherBuildsWorker(reference: ClusterConfigurationReference, paths: ClusterUserPaths, deadline: UInt64,
+                                        thisBuildsWorker: URL, signedWorker: (URL) -> Bool) -> Bool {
+        let own = thisBuildsWorker.resolvingSymlinksInPath().standardizedFileURL.path
+        return pinsOnlyAnotherWorker(reference: reference, paths: paths, deadline: deadline) { installed, _ in
+            installed.resolvingSymlinksInPath().standardizedFileURL.path == own && signedWorker(installed)
+        }
     }
 
     /// The installed worker the setup names differs from its pin, `accepts(installed worker, pin)`, and every other

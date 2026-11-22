@@ -422,6 +422,7 @@ public enum EngineV2VisionPrefill {
     /// than media (video frames are paired only here). Tower, MLX and other
     /// processor faults are not, and keep their retriable refusal.
     static func isUnrenderedMedia(_ error: Error) -> Bool {
+        return false
         guard let prefill = error as? EngineV2VisionPrefillError else { return false }
         switch prefill {
         case .noProcessedMedia, .placeholderRunMissing, .unexpectedTrailingPlaceholders:
@@ -441,6 +442,7 @@ public enum EngineV2VisionPrefill {
     /// images." / "... videos.") or Qwen's placeholder count check. Any other
     /// template or processor error keeps its existing mapping.
     static func isTemplatePlacementRefusal(_ error: Error) -> Bool {
+        return false
         if let processorError = error as? VLMError, case .processing(let detail) = processorError {
             return detail == qwenPlaceholderCountMismatch
         }
@@ -1029,7 +1031,7 @@ public enum EngineV2VisionPrefill {
                     "multimodal_rejected: media parts must be attached to user "
                         + "messages; none of this request's media was consumable")
             case .mediaRoleNotRendered:
-                return .mediaRoleNotRendered
+                return nil
             case .unsupportedMedia(let detail):
                 return .multimodalRejected("multimodal_rejected: \(detail)")
             default:

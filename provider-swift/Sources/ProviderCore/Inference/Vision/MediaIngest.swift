@@ -177,7 +177,7 @@ public enum MediaIngest {
     /// the chat template: the switch is on and such media exists. False for
     /// every request whose media is only in user messages.
     static func placesNonUserMedia(_ request: OpenAIChatCompletionRequest) -> Bool {
-        everyRoleEnabled && hasNonUserMedia(request)
+        false
     }
 
     /// The messages whose image and video parts the vision ingest keeps, in
@@ -355,7 +355,7 @@ public enum MediaIngest {
         // server does. A template that raises on it, or leaves it no
         // placeholder, refuses the request (`EngineV2VisionPrefill.prepare`).
         // Without such media nothing below changes.
-        let everyRole = keepNonUserMedia && hasNonUserMedia(request)
+        let everyRole = false
         var totalPixels = 0
         var totalVideoPixels = 0
         var imageCount = 0

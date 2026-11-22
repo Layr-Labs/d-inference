@@ -141,13 +141,16 @@ struct EngineV2KVQuantizationPolicyTests {
         func layers(_ active: Bool) -> Set<Int> {
             EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(layerKinds: kinds, gemmaAssistantActive: active)
         }
-        let attached = layers(expected(attached: true, .disabled(.configDisabled, configured: true)))
+        let active = MTPActivationStatus(
+            configured: true, active: true, reason: nil, source: nil, revision: nil,
+            artifactBytes: 1, assistantBytes: 1)
+        let attached = layers(expected(attached: true, active))
         #expect(attached == [2, 3])
         for reason in [MTPFallbackReason.artifactNotCached, .catalogUnavailable, .assistantMemoryUnavailable] {
             #expect(layers(expected(attached: false, .disabled(reason, configured: true))) == attached, "\(reason)")
         }
         // MTP switched off keeps the target-only layout, attached or not.
-        #expect(!expected(attached: true, mtp: false, .disabled(.configDisabled, configured: true)))
+        #expect(!expected(attached: true, mtp: false, active))
         #expect(!expected(attached: false, .disabled(.configDisabled, configured: false)))
         #expect(!expected(attached: false, .disabled(.killSwitchDisabled, configured: true)))
         #expect(!expected(attached: false, .disabled(.artifactNotCached, configured: true), process: false))
@@ -159,9 +162,10 @@ struct EngineV2KVQuantizationPolicyTests {
                 "ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift"),
             encoding: .utf8
         ).filter { !$0.isWhitespace }
+        // The decision feeds the backend's native KV layers.
         #expect(source.contains(
-            "EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(assistantAttached:"
-                + "assistantHandle?.drafter!=nil,mtpEnabled:mtpConfig.effectiveEnabled,status:mtpStatus)"))
+            "gemmaAssistantActive:EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(assistantAttached:"
+                + "assistantHandle?.drafter!=nil,mtpEnabled:mtpConfig.effectiveEnabled,status:mtpStatus"))
     }
 
     static let sources = URL(fileURLWithPath: #filePath)

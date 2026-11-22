@@ -1,7 +1,6 @@
 import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
 import DarkbloomClusterRuntime
-import DarkbloomClusterSecurity
 import DarkbloomProcessHardening
 import Darwin
 import Foundation
@@ -14,9 +13,6 @@ import Foundation
         ProcessStartupHardening.applyAtLaunch()
         ProcessStartupHardening.reportIfRequested()
         ProcessStartupHardening.exitUnlessClean(as: "darkbloom-cluster-worker")
-        // The start-up record's clock (`WorkerOwnerPhases`): from the end of the
-        // hardening (which stays the first statement) to the published readiness.
-        let phases = WorkerOwnerPhases()
         var loaded = false
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
@@ -76,7 +72,6 @@ import Foundation
                 permitted: configuration.qualificationSwitchesPermitted, environment: environment)
             let stageResidency = try qualification.stageResidencyRequested(environment: environment)
             let deadline = configuration.load.deadlineUptimeNanoseconds
-            phases.mark("configure")
             // Fixed before any native initialization and before any other
             // thread exists. Every forced end of this process from here on goes
             // through one exit (`ProcessForcedExit`): MLX's wired limit to zero
@@ -101,7 +96,6 @@ import Foundation
             // it. The alarm did not end a rank spinning in the RDMA completion
             // poll on real hardware; this thread is the last resort relied on.
             try ProcessDeadline.arm(lease: configuration.lease, status: 124)
-            phases.mark("lease_arm")
             // Loading and the native bootstrap cannot be interrupted from
             // inside. An owner that names a startup deadline gets a worker
             // that is gone by then unless it became ready.
@@ -122,29 +116,16 @@ import Foundation
                 : nil
             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, lease: configuration.lease)
             try pipes.check()
-            phases.mark("credential_read")
-            // The start-up record names the committed start's generation (none without one).
-            let generation = configuration.bootstrap?.nativeStart
-                .flatMap { try? ClusterNativeAuthorizationStart(encoded: $0) }?.common.membershipGeneration
-            let mode = configuration.generationMode.rawValue, stageCut = configuration.load.stageCut
             // The control reader runs from here, through the load, so the
             // owner's renewals keep the lease alive while weights load. Each
             // renewal also moves the alarm, the second of the two last resorts.
             let coordinator = WorkerCoordinator(pipes: pipes, membershipEpoch: configuration.load.identity.membershipEpoch,
                 keepWarm: configuration.keepWarm, exitHooks: .forcedExit,
-                renewal: { ttl in alarm(UInt32((ttl + 999_999_999) / 1_000_000_000) + 1) },
-                readyPublished: { ready in
-                    // One line per worker start: each phase's duration, from the hardening to this readiness.
-                    phases.ready()
-                    let line = phases.line(rank: ready.rank, epoch: ready.identity.membershipEpoch, generation: generation,
-                        modelID: ready.identity.modelID, mode: mode, stageCut: stageCut)
-                    FileHandle.standardError.write(Data((line + "\n").utf8))
-                })
+                renewal: { ttl in alarm(UInt32((ttl + 999_999_999) / 1_000_000_000) + 1) })
             coordinator.startReading()
             WorkerForceCancelSignal.install { reason in coordinator.forceCancel(reason: reason) }
             // Nothing is loaded over memory a dead process left wired.
             try ClusterOrphanWiredGuard.check(role: "worker-rank-\(configuration.load.rank)")
-            phases.mark("orphan_guard")
             // The registered model's own adapter executes it: GPT-OSS has its
             // own runtime (with its own recording entry); the dense and MiMo
             // families share the native wrapper, and only the dense one records.
@@ -152,7 +133,6 @@ import Foundation
             // exchange that creates the JACCL group through both owners.
             let attachment = try configuration.bootstrap?.attach(epoch: configuration.load.identity.membershipEpoch,
                 rank: configuration.load.rank)
-            phases.beginRuntime()
             let runtime: any WorkerRuntime
             if let document = configuration.glmQualificationDocument {
                 guard let dataPlane else { throw WorkerFailure.invalid("GLM qualification requires authenticated data plane") }
@@ -177,8 +157,7 @@ import Foundation
                         qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey,
                         tensorShares: configuration.tensorShares)
             }
-            phases.endRuntime()
-            WorkerLoadMemory.write(phases: phases)
+            WorkerLoadMemory.write()
             loaded = true
             // Qualification only: a standing wired limit for the loaded stage.
             // Every exit below resets it to zero.
@@ -190,7 +169,7 @@ import Foundation
             withExtendedLifetime(residency) {}
             ProcessForcedExit.finish(status: 0, reason: "shutdown-complete")
         } catch {
-            if !loaded { WorkerLoadMemory.write(phases: phases) }
+            if !loaded { WorkerLoadMemory.write() }
             let message = Data(("darkbloom-cluster-worker: \(error)\n").utf8.prefix(4096))
             _ = message.withUnsafeBytes { Darwin.write(STDERR_FILENO, $0.baseAddress, $0.count) }
             ProcessForcedExit.finish(status: 1, reason: "worker-error")
@@ -199,19 +178,15 @@ import Foundation
 }
 
 /// Each load gate's record (`QwenDenseStageLoadAdmissionSummary.logLine`), one `darkbloom-load-memory-v1` line per
-/// gate, after the load or before the failure that ended it, so a refusal names the figures behind it. Each line
-/// then carries the start-up phases closed so far (`WorkerOwnerPhases.loadMemoryFields`, new `phase_*_ms` keys
-/// after the record's own; its readers ignore keys they do not know), so a failed load shows how far it got.
+/// gate, after the load or before the failure that ended it, so a refusal names the figures behind it.
 enum WorkerLoadMemory {
-    static func write(phases: WorkerOwnerPhases? = nil) {
-        for line in lines(QwenResidentResourceAdmissionReport.current.scopes.map(\.logLine), phases: phases) {
+    /// Red control stub: the records unchanged.
+    static func lines(_ records: [String], phases: WorkerOwnerPhases?) -> [String] { records }
+
+    static func write() {
+        for line in QwenResidentResourceAdmissionReport.current.scopes.map(\.logLine) {
             FileHandle.standardError.write(Data((line + "\n").utf8))
         }
-    }
-
-    static func lines(_ records: [String], phases: WorkerOwnerPhases?) -> [String] {
-        let fields = phases?.loadMemoryFields ?? ""
-        return records.map { fields.isEmpty ? $0 : $0 + " " + fields }
     }
 }
 

@@ -13,17 +13,15 @@ final class NativePairMemberControl: @unchecked Sendable {
     private let lock = NSLock()
     private var connection: NativePairMemberConnection?
     private var session: NativePairMemberSession?
+    /// Red control stubs: no timeline is kept.
+    var sessionTimeline: NativePairOwnerTimeline? { nil }
+    var previousSessionMarks: (cancelled: UInt64?, finished: UInt64?) { (cancelled: nil, finished: nil) }
     private var inboundSequence: UInt64 = 0
     private var epochs = Set<String>()
     /// What serves a committed start once its owner launched (S10). Weak: the
     /// provider loop that serves holds this control.
     private weak var servingHostReference: (any NativePairMemberServingHost)?
     private var sessionStatusHandler: (@Sendable (ClusterSessionStatus) -> Void)?
-    /// For the next session's timeline (`NativePairOwnerTimeline`), each used
-    /// once: when the coordinator's cancel of the current session arrived, and
-    /// when the last session's run finished (its owner seen stopped). A record only.
-    private var lastCancelledAt: UInt64?
-    private var lastFinishedAt: UInt64?
     init(installation: NativePairMemberInstallation, signer: any AttestationSigner) {
         self.installation = installation; self.signer = signer
     }
@@ -39,10 +37,6 @@ final class NativePairMemberControl: @unchecked Sendable {
         set { lock.withLock { sessionStatusHandler = newValue } }
     }
     var status: String { lock.withLock { session?.status ?? "idle" } }
-    /// The current session's timeline so far (the member log and tests).
-    var sessionTimeline: NativePairOwnerTimeline? { lock.withLock { session }?.timeline }
-    /// What the next session's timeline will start from (tests).
-    var previousSessionMarks: (cancelled: UInt64?, finished: UInt64?) { lock.withLock { (cancelled: lastCancelledAt, finished: lastFinishedAt) } }
     /// The heartbeat's `cluster_session` (S16): present only while an owner
     /// runs for a session; the data-plane properties are what its worker
     /// published in its readiness.
@@ -95,11 +89,10 @@ final class NativePairMemberControl: @unchecked Sendable {
                     guard session == nil, epochs.count < 1024, epochs.insert(message.epoch).inserted else { throw NativePairMemberError.inactive }
                     let value = try NativePairMemberSession(installation: installation, connection: expected,
                         message: message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds,
-                        servingHost: servingHostReference, previousCancelled: lastCancelledAt,
-                        previousFinished: lastFinishedAt) { [weak self] old, reusable in
+                        servingHost: servingHostReference) { [weak self] old, reusable in
                             self?.finished(old, reusable: reusable)
                         }
-                    session = value; start = value; lastCancelledAt = nil; lastFinishedAt = nil
+                    session = value; start = value
                 } else if message.type == "native_pair_cancel" {
                     // A cancel only stops. It names its session by epoch,
                     // generation and preparation time and is honoured whatever
@@ -111,9 +104,7 @@ final class NativePairMemberControl: @unchecked Sendable {
                     // A cancel for a session that already ended is ignored.
                     guard Data(base64Encoded: message.payload) == Data([68, 66, 78, 67, 1]) else { throw NativePairMemberError.binding }
                     if let current = session, message.epoch == current.epoch, message.generation == current.generation,
-                       message.prepareBeforeUnixNano == current.prepareUnixNanoseconds {
-                        cancel = current; lastCancelledAt = receivedAt
-                    }
+                       message.prepareBeforeUnixNano == current.prepareUnixNanoseconds { cancel = current }
                 } else {
                     guard let current = session, message.epoch == current.epoch,
                           message.generation == current.generation,
@@ -171,10 +162,8 @@ final class NativePairMemberControl: @unchecked Sendable {
         nativeMemberLog.info("committed session \(current.epoch): freed without a release receipt (\(current.status)); its grant and native cleanup have passed and its owner is gone")
     }
     private func finished(_ old: NativePairMemberSession, reusable: Bool) {
-        let now = DispatchTime.now().uptimeNanoseconds
         lock.withLock {
             guard session === old else { return }
-            lastFinishedAt = now
             // An unacknowledged cleanup or old disconnected identity stays
             // quarantined. Public EOF/timeout is never a replacement slot.
             if reusable { session = nil }

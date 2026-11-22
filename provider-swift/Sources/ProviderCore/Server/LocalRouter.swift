@@ -361,17 +361,11 @@ public enum LocalRouterPolicy {
     }
 
     /// The coordinator path for a local inference path this router may pass on; nil for every other path, which
-    /// only this Mac serves (models, health, tokenizer utilities, embeddings, batches, stored responses).
+    /// only this Mac serves (models, health, tokenizer utilities, embeddings, batches, stored responses). Any
+    /// spelling the SDK router resolves to the route counts (`LocalRoute`).
     public static func upstreamPath(forLocalPath path: String) -> String? {
-        switch path {
-        case "/v1/chat/completions", "/chat/completions": return "/v1/chat/completions"
-        case "/v1/completions", "/completions": return "/v1/completions"
-        case "/v1/responses", "/responses": return "/v1/responses"
-        default: return nil
-        }
+        LocalRoute(method: .post, path: path).upstreamPath
     }
-
-    public static func isModelsPath(_ path: String) -> Bool { path == "/v1/models" || path == "/models" }
 
     /// The route for a request's client. One on another machine never takes the paid hop (`prefer`): whoever holds the
     /// local API's key there may use this Mac and the owner's other Macs (`self`, free), never the owner's balance. So

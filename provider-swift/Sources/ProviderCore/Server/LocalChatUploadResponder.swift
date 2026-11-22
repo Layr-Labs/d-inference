@@ -23,17 +23,17 @@ let localInferenceMaxBatchRequests = 64
 
 /// Responder that serves the chat-completions POSTs itself (with the
 /// raised body ceiling) and forwards everything else to the wrapped
-/// upstream router, the SDK's other JSON routes once their bodies pass the
-/// same nesting checks. Sits INSIDE `CORSResponder` so its responses get the
-/// CORS header and its thrown errors get the OpenAI error-envelope
-/// mapping, exactly like upstream-raised ones.
+/// upstream router. Nothing reaches either before `LocalIngress.admit` has
+/// held its body to its route's limits, so a route with none of its own, and
+/// any spelling of a path the router resolves, is bounded too. Sits INSIDE
+/// `CORSResponder` so its responses get the CORS header and its thrown errors
+/// get the OpenAI error-envelope mapping, exactly like upstream-raised ones.
 public struct LocalChatUploadResponder<Inner: HTTPResponder>: HTTPResponder
 where Inner.Context == BasicRequestContext {
     public typealias Context = BasicRequestContext
 
     public let inner: Inner
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
-    let maxUploadBytes: Int
     let distributedResponses: (any DistributedHTTPResponseProviding)?
     /// The reasoning parser a request that names none is served with, by its model's type (see
     /// `makeLocalInferenceApplication`); nil: the request's own. Without it the local API returned Gemma's thought
@@ -63,7 +63,6 @@ where Inner.Context == BasicRequestContext {
     init(
         inner: Inner,
         service: MLXOpenAIService,
-        maxUploadBytes: Int = localInferenceMaxUploadBytes,
         serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
         distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
         reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)? = nil,
@@ -83,29 +82,8 @@ where Inner.Context == BasicRequestContext {
         self.responseConversations = responseConversations
         self.inner = inner
         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
-        self.maxUploadBytes = maxUploadBytes
         self.distributedResponses = distributedResponses
         self.serviceForRawChat = serviceForRawChat
-    }
-
-    /// The POST paths that carry inline media and need the raised ceiling.
-    static func isChatCompletionsPath(_ path: String) -> Bool {
-        path == "/v1/chat/completions" || path == "/chat/completions"
-    }
-
-    static func isChatCompletionsBatchPath(_ path: String) -> Bool {
-        path == "/v1/chat/completions/batch"
-    }
-
-    static func isResponsesCreationPath(_ path: String) -> Bool {
-        path == "/v1/responses" || path == "/responses"
-    }
-
-    /// The SDK's other JSON routes, which decode their bodies with the same
-    /// recursive parsers and keep BasicRequestContext's 2 MiB ceiling.
-    static func isSDKJSONBodyPath(_ path: String) -> Bool {
-        ["/v1/completions", "/completions", "/completion", "/tokenize", "/detokenize", "/apply-template",
-         "/v1/embeddings", "/embeddings", "/embedding"].contains(path)
     }
 
     /// Tool-call `arguments` hold JSON in a string, which the body scan skips
@@ -114,57 +92,9 @@ where Inner.Context == BasicRequestContext {
         CORSResponder<Inner>.openAIErrorResponse(status: .badRequest, message: JSONNestingLimit.argumentsRefusalMessage)
     }
 
-    static func batchTooLargeRefusal() -> Response {
-        CORSResponder<Inner>.openAIErrorResponse(
-            status: .badRequest,
-            message: "batch exceeds the \(localInferenceMaxBatchRequests)-request local endpoint limit",
-            code: "batch_too_large")
-    }
-
-    /// The items of a batch body's top-level JSON array, counted without
-    /// decoding them: the array's own commas, skipping strings and nested
-    /// values. A body that is not an array counts 0 and is left to the decoder.
-    static func batchItemCount(_ buffer: ByteBuffer) -> Int {
-        buffer.withUnsafeReadableBytes { (bytes: UnsafeRawBufferPointer) -> Int in
-            var depth = 0
-            var commas = 0
-            var hasItem = false
-            var inString = false
-            var escaped = false
-            for byte in bytes {
-                if inString {
-                    if escaped {
-                        escaped = false
-                    } else if byte == UInt8(ascii: "\\") {
-                        escaped = true
-                    } else if byte == UInt8(ascii: "\"") {
-                        inString = false
-                    }
-                    continue
-                }
-                switch byte {
-                case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r"):
-                    break
-                case UInt8(ascii: "["), UInt8(ascii: "{"):
-                    if depth == 0, byte != UInt8(ascii: "[") { return 0 }
-                    if depth == 1 { hasItem = true }
-                    depth += 1
-                case UInt8(ascii: "]"), UInt8(ascii: "}"):
-                    depth -= 1
-                    if depth == 0 { return hasItem ? commas + 1 : 0 }
-                case UInt8(ascii: ","):
-                    if depth == 1 { commas += 1 }
-                case UInt8(ascii: "\""):
-                    if depth == 0 { return 0 }
-                    if depth == 1 { hasItem = true }
-                    inString = true
-                default:
-                    if depth == 0 { return 0 }
-                    if depth == 1 { hasItem = true }
-                }
-            }
-            return hasItem ? commas + 1 : 0
-        }
+    /// A body `LocalIngress` refused, in the envelope every other 4xx of these routes has.
+    static func refusalResponse(_ refusal: LocalIngress.Refusal) -> Response {
+        CORSResponder<Inner>.openAIErrorResponse(status: refusal.status, message: refusal.message, code: refusal.code)
     }
 
     func resolveReasoningParser(_ item: inout LocalChatRequest) async {
@@ -183,63 +113,29 @@ where Inner.Context == BasicRequestContext {
     private static var maxWaitHeader: HTTPField.Name { HTTPField.Name(OwnerMemoryWait.requestLimitHeaderName)! }
 
     private func respondWithinItsWait(to request: Request, context: Context) async throws -> Response {
-        guard request.method == .post else {
-            return try await inner.respond(to: request, context: context)
+        var request = request
+        let route = LocalRoute(method: request.method, path: request.uri.path)
+        var buffer: ByteBuffer
+        switch try await LocalIngress.admit(&request, as: route) {
+        case .admitted(let body): buffer = body
+        case .refused(let refusal): return Self.refusalResponse(refusal)
         }
-        let path = request.uri.path
-        if Self.isSDKJSONBodyPath(path) {
-            var request = request
-            let limit = 2 * 1024 * 1024
-            let body: ByteBuffer
-            do {
-                body = try await request.collectBody(upTo: limit)
-            } catch is NIOTooManyBytesError {
-                return CORSResponder<Inner>.openAIErrorResponse(
-                    status: .contentTooLarge,
-                    message: "request body exceeds the \(limit / (1024 * 1024)) MiB local endpoint limit")
-            }
-            guard !JSONNestingLimit.refuses(body) else {
-                return CORSResponder<Inner>.openAIErrorResponse(
-                    status: .badRequest, message: JSONNestingLimit.refusalMessage)
-            }
+        switch route {
+        case .chatCompletions, .chatCompletionsBatch, .responses:
+            break
+        case .applyTemplate:
             // `/apply-template` renders its messages' tool calls, decoding each one's `arguments` as the chat path
             // does (`templateMessageDict`). A body its route can't decode is left to the route's own 400.
-            if path == "/apply-template",
-               let template = try? JSONDecoder().decode(ApplyTemplateRequest.self, from: Data(buffer: body)),
+            if let template = try? JSONDecoder().decode(ApplyTemplateRequest.self, from: Data(buffer: buffer)),
                JSONNestingLimit.refusesToolCallArguments(in: template.messages) {
                 return Self.toolCallArgumentsRefusal()
             }
             return try await inner.respond(to: request, context: context)
-        }
-        let isBatch = Self.isChatCompletionsBatchPath(path)
-        let isResponses = Self.isResponsesCreationPath(path)
-        guard isBatch || Self.isChatCompletionsPath(path) || isResponses else {
+        case .models, .completions, .other:
             return try await inner.respond(to: request, context: context)
         }
-
-        var request = request
-        // Responses previously used BasicRequestContext's 2 MiB ceiling.
-        let bodyLimit = isResponses ? min(maxUploadBytes, 2 * 1024 * 1024) : maxUploadBytes
-        var buffer: ByteBuffer
-        do {
-            buffer = try await request.collectBody(upTo: bodyLimit)
-        } catch is NIOTooManyBytesError {
-            // Same 413 status the stock path produces, but with an
-            // OpenAI-shaped envelope that names the REAL limit.
-            return CORSResponder<Inner>.openAIErrorResponse(
-                status: .contentTooLarge,
-                message: "request body exceeds the \(bodyLimit / (1024 * 1024)) MiB local endpoint limit"
-            )
-        }
-        // Every parse below recurses per JSON level on this task's stack.
-        guard !JSONNestingLimit.refuses(buffer) else {
-            return CORSResponder<Inner>.openAIErrorResponse(
-                status: .badRequest, message: JSONNestingLimit.refusalMessage)
-        }
-        // A batch's items are counted before any parse reads them.
-        if isBatch, Self.batchItemCount(buffer) > localInferenceMaxBatchRequests {
-            return Self.batchTooLargeRefusal()
-        }
+        let isBatch = route == .chatCompletionsBatch
+        let isResponses = route == .responses
 
         // Tool schemas reach this engine without the coordinator's `$ref`
         // resolution, so the local API applies the same per-model rule.
@@ -307,9 +203,11 @@ where Inner.Context == BasicRequestContext {
             case .success(let decoded): requests = decoded
             case .failure(let badRequest): return badRequest
             }
-            // The decoded count is the authority; the scan above refuses
+            // The decoded count is the authority; `LocalIngress.admit` refuses
             // first without decoding.
-            guard requests.count <= localInferenceMaxBatchRequests else { return Self.batchTooLargeRefusal() }
+            guard requests.count <= localInferenceMaxBatchRequests else {
+                return Self.refusalResponse(.tooManyItems(limit: localInferenceMaxBatchRequests))
+            }
             if requests.contains(where: { JSONNestingLimit.refusesToolCallArguments(in: $0.request.messages) }) {
                 return Self.toolCallArgumentsRefusal()
             }

@@ -48,9 +48,10 @@ public struct LocalInferenceHTTPConfig: Sendable {
 /// disconnect ownership → auth → the local router (this Mac first, then the
 /// route's upstream hops; a pass-through without a router) → a pair's gate
 /// (`LocalPairGateResponder`; a pass-through on every other API) → CORS →
-/// MTP-augmented /metrics → chat-upload interception (32 MiB body ceiling for
-/// the media-bearing chat routes, see `LocalChatUploadResponder`) → upstream
-/// MLXLMServer router.
+/// MTP-augmented /metrics → chat-upload interception (every body held to its
+/// route's limits by `LocalIngress`; the media-bearing chat routes served with
+/// their 32 MiB ceiling, see `LocalChatUploadResponder`) → upstream MLXLMServer
+/// router.
 public typealias LocalInferenceApplication =
     Application<
         LocalDisconnectResponder<LocalRequestOriginResponder<LocalAuthResponder<LocalRouterResponder<
@@ -201,7 +202,7 @@ func makeLocalInferenceApplication(
     // the 32 MiB body ceiling (the upstream router's BasicRequestContext
     // pins the Hummingbird 2 MiB default, which 413s inline media — see
     // LocalChatUploadResponder); everything else falls through to the
-    // upstream router unchanged.
+    // upstream router once `LocalIngress` has admitted its body.
     var reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
     if let modelTypeProvider {
         // Every model's reasoning in its own field, as the coordinator path resolves it. A think-tag stream whose

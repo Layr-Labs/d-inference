@@ -53,6 +53,9 @@ final class WorkerCoordinator: @unchecked Sendable {
     private let exitHooks: WorkerExitHooks
     private let membershipEpoch: UUID?
     private let renewal: @Sendable (UInt64) -> Void
+    /// Told once, on the executor, right after the readiness event was written
+    /// (the worker's start-up record, `WorkerOwnerPhases`). A record only.
+    private let readyPublished: @Sendable (ClusterWorkerReady) -> Void
     private let keepWarmEnabled: Bool
     private let keepWarmTiming: WorkerKeepWarmTiming
     private let idleRelease: WorkerIdleRelease
@@ -98,18 +101,20 @@ final class WorkerCoordinator: @unchecked Sendable {
     /// the process's alarm. Keep-warm tier 1 runs only when `keepWarm`.
     init(pipes: WorkerPipes, membershipEpoch: UUID?, keepWarm: Bool, exitHooks: WorkerExitHooks = .none,
          keepWarmTiming: WorkerKeepWarmTiming = .standard, idleRelease: WorkerIdleRelease = .standard,
-         renewal: @escaping @Sendable (UInt64) -> Void = { _ in }) {
+         renewal: @escaping @Sendable (UInt64) -> Void = { _ in },
+         readyPublished: @escaping @Sendable (ClusterWorkerReady) -> Void = { _ in }) {
         self.pipes = pipes; self.membershipEpoch = membershipEpoch; self.keepWarmEnabled = keepWarm
         self.exitHooks = exitHooks; self.keepWarmTiming = keepWarmTiming; self.idleRelease = idleRelease
-        self.renewal = renewal
+        self.renewal = renewal; self.readyPublished = readyPublished
     }
 
     /// After load, for a caller that has its runtime already (tests).
     convenience init(runtime: any WorkerRuntime, pipes: WorkerPipes, exitHooks: WorkerExitHooks = .none,
-                     idleRelease: WorkerIdleRelease = .standard) throws {
+                     idleRelease: WorkerIdleRelease = .standard,
+                     readyPublished: @escaping @Sendable (ClusterWorkerReady) -> Void = { _ in }) throws {
         guard let ready = runtime.readiness else { throw WorkerFailure.invalid("Native owner did not establish bilateral readiness") }
         self.init(pipes: pipes, membershipEpoch: ready.identity.membershipEpoch, keepWarm: false, exitHooks: exitHooks,
-            idleRelease: idleRelease)
+            idleRelease: idleRelease, readyPublished: readyPublished)
         self.runtime = runtime
     }
 
@@ -176,6 +181,7 @@ final class WorkerCoordinator: @unchecked Sendable {
             ready = value; session = fresh; laneSession = freshLanes
             condition.unlock()
             try publish(.ready(value), requestID: nil)
+            readyPublished(value)
             if let assistant = value.tensorAssistant {
                 let line = "darkbloom-tensor-parallel-mtp-ready-v1 rank=\(value.rank) capacity=\(assistant.capacity)"
                     + " depth=\(assistant.policy.depth) maximum_speculative_width=\(assistant.maximumSpeculativeWidth)"

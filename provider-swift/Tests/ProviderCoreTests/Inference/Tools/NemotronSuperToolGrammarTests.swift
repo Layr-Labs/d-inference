@@ -154,6 +154,71 @@ struct NemotronSuperToolGrammarTests {
         #expect(!L.allows("<parameter=title>\n", constraint, after: open))
         #expect(!L.allows("<parameter=pin>\nmaybe", constraint, after: open))
     }
+
+    // MARK: - The grammar and the owner's validator
+
+    /// One `auto` answer the grammar admits for a `store(meta: { v })` tool.
+    struct AdmittedCall: Sendable, CustomTestStringConvertible {
+        let name: String
+        /// The declaration of `v`, and whether the tool is `strict`.
+        let value: String
+        let strict: Bool
+        var testDescription: String { name }
+
+        var tools: String {
+            #"[{"type":"function","function":{"name":"store","strict":"# + (strict ? "true" : "false")
+                + #","parameters":{"type":"object","properties":{"meta":{"type":"object","properties":{"v":"#
+                + value + #"},"required":["v"],"additionalProperties":false}},"required":["meta"],"#
+                + #""additionalProperties":false}}}]"#
+        }
+
+        static let answer = "Storing.</think><tool_call>\n<function=store>\n<parameter=meta>\n{\"v\": 42}\n"
+            + "</parameter>\n</function>\n</tool_call>"
+
+        static let all = [
+            AdmittedCall(name: "strict, a number for a nested integer", value: #"{"type":"integer"}"#, strict: true),
+            AdmittedCall(name: "strict, a number for a nested property without a type",
+                value: #"{"description":"any value"}"#, strict: true),
+            AdmittedCall(name: "not strict, a number for a nested property without a type",
+                value: #"{"description":"any value"}"#, strict: false),
+        ]
+    }
+
+    /// Calls the grammar admits that the owner's validator refuses today.
+    /// Recorded, not endorsed. The grammar holds a value to the declarations
+    /// as the client sent them (`NemotronSuperToolGrammar`); the validator
+    /// reads the rendered ones (`NemotronSuperRequestPlan` passes it no
+    /// others), where ingress normalization wrote `type: "string"` into a
+    /// property that declares no type. Remove a name when the two agree.
+    /// Closing it moves a `strict` call between validators, which changes
+    /// which calls answer 422, so it needs its own change.
+    static let knownValidatorDivergences: Set<String> = [
+        "strict, a number for a nested property without a type",
+    ]
+
+    @Test("the owner's validator accepts what the grammar admits, except the listed calls",
+          arguments: AdmittedCall.all)
+    func theOwnersValidatorAcceptsWhatTheGrammarAdmits(call: AdmittedCall) throws {
+        let body = F.body(image: false, tools: call.tools)
+        let constraint = try #require(try F.constraint(body))
+        #expect(L.walk(AdmittedCall.answer, constraint) != nil, "the grammar admits the call")
+        var refusal: ToolNoncomplianceCheck?
+        do {
+            let calls = try F.calls(AdmittedCall.answer, body)
+            #expect(calls.first?.function.arguments["meta"] == .object(["v": .int(42)]))
+        } catch {
+            refusal = classifyToolNoncomplianceCheck(error) ?? .other
+        }
+        if Self.knownValidatorDivergences.contains(call.name) {
+            #expect(refusal == .schema, "\(call.name) is accepted now: remove it from knownValidatorDivergences")
+        } else {
+            #expect(refusal == nil, "\(call.name)")
+        }
+    }
+
+    @Test func everyListedValidatorDivergenceIsACase() {
+        #expect(Self.knownValidatorDivergences.isSubset(of: Set(AdmittedCall.all.map(\.name))))
+    }
 }
 
 /// `DARKBLOOM_TEST_NEMOTRON_SUPER_TOKENIZER_DIR=<Super snapshot>` (its

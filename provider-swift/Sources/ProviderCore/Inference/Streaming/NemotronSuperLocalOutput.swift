@@ -51,10 +51,22 @@ struct NemotronSuperLocalOutput {
         // declarations do not allow fails validation instead of reaching the
         // client as raw XML.
         let offersNoTools = plan.toolPolicy.mode == .auto && plan.toolPolicy.tools?.isEmpty != false
-        let streamsCalls = streaming && streamNativeToolCalls && ToolStreamPreparation.streamsToolCallsByDefault
-            && plan.toolPolicy.clientStreams && plan.request.streamToolCallDeltas && plan.toolPolicy.mode != .none
-            && plan.request.responseFormat?.requiresJSONOutput != true && !offersNoTools
-            && (streamForcedToolCalls || !plan.toolPolicy.requiresToolCall)
+        // The scheduler's decision, for this owner's family (`ToolCallExposure`).
+        // Its plan prompt-forces a forced call, so no strategy enforces one.
+        var forcedCalls = ToolStreamPreparation.streamsForcedToolCallsByDefault
+        forcedCalls.native = streamForcedToolCalls
+        let streamsCalls = ToolCallExposure.resolve(
+            family: .superOwner, parser: .nemotron,
+            request: .init(
+                mode: plan.toolPolicy.mode, clientStreams: plan.toolPolicy.clientStreams,
+                rendersFragments: streaming && plan.request.streamToolCallDeltas,
+                offersTools: !offersNoTools,
+                withholdsJSONAnswer: plan.request.responseFormat?.requiresJSONOutput == true,
+                forcedStrategy: .none),
+            switches: .init(
+                toolCalls: ToolStreamPreparation.streamsToolCallsByDefault, forced: forcedCalls,
+                native: streamNativeToolCalls, glm: ToolStreamPreparation.streamsGLMToolCallsByDefault)
+        ).streams
         let allowed = plan.toolPolicy.allowedToolNames
         handler = offersNoTools ? nil : BatchedToolStreamHandler(format: .nemotron,
             tools: plan.toolPolicy.tools?.map { $0.toolSpec() },
@@ -66,6 +78,13 @@ struct NemotronSuperLocalOutput {
         channel = NemotronSuperReasoningChannel(controls: plan.controls)
         self.maximumBytes = maximumBytes
     }
+
+    #if DEBUG
+    /// True when this response's calls leave as `.toolCallDelta` events while
+    /// generated; false when they are withheld until validation. Read by the
+    /// conformance matrix alone, to name the path a response took.
+    var streamsToolCalls: Bool { callRouter != nil }
+    #endif
 
     private var withholdsContent: Bool {
         plan.toolPolicy.requiresToolCall || plan.request.responseFormat?.requiresJSONOutput == true

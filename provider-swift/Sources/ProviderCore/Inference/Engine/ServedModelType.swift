@@ -10,9 +10,10 @@
 /// A rule that must answer for every served type switches over this enum
 /// without a `default:`, so a new case fails to build until the rule decides
 /// it (`EngineV2SupportedModels.isSupported(modelType:)`,
-/// `GenerationLoopGuardPolicy.decision(_:)`). A raw value is the type as
-/// config.json declares it; each caller keeps its own rule for letter case and
-/// surrounding whitespace.
+/// `GenerationLoopGuardPolicy.decision(_:)`, `ToolCallExposure.Family`). A raw
+/// value is the type as config.json declares it; each caller keeps its own
+/// rule for letter case and surrounding whitespace, and `init(normalizing:)`
+/// is the supported set's.
 enum ServedModelType: String, CaseIterable, Sendable {
     case gptOSS = "gpt_oss"
     case gemma4
@@ -29,4 +30,17 @@ enum ServedModelType: String, CaseIterable, Sendable {
     case glm5Next = "glm5_next"
     case nemotronH = "nemotron_h"
     case nemotronHOmni = "nemotron_h_omni"
+}
+
+extension ServedModelType {
+    /// The served type `modelType` names once lowercased and without
+    /// surrounding whitespace: how the supported set admits a type
+    /// (`EngineV2SupportedModels.isSupported(modelType:)`). A rule that must
+    /// answer for every string the engine can serve reads the type through
+    /// this, so it cannot disagree with the supported set about which strings
+    /// name a served type.
+    init?(normalizing modelType: String?) {
+        guard let raw = EngineV2SupportedModels.normalized(modelType) else { return nil }
+        self.init(rawValue: raw)
+    }
 }

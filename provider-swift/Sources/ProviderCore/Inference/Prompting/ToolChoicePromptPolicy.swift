@@ -68,6 +68,27 @@ enum ToolChoicePromptPolicy {
             guard mode == .auto, let tools, !tools.isEmpty else { return false }
             return !tools.contains { $0.function.strict == true } || (started && strictCallsAsGenerated)
         }
+
+        /// The choice as a serving path checks its output: with what only
+        /// the client's own body says, which the typed request (normalized,
+        /// and on the coordinator path always a stream) no longer holds. No
+        /// argument has a default, so every owner that validates calls (the
+        /// scheduler, Nemotron 3.5 Super's plan) states all three and none
+        /// can leave one out.
+        ///
+        /// - Parameters:
+        ///   - declaredTools: the body's declarations as sent (`declaredTools`).
+        ///   - clientStreams: the body's own `stream` (`clientStreams`).
+        ///   - returnsStrictCallsAsGenerated: this owner lets a `strict` call
+        ///     that fails its check leave as generated once a streaming
+        ///     client's response has started (`StrictToolCallPolicy`).
+        func serving(declaredTools: [OpenAITool]?, clientStreams: Bool, returnsStrictCallsAsGenerated: Bool) -> Self {
+            var prepared = self
+            prepared.declaredTools = declaredTools
+            prepared.clientStreams = clientStreams
+            prepared.strictCallsAsGenerated = returnsStrictCallsAsGenerated && clientStreams
+            return prepared
+        }
     }
 
     static func prepare(

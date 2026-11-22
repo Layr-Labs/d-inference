@@ -2,9 +2,11 @@
 //
 // What a failed media preparation tells the coordinator: HTTP status, failure
 // code and error reason, pinned for every error a preparation can throw, on
-// each of the three routes that prepare media (one Mac, the GLM pair, the Qwen
-// pair). The rows come from exhaustive switches over the error enums, so a new
-// case does not compile until it has a row. An answer that is pinned although
+// each of the three routes that answer through `MediaFailure.outward` (one
+// Mac, the GLM pair, the Qwen pair). The rows come from exhaustive switches
+// over the error enums: a new case does not compile until it has an arm, and
+// the arm has a row once the arm before it names it as the next sample
+// (`eachWalkKeepsItsRows` counts them). An answer that is pinned although
 // another is intended is listed once, in `KnownDivergence`. No model weights.
 
 @preconcurrency import AVFoundation
@@ -145,7 +147,8 @@ private enum Table {
 
     /// One row per case of `EngineV2VisionPrefillError` and per owner of a tower
     /// limit. Each arm pins its case and names the next sample; the switch has
-    /// no `default:`, so a new case or owner does not compile until it has a row.
+    /// no `default:`, so a new case or owner does not compile until it has an
+    /// arm. The walk reaches the new arm only when the arm before it names it.
     static func prefillRows() -> [Row] {
         var rows: [Row] = []
         var next: EngineV2VisionPrefillError? = .unsupportedVLM("Wrapper")
@@ -521,8 +524,19 @@ struct MediaFailureDispositionTests {
     @Test("the list of known divergences only shrinks")
     func knownDivergencesOnlyShrink() {
         #expect(
-            KnownDivergence.allCases.count <= 6,
-            "a new divergence is a change to the coordinator contract: review it, do not list it")
+            KnownDivergence.allCases.count == 6,
+            "a corrected divergence lowers this count; a new one changes the coordinator contract: review it, do not list it")
+    }
+
+    /// A walk whose arm names the wrong next sample skips an arm and loses its
+    /// row, which no other test notices. A new case raises its walk's count
+    /// here, so an arm the walk never reaches fails too.
+    @Test("each walk keeps a row for every arm")
+    func eachWalkKeepsItsRows() {
+        #expect(Table.prefillRows().count == 18, "15 cases, and a tower limit for each of its 3 owners")
+        #expect(Table.readerRows().count == 4)
+        #expect(Table.processorRows().count == 9)
+        #expect(Table.mediaErrorRows().count == 7)
     }
 }
 

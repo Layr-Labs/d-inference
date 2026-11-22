@@ -9,10 +9,12 @@
 //
 // The answer is chosen once, here. Every `EngineV2VisionPrefillError` case
 // names its answer in a `switch` without a `default:`, a tower limit carries
-// who owns it (`MediaLimitOwner`), and the three routes that prepare media
-// share `MediaFailure.outward`. HTTP status, failure code and error reason are
-// the coordinator's contract, so an answer here changes only with platform
-// review.
+// who owns it (`MediaLimitOwner`), and the three routes whose preparation
+// throws these errors share `MediaFailure.outward`. MiMo's native media and
+// Nemotron Super map their own failures
+// (`MiMoV26EncodedMediaIngress.outwardFailure`, `SuperHTTPErrors.map`). HTTP
+// status, failure code and error reason are the coordinator's contract, so an
+// answer here changes only with platform review.
 
 import Foundation
 import MLXLMCommon

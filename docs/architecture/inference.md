@@ -5373,8 +5373,10 @@ requests 1 %), so `auto` requests, which return calls as generated, are left as 
   the error's `description`, and so the refusal event and message, show only
   the detail.
 - **One answer per media failure.** `MediaFailure.outward` maps every throw of
-  a media preparation on the three routes that prepare media
-  (`MediaFailure.Route`: `singleMac`, `glmPair`, `qwenPair`). A
+  a media preparation on the three routes that share the vision prefill's
+  errors (`MediaFailure.Route`: `singleMac`, `glmPair`, `qwenPair`). MiMo's
+  native media and Nemotron Super map their own failures
+  (`MiMoV26EncodedMediaIngress.outwardFailure`, `SuperHTTPErrors.map`). A
   `PreContentDeadlineFailure`, a `CancellationError`, a `MediaIngest.MediaError`
   and a `MultiModelBatchSchedulerEngineError` leave unchanged. Every other throw
   gets one `MediaFailure.Disposition`: `clientFault` (400 `invalid_media`:

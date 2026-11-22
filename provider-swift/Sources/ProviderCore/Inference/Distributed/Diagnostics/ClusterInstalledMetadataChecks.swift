@@ -24,10 +24,7 @@ enum ClusterInstalledMetadataChecks {
         } catch let refusal as ClusterPairServingRefusal {
             return refused(refusal)
         } catch {
-            if let earlier, DistributedInstalledValidation.pinsEarlierReleaseWorker(reference: reference, paths: paths,
-                                                                                 earlier: earlier.worker, deadline: deadline) {
-                return [.init(name: "localInstalledMetadata", outcome: .warning, detail: earlierWorkerDetail(earlier.version))]
-            }
+            _ = earlier  // red control: the earlier release is ignored
             return [.init(name: "localInstalledMetadata", outcome: .failed, detail: ClusterDiagnosticsReport.boundedDetail(error))]
         }
         let metadata = ClusterDiagnosticsReport.Check(name: "localInstalledMetadata", outcome: .passed,

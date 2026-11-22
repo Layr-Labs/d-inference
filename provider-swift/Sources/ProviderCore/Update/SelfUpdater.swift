@@ -905,10 +905,7 @@ public struct SelfUpdater: Sendable {
     /// cluster worker inside the copy. Read without the lease, as `recordedRecoveryState` reads; nil when no copy is
     /// kept or the state cannot be read.
     public func keptRollbackWorker() -> (version: String, worker: URL)? {
-        guard let store = recoveryStore(), let copy = try? store.loadState().predecessor,
-              let bundle = try? store.resolvedRecoveryPath(copy.bundlePath) else { return nil }
-        return (copy.release.version, bundle.appendingPathComponent("Contents/Helpers", isDirectory: true)
-            .appendingPathComponent(ClusterBundledHelpers.workerName))
+        nil  // red control: no kept copy is read
     }
 
     private func recoveryStore() -> UpdateRecoveryStore? {

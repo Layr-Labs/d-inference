@@ -63,6 +63,32 @@ struct LocalMemoryWaitTests {
 
     // MARK: - The queue, the setting and the words
 
+    @Test func aGLMRequestWaitsForItsShareToGrowBeforeItStarts() async throws {
+        let engine = InertStubEngine(kvBytesCapacity: 40)
+        let bridge = EngineV2Bridge(engine: engine, modelId: Self.model,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [], kvBytesPerToken: 1)
+        await bridge.installGLMSoloGrant { 100 }
+        let attempts = WaitCounter()
+        let stream = try await bridge.submittingOwnerRequest(
+            OwnerMemoryWait(limit: .seconds(2), retryInterval: .milliseconds(10)),
+            model: Self.model, worstCaseTokens: 80, origin: nil
+        ) { _, _ in
+            attempts.add()
+            guard engine.capacity().kvBytesCapacity >= 80 else {
+                // Model retirement restores the grant, but this attempt still saw the smaller one.
+                engine.updateKVBytesCapacity(100)
+                throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 80)
+            }
+            return AsyncStream { $0.finish() }
+        }
+        _ = await Self.drain(stream)
+        #expect(attempts.value == 2)
+        // An extra byte past the solo admission watermark cannot be recovered by waiting.
+        let refusal = EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 96)
+        #expect(await bridge.ownerMemoryRefusal(refusal, worstCaseTokens: 96) == .exceedsIdle)
+        await bridge.shutdown()
+    }
+
     @Test func theQueueKeepsArrivalOrderAndKeepsAWakeForTheNextPark() async {
         var queue = OwnerMemoryQueue()
         let first = queue.enqueue()!, second = queue.enqueue()!
@@ -774,4 +800,9 @@ private func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
         try? await Task.sleep(for: .milliseconds(10))
     }
     return false
+}
+
+// Test-only adapter: the original bridge has no solo-grant input.
+private extension EngineV2Bridge {
+    func installGLMSoloGrant(_ quote: @escaping @Sendable () async -> UInt64?) {}
 }

@@ -238,7 +238,7 @@ extension EngineV2Factory {
             Self.maxConcurrentPartialPrefills(environment: environment)
         if let gemmaText = gemma4TextModel(model), gemmaText.supportsBlockSDCM {
             let sdcm = Gemma4BlockSDCMConfig.resolve(environment: environment)
-            if sdcm.mode != .off {
+            if sdcm.mode != .off && sdcm.hasActiveOptimizations {
                 // Keep the scheduler floor aligned with `Gemma4BlockSDCM.canRun` so
                 // whole-prompt dispatch never falls back onto an exact paged sliding
                 // write exceeding `maxPrefillChunk`.

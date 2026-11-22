@@ -178,6 +178,9 @@ extension EngineV2Factory {
         }
         let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity, physicalBytes: physicalBytes)
         try configureNativeQwen4Batching(model: model, environment: environment)
+        if let gemmaText = gemma4TextModel(model), gemmaText.supportsBlockSDCM {
+            gemmaText.blockSDCMConfig = Gemma4BlockSDCMConfig.resolve(environment: environment)
+        }
         // Flint is qualified only on paged attention. Automatic selection is an
         // explicit paged request: no crash-guard or failure fallback, and any
         // resolution other than paged refuses the load below.

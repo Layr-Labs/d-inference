@@ -469,6 +469,26 @@ struct EngineV2PrefillGeometryEngineTests {
                 == Gemma4BlockSDCMConfig.lightcone.prefixKeep
                     + Gemma4BlockSDCMConfig.lightcone.tailKeep + 1)
 
+        // Coherent zero-deletion mode arms solo whole-prompt dispatch with its 1024-token tail floor.
+        let coherentConfig = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 4, model: gemmaMoE,
+            environment: [Gemma4BlockSDCMConfig.envKey: "coherent"])
+        #expect(
+            coherentConfig.soloCompactionMinPromptTokens
+                == Gemma4BlockSDCMConfig.coherent.minPromptTokens)
+        #expect(coherentConfig.soloPrefillStripeTokens == nil)
+
+        let coherentLowMinConfig = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 4, model: gemmaMoE,
+            environment: [
+                Gemma4BlockSDCMConfig.envKey: "fullkv",
+                Gemma4BlockSDCMConfig.minTokensEnvKey: "64",
+            ])
+        #expect(
+            coherentLowMinConfig.soloCompactionMinPromptTokens
+                == Gemma4BlockSDCMConfig.coherent.prefixKeep
+                    + Gemma4BlockSDCMConfig.coherent.tailKeep + 1)
+
         // Unsupported dense/PLE Gemma 4 topologies must NOT arm whole-prompt compaction.
         let densePLEConfig = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 4, model: gemmaDensePLE, environment: lcEnv)

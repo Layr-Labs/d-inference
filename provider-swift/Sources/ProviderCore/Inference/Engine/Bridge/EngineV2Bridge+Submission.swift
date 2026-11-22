@@ -65,7 +65,8 @@ extension EngineV2Bridge {
         donationDemand: SSDCheckpointDonationDemand? = nil,
         promptWork: PromptWork? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving,
-        loopGuard: GenerationLoopGuard? = nil
+        loopGuard: GenerationLoopGuard? = nil,
+        disablePrefillCompaction: Bool = false
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -85,7 +86,8 @@ extension EngineV2Bridge {
                 stopStringScope: stopStringScope,
                 donationDemand: donationDemand,
                 firstContentDeadline: nil, promptWork: promptWork,
-                measurementPurpose: measurementPurpose, loopGuard: loopGuard)
+                measurementPurpose: measurementPurpose, loopGuard: loopGuard,
+                disablePrefillCompaction: disablePrefillCompaction)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
             // API using only its fixed, content-free scheduler marker.
@@ -167,7 +169,8 @@ extension EngineV2Bridge {
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving,
-        loopGuard: GenerationLoopGuard? = nil
+        loopGuard: GenerationLoopGuard? = nil,
+        disablePrefillCompaction: Bool = false
     ) async throws -> AsyncStream<GenerationEvent> {
         // The owner's request on the local API, its continuations included; only a first submission waits.
         let ownerRequest = OwnerMemoryWait.servesOwnerRequest(firstContentDeadline: firstContentDeadline)
@@ -198,7 +201,8 @@ extension EngineV2Bridge {
                 distributedRequestOrigin: origin,
                 appliesDistributedFirstTokenBudget: ownerWait?.waitsForFirstToken != true,
                 ownerRequest: ownerRequest, holdsOwnerHead: ownerWait != nil, ownerWaitEnd: waitEnd,
-                measurementPurpose: measurementPurpose, loopGuard: loopGuard)
+                measurementPurpose: measurementPurpose, loopGuard: loopGuard,
+                disablePrefillCompaction: disablePrefillCompaction)
         }
         guard let wait = ownerWait else { return try await attempt(distributedRequestOrigin, nil) }
         let (worstCaseTokens, overflow) = promptTokens.count.addingReportingOverflow(
@@ -250,7 +254,8 @@ extension EngineV2Bridge {
         measurementPurpose: EngineMeasurementPurpose = .serving,
         /// Stops the row as `length` once its answer repeats verbatim
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
-        loopGuard: GenerationLoopGuard? = nil
+        loopGuard: GenerationLoopGuard? = nil,
+        disablePrefillCompaction: Bool = false
     ) async throws -> AsyncStream<GenerationEvent> {
         let reasoningBudget: CBv2ReasoningBudget?
         do {
@@ -477,6 +482,7 @@ extension EngineV2Bridge {
         cbv2Request.maxTokens = maxOutputTokens
         // 0, but for a loop exit's continuation (`EngineAdmissionPriority`).
         cbv2Request.priority = EngineAdmissionPriority.current
+        cbv2Request.disablePrefillCompaction = disablePrefillCompaction
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia

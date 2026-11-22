@@ -1012,4 +1012,17 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.loopGuardStops == [false])
     }
+
+    @Test("loop-exit continuation sets disablePrefillCompaction while ordinary requests leave it false")
+    func continuationDisablesPrefillCompactionWhileOrdinaryRequestAllowsIt() async throws {
+        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true)
+        let outcome = try await serve(engine)
+        #expect(outcome.error == nil)
+        let requests = engine.requests
+        #expect(requests.count == 2)
+        let first = try #require(requests.first)
+        let continuation = try #require(requests.last)
+        #expect(!first.disablePrefillCompaction)
+        #expect(continuation.disablePrefillCompaction)
+    }
 }

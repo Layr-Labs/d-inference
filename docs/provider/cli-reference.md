@@ -4584,6 +4584,22 @@ a last line to run `darkbloom cluster stop --service` on the other Mac if its
 service is still on. A stop forwarded from the Mac that follows to the leading
 Mac that cannot finish still exits 1 and keeps this Mac's service.
 
+On a leading Mac whose cluster service restarted, the stop first waits for the
+service to confirm that this Mac leads (the other Mac answers, or the claim's
+30 s window passes awake). The wait is 40 s, and longer when the service
+publishes a window that ends later, up to 80 s (`confirmsInSeconds`,
+`OnboardingLive.awaitConfirmedLeadership`). If the claim is still unconfirmed
+and the service says the other Mac doesn't answer, this Mac's service stops
+alone, as with `--local-only`, and the command exits 0: `This Mac's leadership
+isn't confirmed yet and the other Mac doesn't answer over the cable, so the pair
+wasn't stopped from here.`, `Only this Mac's cluster service stops, as
+\`darkbloom cluster stop --local-only\` would.`, the service line, and the line to
+run `darkbloom cluster stop --service` on the other Mac. While the other Mac
+answers, the stop still refuses and keeps this Mac's service, as before.
+`DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` keeps the wait at 40 s, and
+`DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` restores the refusal
+(`ClusterUnconfirmedLeadership`).
+
 When the other Mac is gone for good (wiped, sold, or no longer cabled),
 `darkbloom cluster stop --local-only` stops only this Mac. It skips the drain and
 the member acknowledgement, removes the login service, and says that the other Mac

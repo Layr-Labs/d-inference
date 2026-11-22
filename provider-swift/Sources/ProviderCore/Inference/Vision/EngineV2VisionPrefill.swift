@@ -342,22 +342,31 @@ public enum EngineV2VisionPrefill {
 
     /// Run `body` on a new GPU stream when `own` is true.
     ///
-    /// The engine's steps run on the process default GPU stream, and a
-    /// recurrent Qwen step synchronizes it. On that stream, every command
-    /// buffer of the vision tower queued behind the running rows' steps and
-    /// each step waited for the tower's buffers. On its own stream, the
-    /// tower's command queue runs beside the engine's. Every array the
-    /// submission carries is evaluated and the stream drained before the
-    /// scope ends, so nothing lazy outlives the stream.
+    /// The engine's steps run on the process default GPU stream, whose
+    /// command buffers execute in submission order. On that stream, every
+    /// command buffer of the vision tower queued behind the running rows'
+    /// steps, and each step behind the tower's buffers submitted before it.
+    /// On its own stream, the tower's command queue runs beside the engine's.
+    ///
+    /// Every array the submission carries is evaluated, and the stream is
+    /// synchronized on every exit, before the pooled stream is released. So
+    /// nothing lazy outlives it, and an error a failed command buffer stored on
+    /// it is thrown here, under the caller's `MLX.withError`, not at the next
+    /// preparation that reuses the stream.
     static func onMediaPrepStream(
         _ own: Bool, _ body: () async throws -> PreparedSubmission
     ) async throws -> PreparedSubmission {
         guard own else { return try await body() }
         return try await MLX.Stream.withNewDefaultStream(device: .gpu) {
-            let submission = try await body()
-            eval(submission.mlxArrays)
-            MLX.Stream.gpu.synchronize()
-            return submission
+            do {
+                let submission = try await body()
+                eval(submission.mlxArrays)
+                MLX.Stream.gpu.synchronize()
+                return submission
+            } catch {
+                MLX.Stream.gpu.synchronize()
+                throw error
+            }
         }
     }
 

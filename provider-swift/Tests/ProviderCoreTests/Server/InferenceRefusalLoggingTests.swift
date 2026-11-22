@@ -128,6 +128,7 @@ struct InferenceRefusalLoggingTests {
             (.invalidToolPayload("tool message has no preceding assistant tool_calls"), nil),
             (.toolChoiceViolation("model did not emit the required tool call"), nil),
             (.missingUserQuery, .missingUserQuery),
+            (.mediaRoleNotRendered, .mediaRoleNotRendered),
         ]
         for (error, reason) in typed {
             #expect(InferenceRefusalReason(promptRefusal: error) == reason, "\(error)")
@@ -335,6 +336,7 @@ struct InferenceRefusalLoggingTests {
         .requestExceedsContext: "Inference failure: invalid request (request exceeds context)",
         .unsupportedOutputControl: "Inference failure: invalid request (unsupported output control)",
         .missingUserQuery: "Inference failure: invalid request (missing user query)",
+        .mediaRoleNotRendered: "Inference failure: invalid request (media role not rendered)",
     ]
 
     @Test func everyReasonHasItsOwnPublicLine() {

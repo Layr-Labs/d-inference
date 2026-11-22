@@ -3891,6 +3891,30 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 | `--debug` | Include debug-level messages |
 | `--lines <n>` | Number of lines (only with `--file`) |
 
+### Update lines
+
+A single Mac's background update writes one fixed public line for each step
+at the level unified logging keeps on disk (notice), so `darkbloom logs --last 24h`
+still shows an update hours later. The progress lines beside them name the
+versions and reasons; they are private info lines, which unified logging keeps
+only in memory (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`,
+`autoUpdateNotice`; Only me's background service writes the same lines). A check
+that finds this Mac up to date writes none. A pair's update is logged by its
+cluster service.
+
+| Line | Step |
+|---|---|
+| `Auto-update: a newer release is available; staging it while serving` | Download, verification and staging begin |
+| `Auto-update: new release staged; draining requests before installing it` | Admission closes; in-flight requests finish |
+| `Auto-update: a newer release is installed; draining requests before the restart` | An installed release is not running yet |
+| `Auto-update: new release installed; restarting into it` | The restart is issued |
+| `Auto-update deferred: requests did not finish in time; nothing installed` | The drain ran out of time; serving resumed |
+| `Auto-update: the latest release is quarantined on this Mac; staying on this one` | The latest release failed here before |
+| `Auto-update: release check failed; the next check tries again` | The release check failed |
+| `Auto-update: download or staging failed; staying on this release` | Staging failed; serving never stopped |
+| `Auto-update: installing the staged release failed; staying on this release` | The install failed after the drain |
+| `Auto-update: restart into the new release failed; serving on this release` | The restart failed |
+
 ### Refusal lines
 
 A request refused as a client error, before its inference task or while its

@@ -57,7 +57,9 @@ See [inference and logprob admission](../architecture/inference.md).
    --local --port <n> --bind <address> --model <id>…` (`Start.launchOnlyMeService`,
    `provider-swift/Sources/darkbloom/Start/StartCommand+OnlyMe.swift`), which
    starts at login, has the crash-recovery watchdog, updates itself (a check 5
-   minutes after it starts, then every 30 minutes; `StandaloneServer+AutoUpdate`)
+   minutes after it starts, then every 30 minutes; `StandaloneServer+AutoUpdate`,
+   whose steps `darkbloom logs --last` keeps, as the
+   [update lines](cli-reference.md#update-lines) say)
    and unloads models idle past the memory setting
    (`StandaloneServer+IdleUnload`). The provider that served before is drained
    first; when it served Darkbloom, the start says

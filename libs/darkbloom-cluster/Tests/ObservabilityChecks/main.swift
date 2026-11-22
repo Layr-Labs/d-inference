@@ -143,6 +143,16 @@ func classifierChecks() {
         + " rule=compression_or_swap required=52613349376 admissible=268435456 free=268435456 file_backed=85899345920"
         + " counted=0 kernel_file_cache_minimum=unknown anonymous=28991029248 compressor=1073741824 pressure=1"
         + " compressed_since_first=540016640 swapped_out_since_first=0"
+    // The worker's start-up phases (`WorkerOwnerPhases`): the line written once its readiness is published, and
+    // the same durations the load-memory line carries after its own fields (`WorkerLoadMemory`).
+    let phaseTimes = "configure_ms=12 lease_arm_ms=1 credential_read_ms=40 orphan_guard_ms=2"
+        + " bootstrap_attach_ms=310 runtime_load_ms=9800 jaccl_group_ms=420 data_plane_keying_ms=35 link_probe_ms=260"
+        + " checkpoint_verify_ms=2900 weight_read_ms=3100 weight_copy_ms=1400 weight_evaluate_ms=600 runtime_other_ms=1085"
+        + " ready_publish_ms=4 total_ms=10172"
+    let ownerPhasesLine = "darkbloom-owner-phases-v1 rank=1 epoch=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee generation=7"
+        + " model=registered_qwen38_27b mode=pipeline stage_cut=32 " + phaseTimes
+    let loadMemoryWithPhases = loadMemoryLine + " "
+        + phaseTimes.split(separator: " ").prefix(13).map { "phase_" + $0 }.joined(separator: " ")
     let cases: [(String, [String], ClusterFailureReason)] = [
         ("Owner refused: darkbloom-orphan-wired-v1 role=owner decision=refused", [], .orphanedWiredMemory),
         ("Unresolved native ownership journal: an earlier cluster session's owner ended before its worker was seen to exit.", [], .deviceBusy),
@@ -203,6 +213,12 @@ func classifierChecks() {
         ("The serving session stopped without being asked to",
          ["darkbloom-worker-tail-v1 " + loadMemoryLine + "\nrank 1 ended: its owner exited with status 1"], .peerLost),
         (loadMemoryLine, [], .unclassified),
+        // Neither carries a word the classifier reads as a failure.
+        (ownerPhasesLine, [], .unclassified),
+        (loadMemoryWithPhases, [], .unclassified),
+        ("The serving session stopped without being asked to",
+         ["darkbloom-worker-tail-v1 " + ownerPhasesLine + "\ndarkbloom-worker-tail-v1 " + loadMemoryWithPhases
+          + "\nrank 1 ended: its owner exited with status 1"], .peerLost),
     ]
     for (index, item) in cases.enumerated() {
         let result = ClusterFailureClassifier.classify(.init(error: item.0, diagnostics: item.1))

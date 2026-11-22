@@ -2141,6 +2141,37 @@ unpatched. It is the official template with numeric attribute access written as
 `[0]` subscripts; the official hash remains the golden rendering authority and
 fails the load-time render check. See the [build boundary](../developer/build.md).
 
+History tool calls and tool schemas in shapes vLLM's GLM-5.3 serving and the
+OpenAI API accept are served (`DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY`, on by
+default). The native GLM codec reads a call's `arguments` first. It is built for
+the model's own calls, whose text it keeps exactly, and bounds them at 1 MiB.
+What it refuses is read again, within the request's own size bound, as one
+RFC 8259 JSON object (`GLM5NextHistoryArguments`):
+- a repeated key keeps its last value;
+- a number that no JSON value holds exactly is read as `JSONValue` reads it.
+  An integer outside the signed 64-bit range becomes its nearest double, where vLLM keeps it
+  exact;
+- GLM tool-call markers in argument keys and strings render as the text they are.
+
+Every argument is rendered as this provider renders arguments: keys sorted
+(vLLM keeps their order) and numbers as `JSONValue` holds them (`1.0` renders as
+`1`). A tool schema number is read as the typed schema reads it.
+
+Still refused, as there:
+- arguments that are not one JSON object: malformed JSON, a trailing comma, two
+  objects, raw control characters, `null` or an array;
+- broken call and result pairing.
+
+Also still refused, although Python reads them:
+- `NaN`, `Infinity` and numbers beyond a double, which no JSON value holds;
+- lone surrogates, which no JSON value holds;
+- two keys that differ only in Unicode normalization, which one rendered object
+  cannot hold apart;
+- nesting past 64 levels, the provider's bound.
+
+Requests accepted before render byte-identically. `0`, `off`, `false` or `no`
+restores refusing inexact numbers, repeated keys and markers.
+
 ## Mechanism
 
 ### Prompt-completion measurements and qualified profiles
@@ -6162,7 +6193,25 @@ load gate (`QwenDenseStageLoadAdmissionSummary.logLine`): its decisions and
 refusals, the rule that settled it, the numbers of the decision it rests on
 (required, admissible, free, file-backed and counted bytes, the kernel's
 file-cache minimum) and what was compressed and swapped out since its first
-sample.
+sample. These lines also carry the worker's start-up phases so far as
+`phase_*_ms` fields after their own; a reader ignores keys it does not know.
+
+Each worker start also writes one `darkbloom-owner-phases-v1` line when its
+readiness is published (`WorkerOwnerPhases`). It names the rank, the epoch and
+generation, the model, the mode and the stage cut, and gives each phase in
+milliseconds on the uptime clock, from the end of its start-up hardening:
+configuration, lease, credential
+read, orphan-wired check, JACCL bootstrap attach, the runtime load and the
+readiness publication. Inside the load it gives what every adapter passes
+through (`ClusterLoadPhaseClock`): the JACCL group, the data-plane keying, the
+link probe, the checkpoint verification (every file of the artifact hashed),
+the tensor reads, the copies into MLX storage, the Qwen stage's evaluation and
+GPU waits, and the rest of the load. On a pair member,
+`darkbloom-pair-owner-timeline-v1` gives the provider's side of the same start:
+the previous session's cancel and owner stop, the prepare, the commit, the
+owner's launch and the first readiness it saw; a
+`darkbloom-pair-session-heartbeat-v1` line follows each heartbeat a change of
+the session's report sends. The lines are records only and carry no key.
 
 Explicit placement requests may exceed a layout's default prompt or output
 reference while remaining inside the registered family profile. Both the native
@@ -7200,6 +7249,25 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSec
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift`,
 `provider-swift/Sources/ProviderCore/Update/ClusterLinkKeyRollback.swift` and
 `provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift`.
+
+## The doctor after this Mac updated with its pair stopped
+
+The cluster service sets a pair up again after an update only while the pair
+runs (`ClusterService.checkForUpdate`). A pair that was stopped while its Macs
+updated keeps a saved setup that pins the previous release's worker until its
+next start, so `DistributedInstalledValidation.validate` fails its worker check.
+`cluster doctor` reports that as a `warning`, not a failure, only when all of
+these hold (`DistributedInstalledValidation.pinsEarlierReleaseWorker`):
+
+- the installed worker differs from the pin;
+- the pin is the worker in the kept rollback copy, the release this Mac updated
+  from (`SelfUpdater.keptRollbackWorker`, read without the update lease);
+- every other pinned file verifies, in `validate`'s order (`verifyPinnedFiles`).
+
+Anything else that differs stays a failure. `darkbloom doctor` shows the warning
+as WARN, and `cluster doctor` exits 0
+(`ClusterInstalledMetadataChecks.localInstalledMetadata`,
+`ClusterDiagnosticsReport.Outcome.warning`).
 
 ## A paired cable port's own address
 

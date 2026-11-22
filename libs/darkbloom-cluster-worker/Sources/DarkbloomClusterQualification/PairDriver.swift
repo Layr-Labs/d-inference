@@ -83,6 +83,8 @@ public struct PairDriver: Sendable {
         // Tensor parallel: the load (plan, shares, sealed all-sum), each request, the link probe and the collective wait.
         "darkbloom-tensor-parallel-load-v1 ", "darkbloom-tensor-parallel-request-v1 ", "darkbloom-link-probe-v1 ",
         "darkbloom-collective-sync-v1 ",
+        // Each worker start's phases, from its start-up hardening to its readiness (`WorkerOwnerPhases`).
+        "darkbloom-owner-phases-v1 ",
         // Diagnostic (`DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING=1`): each prompt's frames on a Qwen TP rank.
         "qwen-tp-prefill-v1 "]
     /// The two workers' credential lines for one run (S16).

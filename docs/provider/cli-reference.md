@@ -3251,7 +3251,13 @@ ProviderCore checks and the explicit `--clear-backend-guard` action
 On a Mac paired for a two-Mac cluster, the detailed checks also list the
 checks `darkbloom cluster doctor` runs (installed metadata, trust files, the
 Thunderbolt RDMA link, the saved setup), each named `cluster <check>`; a failed
-one fails the run and points to `darkbloom cluster doctor` for its details. The
+one fails the run and points to `darkbloom cluster doctor` for its details. A
+pair set up before this Mac updated, and stopped since, still pins the worker
+of the release the update replaced: when that pin is the worker in the kept
+rollback copy and every other pinned file verifies, `cluster
+localInstalledMetadata` is a ⚠ (`warning` in `cluster doctor --json`, which
+exits 0), because the pair's next start sets it up again
+(`ClusterInstalledMetadataChecks`). The
 saved-setup check counts a provider configuration that other users can open
 (the installer writes it so for a coordinator other than production's) as no
 saved setup until a setup is saved, which makes the file private; one that
@@ -3951,11 +3957,11 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid request (unsupported reasoning control)` | A reasoning or template control the model refuses: an unknown effort, a non-positive budget, `preserve_thinking`, an unknown `reasoning` member, `thinking` key or `chat_template_kwargs` key, or a non-Boolean switch; also a `reasoning` field that does not decode, such as a string `reasoning.enabled` | `ProviderPromptContractPipeline.nativeControlsRefusal`; `InferenceRefusalReason.init(chatDecodeFailure:)` |
 | `Inference failure: invalid request (contradictory reasoning controls)` | Thinking-off beside a thinking-on switch, effort or budget, or a `reasoning.context` that contradicts `clear_thinking` | `ProviderPromptContractPipeline.nativeControlsRefusal` |
 | `Inference failure: invalid request (unsupported tool type)` | A GLM-5.3-Flash tool declaration whose type is not `function` | same |
-| `Inference failure: invalid request (invalid tool schema)` | A GLM-5.3-Flash tool schema holding a number it cannot represent exactly, or nested too deeply | same |
+| `Inference failure: invalid request (invalid tool schema)` | A GLM-5.3-Flash tool schema nested too deeply or holding a number beyond a double, or, with `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0`, a number it cannot represent exactly | same |
 | `Inference failure: invalid media (unsupported audio)` | Audio input to a model without native audio | `MediaIngest.rejectUnsupportedAudio` |
 | `Inference failure: invalid request (unanswered tool call)` | A GLM-5.3-Flash or Gemma 4 history call has no result before the next non-tool message or the end of the conversation | `GLM5NextPromptPolicy.validateHistory`; `Gemma4TurnStructure` |
 | `Inference failure: invalid request (unmatched tool result)` | A tool result names no pending call of the turn before it, repeats one, carries `tool_calls`, or follows no assistant `tool_calls` at all (every model), or a GPT-OSS result after split calls has no `tool_call_id` | same; `ChatTemplateFixes.validateGenericToolHistory`; `GPTOSSHarmonyTemplateFix`; `Gemma4TurnStructure` |
-| `Inference failure: invalid request (native delimiter in history)` | A history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
+| `Inference failure: invalid request (native delimiter in history)` | With `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` only: a history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
 | `Inference failure: invalid request (non-text content)` | Image, video or other non-text content on GLM-5.3-Flash's text path | same |
 | `Inference failure: invalid request (unsupported forced tool choice)` | A required or named `tool_choice` the model cannot enforce: a schema outside the enforceable subset, or GLM-5.3-Flash image or video input | `ToolChoicePromptPolicy`; `MultiModelBatchSchedulerEngine` |
 | `Inference failure: invalid request (request exceeds context)` | The prompt alone fills the model's context window on one Mac (a larger `max_tokens` is cut to fit, not refused), or an output reservation is invalid | `EngineV2Bridge` (`promptExceedsContext`, `advertisedContextExceeded`) |
@@ -3967,9 +3973,10 @@ with an empty or repeated ID, a bad function name or a non-assistant role, a
 first history call without `function.name` on any model, a repeated GPT-OSS
 call ID and an inconsistent Gemma 4 tool-result owner are
 `invalid tool history`; required or named `tool_choice` with image or video
-input is `unsupported forced tool choice`; history `arguments` that are not one exactly
-representable JSON object (malformed, duplicate keys, a number that does not
-survive the round trip) are `invalid tool arguments`; an invalid or repeated
+input is `unsupported forced tool choice`; history `arguments` that are not one JSON
+object (malformed, a trailing comma, two objects, a number beyond a double; on
+GLM-5.3-Flash with `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` also duplicate keys
+or a number that does not survive the round trip) are `invalid tool arguments`; an invalid or repeated
 tool name is `invalid tool declaration`; a required choice without tools or a
 named choice of an undeclared function is `invalid tool choice`; a JSON
 `response_format` with image or video input on a GLM-5.3-Flash cluster pair is

@@ -115,25 +115,24 @@ private struct MediaPrepStreamFixture {
     let request: OpenAIChatCompletionRequest
 
     init() throws {
-        let wrapper = MLXVLM.Qwen35MoE(try mediaPrepStreamConfiguration())
+        let configuration = try mediaPrepStreamConfiguration()
+        let wrapper = MLXVLM.Qwen35MoE(configuration)
         processor = StreamRecordingQwenProcessor(wrapper: wrapper)
         container = ModelContainer(
             context: ModelContext(
                 configuration: ModelConfiguration(id: "tiny/qwen-media-prep-stream"),
                 model: wrapper, processor: processor, tokenizer: StubBridgeTokenizer()))
-        let body = try JSONSerialization.data(withJSONObject: [
-            "model": "tiny/qwen-media-prep-stream",
-            "max_tokens": 4,
-            "messages": [
-                [
-                    "role": "user",
-                    "content": [
-                        ["type": "text", "text": "describe"],
-                        ["type": "image_url", "image_url": ["url": mediaPrepStreamPNGDataURI]],
-                    ],
-                ]
-            ],
-        ])
+        let imagePart: [String: Any] = [
+            "type": "image_url", "image_url": ["url": mediaPrepStreamPNGDataURI],
+        ]
+        let message: [String: Any] = [
+            "role": "user",
+            "content": [["type": "text", "text": "describe"], imagePart] as [Any],
+        ]
+        let object: [String: Any] = [
+            "model": "tiny/qwen-media-prep-stream", "max_tokens": 4, "messages": [message],
+        ]
+        let body = try JSONSerialization.data(withJSONObject: object)
         request = try ProviderLoop.decodeOpenAIRequest(body, modelType: "qwen3_5_moe")
     }
 

@@ -25,6 +25,7 @@ private func reject(_ body: () throws -> Void) throws {
         try journal(f)
         try recovery(f)
         try modeAndServingPolicy(f)
+        try earlierReleaseWorker(f)
         try linkFindings()
         print("Cluster diagnostics: read-only leader/follower metadata, closed fresh status, local discovery, journal uncertainty, explicit recovery, generation mode, pair-serving policy and local link findings passed")
     }
@@ -270,6 +271,64 @@ private func reject(_ body: () throws -> Void) throws {
         try require(steered.first?.name == "pairServingPolicy" && steered[0].detail.contains("diverged from its single-Mac reference"),
             "GPT-OSS's diverged rank-shape on the M3 Ultra: \(steered.map(\.detail))")
         try require(validation(gpt, chip: "Apple M4 Max").map(\.name) == ["localInstalledMetadata"], "GPT-OSS on an M4 Max was refused")
+    }
+
+    /// A pair set up before this Mac updated, and stopped since: its saved setup still pins the worker of the release
+    /// the update replaced, which the kept rollback copy holds. The doctor says WARN for that alone; a pin that is no
+    /// earlier release's worker, or any other pinned file that differs, stays a failure.
+    static func earlierReleaseWorker(_ f: InstalledFixture) throws {
+        let root = f.root.appendingPathComponent("doctor-updated", isDirectory: true)
+        let app = root.appendingPathComponent("app", isDirectory: true), kept = root.appendingPathComponent("kept", isDirectory: true)
+        // The app and its kept copy have the umask's folder modes, as the installer and `snapshotLiveAsPredecessor` leave them.
+        for (directory, mode) in [(root, 0o700), (app, 0o755), (kept, 0o755)] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: mode])
+        }
+        // The setup pins the worker this Mac ran when the pair was set up (the probe stands for it).
+        let installed = app.appendingPathComponent("darkbloom-cluster-worker")
+        let earlier = kept.appendingPathComponent("darkbloom-cluster-worker")
+        try FileManager.default.copyItem(at: f.probe, to: installed)
+        try FileManager.default.copyItem(at: f.probe, to: earlier)
+        let pair = try InstalledFixture.make(root: root.appendingPathComponent("setup"), probe: installed, owner: f.owner, worker: f.worker)
+        func doctor(_ earlier: ClusterInstalledMetadataChecks.EarlierRelease?) -> [ClusterDiagnosticsReport.Check] {
+            ClusterInstalledMetadataChecks.localInstalledMetadata(reference: pair.reference, paths: pair.paths,
+                deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, localChipClass: ClusterChipClass(chipName: "Apple M3 Ultra"),
+                earlier: earlier)
+        }
+        let release = ClusterInstalledMetadataChecks.EarlierRelease(version: "0.10.17", worker: earlier)
+        try require(doctor(release).map(\.outcome) == [.passed], "a setup on the installed worker: \(doctor(release).map(\.detail))")
+
+        // The update replaces the installed worker (another build's bytes); the pair was stopped, so nothing re-planned it.
+        try FileManager.default.removeItem(at: installed)
+        try FileManager.default.copyItem(at: f.owner, to: installed)
+        let warned = doctor(release)
+        try require(warned.map(\.name) == ["localInstalledMetadata"] && warned[0].outcome == .warning
+            && warned[0].detail == ClusterInstalledMetadataChecks.earlierWorkerDetail("0.10.17") && warned[0].detail.contains("Darkbloom 0.10.17"),
+            "a setup pinning the earlier release's worker: \(warned.map { "\($0.outcome) \($0.detail)" })")
+        let encoded = String(decoding: try JSONEncoder().encode(warned[0]), as: UTF8.self)
+        try require(encoded.contains("\"outcome\":\"warning\""), "warning shape: \(encoded)")
+
+        // No kept copy, or one whose worker is not the pinned one: the pin is no earlier release's worker.
+        try require(doctor(nil).map(\.outcome) == [.failed] && doctor(nil)[0].detail.contains("Installed input identity or SHA-256 differs"),
+            "no earlier release: \(doctor(nil).map(\.detail))")
+        let other = ClusterInstalledMetadataChecks.EarlierRelease(version: "0.10.17", worker: f.worker)
+        try require(doctor(other).map(\.outcome) == [.failed], "a kept worker that is not the pinned one: \(doctor(other).map(\.detail))")
+        let missing = ClusterInstalledMetadataChecks.EarlierRelease(version: "0.10.17", worker: kept.appendingPathComponent("absent"))
+        try require(doctor(missing).map(\.outcome) == [.failed], "a kept copy without a worker")
+
+        // Another pinned file differs as well: the setup is not only an earlier release's.
+        let tokenizer = URL(fileURLWithPath: pair.configuration.peers[0].modelDirectory).appendingPathComponent("tokenizer.json")
+        let original = try Data(contentsOf: tokenizer)
+        try Data("{\"changed\":true}".utf8).write(to: tokenizer)
+        try require(doctor(release).map(\.outcome) == [.failed], "a changed tokenizer beside the earlier worker: \(doctor(release).map(\.detail))")
+        try original.write(to: tokenizer)
+        try require(doctor(release).map(\.outcome) == [.warning], "the warning after the tokenizer was put back")
+
+        // The installed worker is the pinned one again, and something else fails: that failure is reported.
+        try FileManager.default.removeItem(at: installed)
+        try FileManager.default.copyItem(at: f.probe, to: installed)
+        try Data("{\"changed\":true}".utf8).write(to: tokenizer)
+        try require(doctor(release).map(\.outcome) == [.failed], "a changed tokenizer on the pinned worker")
+        try original.write(to: tokenizer)
     }
 
     static func journal(_ f: InstalledFixture) throws {

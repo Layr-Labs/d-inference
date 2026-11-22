@@ -90,7 +90,7 @@ struct LocalMemoryWaitTests {
     }
 
     /// With the shared-grant wait off, the same request is refused at once in the larger-than-memory words, after
-    /// one attempt and without queueing, as 0.10.17 refused it; a resize wakes nobody.
+    /// one attempt and without queueing, as 0.10.17 refused it.
     @Test func withTheSharedGrantWaitOffTheRequestIsRefusedAtOnceAsBefore() async throws {
         let engine = InertStubEngine(kvBytesCapacity: 40)
         let bridge = EngineV2Bridge(engine: engine, modelId: Self.model,
@@ -230,7 +230,7 @@ struct LocalMemoryWaitTests {
         for on in ["1", "yes", "on", ""] { #expect(OwnerMemoryWait.waitsForSharedGrant(environment: [shared: on])) }
     }
 
-    /// The busy 503's words for each setting: on (the default), the words the wait was proven with; off, 0.10.17's.
+    /// The busy 503's words for each setting: on, the default words; off, 0.10.17's.
     @Test func theBusyWordsFollowTheSharedGrantSetting() {
         #expect(LocalMemoryRefusal.busy(waitsForSharedGrant: true) == memoryBusyWords)
         #expect(LocalMemoryRefusal.busy(waitsForSharedGrant: false)

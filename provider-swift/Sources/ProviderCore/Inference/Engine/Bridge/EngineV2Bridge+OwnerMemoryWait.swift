@@ -41,7 +41,7 @@ struct OwnerMemoryWait: Sendable {
     static let environmentName = "DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS"
     static let firstTokenWaitEnvironmentName = "DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT"
     /// `0`, `false`, `no` or `off` (`waitsForSharedGrant`): a GLM request that fits GLM alone but not its share beside
-    /// other loaded models is refused at once as larger than memory, with 0.10.17's busy words, as before 0.10.18.
+    /// other loaded models is refused at once as larger than memory, with 0.10.17's busy words, as 0.10.17 did.
     static let sharedGrantWaitEnvironmentName = "DARKBLOOM_GLM_SHARED_GRANT_WAIT"
     /// A request's own bound on its wait, in whole seconds; `0` refuses it at once when it can't start.
     static let requestLimitHeaderName = "X-Darkbloom-Max-Wait"

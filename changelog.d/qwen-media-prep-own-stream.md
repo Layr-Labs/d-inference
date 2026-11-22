@@ -1,4 +1,4 @@
-### Qwen 3.5-family image preparation no longer waits behind running requests
+### Qwen 3.5-family image preparation no longer queues on the running requests' GPU stream
 
 - An image or video request on Qwen 3.5, 3.6 or 3.8 runs its processor and
   vision tower on a GPU stream of its own. Before, it shared the stream the

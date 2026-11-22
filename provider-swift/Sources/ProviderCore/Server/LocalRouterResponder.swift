@@ -76,9 +76,9 @@ public final class LocalRouter: Sendable {
     /// This Mac first: its engine's answer, streamed or not, is returned as it is with one header added, unless this
     /// Mac can't take the request (`LocalRouterPolicy.passesOn`) and the route dials out. A route with no coordinator
     /// path (`LocalRoute.upstreamPath`) is this Mac's only, and its answer is the engine's, untouched.
-    func route<Inner: HTTPResponder>(_ request: Request, as route: LocalRoute, context: Inner.Context,
+    func route<Inner: HTTPResponder>(_ request: Request, as apiRoute: LocalRoute, context: Inner.Context,
                                      inner: Inner) async throws -> Response {
-        guard let upstreamPath = route.upstreamPath else {
+        guard let upstreamPath = apiRoute.upstreamPath else {
             return try await inner.respond(to: request, context: context)
         }
         var request = request
@@ -88,7 +88,7 @@ public final class LocalRouter: Sendable {
         // level on this task's stack, and this Mac can answer before its own check runs (a pair's gate refuses a POST
         // at once, 503).
         let body: ByteBuffer
-        switch try await LocalIngress.admit(&request, as: route) {
+        switch try await LocalIngress.admit(&request, as: apiRoute) {
         case .admitted(let admitted):
             body = admitted
         case .refused(let refusal):

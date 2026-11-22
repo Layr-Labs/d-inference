@@ -505,7 +505,7 @@ already sent: `code` `request_exceeds_node_budget` and the busy memory 503's wor
 
 ### Request limits
 
-Every request but a GET or HEAD passes one guard, `LocalIngress.admit`
+Every request but a GET, HEAD or OPTIONS passes one guard, `LocalIngress.admit`
 (`provider-swift/Sources/ProviderCore/Server/LocalIngress.swift`), before a
 parser or a model reads its body. It checks, in this order:
 
@@ -532,9 +532,10 @@ A request no route was given limits for keeps the default body ceiling and the
 nesting check (`LocalRoute.other`): `/v1/responses/:response_id/cancel`,
 `/tokenize`, `/detokenize`, embeddings, a route a later SDK registers, and a
 path or method no route serves, which gets the router's `404` only within
-them. No GET or HEAD route reads a body, and theirs is left unread. The local
-router takes the body of a request it may pass on from the same guard, before
-it reads it (`LocalRouter.route`,
+them. No GET or HEAD route reads a body, and theirs is left unread; an OPTIONS
+request is answered as a CORS preflight before the guard, its body unread too.
+The local router takes the body of a request it may pass on from the same
+guard, before it reads it (`LocalRouter.route`,
 `provider-swift/Sources/ProviderCore/Server/LocalRouterResponder.swift`).
 
 ### A long prompt's progress

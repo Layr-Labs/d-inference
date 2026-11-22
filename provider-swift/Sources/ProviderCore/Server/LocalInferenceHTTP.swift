@@ -51,7 +51,9 @@ public struct LocalInferenceHTTPConfig: Sendable {
 /// MTP-augmented /metrics → chat-upload interception (every body held to its
 /// route's limits by `LocalIngress`; the media-bearing chat routes served with
 /// their 32 MiB ceiling, see `LocalChatUploadResponder`) → upstream MLXLMServer
-/// router.
+/// router. Above the interception only the local router reads a body, and it
+/// takes it from `LocalIngress.admit` as well; a layer added there that reads
+/// one must too.
 public typealias LocalInferenceApplication =
     Application<
         LocalDisconnectResponder<LocalRequestOriginResponder<LocalAuthResponder<LocalRouterResponder<

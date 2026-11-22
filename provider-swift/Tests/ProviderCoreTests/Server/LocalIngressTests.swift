@@ -344,6 +344,8 @@ struct LocalIngressTests {
             _ = try? await responder.respond(to: request, context: context)
             return context.endpointPath == "NotFound" ? nil : context.endpointPath
         }
+        // No rewriting writes a byte outside ASCII: over a connection the HTTP parser answers such a target 400
+        // before any responder, and built here Hummingbird's `URI` traps on one ending in a three-byte character.
         let rewritings: [(name: String, resolves: Bool?, of: @Sendable (String) -> String)] = [
             ("exact", true, { $0 }),
             ("trailing slash", true, { $0 + "/" }),
@@ -355,6 +357,7 @@ struct LocalIngressTests {
             ("upper case", false, { $0.uppercased() }),
             ("one more segment", false, { $0 + "/zz" }),
             ("dot segment", false, { "/." + $0 }),
+            ("dot-dot segment", false, { "/zz/.." + $0 }),
             // A capture takes these as part of its value, so only a route without one fails to resolve them.
             ("encoded slash", nil, { $0 + "%2F" }),
             ("encoded last letter", nil, { $0.dropLast() + String(format: "%%%02X", $0.utf8.last ?? 0) }),

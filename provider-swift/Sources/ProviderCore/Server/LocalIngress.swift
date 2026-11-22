@@ -7,8 +7,8 @@ import NIOCore
 /// The router's trie splits a path on `/` and drops its empty segments (Hummingbird's `RouterTrie.resolve`), so
 /// `/v1/chat/completions/` and `//v1/chat/completions` are the route `/v1/chat/completions`. A check that compares
 /// the path as the client wrote it misses those spellings, and the SDK's handler then serves them with no limit but
-/// its own body ceiling. So no check compares a path: each asks for the request's `LocalRoute`, which reads the
-/// path the way the trie does.
+/// its own body ceiling. So neither the limits nor the local router compare a path: each asks for the request's
+/// `LocalRoute`, which reads the path the way the trie does.
 enum LocalRoute: Sendable, Equatable {
     /// `GET /v1/models`, `/models`.
     case models

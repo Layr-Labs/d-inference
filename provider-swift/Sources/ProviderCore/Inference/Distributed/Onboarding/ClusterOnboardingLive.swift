@@ -321,17 +321,47 @@ final class OnboardingLive: @unchecked Sendable {
     /// cluster): while its saved claim says it leads, wait until its cluster service confirmed that claim with the
     /// members, or the confirmation window passed with none reachable. A restarted Mac whose claim was superseded
     /// steps down meanwhile, and the command is then forwarded to the current leader instead of running here.
-    func awaitConfirmedLeadership(seconds: Double = ClusterService.leaseTTLSeconds + 10) -> ClusterOnboardingFailure? {
-        let deadline = Date().addingTimeInterval(seconds)
+    /// `waiting` is told once, when the wait begins, so a screen that shows it says why nothing moves for up to
+    /// `seconds` (the guided setup's "Reading both Macs" stood still for 40 s after both services restarted).
+    func awaitConfirmedLeadership(seconds: Double = ClusterService.leaseTTLSeconds + 10,
+                                  waiting: ((String) -> Void)? = nil) -> ClusterOnboardingFailure? {
+        Self.awaitLeadership(deadline: Date().addingTimeInterval(seconds), waiting: waiting,
+            leadsHere: { [self] in
+                guard case .local = route(), let pairing = try? ClusterSetupLinkExchange.pairing() else { return false }
+                return currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID
+            },
+            confirmed: { ClusterService.publishedLive()?.control.map { $0.leads && $0.confirmed == true } ?? false },
+            line: { remaining in Self.leadershipWaitLine(other: thereShort, seconds: remaining) },
+            failure: { [self] in
+                .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(there) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `\(Self.cli) cluster` again in a moment.")
+            },
+            pause: { usleep(250_000) })
+    }
+
+    /// `awaitConfirmedLeadership`'s loop: nothing to wait for once this Mac no longer leads by its saved claim, or its
+    /// service confirmed the claim; else `waiting` hears `line` once, with the whole seconds left, and the loop polls
+    /// until the deadline.
+    static func awaitLeadership(deadline: Date, waiting: ((String) -> Void)?, leadsHere: () -> Bool, confirmed: () -> Bool,
+                                line: (Int) -> String, failure: () -> ClusterOnboardingFailure, pause: () -> Void,
+                                now: () -> Date = Date.init) -> ClusterOnboardingFailure? {
+        var said = false
         while true {
-            guard case .local = route(), let pairing = try? ClusterSetupLinkExchange.pairing(),
-                  currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID else { return nil }
-            if let control = ClusterService.publishedLive()?.control, control.leads, control.confirmed == true { return nil }
-            guard Date() < deadline else {
-                return .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(there) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `\(Self.cli) cluster` again in a moment.")
+            guard leadsHere(), !confirmed() else { return nil }
+            let left = deadline.timeIntervalSince(now())
+            guard left > 0 else { return failure() }
+            if !said {
+                said = true
+                waiting?(line(Int(left.rounded(.up))))
             }
-            usleep(250_000)
+            pause()
         }
+    }
+
+    /// What the screen says while this Mac waits to lead: its cluster service confirms its claim once the other Mac
+    /// answers, or once the claim's window passed with no answer.
+    static func leadershipWaitLine(other: String, seconds: Int) -> String {
+        "Waiting for this Mac's cluster service to confirm it leads the pair: it hasn't heard from \(other) yet "
+            + "(at most \(seconds) s)"
     }
 
     /// Runs `request` on the control leader over the link control channel and returns its answer as it is.
@@ -343,12 +373,14 @@ final class OnboardingLive: @unchecked Sendable {
     /// only once this Mac's own leadership is confirmed when it leads. When leadership moves while the command is sent
     /// (a hand-over finishing on the other Mac), the Mac that no longer leads runs nothing and says so (`notLeader`), and
     /// the command is routed again (up to 3 more times, 2 s apart) instead of failing or running where nobody leads.
+    /// `waiting`: told when an acting command waits for this Mac's leadership to be confirmed (`awaitConfirmedLeadership`).
     func routed<T>(_ request: ClusterControlRequest, seconds: Double = 60, acting: Bool, forwarding: (() -> Void)? = nil,
+                   waiting: ((String) -> Void)? = nil,
                    local: () -> Result<T, ClusterOnboardingFailure>, remote: (ClusterControlReply) -> T) -> Result<T, ClusterOnboardingFailure> {
         var moved: ClusterOnboardingFailure?
         for attempt in 0..<4 {
             if attempt > 0 { sleep(2) }
-            if acting, let failure = awaitConfirmedLeadership() { return .failure(failure) }
+            if acting, let failure = awaitConfirmedLeadership(waiting: waiting) { return .failure(failure) }
             if !forwards {
                 guard acting else { return local() }
                 // Acting here: hold this Mac's command lock (the service never hands leadership over meanwhile), and
@@ -735,7 +767,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// `waiting`: each new reason the other Mac has not answered yet, said on screen while the reading keeps asking.
     func reachMembers(_ waiting: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
         let local = (try? ClusterSetupLinkExchange.pairing())?.localMemberID
-        return routed(.init(op: .reachMembers), seconds: 150, acting: true, local: { localReachMembers(waiting) }) { reply in
+        return routed(.init(op: .reachMembers), seconds: 150, acting: true, waiting: waiting, local: { localReachMembers(waiting) }) { reply in
             (reply.machines ?? []).map { machine in
                 var machine = machine
                 machine.here = machine.memberID != nil && machine.memberID == local

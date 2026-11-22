@@ -83,9 +83,9 @@
 // STREAM NOTE: the engine's steps run on the process default GPU stream. A
 // Qwen 3.5-family wrapper runs the processor and the tower on a GPU stream
 // of their own (`onMediaPrepStream`, `DARKBLOOM_TTFT_MEDIA_PREP_STREAM`), so
-// its tower no longer waits behind the running rows' steps, and their steps no
-// longer wait for the tower. The kernels and inputs are the same, so the
-// embeddings are too.
+// its tower's command buffers are no longer ordered behind the running rows'
+// steps, nor theirs behind the tower's. The kernels and inputs are the same,
+// so the embeddings are expected to be too.
 
 import Foundation
 import MLX
@@ -332,10 +332,13 @@ public enum EngineV2VisionPrefill {
 
     /// The wrappers whose media preparation runs on its own GPU stream:
     /// `Qwen35` and its subclasses (Qwen 3.5, 3.6 and 3.8, dense and MoE).
-    /// Their processor and Qwen3-VL tower use only MLX's built-in kernels,
-    /// which do not depend on the stream. Fused kernels elsewhere in the SDK
-    /// run only on the process default stream (`MLXProcessStreams`), so other
-    /// families keep it.
+    /// Their processor and Qwen3-VL tower select kernels by device, shape,
+    /// dtype and settings, not by stream, so the embeddings are expected to be
+    /// identical (the tests and the release proof measure it). Fused kernels
+    /// elsewhere in the SDK run only on the process default stream
+    /// (`MLXProcessStreams`), so other families keep it, including
+    /// `PrismHadamardQwen35`, `Qwen4Exp` and `Qwen3VL`, which share the tower
+    /// code but are not proven here.
     static func preparesOnOwnStream(_ model: Any) -> Bool {
         model is MLXVLM.Qwen35
     }
@@ -346,13 +349,20 @@ public enum EngineV2VisionPrefill {
     /// command buffers execute in submission order. On that stream, every
     /// command buffer of the vision tower queued behind the running rows'
     /// steps, and each step behind the tower's buffers submitted before it.
-    /// On its own stream, the tower's command queue runs beside the engine's.
+    /// On its own stream, the tower's command queue is not ordered behind the
+    /// engine's; the two still share the GPU, memory and `evalLock`.
     ///
-    /// Every array the submission carries is evaluated, and the stream is
-    /// synchronized on every exit, before the pooled stream is released. So
-    /// nothing lazy outlives it, and an error a failed command buffer stored on
-    /// it is thrown here, under the caller's `MLX.withError`, not at the next
-    /// preparation that reuses the stream.
+    /// Before the pooled stream is released:
+    /// - every array the submission carries is evaluated;
+    /// - the stream is synchronized on every exit, which takes (and clears) an
+    ///   error a failed command buffer stored on it. On success that error
+    ///   fails this request through the caller's `MLX.withError`. When `body`
+    ///   threw, its error is the one reported and the drain only returns the
+    ///   stream clean for the next preparation;
+    /// - module construction on first use (a deferred vision tower's load)
+    ///   draws its placeholder weights from a task-local random state, so no
+    ///   lazy split of the process-global key stays bound to this stream.
+    ///   The checkpoint replaces those placeholders, so outputs are unchanged.
     static func onMediaPrepStream(
         _ own: Bool, _ body: () async throws -> PreparedSubmission
     ) async throws -> PreparedSubmission {
@@ -360,12 +370,13 @@ public enum EngineV2VisionPrefill {
     }
 
     /// Build the v2 media submission for `request` over the slot's loaded
-    /// VLM container. Runs media decode, processor prepare, the vision
-    /// tower + projector, and span carving under the container's serial
-    /// isolation (the same serialization the legacy `container.prepare`/
-    /// `generate` path uses, so wrapper module access never races).
-    /// A Qwen 3.5-family wrapper runs the processor and the tower on its own
-    /// GPU stream (`onMediaPrepStream`) unless `ownMediaPrepStream` (default:
+    /// VLM container. Decodes the request's media (`MediaIngest.buildUserInput`)
+    /// first, then runs processor prepare, the vision tower + projector, and
+    /// span carving under the container's serial isolation (the same
+    /// serialization the legacy `container.prepare`/`generate` path uses, so
+    /// wrapper module access never races).
+    /// A Qwen 3.5-family wrapper runs the scoped part on its own GPU stream
+    /// (`onMediaPrepStream`) unless `ownMediaPrepStream` (default:
     /// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM`) is false.
     ///
     /// Throws `EngineV2VisionPrefillError` (and any `MediaError`/processor

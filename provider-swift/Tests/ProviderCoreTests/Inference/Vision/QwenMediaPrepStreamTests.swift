@@ -117,6 +117,9 @@ private struct MediaPrepStreamFixture {
     init() throws {
         let configuration = try mediaPrepStreamConfiguration()
         let wrapper = MLXVLM.Qwen35MoE(configuration)
+        // Materialize the toy weights here, so no lazy initializer graph on
+        // the default stream enters the first preparation.
+        eval(wrapper)
         processor = StreamRecordingQwenProcessor(wrapper: wrapper)
         container = ModelContainer(
             context: ModelContext(
@@ -136,10 +139,52 @@ private struct MediaPrepStreamFixture {
         request = try ProviderLoop.decodeOpenAIRequest(body, modelType: "qwen3_5_moe")
     }
 
-    func prepare(ownStream: Bool) async throws -> EngineV2VisionPrefill.PreparedSubmission {
+    func prepare(ownStream: Bool?) async throws -> EngineV2VisionPrefill.PreparedSubmission {
         try await EngineV2VisionPrefill.prepare(
             container: container, request: request, ownMediaPrepStream: ownStream)
     }
+}
+
+private func qwen3VLExclusionFixture() throws -> MLXVLM.Qwen3VL {
+    let data = Data(
+        """
+        {
+          "model_type": "qwen3_vl_moe",
+          "text_config": {
+            "model_type": "qwen3_vl_moe_text",
+            "hidden_size": 8,
+            "intermediate_size": 16,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 1,
+            "num_key_value_heads": 1,
+            "head_dim": 8,
+            "max_position_embeddings": 64,
+            "vocab_size": 32,
+            "num_experts": 4,
+            "num_experts_per_tok": 2,
+            "decoder_sparse_step": 1,
+            "mlp_only_layers": [],
+            "moe_intermediate_size": 4,
+            "norm_topk_prob": true
+          },
+          "vision_config": {
+            "model_type": "qwen3_vl_moe",
+            "depth": 1,
+            "hidden_size": 8,
+            "hidden_act": "gelu_pytorch_tanh",
+            "intermediate_size": 16,
+            "out_hidden_size": 8,
+            "num_heads": 1,
+            "patch_size": 2,
+            "spatial_merge_size": 1,
+            "temporal_patch_size": 1,
+            "num_position_embeddings": 8,
+            "deepstack_visual_indexes": []
+          }
+        }
+        """.utf8)
+    return MLXVLM.Qwen3VL(
+        try JSONDecoder().decode(MLXVLM.Qwen3VLConfiguration.self, from: data))
 }
 
 private func bytes(_ array: MLXArray) -> Data {
@@ -166,6 +211,53 @@ struct QwenMediaPrepStreamTests {
         // Everything the engine receives is materialized before the stream is
         // released.
         #expect(prepared.mlxArrays.count == 2)
+    }
+
+    @Test("with no override and the variable unset, preparation takes its own stream")
+    func defaultIsOwnStream() async throws {
+        try #require(
+            ProcessInfo.processInfo.environment[EngineV2VisionPrefill.mediaPrepStreamEnvironmentKey] == nil,
+            "the test process must not set the variable")
+        let fixture = try MediaPrepStreamFixture()
+        _ = try await fixture.prepare(ownStream: nil)
+
+        #expect(fixture.processor.onProcessDefaultStream == [false])
+    }
+
+    @Test("a submission stays usable on the default stream after its pooled stream is reused")
+    func submissionOutlivesItsStream() async throws {
+        let fixture = try MediaPrepStreamFixture()
+        let first = try await fixture.prepare(ownStream: true)
+        let firstBytes = bytes(first.embeddings[0])
+        let firstSum = MLX.sum(first.embeddings[0]).item(Float.self)
+        // The next preparation checks the released stream out of the pool again.
+        let second = try await fixture.prepare(ownStream: true)
+
+        #expect(fixture.processor.onProcessDefaultStream == [false, false])
+        #expect(MLXProcessStreams.isOnDefaultGPUStream)
+        // Consumed on the default stream, as the engine does at submit.
+        let doubled = first.embeddings[0] * 2
+        eval(doubled)
+        #expect(MLX.sum(first.embeddings[0]).item(Float.self) == firstSum && firstSum.isFinite)
+        #expect(bytes(doubled) == bytes(first.embeddings[0] * 2))
+        #expect(bytes(first.embeddings[0]) == firstBytes)
+        #expect(bytes(second.embeddings[0]) == firstBytes)
+    }
+
+    @Test("random draws inside the scope leave the process-global key untouched")
+    func scopeKeepsTheGlobalRandomKey() async throws {
+        let before = MLXRandom.globalState.innerState()[0]
+        let empty = try await EngineV2VisionPrefill.onMediaPrepStream(true) {
+            // What a deferred tower's first-use construction does: draw
+            // placeholder weights with no explicit key.
+            eval(MLXRandom.normal([4]))
+            return EngineV2VisionPrefill.PreparedSubmission(
+                promptTokens: [], spans: [], embeddings: [], mediaKind: .image)
+        }
+        let after = MLXRandom.globalState.innerState()[0]
+
+        #expect(empty.mlxArrays.isEmpty)
+        #expect(before === after)
     }
 
     @Test("the switch keeps media preparation on the process default GPU stream")
@@ -213,6 +305,8 @@ struct QwenMediaPrepStreamTests {
         let configuration = try mediaPrepStreamConfiguration()
         #expect(EngineV2VisionPrefill.preparesOnOwnStream(MLXVLM.Qwen35(configuration)))
         #expect(EngineV2VisionPrefill.preparesOnOwnStream(MLXVLM.Qwen35MoE(configuration)))
+        let qwen3VL = try qwen3VLExclusionFixture()
+        #expect(!EngineV2VisionPrefill.preparesOnOwnStream(qwen3VL))
         #expect(!EngineV2VisionPrefill.preparesOnOwnStream(NSObject()))
     }
 
@@ -265,7 +359,7 @@ struct QwenMediaPrepStreamTests {
         let perStep = (clock.now - calibrationStart) / 32
         let steps = max(64, Int((Duration.seconds(2) / perStep).rounded()))
 
-        for ownStream in [true, false] {
+        for ownStream in [true, false, true, false] {
             let queued = load(steps)
             let loadStart = clock.now
             asyncEval(queued)
@@ -273,14 +367,15 @@ struct QwenMediaPrepStreamTests {
             _ = try await fixture.prepare(ownStream: ownStream)
             let prep = clock.now - prepStart
             eval(queued)
-            let busy = clock.now - loadStart
+            let remaining = clock.now - prepStart
             print(
-                "media prep on \(ownStream ? "its own" : "the default") stream: \(prep) "
-                    + "behind \(busy) of default-stream work (\(steps) steps)")
+                "media prep on \(ownStream ? "its own" : "the default") stream: \(prep); "
+                    + "default-stream work left at its start: \(remaining) "
+                    + "(queued in \(prepStart - loadStart), \(steps) steps)")
             if ownStream {
-                #expect(prep < busy / 4)
+                #expect(prep < remaining / 4)
             } else {
-                #expect(prep > busy / 2)
+                #expect(prep > remaining / 2)
             }
         }
     }

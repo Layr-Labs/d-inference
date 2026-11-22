@@ -11273,6 +11273,19 @@ These mechanisms and tiny paired-shard fixtures do not establish full-artifact n
 
 Code: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift` (`readAutomatic`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPDecoder.swift` (`stepBatch`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelNativeBatchExecutor.swift` (`QwenTensorParallelNativeBatchExecutor`), and `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantReady.swift` (`ClusterQwenTensorAssistantReady`).
 
+### Acting as the leader before the claim is confirmed
+
+Before the leading Mac acts as the leader (it reads both Macs to list the
+models, adopts a setup, starts or stops the pair), `OnboardingLive.routed` waits
+until its cluster service confirmed its claim: the other Mac accepted it, or the
+claim's window (the lease's time-to-live, awake) passed with no answer
+(`OnboardingLive.awaitConfirmedLeadership`, `ClusterControlNode.leadershipConfirmed`).
+The wait is `leaseTTLSeconds + 10` (40 s), then a refusal. While the guided setup
+reads both Macs, the wait is said once, when it begins
+(`OnboardingLive.leadershipWaitLine`): "Waiting for this Mac's cluster service to
+confirm it leads the pair: it hasn't heard from the other Mac yet (at most 40 s)".
+A Mac whose claim is superseded steps down meanwhile, and the command is forwarded.
+
 ### Planned cluster stop ordering
 
 `OnboardingLive.localStop` saves stopped intent, then waits up to 300 seconds for

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -326,7 +326,9 @@ restore their build cache by the exact key first, then by the key prefix; the
 action then tries the loose prefix, which ignores the CI recipe, and builds
 once more from nothing if that build fails. The test jobs build nothing: they
 download their lane's products and refuse products of another commit or
-toolchain version. Only a push to `dev` or `master` saves a build; a pull request
+toolchain version. On macOS, `swift test list --skip-build` discovers the
+provider tests from the linked test bundle; it needs no compiler index.
+Only a push to `dev` or `master` saves a build; a pull request
 restores its base branch's entry and saves nothing
 ([CI caching](build.md#ci-caching)). A push whose tree a pull request run
 already tested runs no test job; the build jobs of the components the push

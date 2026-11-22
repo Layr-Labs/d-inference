@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -578,7 +578,8 @@ packs the lane's `.build` with tar and zstd. It leaves out what no test step
 reads:
 
 - The compile intermediates: each target's `<Target>.build` directory,
-  `ModuleCache`, `index` and `Modules`.
+  `ModuleCache`, `index` and `Modules`. The macOS provider build passes
+  `--disable-index-store` to SwiftPM so the compilers need not write the index.
 - The host tools, which SwiftPM builds with a `-tool` suffix (the
   `MLXHuggingFaceMacros-tool` macro), and their modules in `Modules-tool`.
   Only the compiler runs them.
@@ -1055,10 +1056,8 @@ edit to a workflow or a CI script no longer makes every build cold.
 `swift-mlx-prefix` keeps only the toolchain, the checkout path and the MLX
 gitlinks (`libs/mlx`, `libs/mlx-swift`, `libs/mlx-swift-lm`), so a change to
 `Package.swift` or another pin still restores the compiled MLX. Every tier also
-binds the lane's purpose (`LANE_PURPOSES`), which names a build flag that
-changes every object: the provider lane's purpose names its build without DWARF
-(`-debug-info-format none`), so no tier restores a build made with DWARF, which
-SwiftPM would recompile in full while keeping its stale `.dSYM` bundles. Source
+binds the lane's purpose (`LANE_PURPOSES`), so the provider build never restores
+old compiler indexes or `.dSYM` bundles from a build that emitted them. Source
 timestamps are restored only for unchanged files, so SwiftPM rebuilds what
 changed. If a build
 restored from the loose tier fails, `scripts/provider-ci-cold-retry.sh` deletes

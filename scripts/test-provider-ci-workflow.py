@@ -580,8 +580,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                           if field(step, "id", indent=6) == "provider-build")
         self.assertEqual(textwrap.dedent(build_step.split("run: |\n", 1)[1]).strip(),
                          "build() {\n"
-                         "  swift build --build-tests --enable-code-coverage -debug-info-format none &&\n"
-                         "    swift build --product darkbloom-fan-helper --enable-code-coverage -debug-info-format none\n"
+                         "  local flags=(--enable-code-coverage -debug-info-format none --disable-index-store)\n"
+                         '  swift build --build-tests "${flags[@]}" &&\n'
+                         '    swift build --product darkbloom-fan-helper "${flags[@]}"\n'
                          "}\n"
                          "build || { ../scripts/provider-ci-cold-retry.sh && build; }")
 

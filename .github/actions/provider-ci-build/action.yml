@@ -138,14 +138,13 @@ runs:
       env:
         PROVIDER_CI_MATCHED_KEY: ${{ steps.swift-cache.outputs.cache-matched-key }}
         PROVIDER_CI_STRICT_PREFIX: ${{ steps.keys.outputs.swift-prefix }}
-      # Instrumented for the coverage report. Both builds use the same flags,
-      # so neither rebuilds the other. No DWARF: the products archive drops
-      # the object files and dSYMs that would hold it (scripts/ci-test-products.py),
-      # so emitting it and running dsymutil only slows the build.
+      # The macOS shards discover the linked tests and read their coverage
+      # maps. The compiler index, object files and dSYMs never reach them.
       run: |
         build() {
-          swift build --build-tests --enable-code-coverage -debug-info-format none &&
-            swift build --product darkbloom-fan-helper --enable-code-coverage -debug-info-format none
+          local flags=(--enable-code-coverage -debug-info-format none --disable-index-store)
+          swift build --build-tests "${flags[@]}" &&
+            swift build --product darkbloom-fan-helper "${flags[@]}"
         }
         build || { ../scripts/provider-ci-cold-retry.sh && build; }
     - name: Build all cluster test products

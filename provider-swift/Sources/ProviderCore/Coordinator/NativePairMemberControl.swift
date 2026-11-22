@@ -122,7 +122,7 @@ final class NativePairMemberControl: @unchecked Sendable {
                     try current.accept(message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds)
                 }
             }
-            cancel?.cancel(notify: false); start?.run()
+            cancel?.cancel(notify: false, reason: "the coordinator cancelled it"); start?.run()
             if let start { watchSessionStatus(start) }
         } catch { detach(expected); throw NativePairMemberError.binding }
     }
@@ -133,7 +133,7 @@ final class NativePairMemberControl: @unchecked Sendable {
     /// connection closes. Returns whether no session is left running.
     func endSessionBeforeClose(timeout: TimeInterval) async -> Bool {
         guard let current = lock.withLock({ session }) else { return true }
-        current.cancel(notify: false)
+        current.cancel(notify: false, reason: "this Mac's member is stopping")
         let deadline = Date().addingTimeInterval(timeout)
         // The wait blocks a thread for up to the timeout: a dispatch thread,
         // never one of the cooperative pool's.

@@ -378,6 +378,123 @@ import Testing
     #expect(r.toolConstraintModels == ["model"])
 }
 
+@Test func attestedRegistrationCarriesEveryFieldAnUnattestedOneSends() throws {
+    // Every Register field is set, so a field the raw-attestation encoder
+    // (ProtocolCodec.encodeRegisterPreservingRawAttestation) does not mirror
+    // fails here instead of silently dropping from every attested registration.
+    let raw = #"{"signature":"sig","blob":{"a":1,"b":[true,false]}}"#
+    let attested = try fullyPopulatedRegister(attestation: RawJSON(rawBytes: Data(raw.utf8)))
+    let unsetInFixture = unsetRegisterFields(attested)
+    #expect(unsetInFixture.isEmpty, "set \(unsetInFixture) in fullyPopulatedRegister")
+    var unattested = attested
+    unattested.attestation = nil
+
+    let attestedData = try ProviderProtocolCodec.encodeProviderMessage(.register(attested))
+    let unattestedData = try ProviderProtocolCodec.encodeProviderMessage(.register(unattested))
+    #expect(String(decoding: attestedData, as: UTF8.self).contains(#""attestation":\#(raw)"#))
+    var attestedObject = try jsonObject(attestedData)
+    let unattestedObject = try jsonObject(unattestedData)
+    let attestationValue = attestedObject.removeValue(forKey: "attestation")
+    #expect(attestationValue != nil)
+    let dropped = Set(unattestedObject.keys).subtracting(attestedObject.keys).sorted()
+    let added = Set(attestedObject.keys).subtracting(unattestedObject.keys).sorted()
+    #expect(dropped.isEmpty, "the attested registration drops \(dropped)")
+    #expect(added.isEmpty, "the attested registration adds \(added)")
+    for key in unattestedObject.keys.sorted() where attestedObject[key] != nil {
+        let same = (attestedObject[key] as? NSObject)?.isEqual(unattestedObject[key]) ?? false
+        #expect(same, "the attested registration's \(key) differs from the unattested one's")
+    }
+
+    guard case .register(var fromAttested) = try ProviderProtocolCodec.decodeProviderMessage(from: attestedData),
+          case .register(let fromUnattested) = try ProviderProtocolCodec.decodeProviderMessage(from: unattestedData)
+    else { throw TestFailure.unexpectedMessage }
+    // Every field also survives the unattested path, so none is compared vacuously.
+    let lostUnattested = unsetRegisterFields(fromUnattested).filter { $0 != "attestation" }
+    #expect(lostUnattested.isEmpty, "the unattested registration does not carry \(lostUnattested)")
+    #expect(fromAttested.attestation?.rawBytes == Data(raw.utf8))
+    fromAttested.attestation = nil
+    #expect(fromAttested == fromUnattested)
+}
+
+/// A registration whose every field holds a value both register encoders write.
+private func fullyPopulatedRegister(attestation: RawJSON) throws -> ProviderMessage.Register {
+    let capability = PrefixCacheV2Capability(
+        modelId: "model",
+        modelAggregateHash: String(repeating: "a", count: 64),
+        promptContractId: String(repeating: "b", count: 64),
+        blockHashVersion: "dbk3",
+        blockSize: 256,
+        cacheEpoch: "11111111-1111-1111-1111-111111111111",
+        enabled: true,
+        ready: true)
+    let membership = try ClusterMembership(
+        clusterID: "studio-pair", rank: 1, policySHA256: String(repeating: "b", count: 64))
+        .resuming(ClusterMembership.Resume(epoch: String(repeating: "ab", count: 16), generation: 9))
+    return ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm",
+        version: "0.10.17",
+        publicKey: "cHVibGlj",
+        encryptedResponseChunks: true,
+        attestation: attestation,
+        prefillTps: 512.5,
+        decodeTps: 123.25,
+        authToken: "token",
+        templateHashes: ["chatml": "templatehash"],
+        privacyCapabilities: samplePrivacyCapabilities(),
+        runtimeCapabilities: [.modelRevisions],
+        privateOnly: true,
+        apnsDeviceToken: "cb1ceb489ec9",
+        apnsEnvironment: "production",
+        prefixCacheProtocol: 2,
+        prefixCacheV2Models: [capability],
+        prefixCacheMemoryModels: [capability],
+        prefixCacheStatuses: [PrefixCacheModelStatus(
+            modelId: "model", backend: .contiguous, replayStrategy: .direct, state: .ready, reason: .ready)],
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount(outcome: .donated, count: 7)],
+        toolConstraintProtocol: 1,
+        toolConstraintModels: ["model"],
+        appAttestProtocol: 3,
+        appAttestResumeProtocol: 1,
+        appAttestResumeNonce: "bm9uY2U=",
+        modelAutopilot: ModelAutopilotSnapshot(enabled: true, pinnedModels: ["model"]),
+        autopilotInventory: [sampleModel()],
+        executionRole: .clusterMember,
+        memberRegistrationNonce: String(repeating: "c", count: 64),
+        clusterModels: [sampleModel()],
+        clusterMembership: membership,
+        busy: ProviderBusy(reason: .addon, sinceMs: 1_700_000_000_000, addon: "io.darkbloom.sandbox"),
+        gemmaPromptContract: 2)
+}
+
+/// The fields of `register` left empty (nil, empty, `false`, zero or the solo
+/// role), values an encoder may omit, so the fixture must not use them.
+private func unsetRegisterFields(_ register: ProviderMessage.Register) -> [String] {
+    Mirror(reflecting: register).children.compactMap { child in
+        isSetRegisterValue(child.value) ? nil : child.label ?? "<unlabeled>"
+    }
+}
+
+private func isSetRegisterValue(_ value: Any) -> Bool {
+    let mirror = Mirror(reflecting: value)
+    switch mirror.displayStyle {
+    case .optional:
+        guard let wrapped = mirror.children.first?.value else { return false }
+        return isSetRegisterValue(wrapped)
+    case .collection, .dictionary, .set:
+        return !mirror.children.isEmpty
+    default:
+        break
+    }
+    if let flag = value as? Bool { return flag }
+    if let text = value as? String { return !text.isEmpty }
+    if let number = value as? any BinaryInteger { return number.description != "0" }
+    if let number = value as? any BinaryFloatingPoint { return !number.isZero }
+    if let role = value as? ProviderExecutionRole { return role != .solo }
+    return true
+}
+
 @Test func codeAttestationResponseEncodesSnakeCaseAndRoundTrips() throws {
     // The WebSocket return leg of the APNs push round-trip. Must match the Go
     // CodeAttestationResponseMessage wire shape (type=code_attestation_response).

@@ -144,6 +144,10 @@ final class OnboardingLive: @unchecked Sendable {
     var there: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other(named: peerName) }
     var thereShort: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other }
     private var answering: Bool { lock.withLock { answeringForward } }
+    /// The rank of the Mac whose screen this run's words are for: this Mac's, or the other Mac's while answering a
+    /// command it forwarded (its status and its `darkbloom cluster` run on the leading Mac).
+    func viewerRank(localRankZero: Bool) -> Int { Self.viewerRank(localRankZero: localRankZero, answering: answering) }
+    static func viewerRank(localRankZero: Bool, answering: Bool) -> Int { localRankZero != answering ? 0 : 1 }
     /// The phase `publishStart` last recorded, and when.
     private var startPublished: (phase: ClusterOnboardingStartProgress.Phase?, at: Double) = (nil, 0)
 
@@ -884,7 +888,8 @@ final class OnboardingLive: @unchecked Sendable {
         // cluster's parts still counts the other Mac's old part (the re-plan after an update stops them first):
         // ask again, so both Macs are priced with that memory given back. 2026-10-22: the other Mac's report was
         // taken while its tensor-parallel part still held 98 GB, its share of tensor parallel looked 6 GB short,
-        // and the update came back as a pipeline at half the speed.
+        // and the update came back as a pipeline at half the speed. With no report in this process (reading both Macs
+        // ran where control was a moment before), it asks the other Mac first too, rather than failing the list.
         let stale = lock.withLock { !ClusterOnboardingUpdate.reportPricesPlan(reportedAt: peerReportAt, partsStoppedAt: partsStoppedAt) }
         if stale, case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
         guard let peer = lock.withLock({ peerReport }) else { return .failure(.init("The other Mac has not answered yet.")) }
@@ -2305,7 +2310,8 @@ final class OnboardingLive: @unchecked Sendable {
         if case .stopped(let why)? = rankZero {
             // Apple verification is named only when a Mac reports it missing.
             return (false, nil, progress, ClusterOnboardingNotServing.words(reason: why, mac: "one of the Macs",
-                                                                              anyUnverified: apple != .verified))
+                                                                              anyUnverified: apple != .verified,
+                                                                              viewerRank: viewerRank(localRankZero: localRankZero)))
         }
         // The coordinator refuses every pair for a model its catalog does not list, and tells neither Mac.
         for child in [own?.child, peer?.child] {

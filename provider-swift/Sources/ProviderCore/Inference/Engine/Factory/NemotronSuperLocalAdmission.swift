@@ -17,6 +17,12 @@ extension NemotronSuperLocalBridgeBuilder {
     /// surrounding space ignored) is the kill switch: the single-media path of
     /// 0.10.12. Read at owner construction; forwarded to the LaunchAgent.
     static let concurrentImagesKey = "DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES"
+    /// A request with one video takes one of those media rows, beside an image
+    /// or another video, on by default. An off word (as for
+    /// `concurrentImagesKey`) keeps a video exclusive with other media, as in
+    /// 0.10.16; the image switch's off word keeps every media request
+    /// exclusive. Read at owner construction; forwarded to the LaunchAgent.
+    static let concurrentVideoKey = "DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO"
     /// The early `deadline_unreachable` refusal of a coordinator request whose
     /// first content the owner's measured pace cannot deliver before its
     /// forwarded deadline (`NemotronSuperFirstContentPace`), on by default. An
@@ -26,6 +32,8 @@ extension NemotronSuperLocalBridgeBuilder {
     static let firstContentRefusalKey = "DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL"
 
     static func concurrentImagesEnabled(_ value: String?) -> Bool { switchEnabled(value) }
+
+    static func concurrentVideoEnabled(_ value: String?) -> Bool { switchEnabled(value) }
 
     static func firstContentRefusalEnabled(_ value: String?) -> Bool { switchEnabled(value) }
 

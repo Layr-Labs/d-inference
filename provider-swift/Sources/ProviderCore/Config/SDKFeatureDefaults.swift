@@ -53,7 +53,7 @@ public enum SDKFeatureDefaults {
     /// Exact catalog ids (case-sensitive, like `qwen35CardModelTypes` and
     /// `MTPAcceptancePolicy.builtInIsExact`).
     static let penaltyRowBuilds: Set<String> = Set(
-        [EngineV2SamplingDefaults.qwen35NineBModelID, MTPAcceptancePolicy.gemmaQATModelID]
+        [EngineV2SamplingDefaults.qwen35NineBModelID]
     ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs)
 
     /// SDK stop-string MTP rows: rows with `stop` strings speculate on the
@@ -61,7 +61,7 @@ public enum SDKFeatureDefaults {
     /// tokens one at a time and ends the row at the first match (ordinary
     /// decode semantics). The SDK's process kill switch
     /// `DARKBLOOM_MTP_STOP_STRING_ROWS=0` still wins. Exact catalog ids.
-    static let stopStringRowBuilds: Set<String> = [MTPAcceptancePolicy.gemmaQATModelID]
+    static let stopStringRowBuilds: Set<String> = []
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper, .mimoV26]

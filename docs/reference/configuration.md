@@ -269,8 +269,9 @@ forwarded or as not forwarded with a reason:
 (`provider-swift/Tests/ProviderCoreTests/Service/ServiceEnvironmentReachTests.swift`)
 scans the string literals of `provider-swift/Sources` and fails on a variable in
 neither declaration, in both, or still declared when no other source spells it,
-and on an undeclared prefix that names are built from. It pins the forwarded
-lists and the `undecided` set, which only loses variables.
+and on an undeclared prefix that names are built from. It pins the `undecided`
+set, which only loses variables. It keeps no second copy of the forwarded
+lists: a change that forwards a new variable adds it in one place.
 It does not read `libs/`: a variable only the SDK reads is covered when the
 provider forwards it, not otherwise.
 

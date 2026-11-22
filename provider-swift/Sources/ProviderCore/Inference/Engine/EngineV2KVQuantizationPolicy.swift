@@ -31,8 +31,7 @@ extension PagedKVQuantizationPolicy {
         assistantAttached: Bool, mtpEnabled: Bool, status: MTPActivationStatus,
         processMTPEnabled: Bool = CBv2MTPConfig.envEnabled
     ) -> Bool {
-        if assistantAttached { return mtpEnabled }
-        return processMTPEnabled && status.configured && status.reason != .killSwitchDisabled
+        assistantAttached && mtpEnabled
     }
 
     /// Gemma's active assistant reads these two owning rows without copying history.

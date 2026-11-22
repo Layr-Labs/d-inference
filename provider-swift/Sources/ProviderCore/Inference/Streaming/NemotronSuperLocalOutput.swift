@@ -79,9 +79,12 @@ struct NemotronSuperLocalOutput {
         self.maximumBytes = maximumBytes
     }
 
+    #if DEBUG
     /// True when this response's calls leave as `.toolCallDelta` events while
-    /// generated; false when they are withheld until validation.
+    /// generated; false when they are withheld until validation. Read by the
+    /// conformance matrix alone, to name the path a response took.
     var streamsToolCalls: Bool { callRouter != nil }
+    #endif
 
     private var withholdsContent: Bool {
         plan.toolPolicy.requiresToolCall || plan.request.responseFormat?.requiresJSONOutput == true

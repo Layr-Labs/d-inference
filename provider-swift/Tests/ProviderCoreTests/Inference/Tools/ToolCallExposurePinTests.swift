@@ -68,10 +68,12 @@ struct ToolCallExposurePinTests {
     /// The served types under other spellings, and types and ids outside the
     /// served set. The supported set admits a type in any letter case and
     /// with surrounding whitespace (`EngineV2SupportedModels.isSupported(modelType:)`),
-    /// and a cluster pair's slot takes its `model_type` as registered, so
-    /// these strings can reach the tool path. Each rule that reads the type
-    /// has its own tolerance; the outcomes below are what those rules give
-    /// together, kept as they are.
+    /// and a cluster pair's slot takes the `model_type` of its pinned
+    /// config.json unchecked. No model of such a spelling is known to load
+    /// (the SDK's registry is keyed by the type as declared), but nothing
+    /// rules these strings out either, so the tool path does not rely on the
+    /// spelling. Each rule that reads the type has its own tolerance; the
+    /// outcomes below are what those rules give together, kept as they are.
     static let otherSpellings: [Build] = [
         // Letter case alone. The parser is still inferred from the type.
         .init(name: "GEMMA4", modelType: "GEMMA4", model: "gemma-4-26b-qat-4bit", pinned: "SSS Sww",

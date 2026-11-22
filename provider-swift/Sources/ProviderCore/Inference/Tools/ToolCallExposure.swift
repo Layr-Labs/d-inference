@@ -163,13 +163,19 @@ extension ToolCallExposure {
         }
 
         /// A served model type under another spelling: another letter case,
-        /// or surrounding whitespace. The supported set admits a type that
-        /// way (`ServedModelType.init(normalizing:)`), and a cluster pair's
-        /// slot takes its `model_type` as registered, so such a string can
-        /// reach the tool path. The rules this decision replaced each read
-        /// the type with their own tolerance; what they gave together is kept
-        /// here, one decision per type, so that reading the type through one
-        /// normalisation changed nothing.
+        /// or surrounding whitespace. No model of one is known to load (the
+        /// SDK's model registry is keyed by the type as declared), but the
+        /// supported set admits a type that way
+        /// (`ServedModelType.init(normalizing:)`) and a cluster pair's slot
+        /// takes the `model_type` of its pinned config.json unchecked, so
+        /// the tool path does not rely on the spelling.
+        ///
+        /// A record, not a policy: the rules this decision replaced each
+        /// read the type with their own tolerance, and what they gave
+        /// together is kept here, one decision per type, so that reading
+        /// the type through one normalisation changed nothing. A type's
+        /// exposure is decided in `served`; `ToolCallExposurePinTests` holds
+        /// a row for each type in another letter case and with whitespace.
         static func respelled(_ type: ServedModelType, modelID: String?) -> Family {
             switch type {
             case .gptOSS, .gemma4, .gemma4Text, .qwen35, .qwen35MoE, .qwen3VLMoE, .nemotronHOmni, .qwen4Exp,

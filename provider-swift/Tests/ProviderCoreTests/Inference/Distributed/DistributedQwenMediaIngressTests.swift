@@ -273,6 +273,43 @@ struct DistributedQwenMediaIngressTests {
         await bridge.shutdown()
     }
 
+    /// A preparation that fails on this provider's side (a chat template that
+    /// does not render) leaves the pair route as the retried construction
+    /// refusal, before any native reservation. This route publishes no refusal
+    /// event for it, unlike one Mac and the GLM pair.
+    @Test func schedulerRefusesAConstructionFailureWithoutARefusalEvent() async throws {
+        let owner = try QwenIngressOwner(configuration: configuration()), budget = budget()
+        let (bridge, directory) = try bridge(owner, budget: budget)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let releases = QwenIngressReleaseCounter(), model = "EigenLabs/Qwen3.8-27B-4bit-mtp"
+        let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
+            tokenizer: TokenizerHandle(QwenIngressTokenizer(rendersTemplate: false)), modelType: "qwen3_5",
+            isVLM: true, engineV2Bridge: bridge)
+        let refusals = MediaRefusalEventRecorder()
+        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [model: entry] },
+            releaseModel: { _ in await releases.increment() },
+            engineV2Vision: EngineV2VisionPlumbing(
+                prepare: { _, _, _ in throw CancellationError() }, emitTelemetry: refusals.record))
+        do {
+            _ = try await scheduler.streamChatCompletion(request: request([("image", QwenIngressFixtures.red)]))
+            Issue.record("an unrenderable template reached the pair")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .requestRejected(let message) = error else {
+                Issue.record("expected requestRejected, got \(error)")
+                await bridge.shutdown()
+                return
+            }
+            #expect(message.hasPrefix("engine_v2 media prefill construction failed (media=image): "))
+            let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .streamStart)
+            #expect(failure.statusCode == 503 && failure.code == .capacity && failure.errorReason == .capacityBusy)
+        }
+        #expect(refusals.events.isEmpty)
+        #expect(owner.leases.isEmpty)
+        #expect(await releases.value == 1)
+        #expect(await budget.outstandingReservedBytes() == 0)
+        await bridge.shutdown()
+    }
+
     @Test func mediaJSONAndSchemaUseSharedPromptPreparationAndResponseValidation() async throws {
         let schema = try JSONDecoder().decode(OpenAIResponseFormat.self, from: Data(#"{"type":"json_schema","json_schema":{"name":"color","strict":true,"schema":{"type":"object","properties":{"color":{"type":"string","enum":["red"]}},"required":["color"],"additionalProperties":false}}}"#.utf8))
         // Fabricated completion tokens exercise shared HTTP behavior, not model capability.

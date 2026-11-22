@@ -127,9 +127,10 @@ enum VisionTowerBudget {
 
     enum Decision: Sendable, Equatable {
         case admit
-        /// Operator-facing, content-free reason. Never embeds prompt or media
-        /// bytes — only patch counts and byte budgets.
-        case reject(String)
+        /// Who owns the limit that refused, and an operator-facing,
+        /// content-free reason. Never embeds prompt or media bytes, only
+        /// patch counts and byte budgets.
+        case reject(MediaLimitOwner, String)
     }
 
     /// Live device limits, with a head factor of 1 (the fused-kernel case).
@@ -219,7 +220,9 @@ enum VisionTowerBudget {
     /// of the request to shrink.
     static func admit(grids: [THW], subject: String, limits: Limits) -> Decision {
         guard let patches = totalPatchCount(grids) else {
+            // The processor's own grid: it overflows on every provider.
             return .reject(
+                .artifact,
                 "\(subject) has an unrepresentable patch grid "
                     + "(\(grids.count) grid(s) overflowed 64-bit patch arithmetic)")
         }
@@ -242,7 +245,21 @@ enum VisionTowerBudget {
         if limits.maxBufferBytes > 0 {
             reason += " (max \(formatGiB(UInt64(limits.maxBufferBytes))))"
         }
-        return .reject(reason + " — send a smaller image")
+        return .reject(
+            limitOwner(refusing: patches, limits: limits), reason + " — send a smaller image")
+    }
+
+    /// Whose ceiling refused `patches`: the device's when its own bound
+    /// refuses the count whatever the operator set, otherwise the operator's
+    /// lower one.
+    private static func limitOwner(refusing patches: Int, limits: Limits) -> MediaLimitOwner {
+        let deviceBound = maxAdmissiblePatches(
+            Limits(
+                maxBufferBytes: limits.maxBufferBytes,
+                attentionElementBytes: limits.attentionElementBytes,
+                headFactor: limits.headFactor))
+        guard let deviceBound, patches > deviceBound else { return .operatorLimit }
+        return .device
     }
 
     /// Integer square root by Newton's method. Exact for every `UInt64`; the

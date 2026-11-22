@@ -31,10 +31,10 @@ extension EngineV2VisionPrefill {
                     for (index, frame) in prepared.frames.enumerated() {
                         let grid = THW(1, frame.pixels.dim(2) / geometry.patchSize,
                             frame.pixels.dim(3) / geometry.patchSize)
-                        if case .reject(let detail) = VisionTowerBudget.admit(grids: [grid],
+                        if case .reject(let owner, let detail) = VisionTowerBudget.admit(grids: [grid],
                             subject: "native visual frame \(index)", limits: limits.withHeadFactor(geometry.attentionHeadFactor))
                         {
-                            throw EngineV2VisionPrefillError.towerBudgetExceeded(detail)
+                            throw EngineV2VisionPrefillError.towerBudgetExceeded(owner, detail)
                         }
                     }
                     guard let media = try context.model.prepareVision(prepared,

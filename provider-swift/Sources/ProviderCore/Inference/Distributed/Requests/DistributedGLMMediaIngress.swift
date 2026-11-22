@@ -207,7 +207,7 @@ public struct DistributedGLMMediaIngress: Sendable {
             for (item, grid) in grids.enumerated() {
                 guard grid.t > 0, modality != .image || grid.t == 1,
                       let count = VisionTowerBudget.patchCount(grid), count <= 960_000 - aggregatePatches else {
-                    throw EngineV2VisionPrefillError.towerBudgetExceeded("GLM aggregate patch limit")
+                    throw EngineV2VisionPrefillError.towerBudgetExceeded(.artifact, "GLM aggregate patch limit")
                 }
                 aggregatePatches += count
                 let limits = try VisionTowerBudget.glm5FrameLimits(grid: THW(1, grid.h, grid.w),

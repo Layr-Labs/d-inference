@@ -1497,7 +1497,7 @@ struct EngineV2VisionRoutingTests {
         }
         let constructionFailures: [any Error] = [
             VLMError.processing("x"), VLMError.maskRequired,
-            EngineV2VisionPrefillError.towerBudgetExceeded("x"),
+            EngineV2VisionPrefillError.towerBudgetExceeded(.device, "x"),
             EngineV2VisionPrefillError.towerFault(stage: "x"),
             EngineV2VisionPrefillError.invalidVisionGrid(mediaIndex: 0),
         ]

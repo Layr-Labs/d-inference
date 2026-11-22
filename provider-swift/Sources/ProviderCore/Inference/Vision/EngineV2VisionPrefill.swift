@@ -38,7 +38,8 @@
 //      image/video requests keep their interleave.
 //
 // FAIL-LOUD CONTRACT (v0.7.5): every throw out of `prepare` lands in the
-// scheduler engine's catch → ERROR `engine_v2_vision_refusal` telemetry +
+// scheduler engine's catch (`MediaFailure.outward`, shared with the pair
+// routes) → ERROR `engine_v2_vision_refusal` telemetry +
 // a retriable 503 (`constructionRefusal(for:mediaKind:)`: `.requestRejected`,
 // or `.mediaMemoryUnavailable` for a transient reader fault) so the
 // coordinator's pre-content failover reroutes the request invisibly. There is
@@ -98,7 +99,8 @@ public enum EngineV2MediaKind: String, Sendable {
 /// caught by the scheduler engine and REFUSED loudly (ERROR telemetry + a
 /// retriable 503; the coordinator reroutes) except deterministic request
 /// shapes (`noProcessedMedia` and `unsupportedMedia`), which map to 400
-/// (`EngineV2VisionPrefill.clientFault(for:)`).
+/// (`EngineV2VisionPrefill.clientFault(for:)`). `disposition` names the answer
+/// of every case (`MediaFailure.swift`).
 /// Messages are operator-facing and must never embed prompt or media content.
 enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// The slot's loaded module is not a supported Gemma 4 or Qwen wrapper.
@@ -148,12 +150,13 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// Slicing on that disagreement would feed one image's pixels through
     /// another image's grid, so the prefill refuses instead.
     case visionPixelRunMismatch(expected: Int, actual: Int)
-    /// The vision tower's projected activation would exceed what this GPU can
-    /// allocate, predicted from the processor's grids BEFORE any tower work.
-    /// Device-dependent, so it refuses retriably: a machine with a larger
-    /// `MTLDevice.maxBufferLength` can serve the same request. The detail is
-    /// built from integers and literals only (`VisionTowerBudget`).
-    case towerBudgetExceeded(String)
+    /// A vision tower limit refused the request, predicted from the
+    /// processor's grids BEFORE any tower work. The owner says whose limit it
+    /// was: the artifact's (every provider refuses the same request), this
+    /// Mac's operator's or this GPU's `MTLDevice.maxBufferLength` (another
+    /// machine can serve it). The detail is built from integers and literals
+    /// only (`VisionTowerBudget`) and is all that `description` shows.
+    case towerBudgetExceeded(MediaLimitOwner, String)
     /// MLX refused an allocation the vision tower asked for. Carries only the
     /// two integers MLX itself reported — never its message — so the enum's
     /// content-safe-by-construction invariant survives a foreign fault.
@@ -194,7 +197,7 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
         case .visionPixelRunMismatch(let expected, let actual):
             return "engine_v2 media prefill: image grids cover \(actual) of \(expected) "
                 + "packed pixel rows"
-        case .towerBudgetExceeded(let detail):
+        case .towerBudgetExceeded(_, let detail):
             return "engine_v2 media prefill: \(detail)"
         case .towerAllocationRefused(let requested, let limit):
             return "engine_v2 media prefill: the vision tower asked MLX for \(requested) B "
@@ -928,50 +931,14 @@ public enum EngineV2VisionPrefill {
         return nil
     }
 
-    /// The 400 for a media preparation throw that is the request's own fault.
-    /// Every provider serving the artifact, one Mac or a pair, fails it the
-    /// same way, so a retriable refusal would only repeat it elsewhere: the
-    /// deterministic prefill shapes, and the processor refusing the media
-    /// itself (a geometry its resize cannot use, such as Qwen's side below
-    /// `patch_size × merge_size` or aspect ratio over 200:1; a video without a
-    /// decodable track; a video or audio track whose reader failed twice
-    /// without a transient decoder fault; a media count the processor does
-    /// not take). nil for any other throw, which the caller refuses as a
-    /// construction failure.
-    /// Processor text carries media dimensions, so the messages are fixed.
+    /// The 400 for a media preparation throw that is the request's own fault
+    /// (`MediaFailure.Disposition.clientFault`): the deterministic prefill
+    /// shapes, the processor refusing the media itself, and a video or audio
+    /// track whose reader failed twice without a transient decoder fault. nil
+    /// for any other throw, which the caller refuses as a construction failure.
     static func clientFault(for error: Error) -> MultiModelBatchSchedulerEngineError? {
-        if let readerFailure = error as? VideoReaderFailure {
-            return readerFailure.isTransient
-                ? nil
-                : .multimodalRejected("multimodal_rejected: the \(readerFailure.medium.rawValue) could not be decoded")
-        }
-        if let visionError = error as? EngineV2VisionPrefillError {
-            switch visionError {
-            case .noProcessedMedia:
-                return .multimodalRejected(
-                    "multimodal_rejected: media parts must be attached to user "
-                        + "messages; none of this request's media was consumable")
-            case .unsupportedMedia(let detail):
-                return .multimodalRejected("multimodal_rejected: \(detail)")
-            default:
-                return nil
-            }
-        }
-        guard let processorError = error as? VLMError else { return nil }
-        switch processorError {
-        case .imageProcessingFailure:
-            return .multimodalRejected(
-                "multimodal_rejected: the model's processor cannot resize this media "
-                    + "(a side below its minimum, an aspect ratio above its limit or no frame)")
-        case .noVideoTrackFound, .videoNotDecodable:
-            return .multimodalRejected("multimodal_rejected: the video has no decodable video track")
-        case .imageRequired, .singleImageAllowed, .singleVideoAllowed, .singleMediaTypeAllowed:
-            return .multimodalRejected(
-                "multimodal_rejected: the model's processor does not take this number or mix of media")
-        case .maskRequired, .processing:
-            // Processor configuration or internal agreement, not the media.
-            return nil
-        }
+        guard case .clientFault(let message) = MediaFailure.disposition(of: error) else { return nil }
+        return .multimodalRejected(message)
     }
 
     /// The retryable 503 for a media preparation throw that `clientFault(for:)`
@@ -981,7 +948,7 @@ public enum EngineV2VisionPrefill {
     static func constructionRefusal(for error: Error, mediaKind: EngineV2MediaKind)
         -> MultiModelBatchSchedulerEngineError
     {
-        if (error as? VideoReaderFailure)?.isTransient == true { return .mediaMemoryUnavailable }
+        if MediaFailure.disposition(of: error) == .decodeUnavailable { return .mediaMemoryUnavailable }
         return .requestRejected(
             "engine_v2 media prefill construction failed "
                 + "(media=\(mediaKind.rawValue)): "

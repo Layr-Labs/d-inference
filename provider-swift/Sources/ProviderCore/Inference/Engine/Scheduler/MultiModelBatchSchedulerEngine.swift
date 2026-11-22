@@ -756,6 +756,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // so the coordinator's pre-content failover reroutes invisibly. The
             // legacy wrapper path below is NOT reachable for media on a
             // v2-bridged slot anymore (the pre-release silent fallback is gone).
+            // `MediaFailure.outward` maps every throw, here and on both pair routes.
             // These throws are NOT refusals: `CancellationError` (the
             // caller went away — propagate, 499), `MediaError`
             // (deterministic input fault — keeps its 4xx mapping), the
@@ -1016,18 +1017,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // before classifying the failure or publishing refusal telemetry.
                     await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
-                    if let failure = error as? PreContentDeadlineFailure { throw failure }
-                    if error is CancellationError { throw CancellationError() }
-                    if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
-                    if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
-                    if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
-                    // Construction failures are retryable; deterministic input faults,
-                    // cancellation and deadlines above keep their original mappings.
-                    let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
-                    plumbing.emitTelemetry(
-                        EngineV2VisionPrefill.refusalTelemetryEvent(
-                            modelId: modelId, mediaKind: mediaKind, error: error))
-                    throw EngineV2VisionPrefill.constructionRefusal(for: error, mediaKind: mediaKind)
+                    throw MediaFailure.outward(
+                        error, route: .singleMac, modelId: modelId,
+                        mediaKind: EngineV2VisionPrefill.mediaKind(of: visionRequest),
+                        emitTelemetry: plumbing.emitTelemetry)
                 }
             }
 
@@ -1571,15 +1564,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
             }
         } catch {
-            if let failure = error as? PreContentDeadlineFailure { throw failure }
-            if error is CancellationError { throw CancellationError() }
-            if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
-            if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
-            if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
-            let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
-            (engineV2Vision ?? .production).emitTelemetry(EngineV2VisionPrefill.refusalTelemetryEvent(
-                modelId: request.model, mediaKind: mediaKind, error: error))
-            throw EngineV2VisionPrefill.constructionRefusal(for: error, mediaKind: mediaKind)
+            throw MediaFailure.outward(
+                error, route: .glmPair, modelId: request.model,
+                mediaKind: EngineV2VisionPrefill.mediaKind(of: request),
+                emitTelemetry: (engineV2Vision ?? .production).emitTelemetry)
         }
         try checkFirstContentDeadline()
         let id = "req-" + UUID().uuidString
@@ -1649,13 +1637,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
             }
         } catch {
-            if let failure = error as? PreContentDeadlineFailure { throw failure }
-            if error is CancellationError { throw CancellationError() }
-            if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
-            if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
-            if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
-            throw EngineV2VisionPrefill.constructionRefusal(
-                for: error, mediaKind: EngineV2VisionPrefill.mediaKind(of: visionRequest))
+            throw MediaFailure.outward(
+                error, route: .qwenPair, modelId: request.model,
+                mediaKind: EngineV2VisionPrefill.mediaKind(of: visionRequest),
+                emitTelemetry: (engineV2Vision ?? .production).emitTelemetry)
         }
         defer { host.lifetime.releaseIfUnsubmitted() }
         try checkFirstContentDeadline()

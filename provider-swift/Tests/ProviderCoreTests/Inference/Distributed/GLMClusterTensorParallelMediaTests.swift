@@ -105,6 +105,58 @@ struct GLMClusterTensorParallelMediaTests {
         await distributed.shutdown()
     }
 
+    /// A preparation that fails on this provider's side (a chat template that
+    /// does not render) leaves the pair route as the retried construction
+    /// refusal, with one refusal event that names the error's class and the
+    /// request's model and media kind, never the error's text.
+    @Test func aConstructionFailureIsRefusedWithOneRefusalEvent() async throws {
+        let bytes = try Self.configuration()
+        let ingress = try DistributedGLMMediaIngress(configuration: bytes,
+            processorConfiguration: Self.processorConfiguration(),
+            expectedSHA256: ClusterGLMMedia.sha256(bytes))
+        let owner = GLMTensorParallelMediaOwner(configuration: bytes)
+        let profile = try DistributedResidentExecutionProfile(id: ClusterGLMImageCandidate.textProfileID,
+            vocabularySize: 160000, maxPromptTokens: 2048, maxOutputTokens: 128,
+            maxContextTokens: 4096, requestTimeout: .seconds(30))
+        let distributed = try DistributedCBv2Engine(owner: owner, expectedIdentity: owner.identity,
+            profile: profile, detokenizers: DistributedTestDetokenizers())
+        let bridge = EngineV2Bridge(engine: distributed, modelId: "fixture/glm-tp-media",
+            tokenizer: TokenizerHandle(GLMTensorParallelMediaTokenizer()), eosTokenIds: [], defaultMaxTokens: 128,
+            defaultMaxTokensContextLimit: 4096, clusterGLMMediaIngress: ingress)
+        let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
+            tokenizer: TokenizerHandle(GLMTensorParallelMediaTokenizer(rendersTemplate: false)),
+            modelType: "glm5_next", engineV2Bridge: bridge)
+        let refusals = MediaRefusalEventRecorder()
+        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { ["fixture/glm-tp-media": entry] },
+            engineV2Vision: EngineV2VisionPlumbing(
+                prepare: { _, _, _ in throw CancellationError() }, emitTelemetry: refusals.record))
+        let request = OpenAIChatCompletionRequest(model: "fixture/glm-tp-media",
+            messages: [.init(role: .user, content: .parts([.text("Describe."), .imageURL("data:image/png;base64," + Self.png)]))],
+            stream: true, temperature: 0, maxTokens: 1)
+        do {
+            _ = try await scheduler.streamChatCompletion(request: request)
+            Issue.record("an unrenderable template reached the pair")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .requestRejected(let message) = error else {
+                Issue.record("expected requestRejected, got \(error)")
+                await distributed.shutdown()
+                return
+            }
+            #expect(message.hasPrefix("engine_v2 media prefill construction failed (media=image): "))
+            let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .streamStart)
+            #expect(failure.statusCode == 503 && failure.code == .capacity && failure.errorReason == .capacityBusy)
+        }
+        #expect(owner.lastRequest == nil)
+        let event = try #require(refusals.events.first)
+        #expect(refusals.events.count == 1)
+        #expect(event.fields?["operation"]?.description == "engine_v2_vision_refusal")
+        #expect(event.fields?["model"]?.description == "fixture/glm-tp-media")
+        #expect(event.fields?["media_kind"]?.description == "image")
+        #expect(event.fields?["error_class"]?.description.hasSuffix("GLMTensorParallelUnrenderableTemplate") == true)
+        #expect(event.fields?["error"] == nil)
+        await distributed.shutdown()
+    }
+
     @Test func videoAndRefusalsFollowTheProduct() async throws {
         let bytes = try Self.configuration()
         let ingress = try DistributedGLMMediaIngress(configuration: bytes,
@@ -130,7 +182,12 @@ struct GLMClusterTensorParallelMediaTests {
     }
 }
 
+/// What `GLMTensorParallelMediaTokenizer` throws when its template does not render.
+private struct GLMTensorParallelUnrenderableTemplate: Error {}
+
 private struct GLMTensorParallelMediaTokenizer: MLXLMCommon.Tokenizer {
+    /// False makes the chat template throw, as one that cannot render does.
+    var rendersTemplate = true
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { [1] }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "t" }
     func convertTokenToId(_ token: String) -> Int? {
@@ -145,6 +202,7 @@ private struct GLMTensorParallelMediaTokenizer: MLXLMCommon.Tokenizer {
     var unknownToken: String? { nil }
     func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
                            additionalContext: [String: any Sendable]?) throws -> [Int] {
+        guard rendersTemplate else { throw GLMTensorParallelUnrenderableTemplate() }
         var tokens = [1]
         for message in messages {
             guard let content = message["content"] as? [[String: String]] else { continue }

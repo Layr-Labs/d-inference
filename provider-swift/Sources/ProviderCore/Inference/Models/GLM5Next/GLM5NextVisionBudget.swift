@@ -31,24 +31,30 @@ extension VisionTowerBudget {
             limits.operatorMaxPatches ?? GLM5NextVisionBudget.maximumFramePatches)
         guard patches <= maximumPatches else {
             throw EngineV2VisionPrefillError.towerBudgetExceeded(
-                "GLM frame exceeds operator patch limit")
+                .operatorLimit, "GLM frame exceeds operator patch limit")
         }
         func bytes(_ dimensions: [Int]) throws -> Int {
             var value = 4  // Conservative FP32 intermediates, including prepared pixels.
             for dimension in dimensions {
                 let next = value.multipliedReportingOverflow(by: dimension)
                 guard dimension > 0, !next.overflow else {
-                    throw EngineV2VisionPrefillError.towerBudgetExceeded("GLM frame byte overflow")
+                    // The artifact's own dimensions: they overflow on every Mac.
+                    throw EngineV2VisionPrefillError.towerBudgetExceeded(
+                        .artifact, "GLM frame byte overflow")
                 }
                 value = next.partialValue
             }
             return value
         }
         let c = configuration
-        let scoreElements = min(32_000_000, limits.maxBufferBytes / 4)
+        let nativeScoreElements = 32_000_000
+        let scoreElements = min(nativeScoreElements, limits.maxBufferBytes / 4)
         guard c.numHeads > 0, scoreElements / c.numHeads / patches > 0 else {
+            // A row the native tile holds is refused only by this GPU's smaller
+            // buffer; one it cannot hold is refused on every Mac.
+            let nativeTileHoldsARow = c.numHeads > 0 && nativeScoreElements / c.numHeads / patches > 0
             throw EngineV2VisionPrefillError.towerBudgetExceeded(
-                "GLM attention query tile cannot fit")
+                nativeTileHoldsARow ? .device : .artifact, "GLM attention query tile cannot fit")
         }
         let query = min(128, min(patches, scoreElements / c.numHeads / patches))
         let buffers = try [
@@ -61,7 +67,7 @@ extension VisionTowerBudget {
         ]
         guard buffers.allSatisfy({ $0 <= limits.maxBufferBytes }) else {
             throw EngineV2VisionPrefillError.towerBudgetExceeded(
-                "GLM tower buffer exceeds Metal limit")
+                .device, "GLM tower buffer exceeds Metal limit")
         }
         return .init(
             maximumPatches: maximumPatches, maximumFramePatches: maximumPatches,

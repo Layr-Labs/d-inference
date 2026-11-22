@@ -276,10 +276,30 @@ struct QwenMediaPrepStreamTests {
         let weight = MLXArray((0 ..< 16).map { Float($0) / 16 }, [4, 4])
         let bias = MLXArray([Float](repeating: 0.5, count: 4))
         try MLX.save(arrays: ["vision_tower.weight": weight, "vision_tower.bias": bias], url: file)
+        struct CheckpointFailure: Error {}
+        // A load that fails after the placeholder was built stays pending and
+        // leaves the global key alone too.
+        let failing = OnDemandComponent(.vision) { DeferredTowerFixture() }
+        failing.setSource(
+            AnyOnDemandComponent.Source(
+                urls: [file], namespaces: ["vision_tower"], perLayerQuantization: nil,
+                prepare: { _ in throw CheckpointFailure() }))
         let component = OnDemandComponent(.vision) { DeferredTowerFixture() }
         component.setSource(
             AnyOnDemandComponent.Source(
                 urls: [file], namespaces: ["vision_tower"], perLayerQuantization: nil, prepare: { $0 }))
+        #expect(failing.isPending && component.isPending)
+
+        let beforeFailure = MLXRandom.globalState.innerState()[0]
+        await #expect(throws: CheckpointFailure.self) {
+            try await EngineV2VisionPrefill.onMediaPrepStream(true) {
+                _ = try failing.load()
+                return EngineV2VisionPrefill.PreparedSubmission(
+                    promptTokens: [], spans: [], embeddings: [], mediaKind: .image)
+            }
+        }
+        #expect(failing.isPending && !failing.isLoaded)
+        #expect(MLXRandom.globalState.innerState()[0] === beforeFailure)
 
         let before = MLXRandom.globalState.innerState()[0]
         _ = try await EngineV2VisionPrefill.onMediaPrepStream(true) {

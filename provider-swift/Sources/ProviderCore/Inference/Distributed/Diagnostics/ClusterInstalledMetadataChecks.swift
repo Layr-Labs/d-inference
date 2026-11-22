@@ -32,10 +32,7 @@ enum ClusterInstalledMetadataChecks {
                                                                                  earlier: earlier.worker, deadline: deadline) {
                 return [.init(name: "localInstalledMetadata", outcome: .warning, detail: earlierWorkerDetail(earlier.version))]
             }
-            if DistributedInstalledValidation.pinsAnotherBuildsWorker(reference: reference, paths: paths, deadline: deadline,
-                                                                      signedWorker: signedWorker) {
-                return [.init(name: "localInstalledMetadata", outcome: .warning, detail: anotherBuildsWorkerDetail)]
-            }
+            _ = signedWorker  // red control: only the kept copy's rule
             return [.init(name: "localInstalledMetadata", outcome: .failed, detail: ClusterDiagnosticsReport.boundedDetail(error))]
         }
         let metadata = ClusterDiagnosticsReport.Check(name: "localInstalledMetadata", outcome: .passed,

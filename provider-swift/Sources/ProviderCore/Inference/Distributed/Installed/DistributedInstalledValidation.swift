@@ -14,7 +14,7 @@ struct DistributedInstalledValidation: Sendable {
     let model: DistributedInstalledModel
     let workerFeatures: DistributedInstalledWorkerFeatures
 
-    /// The largest worker executable read (`validate`, `pinsOnlyAnotherWorker`).
+    /// The largest worker executable read.
     private static let workerMaximumBytes = 256 * 1024 * 1024
 
     static func validate(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
@@ -106,8 +106,8 @@ struct DistributedInstalledValidation: Sendable {
     static func pinsAnotherBuildsWorker(reference: ClusterConfigurationReference, paths: ClusterUserPaths, deadline: UInt64,
                                         thisBuildsWorker: URL, signedWorker: (URL) -> Bool) -> Bool {
         let own = thisBuildsWorker.resolvingSymlinksInPath().standardizedFileURL.path
-        return pinsOnlyAnotherWorker(reference: reference, paths: paths, deadline: deadline) { installed, _ in
-            installed.resolvingSymlinksInPath().standardizedFileURL.path == own && signedWorker(installed)
+        return pinsOnlyAnotherWorker(reference: reference, paths: paths, deadline: deadline) { worker, _ in
+            worker.resolvingSymlinksInPath().standardizedFileURL.path == own && signedWorker(worker)
         }
     }
 

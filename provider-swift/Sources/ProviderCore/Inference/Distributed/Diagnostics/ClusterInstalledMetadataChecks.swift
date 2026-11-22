@@ -17,7 +17,7 @@ enum ClusterInstalledMetadataChecks {
     /// start sets it up again. So is one that differs only by pinning another
     /// worker while it names this build's own (`thisBuildsWorker`), signed like
     /// this provider (`signedWorker`): the pair stayed stopped across more than
-    /// one update. Without `thisBuildsWorker` that second rule doesn't apply.
+    /// one update.
     static func localInstalledMetadata(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
                                        deadline: UInt64, localChipClass: ClusterChipClass?,
                                        earlier: EarlierRelease? = nil, thisBuildsWorker: URL? = nil,
@@ -58,7 +58,7 @@ enum ClusterInstalledMetadataChecks {
 
     static let anotherBuildsWorkerDetail = "The pair's saved setup still pins another Darkbloom build's cluster worker, "
         + "as a pair left stopped while this Mac updated keeps it; the worker it names is this Darkbloom's own, signed with "
-        + "the same certificate. Its next start, once both Macs run this release, sets the pair up again with this release's "
+        + "the same certificate as this Darkbloom. Its next start, once both Macs run this release, sets the pair up again with this release's "
         + "worker. The setup's other pinned files verified."
 
     private static func refused(_ refusal: Error) -> [ClusterDiagnosticsReport.Check] {

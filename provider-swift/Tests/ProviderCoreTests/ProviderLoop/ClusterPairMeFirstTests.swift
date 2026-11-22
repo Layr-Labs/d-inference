@@ -241,7 +241,7 @@ struct ClusterPairMeFirstTests {
         #expect(await leader.meFirstSnapshot == MeFirstSnapshot(idleMs: twoMinutesMs, paused: false, lastUseMs: last))
         #expect(await leader.currentDaemonState().meFirst?.paused == false)
         #expect(await !leader.meFirstResumeTimerArmedForTesting, "the resume ends the timer with it")
-        #expect(await leader.retireClusterPairSlot(reason: "test"))
+        #expect(await leader.retireClusterPairSlot(cause: .memberStopping))
     }
 
     /// Darkbloom work accepted before the pause finishes and is never
@@ -337,7 +337,7 @@ struct ClusterPairMeFirstTests {
             #expect(try await member.beat() == member.before)
             #expect(await member.loop.meFirstSnapshot == nil)
         }
-        #expect(await leader.retireClusterPairSlot(reason: "test"))
+        #expect(await leader.retireClusterPairSlot(cause: .memberStopping))
     }
 
     /// With me first off (`[local] me_first = false`) the owner's use changes
@@ -371,7 +371,7 @@ struct ClusterPairMeFirstTests {
                 #expect(await !leader.meFirstResumeTimerArmedForTesting)
             }
             #expect(await leader.clusterPairLocalCounts == (0, 0, 0))
-            #expect(await leader.retireClusterPairSlot(reason: "test"))
+            #expect(await leader.retireClusterPairSlot(cause: .memberStopping))
         }
     }
 
@@ -437,7 +437,7 @@ struct ClusterPairMeFirstTests {
                 #expect(mock.snapshot().heartbeats.count == base + 2, "nothing after the resume")
             }
             #expect(await !leader.meFirstResumeTimerArmedForTesting)
-            #expect(await leader.retireClusterPairSlot(reason: "test"))
+            #expect(await leader.retireClusterPairSlot(cause: .memberStopping))
         }
 
         // The hook's cost, measured on the actor, does not grow with the owner's requests in flight.
@@ -470,8 +470,8 @@ struct ClusterPairMeFirstTests {
         _ = await bench.clusterMemberHeartbeatForTesting(advancing: benchClock, by: twoMinutesMs)
         #expect(await !bench.ownerPausesPublic)
         #expect(await !bench.meFirstResumeTimerArmedForTesting)
-        #expect(await bench.retireClusterPairSlot(reason: "test"))
-        #expect(await off.retireClusterPairSlot(reason: "test"))
+        #expect(await bench.retireClusterPairSlot(cause: .memberStopping))
+        #expect(await off.retireClusterPairSlot(cause: .memberStopping))
     }
 
     /// Me first is on only where the owner's requests meet the pair: the

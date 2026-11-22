@@ -24,7 +24,7 @@ struct ClusterPairFollowerVerdictTests {
     @Test("rank 0 of a coordinator-paired pair serves only once its own pair line says so")
     func rankZeroNeedsItsServingLine() {
         let reports: [(ClusterOnboardingPairReport.State?, Bool)] = [(nil, false), (.starting, false),
-                                                                      (.stopped("memory_gate_refused"), false), (serving, true)]
+                                                                      (.stopped(.guidance(.memoryGateRefused)), false), (serving, true)]
         for (report, serves) in reports {
             #expect(ClusterService.partServesNow(partUp: true, otherAnsweredAt: 100, now: 101, memberRank: 0,
                                                  pairReport: { report }) == serves, "\(String(describing: report))")

@@ -73,7 +73,7 @@ struct ClusterPairStatusWordsTests {
         let checking = Apple.Look.checking("checking both Macs with Apple")
         let slow = Apple.Look.slow(ClusterOnboardingNotServing.notVerified("this Mac"))
         #expect(ClusterOnboardingPairWait.words(rankZero: .starting, apple: checking) == "the coordinator paired both Macs")
-        for rankZero in [nil, .stopped("memory_gate_refused")] as [ClusterOnboardingPairReport.State?] {
+        for rankZero in [nil, .stopped(.guidance(.memoryGateRefused))] as [ClusterOnboardingPairReport.State?] {
             #expect(ClusterOnboardingPairWait.words(rankZero: rankZero, apple: checking) == "checking both Macs with Apple")
             for apple in [Apple.Look.verified, slow] {
                 #expect(ClusterOnboardingPairWait.words(rankZero: rankZero, apple: apple) == "waiting for the coordinator to pair both Macs")

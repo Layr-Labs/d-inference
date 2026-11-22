@@ -560,14 +560,16 @@ extension ClusterPairSummary {
     static let otherMacPresentModes: Set<String> = ["cluster", "confirming"]
 
     /// A reason that ends a start's wait: one that needs a person (a login, the clock, a coordinator rule, matching
-    /// builds, a pair not offered to Darkbloom, which only a new plan or approval changes, single-Mac serving on a Mac). Others (Apple verification
-    /// retrying, memory freeing, a busy or reconnecting Mac, the coordinator retrying) are waited through, as the setup
-    /// screen does, within the bounded wait.
+    /// builds or versions, a pair not offered to Darkbloom, which only a new plan or approval changes, single-Mac
+    /// serving on a Mac). Others (Apple verification retrying, memory freeing, a busy or reconnecting Mac, the
+    /// coordinator retrying) are waited through, as the setup screen does, within the bounded wait. A missing reason
+    /// ends the wait too: there is nothing to wait for.
     static func isFinalReason(_ reason: String?) -> Bool {
         guard let reason else { return true }
         if reason.contains(ClusterOnboardingVersionSplit.reasonMarker) { return true }
         return ClusterOnboardingNotServing.isMissingLogin(reason) || reason.contains("The clock of")
             || reason.contains("doesn't let") || reason.contains("run different Darkbloom builds")
+            || ClusterOnboardingNotServing.stopRemedy(saidBy: reason) == .updateBothMacs
             || ClusterOnboardingReady.isNotOffered(reason) || ClusterOnboardingSoloServing.isBlock(reason)
     }
 
@@ -651,9 +653,16 @@ extension ClusterPairSummary {
                 return "Leave both Macs running: Darkbloom retries by itself. Or serve locally only: `\(Self.cli) cluster local` "
                     + "on \(leadingMac)."
             }
-            if ClusterOnboardingNotServing.isMemoryShort(reason) {
+            // A stopped start a person can mend (`ClusterOnboardingNotServing.stopRemedy`): what to run.
+            switch ClusterOnboardingNotServing.stopRemedy(saidBy: reason) {
+            case .freeMemory?:
                 return "Quit apps on that Mac; the cluster starts again by itself. Or choose a smaller model: "
                     + "`\(Self.cli) cluster` on \(leadingMac)."
+            case .recoverDevice?:
+                return "Run `\(Self.cli) cluster recover` on each Mac; the cluster starts again by itself."
+            case .updateBothMacs?:
+                return "Run `\(Self.cli) update` on both Macs; then check that `\(Self.cli) --version` shows the same version on both."
+            case nil: break
             }
             // Single-Mac serving never stops by itself: what to run, never "keep trying" (0.10.9 DevNet f1).
             if ClusterOnboardingSoloServing.isBlock(reason) {
@@ -735,12 +744,13 @@ extension ClusterPairSummary {
         return out
     }
 
-    /// The pair is started but doesn't run here (its cluster service said why): the one line `status` gives. Not for two
-    /// Macs on different versions: that never clears by itself, and its reason and `next` name the Mac to update, which
-    /// the 15-min line ("The pair hasn't served for 15 min …") replaced (a DevNet pair, 2026-11-17).
+    /// The pair is started but doesn't run here (its cluster service said why): the one line `status` gives. Not while
+    /// a reason is known that only a person mends (`isFinalReason`): that never clears by itself, and its words and
+    /// `next` say what to do, which the 15-min line ("The pair hasn't served for 15 min …") replaced (a DevNet pair
+    /// on two versions, 2026-11-17). A missing reason is nothing to say, so it keeps the line.
     var startedButNotRunningLine: String? {
-        guard paired, !pairingUnreadable, started, pairRunning == false,
-              reason?.contains(ClusterOnboardingVersionSplit.reasonMarker) != true else { return nil }
+        guard paired, !pairingUnreadable, started, pairRunning == false, !(reason.map { Self.isFinalReason($0) } ?? false)
+        else { return nil }
         return pairNotRunning ?? "The pair isn't running on this Mac (\(otherMac) isn't taking part)."
     }
 

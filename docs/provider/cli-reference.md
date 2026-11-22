@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -673,7 +673,13 @@ answered for 15 min; …", or, when it answers but the pair never served, "The
 pair hasn't served for 15 min since it started …". While the two Macs are known
 to run different Darkbloom versions, `status` and `cluster status` keep naming
 the versions and the Mac to update instead of either line, since that never
-clears by itself. `start --solo` serves this Mac alone (`Start.PairStart.serveAlone`). How this Mac
+clears by itself. The same holds for every other reason that only a person
+mends (`ClusterPairSummary.isFinalReason`): a Mac that isn't logged in, a Mac's
+clock, a model the coordinator doesn't let a Mac serve in a pair, different
+builds, a pair not offered to Darkbloom, and single-Mac serving on a Mac. A
+reason the pair is waited through (memory that may free, a part that starts
+again) still gives way to the 15-minute line.
+`start --solo` serves this Mac alone (`Start.PairStart.serveAlone`). How this Mac
 would serve alone is checked first: with **Only me** saved (by `darkbloom
 start`, or by `darkbloom cluster` for the pair) and no mode flag, a start
 without a terminal is refused in one line, as on one Mac (exit 64), before
@@ -1394,10 +1400,16 @@ part has run 2 minutes without one, or its key-generation safeguard holds it bac
 says `… is not serving yet: checking both Macs with Apple.` (or names the one Mac), which reads `loading` (exit 3)
 on both Macs, and a scripted `darkbloom start` waits through it.
 
-A start the coordinator committed but a Mac's part ended says that part's reason: `✗ Not serving: The other Mac
-doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB).` when its load gate refused, or
-`✗ Not serving: The pair stopped (<guidance>).` otherwise. The coordinator retries the pair by itself; quit apps on
-the Mac named, or choose a smaller model.
+A start the coordinator committed but a Mac's part ended says that part's reason (`ClusterPairStopCause`,
+`ClusterOnboardingNotServing.words`), and `next` names what to run where a person can mend it:
+
+| Reason | `✗ Not serving: …` | `Next:` |
+|---|---|---|
+| A Mac's load gate refused its share | `The other Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB).` | Quit apps on that Mac, or choose a smaller model |
+| An earlier session's device journal is unresolved (`device_busy`) | `An earlier session still holds the cluster device of one of the Macs.` | ``Run `darkbloom cluster recover` on each Mac; the cluster starts again by itself.`` |
+| The two ranks' workers speak different versions (`version_mismatch`) | `The two Macs run different Darkbloom versions.` | ``Run `darkbloom update` on both Macs; then check that `darkbloom --version` shows the same version on both.`` A start's wait ends on it, and it is kept over the 15-minute line |
+| The leading Mac's session with the coordinator ended | `The pair stopped (committed start ended: the coordinator's grant expired).`, or another of its ends | The coordinator retries the pair by itself |
+| Any other recorded cause | `The pair stopped (<guidance>).` | The coordinator retries the pair by itself |
 
 | Exit status | `state` | Meaning |
 |---|---|---|

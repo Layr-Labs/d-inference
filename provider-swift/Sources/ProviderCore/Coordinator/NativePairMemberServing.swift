@@ -46,17 +46,27 @@ public protocol NativePairMemberServingHost: AnyObject, Sendable {
     /// and releases. Never takes ownership of the endpoint's cleanup: the
     /// session keeps that obligation.
     func serveCommittedStart(_ start: NativePairMemberServingStart) async throws
-    /// The session is ending: retire what `serveCommittedStart` published for
-    /// this epoch (or stop a serve still under way) and return once it is
-    /// retired. The epoch is released at once, so a later start can begin
-    /// during that retirement, and is never served afterwards. Idempotent.
-    func stopServingCommittedStart(epoch: UUID) async
-    /// The same, with why the session ended (`reason`, in its own words), for a host that reports it.
-    func stopServingCommittedStart(epoch: UUID, reason: String) async
+    /// The session is ending (`end`: how): retire what `serveCommittedStart`
+    /// published for this epoch (or stop a serve still under way) and return
+    /// once it is retired. The epoch is released at once, so a later start
+    /// can begin during that retirement, and is never served afterwards.
+    /// Idempotent. Every host is told how the session ended, and there is no
+    /// way to stop a start without saying it: the leader writes it in its
+    /// pair line, the follower in its fence of the leader's session.
+    func stopServingCommittedStart(epoch: UUID, end: NativePairSessionEnd) async
 }
 
-extension NativePairMemberServingHost {
-    public func stopServingCommittedStart(epoch: UUID, reason: String) async { await stopServingCommittedStart(epoch: epoch) }
+/// How a member's committed session ended, as the session tells its serving
+/// host: the cause, and the session's own words for it, which carry the error
+/// after them when an error ended it.
+public struct NativePairSessionEnd: Sendable, Equatable {
+    public let cause: ClusterPairStopCause.SessionEnd
+    /// "the coordinator cancelled it", "it ended early: <error>".
+    public let words: String
+
+    public init(_ cause: ClusterPairStopCause.SessionEnd) { self.cause = cause; words = cause.words }
+    /// An end an error caused (`endedEarly`, `couldNotServe`).
+    public init(_ cause: ClusterPairStopCause.SessionEnd, error: Error) { self.cause = cause; words = "\(cause.words): \(error)" }
 }
 
 /// Why a pair slot or a member serving host refused (kept beside the seam so

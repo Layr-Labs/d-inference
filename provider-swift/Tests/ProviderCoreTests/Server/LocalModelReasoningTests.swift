@@ -146,7 +146,7 @@ struct LocalModelReasoningTests {
         let entries = try await Self.entries(await loop.makeLocalEndpointApplication(config))
         #expect(Self.features(entries[clusterPairFixtureModel]) == ["reasoning"])
         #expect(entries[clusterPairFixtureModel]?["input_modalities"] as? [String] == ["text"])
-        #expect(await loop.retireClusterPairSlot(reason: "test"))
+        #expect(await loop.retireClusterPairSlot(cause: .memberStopping))
     }
 
     /// The pair's own API (`darkbloom cluster local`, `DistributedLocalServer`) lists its model as its installed type

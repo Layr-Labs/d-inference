@@ -524,7 +524,7 @@ extension ProviderLoop {
             finishMemberRegistrationWait(roleRefused ? roleError : ClusterMemberControlError.connectionEnded)
             // The pair slot's engine shuts its owner down, so both ranks end
             // their work and each member's owner can release its device.
-            await retireClusterPairSlot(reason: "member stopping")
+            await retireClusterPairSlot(cause: .memberStopping)
             await coordinator.shutdown()
             if await coordinator.memberRoleFailure {
                 throw await coordinator.memberRoleUnsupported ? ClusterMemberControlError.roleUnsupported

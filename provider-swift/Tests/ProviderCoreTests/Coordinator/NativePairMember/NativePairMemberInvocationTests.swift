@@ -245,7 +245,7 @@ struct NativePairMemberInvocationTests {
             // deadline: the exact boundary while the prepared state exists.
             #expect(throws: NativePairMemberError.self) { try session.accept(start, receivedAt: session.prepareDeadline) }
             #expect(session.status == "prepared")
-            session.cancel(notify: false)
+            session.cancel(notify: false, end: .init(.coordinatorCancelled))
             try await memberFixtureWaitUntil { done.isSet }
             #expect(!fixture.nativeStarted[0])
             #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_prepared"])

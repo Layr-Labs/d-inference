@@ -42,6 +42,8 @@ final class ScriptedPairBuilder: @unchecked Sendable {
     var hold: DispatchSemaphore?
     /// Set on each built owner: its requests wait for one signal each.
     var ownerHold: DispatchSemaphore?
+    /// Set on each built owner: its first this many reservations fail (the warmup canary is the first).
+    var ownerFailFirstReservations = 0
     var failure: Error?
     var built: [ScriptedPairOwner] { lock.withLock { owners } }
     /// Builds begun, including one still held.
@@ -56,6 +58,7 @@ final class ScriptedPairBuilder: @unchecked Sendable {
             artifactSHA256: wire.artifactSHA256, configurationSHA256: wire.configurationSHA256,
             peers: wire.peers.map { .init(id: $0.id, buildSHA256: $0.buildSHA256) }))
         owner.hold = ownerHold
+        owner.failFirstReservations = ownerFailFirstReservations
         lock.withLock { owners.append(owner) }
         return owner
     }
@@ -123,6 +126,20 @@ extension ProviderLoop {
     }
 }
 
+/// The pair lines (`Pair: …`) this process writes to standard error while `body` runs, in order. A part writes them
+/// there and the cluster service reads them from the part's `rank.log`; here file descriptor 2 points at a temporary
+/// file for that time. Only for a serialized suite in a process that runs its tests one at a time.
+private func pairLinesWritten(while body: () async throws -> Void) async rethrows -> [String] {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("pair-lines-\(UUID().uuidString).log")
+    FileManager.default.createFile(atPath: file.path, contents: nil)
+    let saved = dup(2), target = open(file.path, O_WRONLY | O_APPEND)
+    dup2(target, 2); close(target)
+    defer { dup2(saved, 2); close(saved); try? FileManager.default.removeItem(at: file) }
+    try await body()
+    return String(decoding: (try? Data(contentsOf: file)) ?? Data(), as: UTF8.self)
+        .split(whereSeparator: \.isNewline).filter { $0.hasPrefix(ClusterOnboardingPairReport.logPrefix) }.map(String.init)
+}
+
 @Suite("Cluster pair serving of committed starts", .serialized, .timeLimit(.minutes(1)))
 struct ClusterPairServingTests {
     @Test func theLeaderPublishesItsCommittedStartAndRetiresItWhenTheSessionEnds() async throws {
@@ -137,9 +154,9 @@ struct ClusterPairServingTests {
         // One start at a time.
         await #expect(throws: ClusterPairSlotError.self) { try await fixture.loop.serveCommittedStart(try fixture.start(epoch: UUID())) }
 
-        await fixture.loop.stopServingCommittedStart(epoch: UUID()) // another epoch: nothing
+        await fixture.loop.stopServingCommittedStart(epoch: UUID(), end: .init(.coordinatorCancelled)) // another epoch: nothing
         #expect(await fixture.loop.clusterPairServingSnapshot.slotEpoch == first.membershipEpoch)
-        await fixture.loop.stopServingCommittedStart(epoch: first.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: first.membershipEpoch, end: .init(.coordinatorCancelled))
         snapshot = await fixture.loop.clusterPairServingSnapshot
         #expect(snapshot.epoch == nil && snapshot.slotEpoch == nil && snapshot.refusing)
         #expect(fixture.builder.built.first?.shutdownCount == 1)
@@ -148,7 +165,7 @@ struct ClusterPairServingTests {
         let second = try fixture.start(epoch: UUID())
         try await fixture.loop.serveCommittedStart(second)
         #expect(await fixture.loop.clusterPairServingSnapshot.slotEpoch == second.membershipEpoch)
-        await fixture.loop.stopServingCommittedStart(epoch: second.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: second.membershipEpoch, end: .init(.coordinatorCancelled))
         #expect(fixture.builder.built.count == 2 && fixture.builder.built[1].shutdownCount == 1)
     }
 
@@ -163,7 +180,7 @@ struct ClusterPairServingTests {
         #expect(owner.shutdownCount == 1)
         // Still this start's until its session ends.
         #expect(await fixture.loop.clusterPairServingSnapshot.epoch == first.membershipEpoch)
-        await fixture.loop.stopServingCommittedStart(epoch: first.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: first.membershipEpoch, end: .init(.coordinatorCancelled))
         #expect(await fixture.loop.clusterPairServingSnapshot.epoch == nil)
         try await fixture.loop.serveCommittedStart(try fixture.start(epoch: UUID()))
         #expect(await fixture.loop.clusterPairServingSnapshot.slotEpoch != nil)
@@ -179,7 +196,7 @@ struct ClusterPairServingTests {
         let start = try fixture.start()
         let serve = Task { try await fixture.loop.serveCommittedStart(start) }
         #expect(await clusterPairWait { await fixture.loop.clusterPairServingSnapshot.epoch == start.membershipEpoch })
-        await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch, end: .init(.coordinatorCancelled))
         hold.signal()
         await #expect(throws: ClusterPairSlotError.self) { try await serve.value }
         let snapshot = await fixture.loop.clusterPairServingSnapshot
@@ -204,7 +221,7 @@ struct ClusterPairServingTests {
         #expect(await clusterPairWait { fixture.builder.built.first?.reserveCount == 1 })
         // The retirement drains the held canary request; let it end later.
         let release = Task { try? await Task.sleep(for: .milliseconds(200)); hold.signal() }
-        await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch, end: .init(.coordinatorCancelled))
         let stopped = await fixture.loop.clusterPairSlotSnapshot
         #expect(stopped.id == nil && stopped.slots.isEmpty && stopped.refusing)
         #expect(fixture.builder.built.first?.shutdownCount == 1)
@@ -220,7 +237,7 @@ struct ClusterPairServingTests {
         let next = try fixture.start(epoch: UUID())
         try await fixture.loop.serveCommittedStart(next)
         #expect(await fixture.loop.clusterPairServingSnapshot.slotEpoch == next.membershipEpoch)
-        await fixture.loop.stopServingCommittedStart(epoch: next.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: next.membershipEpoch, end: .init(.coordinatorCancelled))
     }
 
     /// Production, 2026-11-01: after a peer loss the session's stop did not
@@ -237,7 +254,7 @@ struct ClusterPairServingTests {
         let first = try fixture.start()
         let stale = Task { try await fixture.loop.serveCommittedStart(first) }
         #expect(await clusterPairWait { fixture.builder.begun == 1 })
-        await fixture.loop.stopServingCommittedStart(epoch: first.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: first.membershipEpoch, end: .init(.coordinatorCancelled))
         #expect(await fixture.loop.clusterPairServingSnapshot.epoch == nil)
 
         // The coordinator's next committed start is served while the stale serve is still out.
@@ -253,7 +270,7 @@ struct ClusterPairServingTests {
         #expect(snapshot.epoch == next.membershipEpoch && snapshot.slotEpoch == next.membershipEpoch && !snapshot.refusing)
         let staleOwner = fixture.builder.built.first { $0.identity.membershipEpoch == first.membershipEpoch }
         #expect(staleOwner?.shutdownCount == 1)
-        await fixture.loop.stopServingCommittedStart(epoch: next.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: next.membershipEpoch, end: .init(.coordinatorCancelled))
         #expect(await fixture.loop.clusterPairServingSnapshot.epoch == nil)
     }
 
@@ -269,7 +286,7 @@ struct ClusterPairServingTests {
         let start = try fixture.start()
         let serve = Task { try await fixture.loop.serveCommittedStart(start) }
         #expect(await clusterPairWait { fixture.builder.built.first?.reserveCount == 1 })
-        let stop = Task { await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch) }
+        let stop = Task { await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch, end: .init(.coordinatorCancelled)) }
         #expect(await clusterPairWait { await fixture.loop.clusterPairServingSnapshot.epoch == nil })
         #expect(fixture.builder.built.first?.shutdownCount == 0) // still draining
         hold.signal()
@@ -284,14 +301,14 @@ struct ClusterPairServingTests {
         let fixture = try await ServingFixture.make()
         try await fixture.loop.installClusterPairServing(fixture.context())
         let start = try fixture.start()
-        await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch, end: .init(.coordinatorCancelled))
         await #expect(throws: ClusterPairSlotError.self) { try await fixture.loop.serveCommittedStart(start) }
         let snapshot = await fixture.loop.clusterPairServingSnapshot
         #expect(snapshot.epoch == nil && snapshot.slotEpoch == nil && fixture.builder.built.isEmpty)
         let next = try fixture.start(epoch: UUID())
         try await fixture.loop.serveCommittedStart(next)
         #expect(await fixture.loop.clusterPairServingSnapshot.slotEpoch == next.membershipEpoch)
-        await fixture.loop.stopServingCommittedStart(epoch: next.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: next.membershipEpoch, end: .init(.coordinatorCancelled))
     }
 
     @Test func onlyTheLeaderWithAContextServesAndAFailedPairLeavesNothing() async throws {
@@ -306,5 +323,96 @@ struct ClusterPairServingTests {
 
         let follower = try await ServingFixture.make(rank: 1)
         await #expect(throws: ClusterPairSlotError.self) { try await follower.loop.installClusterPairServing(follower.context()) }
+    }
+
+    /// The lines the leading Mac's part writes for its pair, byte for byte as the build before the typed stop cause
+    /// wrote them: the status both Macs read carries their text, and the other Mac may run that build.
+    @Test func theLeaderWritesItsPairsLinesAsTheEarlierBuildDid() async throws {
+        let fixture = try await ServingFixture.make()
+        try await fixture.loop.installClusterPairServing(fixture.context())
+        await fixture.loop.setClusterPairWarmupForTesting(timeoutSeconds: nil)
+
+        // Both ranks loaded, then a rank is lost while the slot is published.
+        let lost = try fixture.start()
+        var lines = try await pairLinesWritten {
+            try await fixture.loop.serveCommittedStart(lost)
+            try #require(fixture.builder.built.last).losePeer()
+            #expect(await clusterPairWait { await fixture.loop.clusterPairServingSnapshot.slotEpoch == nil })
+        }
+        #expect(lines == ["Pair: starting", "Pair: serving", "Pair: stopped (pair readiness lost)"])
+        await fixture.loop.stopServingCommittedStart(epoch: lost.membershipEpoch, end: .init(.coordinatorCancelled))
+
+        // The pair's own first request fails: the engine's detail stays out of the line.
+        await fixture.loop.setClusterPairWarmupForTesting(timeoutSeconds: 30)
+        fixture.builder.ownerFailFirstReservations = 1
+        let unanswered = try fixture.start(epoch: UUID())
+        lines = try await pairLinesWritten {
+            try await fixture.loop.serveCommittedStart(unanswered)
+            #expect(await clusterPairWait { await fixture.loop.clusterPairServingSnapshot.slotEpoch == nil })
+        }
+        #expect(lines == ["Pair: starting", "Pair: stopped (its first request failed)"])
+        await fixture.loop.stopServingCommittedStart(epoch: unanswered.membershipEpoch, end: .init(.coordinatorCancelled))
+        fixture.builder.ownerFailFirstReservations = 0
+
+        // The pair answers its first request, then this Mac's part stops.
+        let stopping = try fixture.start(epoch: UUID())
+        lines = try await pairLinesWritten {
+            try await fixture.loop.serveCommittedStart(stopping)
+            await fixture.loop.releaseClusterMemberSessionBeforeClose()
+        }
+        #expect(lines.count == 3 && lines.first == "Pair: starting" && lines.last == "Pair: stopped (member stopping)", "\(lines)")
+        #expect(lines.dropFirst().first?.hasPrefix("Pair: serving (first request in ") == true, "\(lines)")
+        await fixture.loop.stopServingCommittedStart(epoch: stopping.membershipEpoch, end: .init(.coordinatorCancelled))
+
+        // A pair that could not form, with no incident recorded for it (this context names no plan).
+        fixture.builder.failure = ClusterWorkerOwnerError.invalid("pair did not form")
+        lines = await pairLinesWritten {
+            await #expect(throws: ClusterWorkerOwnerError.self) { try await fixture.loop.serveCommittedStart(try fixture.start(epoch: UUID())) }
+        }
+        #expect(lines == ["Pair: starting", "Pair: stopped (the pair did not form)"])
+    }
+
+    /// The leading Mac's part retires its slot when the member session that committed the start ends, and its line said
+    /// only "committed start ended": the session's reason reached the Mac that follows (its fence says it) and was
+    /// dropped here. The line keeps those words and says why after them.
+    @Test func theLeadersStoppedLineSaysWhyItsSessionEnded() async throws {
+        let fixture = try await ServingFixture.make()
+        try await fixture.loop.installClusterPairServing(fixture.context())
+        await fixture.loop.setClusterPairWarmupForTesting(timeoutSeconds: nil)
+        let start = try fixture.start()
+        try await fixture.loop.serveCommittedStart(start)
+        let lines = await pairLinesWritten {
+            await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch, end: .init(.grantExpired))
+        }
+        #expect(lines == ["Pair: stopped (committed start ended: the coordinator's grant expired)"])
+    }
+
+    /// Each way a session ends has its own line, in fixed words. The error an early end carries stays out of it: the
+    /// other Mac may run a build that chooses its words by what the line contains ("release", "clock").
+    @Test func everyWayASessionEndsHasItsOwnLine() async throws {
+        let failure = ClusterWorkerOwnerError.invalid("release the clock")
+        let ends: [(NativePairSessionEnd, String)] = [
+            (.init(.coordinatorCancelled), "Pair: stopped (committed start ended: the coordinator cancelled it)"),
+            (.init(.grantExpired), "Pair: stopped (committed start ended: the coordinator's grant expired)"),
+            (.init(.connectionClosed), "Pair: stopped (committed start ended: its connection to the coordinator closed)"),
+            (.init(.connectionStayedClosed), "Pair: stopped (committed start ended: its coordinator connection stayed closed)"),
+            (.init(.couldNotServe, error: failure), "Pair: stopped (committed start ended: it could not be served)"),
+            (.init(.endedEarly, error: failure), "Pair: stopped (committed start ended: it ended early)"),
+            (.init(.ownerInvalidated), "Pair: stopped (committed start ended: its owner was invalidated before the prelude completed)"),
+            (.init(.memberStopping), "Pair: stopped (committed start ended: its part is stopping)"),
+            (.init(.ownerEndedCleanly), "Pair: stopped (committed start ended: its owner ended cleanly)"),
+        ]
+        #expect(ends.map(\.0.cause) == ClusterPairStopCause.SessionEnd.allCases)
+        let fixture = try await ServingFixture.make()
+        try await fixture.loop.installClusterPairServing(fixture.context())
+        await fixture.loop.setClusterPairWarmupForTesting(timeoutSeconds: nil)
+        for (end, line) in ends {
+            let start = try fixture.start(epoch: UUID())
+            try await fixture.loop.serveCommittedStart(start)
+            let lines = await pairLinesWritten { await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch, end: end) }
+            #expect(lines == [line], "\(end.words)")
+            // The status carries the line's text, and either Mac reads the cause back from it.
+            #expect(ClusterOnboardingPairReport.latest(inLog: line) == .stopped(.sessionEnded(end.cause)))
+        }
     }
 }

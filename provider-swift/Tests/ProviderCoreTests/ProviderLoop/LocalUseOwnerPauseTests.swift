@@ -30,7 +30,8 @@ struct LocalUseOwnerPauseTests {
         let client: CoordinatorClient
 
         func heartbeat() async throws -> [String: Any] {
-            try #require(JSONSerialization.jsonObject(with: Data(await client.buildHeartbeatJSON().utf8)) as? [String: Any])
+            let json = try #require(await client.buildHeartbeatJSON())
+            return try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
         }
 
         func heartbeatBytes() async -> String { await LocalUseOwnerPauseTests.heartbeatBytes(of: client) }

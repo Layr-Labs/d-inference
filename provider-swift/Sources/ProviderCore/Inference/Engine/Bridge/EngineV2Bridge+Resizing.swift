@@ -35,6 +35,12 @@ extension EngineV2Bridge {
         // A retained GLM engine may still hold pages up to its grant: a shrink
         // would hand survivors bytes it may occupy, and growth is never safe.
         if isGLM5NextManaged, GLM5NextLoadFaultState.isRetained { return }
+        defer {
+            // A follower parked with no deadline may now need the shared-grant bound.
+            if glmSoloGrant != nil {
+                for ticket in ownerMemoryWaiters.waiting { ownerMemoryWaiters.wake(ticket) }
+            }
+        }
         lastRequestedKVBytesCapacity = requested
         guard kvBackendKind == .paged else {
             engine.updateKVBytesCapacity(requested)

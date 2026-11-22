@@ -650,6 +650,8 @@ public actor ProviderLoop {
     /// Models remain tracked while their scheduler is tearing down so
     /// reentrant loads cannot start against memory that has not been freed yet.
     internal var modelsUnloading: Set<String> = []
+    /// A removed slot's survivors may still have their old, shared grants.
+    internal var pendingSurvivorRegrowth: [UUID: String] = [:]
     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     internal var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
     /// Set when a Nemotron Super slot retires: macOS returns its ~80 GB of

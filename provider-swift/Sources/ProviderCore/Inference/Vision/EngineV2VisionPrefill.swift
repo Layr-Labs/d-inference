@@ -352,13 +352,7 @@ public enum EngineV2VisionPrefill {
     static func onMediaPrepStream(
         _ own: Bool, _ body: () async throws -> PreparedSubmission
     ) async throws -> PreparedSubmission {
-        guard own else { return try await body() }
-        return try await MLX.Stream.withNewDefaultStream(device: .gpu) {
-            let submission = try await body()
-            eval(submission.mlxArrays)
-            MLX.Stream.gpu.synchronize()
-            return submission
-        }
+        try await body()
     }
 
     /// Build the v2 media submission for `request` over the slot's loaded

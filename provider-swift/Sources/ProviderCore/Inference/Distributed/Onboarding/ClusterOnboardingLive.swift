@@ -328,6 +328,8 @@ final class OnboardingLive: @unchecked Sendable {
     func awaitConfirmedLeadership(seconds: Double = ClusterService.leaseTTLSeconds + 10,
                                   waiting: ((String) -> Void)? = nil) -> ClusterOnboardingFailure? {
         let started = Date(), waitsWindow = ClusterUnconfirmedLeadership.waitsWindow()
+        // The window and the other Mac's silence only from a status written within a third of the lease.
+        let fresh = { ClusterService.publishedLive(writtenWithin: ClusterService.leaseTTLSeconds / 3)?.control }
         return Self.awaitLeadership(deadline: started.addingTimeInterval(seconds),
             latest: started.addingTimeInterval(waitsWindow ? 2 * seconds : seconds), waiting: waiting,
             leadsHere: { [self] in
@@ -335,11 +337,11 @@ final class OnboardingLive: @unchecked Sendable {
                 return currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID
             },
             confirmed: { ClusterService.publishedLive()?.control.map { $0.leads && $0.confirmed == true } ?? false },
-            window: { ClusterService.publishedLive()?.control?.confirmsInSeconds.map(Double.init) },
+            window: { fresh()?.confirmsInSeconds.map(Double.init) },
             other: thereShort,
             failure: { [self] in
                 .init(["This Mac's leadership is not confirmed yet (its cluster service has not heard from \(there) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `\(Self.cli) cluster` again in a moment."],
-                      unconfirmedLeaderAlone: ClusterService.publishedLive()?.control?.otherAnswering == false)
+                      unconfirmedLeaderAlone: fresh()?.otherAnswering == false)
             },
             pause: { usleep(250_000) })
     }

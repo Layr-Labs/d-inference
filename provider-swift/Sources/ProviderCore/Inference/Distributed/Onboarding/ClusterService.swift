@@ -1972,6 +1972,20 @@ public final class ClusterService: @unchecked Sendable {
         return status
     }
 
+    /// `publishedLive`, only while its file was written within `seconds`: every tick rewrites it, so an older one is
+    /// from a service that stalled or could not write (a full disk), and what it says about the other Mac is stale.
+    static func publishedLive(writtenWithin seconds: Double, now: Date = Date()) -> ClusterServiceStatus? {
+        guard let status = publishedLive(), let directory = try? paths().pid.deletingLastPathComponent() else { return nil }
+        let file = directory.appendingPathComponent(ClusterServiceStatus.fileName)
+        let modified = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
+        return writtenRecently(modified, now: now, within: seconds) ? status : nil
+    }
+
+    static func writtenRecently(_ modified: Date?, now: Date, within seconds: Double) -> Bool {
+        guard let modified else { return false }
+        return now.timeIntervalSince(modified) <= seconds
+    }
+
     // MARK: - This Mac's part
 
     /// Whether single-Mac serving on this Mac holds back this Mac's part now: said once when it is first seen, and once

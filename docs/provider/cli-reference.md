@@ -3967,6 +3967,7 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid request (request exceeds context)` | The prompt alone fills the model's context window on one Mac (a larger `max_tokens` is cut to fit, not refused), or an output reservation is invalid | `EngineV2Bridge` (`promptExceedsContext`, `advertisedContextExceeded`) |
 | `Inference failure: invalid request (unsupported output control)` | An output control the model's engine cannot honor, such as logprobs on an engine without them | `EngineV2Bridge.nativeOutputControlRefusal` |
 | `Inference failure: invalid request (missing user query)` | No user turn is more than a `<tool_response>` wrapper, such as a system-only conversation, on Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2, whose templates raise "No user query found in messages." | `Qwen35TemplateFix.validateUserQuery` |
+| `Inference failure: invalid request (media role not rendered)` | An image or video in a system, assistant or tool message that the model's chat template refuses (Qwen 3.5–3.8 raise on a system-message image) or leaves without a placeholder (Gemma 4 renders only the text of its first system message and of tool results), so the model could not see it. vLLM refuses the same request | `EngineV2VisionPrefill.prepare` (`isUnrenderedMedia`) |
 
 Prompt-time refusals also use the earlier reasons: a GLM-5.3-Flash history call
 with an empty or repeated ID, a bad function name or a non-assistant role, a

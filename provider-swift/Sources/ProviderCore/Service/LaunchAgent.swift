@@ -446,6 +446,9 @@ public enum LaunchAgent: Sendable {
     /// closing it with the arguments it sent.
     /// `DARKBLOOM_QWEN_CALL_END_GUARD`: Qwen 3.5–3.8 admit no end of turn while
     /// a call frame is open, by default; an off word samples as before.
+    /// `DARKBLOOM_MEDIA_ON_EVERY_ROLE`: media in a system, assistant or tool
+    /// message is rendered where the chat template renders it, by default; an
+    /// off word keeps only user-message media again.
     /// `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY`: GLM-5.3-Flash serves history
     /// tool-call arguments and tool schemas in shapes vLLM and the OpenAI API
     /// accept, by default; an off word restores refusing inexact numbers,
@@ -589,6 +592,7 @@ public enum LaunchAgent: Sendable {
         NemotronSuperLocalBridgeBuilder.concurrentVideoKey,
         NemotronSuperLocalBridgeBuilder.firstContentRefusalKey,
         MediaIngest.maxImagesEnvironmentKey,
+        MediaIngest.everyRoleEnvironmentKey,
         GLM5NextPromptPolicy.referenceToolHistoryEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,

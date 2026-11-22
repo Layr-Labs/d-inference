@@ -345,8 +345,8 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     /// `awaitConfirmedLeadership`'s loop, with its claim, service, clock and pause passed in so the wait can be tested
-    /// without a service. `window`: the seconds the service says confirmation takes with no member answering; the
-    /// deadline moves to 2 s past it, never past `latest`.
+    /// without a service. `window`: the seconds the service says confirmation takes with no member answering; while it
+    /// is open the deadline moves to 2 s past it, never past `latest`.
     static func awaitLeadership(deadline: Date, latest: Date, waiting: ((String) -> Void)?, leadsHere: () -> Bool,
                                 confirmed: () -> Bool, window: () -> Double?, other: String,
                                 failure: () -> ClusterOnboardingFailure, pause: () -> Void,

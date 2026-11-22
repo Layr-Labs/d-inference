@@ -45,7 +45,8 @@ struct AutoUpdateControllerTests {
         _ fakes: Fakes,
         recorder: Recorder,
         drainTimeout: Duration = .milliseconds(10),
-        recordRestartFailure: Bool = false
+        recordRestartFailure: Bool = false,
+        steps: Recorder? = nil
     ) -> AutoUpdateController {
         let deps = AutoUpdateController.Dependencies(
             claimStart: { recorder.record("claim"); return fakes.claimReturns },
@@ -66,9 +67,46 @@ struct AutoUpdateControllerTests {
             restartDidFail: {
                 if recordRestartFailure { recorder.record("retireAttempt") }
             },
-            log: { _ in }
+            log: { _ in },
+            step: { steps?.record("\($0)") }
         )
         return AutoUpdateController(deps: deps, drainTimeout: drainTimeout)
+    }
+
+    // MARK: - The steps `darkbloom logs` keeps
+
+    /// Each path's steps, in order; the restart's step comes before the restart, which in production does not return.
+    @Test("each path names its steps for the persisted log, the restart's before the restart")
+    func eachPathNamesItsSteps() async {
+        func steps(_ fakes: Fakes) async -> (steps: [String], events: [String]) {
+            let recorder = Recorder(), stepLog = Recorder()
+            _ = await makeController(fakes, recorder: recorder, steps: stepLog).run()
+            return (stepLog.events, recorder.events)
+        }
+        let available = Fakes(checkResult: .updateAvailable(current: "1.0.0", latest: Self.release))
+        #expect(await steps(available).steps == ["available", "staged", "restarting"])
+        #expect(await steps(Fakes(checkResult: .restartRequired(current: "1.0.0", installed: "2.0.0"))).steps
+            == ["installedNotRunning", "restarting"])
+        #expect(await steps(Fakes(checkResult: .upToDate(currentVersion: "1.0.0"))).steps == [], "an up-to-date check adds no line")
+        #expect(await steps(Fakes(checkResult: .checkFailed(.init(.noAnswer, "network down")))).steps == ["checkFailed"])
+        #expect(await steps(Fakes(checkResult: .quarantined(version: "2.0.0", reason: "crashed twice"))).steps == ["quarantined"])
+        var failing = available
+        failing.stageResult = .failed("disk full")
+        #expect(await steps(failing).steps == ["available", "stageFailed"])
+        failing = available
+        failing.drainReturns = false
+        #expect(await steps(failing).steps == ["available", "staged", "deferred"])
+        failing = available
+        failing.commitResult = .failed("rename failed")
+        #expect(await steps(failing).steps == ["available", "staged", "installFailed"])
+        failing = available
+        failing.prepareRestartResult = .failed("App Attest worker has not exited")
+        #expect(await steps(failing).steps == ["available", "staged", "restartFailed"])
+        failing = available
+        failing.restartThrows = true
+        let thrown = await steps(failing)
+        #expect(thrown.steps == ["available", "staged", "restarting", "restartFailed"])
+        #expect(thrown.events.firstIndex(of: "restart")! > thrown.events.firstIndex(of: "commit")!)
     }
 
     // MARK: - No-op paths

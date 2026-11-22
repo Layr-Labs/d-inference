@@ -145,7 +145,8 @@ extension ProviderLoop {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "background-restart-failure")
             },
-            log: { logger.info("\($0)") }
+            log: { logger.info("\($0)") },
+            step: { logger.notice(Self.autoUpdateNotice($0)) }
         )
 
         let controller = AutoUpdateController(deps: deps, drainTimeout: Self.updateDrainTimeout)
@@ -173,6 +174,24 @@ extension ProviderLoop {
             logger.warning("Auto-update: restart failed: \(reason)")
         }
         return outcome
+    }
+
+    /// The line `darkbloom logs` keeps for a step of a single Mac's update cycle. The progress lines beside it name
+    /// the versions and reasons but are private and kept only in memory, so a person reading the log later saw no
+    /// update at all.
+    static func autoUpdateNotice(_ step: AutoUpdateController.Step) -> ProviderOperationalMessage {
+        switch step {
+        case .available: .autoUpdateAvailable
+        case .installedNotRunning: .autoUpdateInstalledNotRunning
+        case .staged: .autoUpdateStaged
+        case .restarting: .autoUpdateRestarting
+        case .deferred: .autoUpdateDeferred
+        case .quarantined: .autoUpdateQuarantined
+        case .checkFailed: .autoUpdateCheckFailed
+        case .stageFailed: .autoUpdateStageFailed
+        case .installFailed: .autoUpdateInstallFailed
+        case .restartFailed: .autoUpdateRestartFailed
+        }
     }
 
     /// `ClusterPairUpdate.askPairToFollow` with this Mac's actual pair state and its cluster service's request path.

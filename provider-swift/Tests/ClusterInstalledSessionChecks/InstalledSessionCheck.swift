@@ -876,15 +876,15 @@ final class EndpointBox: @unchecked Sendable {
                     "logprob support did not follow the installed adapter and selected mode")
                 for profile in [installed.profile, memberProfile] {
                     var request = CBv2Request(id: .init(1), promptTokens: [1], sampling: .init(temperature: 0), maxTokens: 1)
-                    try require(profile.refusal(for: request) == nil, "ordinary request refused by capture policy")
+                    try require(profile.refusal(for: request, ownerRequest: false) == nil, "ordinary request refused by capture policy")
                     request.sampling.topLogprobs = 1
-                    try require(profile.refusal(for: request) == (supported ? nil : .logprobCaptureUnsupported),
+                    try require(profile.refusal(for: request, ownerRequest: false) == (supported ? nil : .logprobCaptureUnsupported),
                         "unsupported capture reached worker admission")
                     request.sampling.topLogprobs = ClusterWorkerSampling.maximumTopLogprobs
-                    try require(profile.refusal(for: request) == (supported ? nil : .logprobCaptureUnsupported),
+                    try require(profile.refusal(for: request, ownerRequest: false) == (supported ? nil : .logprobCaptureUnsupported),
                         "valid upper logprob limit changed")
                     request.sampling.topLogprobs += 1
-                    try require(profile.refusal(for: request) == .logprobsUnsupported, "numeric logprob limit changed")
+                    try require(profile.refusal(for: request, ownerRequest: false) == .logprobsUnsupported, "numeric logprob limit changed")
                 }
             }
         }
@@ -1128,7 +1128,7 @@ final class EndpointBox: @unchecked Sendable {
         let tokens=TokenBox()
         let lease=try s.reserve(.init(id:.init(1),promptTokens:[1,2,3],sampling:.init(temperature:0),maxTokens:24),
             identity:s.expectedIdentity,profileID:s.profile.id,capacityLimit:1800,
-            deadlineContext:.init(generationDeadline:ContinuousClock.now.advanced(by:.seconds(8)),firstTokenDeadline:ContinuousClock.now.advanced(by:.seconds(2))))
+            deadlineContext:.init(generationDeadline:ContinuousClock.now.advanced(by:.seconds(8)),firstTokenDeadline:ContinuousClock.now.advanced(by:.seconds(2)),ownerRequest:false))
         let begin=ContinuousClock.now
         // The client stops after the eleventh token, inside the fourth batch.
         try lease.start{event in tokens.add(event,at:ContinuousClock.now-begin); return tokens.count<11}
@@ -1191,7 +1191,7 @@ final class EndpointBox: @unchecked Sendable {
     static func request(_ session:DistributedInstalledSession,_ id:UInt64) throws->any DistributedResidentRequestLease {
         try session.reserve(.init(id:.init(id),promptTokens:[1,2,3],sampling:.init(temperature:0),maxTokens:2),
             identity:session.expectedIdentity,profileID:session.profile.id,capacityLimit:1800,
-            deadlineContext:.init(generationDeadline:ContinuousClock.now.advanced(by:.seconds(100))))
+            deadlineContext:.init(generationDeadline:ContinuousClock.now.advanced(by:.seconds(100)),ownerRequest:false))
     }
     static func normalAndDrain(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
         let(s,box)=try session(f,p);try require(s.status == .prepared && s.readiness()==nil && !s.canRotate,"preparation fabricated readiness")

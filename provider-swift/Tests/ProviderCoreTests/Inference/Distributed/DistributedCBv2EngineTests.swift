@@ -278,12 +278,12 @@ struct DistributedCBv2EngineTests {
         let profile = try distributedTestProfile()
         for refusal in DistributedRequestRefusal.allCases {
             let message = EngineV2Translation.admissionErrorMessage(
-                for: DistributedEngineError.refused(refusal), distributedProfile: profile)
+                for: DistributedEngineError.refused(refusal), distributedProfile: profile, route: .coordinator(nil))
             let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
             guard case .distributedRequestRefused(let parsed, let text) = typed else {
                 Issue.record("\(refusal) did not parse: \(message)"); continue
             }
-            #expect(parsed == refusal && text == refusal.message(profile))
+            #expect(parsed == refusal && text == refusal.message(profile, ownerRequest: false))
             #expect(ProviderLoop.mapInferenceErrorToStatus(typed) == 400)
             let failure = ProviderLoop.sanitizedInferenceFailure(from: typed, phase: .generation)
             // Over this pair's context: the coordinator may route it to a node
@@ -292,9 +292,10 @@ struct DistributedCBv2EngineTests {
             #expect(failure.code == (refusal.exceedsContext ? .capacity : .invalidRequest))
             #expect(failure.errorReason == (refusal.exceedsContext ? .requestExceedsContext : .clientError))
         }
-        #expect(DistributedRequestRefusal.outputTooLong.message(profile).contains("128"))
+        #expect(DistributedRequestRefusal.outputTooLong.message(profile, ownerRequest: false).contains("128"))
         // A prompt that fills the pair's context: one Mac's words for its window.
-        #expect(DistributedRequestRefusal.contextLengthExceeded.message(profile) == windowRefusalWords(8320))
+        #expect(DistributedRequestRefusal.contextLengthExceeded.message(profile, ownerRequest: false)
+                == windowRefusalWords(8320))
         let unavailable = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
             EngineV2Translation.admissionErrorMessage(for: DistributedEngineError.unavailable))
         #expect(ProviderLoop.mapInferenceErrorToStatus(unavailable) == 503)

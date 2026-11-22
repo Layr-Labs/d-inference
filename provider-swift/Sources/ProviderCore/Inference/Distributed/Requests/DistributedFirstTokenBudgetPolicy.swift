@@ -31,7 +31,8 @@ public struct DistributedFirstTokenBudgetPolicy: Sendable, Equatable {
         let first = available <= .zero ? context.generationDeadline
             : receivedAt.advanced(by: min(.milliseconds(amount), available))
         return context.restricted(to: .init(
-            generationDeadline: context.generationDeadline, firstTokenDeadline: first))
+            generationDeadline: context.generationDeadline, firstTokenDeadline: first,
+            ownerRequest: context.ownerRequest))
     }
 
     private func milliseconds(inputTokenCount: Int) throws -> Int64 {

@@ -134,7 +134,7 @@ struct DistributedPrefixPartitionTests {
                 sampling: .init(temperature: 0), maxTokens: 2, cacheSalt: nil, prefixCacheEnabled: false)
             let before = DispatchTime.now().uptimeNanoseconds
             let lease = try owner.reserve(request, identity: identity, profileID: profile.id, capacityLimit: 1 << 20,
-                deadlineContext: .init(generationDeadline: ContinuousClock.now.advanced(by: value.ahead)))
+                deadlineContext: .init(generationDeadline: ContinuousClock.now.advanced(by: value.ahead), ownerRequest: false))
             lease.cancel()
             await lease.waitUntilRetired()
             lease.releaseResources()

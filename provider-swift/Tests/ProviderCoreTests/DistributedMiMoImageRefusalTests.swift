@@ -10,9 +10,9 @@ struct DistributedMiMoImageRefusalTests {
             let profile = try DistributedResidentExecutionProfile(id:id,vocabularySize:152576,
                 maxPromptTokens:1024,maxOutputTokens:128,maxContextTokens:2048,requestTimeout:.seconds(30))
             var request = CBv2Request(id:.init(42),promptTokens:[1,2],maxTokens:4)
-            #expect(profile.refusal(for:request) == nil)
+            #expect(profile.refusal(for:request, ownerRequest: false) == nil)
             request.mimoClusterImages = Data(#"{"images":[]}"#.utf8)
-            #expect(profile.refusal(for:request) == .mediaUnsupported)
+            #expect(profile.refusal(for:request, ownerRequest: false) == .mediaUnsupported)
         }
     }
 }

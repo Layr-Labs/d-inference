@@ -33,7 +33,7 @@ struct DistributedRequestObservationTests {
         let origin = clock.now
         let stream = try engine.submit(distributedTestRequest(), deadlineContext: .init(
             generationDeadline: origin.advanced(by: .seconds(30)),
-            firstTokenDeadline: origin.advanced(by: .seconds(10))))
+            firstTokenDeadline: origin.advanced(by: .seconds(10)), ownerRequest: false))
         clock.advance(.seconds(2))
         #expect(owner.last.send(.token(4)))
         clock.advance(.milliseconds(50))
@@ -62,7 +62,7 @@ struct DistributedRequestObservationTests {
         let engine = try engine(owner, clock, capture)
         let stream = try engine.submit(distributedTestRequest(), deadlineContext: .init(
             generationDeadline: clock.now.advanced(by: .seconds(30)),
-            firstTokenDeadline: clock.now.advanced(by: .seconds(3))))
+            firstTokenDeadline: clock.now.advanced(by: .seconds(3)), ownerRequest: false))
         clock.advance(.seconds(4))
         engine.onQueue { engine.checkDeadline(engine.active!) }
         owner.losePeer()

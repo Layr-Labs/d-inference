@@ -48,7 +48,7 @@ struct DistributedRequestObservationSinkTests {
             requestObserver: blocked.receive)
         let stream = try engine.submit(distributedTestRequest(), deadlineContext: .init(
             generationDeadline: clock.now.advanced(by: .seconds(30)),
-            firstTokenDeadline: clock.now.advanced(by: .seconds(3))))
+            firstTokenDeadline: clock.now.advanced(by: .seconds(3)), ownerRequest: false))
         #expect(await observationWait(blocked.entered))
         #expect(blocked.isBlocked)
         clock.advance(.seconds(4))

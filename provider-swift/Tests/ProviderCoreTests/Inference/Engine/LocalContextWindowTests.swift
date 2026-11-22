@@ -129,10 +129,11 @@ struct LocalContextWindowTests {
             maxConcurrentRequests: 1)
         let prompt = profile.maxContextTokens - 20
         #expect(bridge.modelWindowTokens == nil)
-        #expect(bridge.outputTokens(requested: 300_000, promptTokens: prompt) == 20)
-        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 1) == profile.maxOutputTokens)
-        #expect(bridge.outputTokens(requested: nil, promptTokens: prompt) == 20)
-        #expect(bridge.outputTokens(requested: 64, promptTokens: profile.maxContextTokens) == 64)
+        let route = ServingRoute.coordinator(nil)
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: prompt, route: route) == 20)
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 1, route: route) == profile.maxOutputTokens)
+        #expect(bridge.outputTokens(requested: nil, promptTokens: prompt, route: route) == 20)
+        #expect(bridge.outputTokens(requested: 64, promptTokens: profile.maxContextTokens, route: route) == 64)
         await bridge.shutdown()
     }
 

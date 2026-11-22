@@ -160,7 +160,8 @@ struct DistributedHTTPCompletionTests {
                 let error = try #require(try jsonObject(data)["error"] as? [String: Any])
                 #expect(error["code"] as? String == "logprob_capture_unsupported")
                 #expect(error["message"] as? String
-                    == DistributedRequestRefusal.logprobCaptureUnsupported.message(fixture.session.profile))
+                    == DistributedRequestRefusal.logprobCaptureUnsupported.message(fixture.session.profile,
+                                                                                   ownerRequest: true))
                 #expect(!String(decoding: data, as: UTF8.self).contains("data:"))
             }
             #expect(fixture.session.base.reserveCount == 0)

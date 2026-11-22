@@ -14,8 +14,10 @@ public struct DistributedRequestDeadlineContext: Sendable, Equatable {
     /// (`DistributedResidentExecutionProfile.ownerServed`); false for every request through Darkbloom.
     public let ownerRequest: Bool
 
+    /// `ownerRequest` has no default: a caller that omits it cannot compile, so none gets a Darkbloom request's
+    /// limits without saying so.
     public init(generationDeadline: ContinuousClock.Instant,
-                firstTokenDeadline: ContinuousClock.Instant? = nil, ownerRequest: Bool = false) {
+                firstTokenDeadline: ContinuousClock.Instant? = nil, ownerRequest: Bool) {
         self.generationDeadline = generationDeadline
         self.firstTokenDeadline = firstTokenDeadline
         self.ownerRequest = ownerRequest

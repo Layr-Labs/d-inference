@@ -58,9 +58,10 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
     }
     public func reserve(_ request: CBv2Request, identity expected: DistributedResidentIdentity,
                         profileID: String, capacityLimit: Int) throws -> any DistributedResidentRequestLease {
-        // Compatibility for direct callers without an originating context.
+        // Compatibility for direct callers without an originating context: served as a Darkbloom request.
         try reserve(request, identity: expected, profileID: profileID, capacityLimit: capacityLimit,
-            deadlineContext: .init(generationDeadline: ContinuousClock.now.advanced(by: profile.requestTimeout)))
+            deadlineContext: .init(generationDeadline: ContinuousClock.now.advanced(by: profile.requestTimeout),
+                                   ownerRequest: false))
     }
     public func reserve(_ request: CBv2Request, identity expected: DistributedResidentIdentity,
                         profileID: String, capacityLimit: Int,

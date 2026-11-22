@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -6381,9 +6381,10 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |
 | Me first: an owner's request waiting in the queue | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerWait.swift` (`watchOwnerWait`, `hasAdmitted(darkbloomRequest:)`, `MeFirstOwnerRequest`, `MeFirstDarkbloomRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+QueueState.swift` (`queueState(of:)`, which a held head reads too); `provider-swift/Sources/ProviderCore/ProviderLoop+MeFirst.swift` (`giveWayToOwner`); `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceCancellation.swift` (`claimOutput`, `giveWay`): Darkbloom work still queued gives way ([owner pause](owner-pause.md#when-the-owners-request-waits)) |
+| Whose request a submission is, and what each limit decides for it | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/ServingRoute.swift` (`ServingRoute`, `ServingFrontEnd`, `RouteLimits`, `RoutePolicy`): [the serving route and its policy table](#the-serving-route-and-its-policy-table) |
 | The owner's request waiting for memory running requests hold | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait`, `OwnerMemoryQueue`, `submittingOwnerRequest`, `ownerMemoryRefusal`): a local-API request (`OwnerMemoryWait.current`, bound by `MultiModelBatchSchedulerEngine.ownerMemoryWait`) refused before the engine took it, for memory the slot would hold idle, waits in arrival order and tries again when a request on the slot retires (`noteOwnerMemoryReleased`) or each second, as long as it takes unless `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS` or the request's `X-Darkbloom-Max-Wait` (`OwnerMemoryWait.requestLimit`, bound by `LocalChatUploadResponder`) names a bound (`effectiveLimit`), its pair budgets starting after the wait. The engine's end of one it queued and never admitted (a held head's `headHoldLeaseExpired`, `headHoldKVExhausted`) waits the same way and submits it again, at the back of the engine's queue; the owner's request is held until admission streamed or not, and a bound reached while it is still queued cancels it there (`holdHeadUntilAdmitted(until:)`); never a coordinator request (refused at once, as before), nor one the local router would pass on (`LocalRouter.waitsHereForMemory`). Busy or too large is read from the refusal and the slot (`ownerMemoryRefusal`): a contiguous slot's shared budget against the bytes it refused (`OwnerMemoryAttempt`), a native block engine's figures against its whole capacity (it gives the same figures for busy and never-fits). With me first on, each refusal it waits after calls `MeFirstOwnerRequest.makeRoom`. On a pair it also carries no first-token allowance (`OwnerMemoryWait.waitsForFirstToken`, `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT`; the bridge skips `DistributedFirstTokenBudgetPolicy` for it, so neither the distributed engine's `prefill_stall` nor `cluster local`'s HTTP content timer fires): only its request deadline bounds its wait for a first token, and that deadline is the worker protocol's hour (`DistributedCBv2Engine.ownerRequestTimeout`, through `deadlineContext(requestTimeout:)`, `submitAwaitingQueue(requestTimeout:)` and each rank's reservation in `DistributedPipeExecutionOwner`), not the setup's request timeout. A retried Qwen pair media admission waits for its own generation's retirement (`DistributedQwenMediaLifetime.requireNativeRetirement`). Nemotron Super's local engines keep their own admission and don't bind it |
 | A local request at its overall deadline | `provider-swift/Sources/ProviderCore/Server/LocalDeadlineAnswer.swift` (`LocalDeadlineOutcome`): the local router binds one per request it answers here (`LocalRouter.answerHere`), else `CORSResponder` does; `MultiModelBatchSchedulerEngine` (and Nemotron Super's local route, `NemotronSuperLocalImageHTTP`) marks it when the engine ends the request at its safety ceiling (`InferenceTerminalCause.safetyDeadline`, also a pair's request deadline) or its legacy total wall (`request exceeded Ns deadline`). Not streamed: `CORSResponder` answers 503 with `Retry-After` in `LocalMemoryRefusal.deadline`, code `capacity_busy`, whatever error ended it (`deadlineResponse`); streamed: `CORSResponder` rewrites the failure event of any SSE body it returns (`answeringBusy`: a chat or completions chunk, a Responses `response.failed`); `cluster local`: `DistributedHTTPEventStream.deadlineFailureFrame`. The router never passes such a request on. Coordinator requests have no outcome and keep their typed terminal |
-| A local request's head, held until admission | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift` (`holdHeadUntilAdmitted`, `recordHeadHoldRefusal`, `LocalHeadHold`): a streamed request's, and the owner's first submission streamed or not (`holdsOwnerHead`). The engine's end before admission is the hold's refusal: the owner's request waits and is submitted again (the new attempt reuses the request id and usage signal, so it first waits for the earlier attempt's pump task, cleanup included, then resets the signal, `EngineV2RequestUsageSignal.awaitEarlierAttempt`); past a bound, or with the wait off, the memory 503 before any SSE header. A KV end with no other request on the slot (the bridge's `active`; a lone row whose step can't reserve its scratch) is refused as larger than the slot holds idle. A request with `LocalHeadHold.enabled` off (a raw-body owner's request whose logprobs ride a side channel) isn't held, and the 120 s admission lease still ends it |
+| A local request's head, held until admission | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift` (`holdHeadUntilAdmitted`, `recordHeadHoldRefusal`, `LocalHeadHold`): a streamed request's, and the owner's first submission streamed or not (`RouteLimits.EngineQueue.heldAndSubmittedAgain`). The engine's end before admission is the hold's refusal: the owner's request waits and is submitted again (the new attempt reuses the request id and usage signal, so it first waits for the earlier attempt's pump task, cleanup included, then resets the signal, `EngineV2RequestUsageSignal.awaitEarlierAttempt`); past a bound, or with the wait off, the memory 503 before any SSE header. A KV end with no other request on the slot (the bridge's `active`; a lone row whose step can't reserve its scratch) is refused as larger than the slot holds idle. A request with `LocalHeadHold.enabled` off (a raw-body owner's request whose logprobs ride a side channel) isn't held, and the 120 s admission lease still ends it |
 | Sampling translation | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`samplingParams`) |
 | Slot construction | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | Scheduler config, backend prep | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`productionSchedulerConfig`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
@@ -8254,6 +8255,118 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/R
 (`Gemma4ResidentLoadedStage.requestAllowance`)
 and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
+## The serving route and its policy table
+
+Several limits depend on whose request a submission is: a Darkbloom request,
+which the coordinator can send elsewhere; the owner's own request on the local
+API; or a request the provider submits for itself. The bridge resolves that
+once per submission as a value, `ServingRoute`, and every such limit reads its
+decision from one table, `RoutePolicy`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/ServingRoute.swift`).
+No limit works the route out for itself, and none takes it with a default.
+
+`ServingRoute.current(firstContentDeadline:)` reads three request-scoped
+values and applies `ServingRoute.resolve`:
+
+| Route | When |
+|---|---|
+| `owner` | The owner's wait is bound (`OwnerMemoryWait.current`: `MultiModelBatchSchedulerEngine.streamChatCompletion` binds the local API's `ownerMemoryWait`) and the request has no first-content budget, at engine admission priority 0 |
+| `ownerContinuation` | The same at a higher priority: a loop exit's continuation (`EngineAdmissionPriority`) |
+| `coordinator` | Any other request with a first-content budget or the coordinator's request id (`MeFirstDarkbloomRequest.id`, which `ProviderLoop` binds) |
+| `internal` | Neither: a calibration probe, a warm-up, a preload. Also the owner's request on Nemotron Super's local route, which binds no owner's wait |
+
+`RoutePolicy.limits(for:at:)` returns a `RouteLimits`, one field per limit,
+for a route and a front end (`ServingFrontEnd`: `oneMac`, `pair`).
+`coordinator` and `internal` decide the same in every cell.
+
+| Limit (`RouteLimits` field) | Front end | `coordinator`, `internal` | `owner` | `ownerContinuation` |
+|---|---|---|---|---|
+| `memory`: memory that running requests hold | one Mac, pair | Refused at once | Waits within the owner's bound, then is submitted again | Refused at once |
+| `engineQueue`: a request the engine queued and ended before admitting it | one Mac | Ends with the engine's lease | Its head is held; it waits and is submitted again | Ends with the engine's lease |
+| `mediaMemory`: the media memory gate | one Mac, pair | Refused at once | Refused at once | Refused at once |
+| `firstToken` | pair | The pair's allowance | None; the allowance with `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0` | The pair's allowance |
+| `requestDeadline` | pair | The setup's request timeout | The protocol's hour | The protocol's hour |
+| `context` | pair | `served` | `ownerServed` | `ownerServed` |
+
+Where the table has no row for a front end, the decision is the same for
+every route: a pair has no engine queue; one Mac has no first-token
+allowance, the engine's own request ceiling and the model window.
+
+The readers:
+
+- `EngineV2Bridge.submitTokenized` resolves the route and reads `memory`:
+  only the owner's request goes through `submittingOwnerRequest`.
+- Its one attempt (`submitTokenizedAttempt`) takes the route, with no default,
+  and reads `engineQueue` (the held head), `firstToken`, `requestDeadline`
+  and `context` for the engine it submits to. The coordinator's first-content
+  budget travels in the route (`ServingRoute.firstContentDeadline`).
+- `EngineV2Bridge.outputTokens(requested:promptTokens:route:)` and
+  `EngineV2Translation.admissionErrorMessage(for:distributedProfile:route:)`
+  read `context`. The scheduler and Nemotron Super's bindings name the route
+  where they size an output.
+- `MultiModelBatchSchedulerEngine` reads `mediaMemory` where its media gate
+  refuses.
+
+Every field has a reader. A wait that no code would read from the table is
+not a cell ([what the table does not decide](#what-the-table-does-not-decide)).
+
+Invariants:
+
+1. A new limit is a new `RouteLimits` field. The fields have no defaults, so
+   the build fails until `RoutePolicy.limits(for:at:)` decides it, and every
+   switch in `RoutePolicy` names every route and front end.
+2. No production parameter takes a route with a default, nor the flag below
+   (`ServingRoutePolicyTests.noCallerGetsARouteItDidNotName`).
+3. The pair's own types carry the `context` decision as a flag
+   (`DistributedRequestDeadlineContext.ownerRequest`,
+   `DistributedResidentExecutionProfile.limits(ownerRequest:)`,
+   `refusal(for:ownerRequest:)`, `DistributedCBv2Engine.deadlineContext`),
+   because the cluster checks under `libs/darkbloom-cluster/Tests` compile
+   those files alone, so they cannot name the route. The flag has no default
+   anywhere: the bridge sets it from `RouteLimits.Context.servesOwner`, a
+   submission with no context of its own says `false`, and a restriction
+   passes the request's own.
+4. `ServingRoutePolicyTests` pins every cell: a second copy, so that changing
+   one takes a second hand. It cannot say a cell is right. The oracle is
+   `ServingRouteLimitTests`, which drives real engine paths on fabricated
+   engines. It does not reach `mediaMemory` (`EngineV2VisionRoutingTests`
+   does), a continuation's cells on a pair, a pair's `engineQueue`, or one
+   Mac's `firstToken`, `requestDeadline` and `context`.
+
+Cells that state today's behaviour rather than a decision:
+
+- The owner's media request is refused at once by the media memory gate
+  (`mediaMemory`): the owner's memory wait covers the engine's memory only.
+  The local API answers 503 without `Retry-After`. Every route decides the
+  same; the cell is there so that letting the owner's request wait is a new
+  case that its reader must handle.
+- A loop exit's continuation on a pair carries the owner's `requestDeadline`
+  and `context` and the pair's `firstToken` allowance, with no effect: a pair
+  refuses a request with a priority first
+  (`DistributedRequestRefusal.priorityUnsupported`).
+
+### What the table does not decide
+
+These are decided by their own front ends, which read no cell. They are
+open decisions, not rows:
+
+- A pair's lane queue (`DistributedLocalServer.waitForTurn`,
+  `ProviderLoop.takeClusterPairLane`): a request on the pair's local API
+  takes a lane at once when one is free and nobody waits, otherwise waits in
+  arrival order until `DistributedRequestQueue.Limits.waitCeiling`, then is
+  refused with 503. The ceiling counts in the setup's request timeout, though
+  each of the owner's requests ahead may run for the protocol's hour.
+- Nemotron Super's local route
+  (`NemotronSuperLocalImageHTTP.streamChatCompletion`): its own admission
+  runs before its bridges and binds no owner's wait, so the owner's request
+  resolves as `internal` and never waits for memory. A busy slot is waited
+  for at most `NemotronSuperServingPolicy.finishingWait` (1 s), a media
+  request at most `stackedMediaWait` (3 s) behind media answers already
+  streaming, one waiter at a time; then 429.
+- A local request at its overall deadline: the transport that binds
+  `LocalDeadlineOutcome` decides how it is answered, Nemotron Super's local
+  route included.
+
 ## A GLM pipeline pair serves its owner 262,144 tokens
 
 A GLM-5.3-Flash pipeline pair serves the owner's own requests (the leader's
@@ -8268,8 +8381,9 @@ slot's `request_limits` and the qualification envelope keep the memory plan's
   it (`ClusterWorkerProfile.scope(contextTokens:)`), stored as
   `DistributedResidentExecutionProfile.ownerServed` beside `served`. The
   owner's request carries `DistributedRequestDeadlineContext.ownerRequest`
-  (the bridge sets it for a request the local API binds `OwnerMemoryWait` to;
-  a restriction of its deadlines keeps it). The engine's and the pipe owner's
+  (the bridge sets it from the request's route,
+  [`RouteLimits.context`](#the-serving-route-and-its-policy-table); a
+  restriction of its deadlines keeps it). The engine's and the pipe owner's
   refusals, the bridge's cut of `max_tokens` (`pairOwnerLimits`), the refusal's
   words and both local `/v1/models` lists read `ownerServed` for it; the
   heartbeat (`requestLimits`) reads `served`.

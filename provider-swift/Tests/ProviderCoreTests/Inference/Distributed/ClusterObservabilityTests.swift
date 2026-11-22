@@ -50,7 +50,7 @@ struct ClusterObservabilityTests {
             detokenizers: DistributedTestDetokenizers(), clock: clock.clock, requestObserver: capture.record)
         let origin = clock.now
         let stream = try engine.submit(distributedTestRequest(maxTokens: 3), deadlineContext: .init(
-            generationDeadline: origin.advanced(by: .seconds(30)), firstTokenDeadline: origin.advanced(by: .seconds(10))))
+            generationDeadline: origin.advanced(by: .seconds(30)), firstTokenDeadline: origin.advanced(by: .seconds(10)), ownerRequest: false))
         clock.advance(.milliseconds(400))
         #expect(owner.last.send(.token(4)))
         clock.advance(.milliseconds(100))

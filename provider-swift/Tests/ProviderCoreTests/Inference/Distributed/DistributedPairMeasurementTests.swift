@@ -142,11 +142,11 @@ struct DistributedPairMeasurementTests {
         let longOutput = distributedTestRequest(1, maxTokens: 40_000)
         let longPrompt = CBv2Request(id: .init(2), promptTokens: Array(repeating: 1, count: 40_000),
                                      sampling: .init(temperature: 0), maxTokens: 1)
-        #expect(pipeline.profile.refusal(for: longOutput) == .outputTooLong)
-        #expect(pipeline.profile.refusal(for: longPrompt) == .promptTooLong)
-        #expect(DistributedRequestRefusal.outputTooLong.message(pipeline.profile)
+        #expect(pipeline.profile.refusal(for: longOutput, ownerRequest: false) == .outputTooLong)
+        #expect(pipeline.profile.refusal(for: longPrompt, ownerRequest: false) == .promptTooLong)
+        #expect(DistributedRequestRefusal.outputTooLong.message(pipeline.profile, ownerRequest: false)
             == "max_tokens is above this model's output limit of 32768 tokens on this cluster.")
-        #expect(tensor.profile.refusal(for: longOutput) == nil && tensor.profile.refusal(for: longPrompt) == nil)
+        #expect(tensor.profile.refusal(for: longOutput, ownerRequest: false) == nil && tensor.profile.refusal(for: longPrompt, ownerRequest: false) == nil)
     }
 
     /// End to end through the provider bridge: one served request becomes the

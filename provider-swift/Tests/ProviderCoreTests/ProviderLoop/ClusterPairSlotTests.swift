@@ -210,7 +210,7 @@ struct ClusterPairSlotTests {
                                            maxOutputLength: profile.served.outputTokens, inputModalities: ["text"]))
         // A request sized to the listed output is one the pair serves.
         let listed = try #require(limits.maxOutputLength)
-        #expect(profile.refusal(for: distributedTestRequest(maxTokens: listed)) == nil)
+        #expect(profile.refusal(for: distributedTestRequest(maxTokens: listed), ownerRequest: false) == nil)
         #expect(await loop.retireClusterPairSlot(reason: "test"))
     }
 

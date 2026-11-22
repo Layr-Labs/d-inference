@@ -1098,7 +1098,7 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         // rejection before native admission, naming the bound, never a
         // retained engine fault. (An output that would pass it is cut.)
         #expect(mtpBridge.advertisedContextTokens == 32)
-        #expect(mtpBridge.outputTokens(requested: 31, promptTokens: 2) == 30)
+        #expect(mtpBridge.outputTokens(requested: 31, promptTokens: 2, route: .coordinator(nil)) == 30)
         let overBound = await mtpBridge.submitTokenized(
             promptTokens: Array(repeating: 3, count: 32),
             request: .init(model: fixture.catalog.id, messages: [], temperature: 0, max_tokens: 1),

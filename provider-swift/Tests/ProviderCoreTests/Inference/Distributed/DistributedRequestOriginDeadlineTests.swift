@@ -91,7 +91,7 @@ struct DistributedRequestOriginDeadlineTests {
     @Test func preparationAndReserveTimeConsumeTheOriginalBudget() async throws {
         let owner = DeadlineOwner(), clock = DistributedTestClock()
         let engine = try engine(owner, clock)
-        let context = engine.deadlineContext(receivedAt: clock.now)
+        let context = engine.deadlineContext(receivedAt: clock.now, ownerRequest: false)
         clock.advance(.seconds(300)) // provider preparation and queued work
         owner.base.onReserve = { clock.advance(.seconds(10)) }
         let stream = try engine.submit(distributedTestRequest(), deadlineContext: context)
@@ -110,7 +110,7 @@ struct DistributedRequestOriginDeadlineTests {
     @Test func expiredOriginDoesNotReserve() async throws {
         let owner = DeadlineOwner(), clock = DistributedTestClock()
         let engine = try engine(owner, clock)
-        let context = engine.deadlineContext(receivedAt: clock.now)
+        let context = engine.deadlineContext(receivedAt: clock.now, ownerRequest: false)
         clock.advance(.seconds(315))
         #expect(throws: DistributedRequestDeadlineError.generationExpired) {
             _ = try engine.submit(distributedTestRequest(), deadlineContext: context)
@@ -123,7 +123,7 @@ struct DistributedRequestOriginDeadlineTests {
         let owner = DeadlineOwner(), clock = DistributedTestClock()
         let engine = try engine(owner, clock), now = clock.now
         let stream = try engine.submit(distributedTestRequest(maxTokens: 1),
-            deadlineContext: .init(generationDeadline: now.advanced(by: .seconds(600))))
+            deadlineContext: .init(generationDeadline: now.advanced(by: .seconds(600)), ownerRequest: false))
         #expect(owner.context?.generationDeadline == now.advanced(by: .seconds(315)))
         owner.base.last.send(.token(4)); owner.base.last.acknowledge()
         _ = await distributedCollect(stream); await finish(engine, owner)
@@ -136,10 +136,10 @@ struct DistributedRequestOriginDeadlineTests {
         let engine = try engine(owner, clock), now = clock.now
         let hour = DistributedCBv2Engine.ownerRequestTimeout
         #expect(hour == .seconds(3600) && hour == .nanoseconds(Int64(ClusterWorkerLimits.deadlineNanoseconds)))
-        #expect(engine.deadlineContext(receivedAt: now, requestTimeout: hour).generationDeadline
+        #expect(engine.deadlineContext(receivedAt: now, requestTimeout: hour, ownerRequest: false).generationDeadline
                 == now.advanced(by: hour))
         let submitted = try await engine.submitAwaitingQueue(distributedTestRequest(maxTokens: 1),
-            deadlineContext: .init(generationDeadline: now.advanced(by: .seconds(7200))), requestTimeout: hour)
+            deadlineContext: .init(generationDeadline: now.advanced(by: .seconds(7200)), ownerRequest: false), requestTimeout: hour)
         #expect(owner.context?.generationDeadline == now.advanced(by: hour))
         #expect(engine.onQueue { engine.active?.absoluteDeadline } == now.advanced(by: hour))
         owner.base.last.send(.token(4)); owner.base.last.acknowledge()
@@ -150,7 +150,7 @@ struct DistributedRequestOriginDeadlineTests {
         let owner = DeadlineOwner(), clock = DistributedTestClock()
         let engine = try engine(owner, clock), now = clock.now
         let context = DistributedRequestDeadlineContext(generationDeadline: now.advanced(by: .seconds(20)),
-                                                        firstTokenDeadline: now.advanced(by: .seconds(2)))
+                                                        firstTokenDeadline: now.advanced(by: .seconds(2)), ownerRequest: false)
         let stream = try engine.submit(distributedTestRequest(), deadlineContext: context)
         #expect(owner.base.last.send(.token(4)))
         clock.advance(.seconds(3))
@@ -166,7 +166,7 @@ struct DistributedRequestOriginDeadlineTests {
         let engine = try engine(owner, clock), now = clock.now
         owner.base.onReserve = { clock.advance(.seconds(3)) }
         let stream = try engine.submit(distributedTestRequest(), deadlineContext: .init(
-            generationDeadline: now.advanced(by: .seconds(20)), firstTokenDeadline: now.advanced(by: .seconds(2))))
+            generationDeadline: now.advanced(by: .seconds(20)), firstTokenDeadline: now.advanced(by: .seconds(2)), ownerRequest: false))
         #expect(owner.base.last.startCount == 0 && owner.base.last.cancelCount == 1)
         #expect(owner.base.last.releaseCount == 0)
         owner.base.last.acknowledge()

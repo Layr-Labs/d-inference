@@ -3,13 +3,14 @@ import MLXLMCommon
 
 extension DistributedCBv2Engine {
     public func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
-        try submit(request, deadlineContext: deadlineContext(receivedAt: clock.now()))
+        try submit(request, deadlineContext: deadlineContext(receivedAt: clock.now(), ownerRequest: false))
     }
 
     public func submit(_ request: CBv2Request,
                        deadlineContext context: DistributedRequestDeadlineContext) throws -> AsyncStream<CBv2Event> {
         // Capture before queue.sync: waiting for the engine queue consumes time.
-        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now()))
+        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now(),
+                                                             ownerRequest: context.ownerRequest))
         let held = try onQueue { try holdLane(request, deadlineContext: bounded) }
         return try admit(held).stream
     }
@@ -25,7 +26,8 @@ extension DistributedCBv2Engine {
     func submitAwaitingQueue(_ request: CBv2Request,
         deadlineContext context: DistributedRequestDeadlineContext, requestTimeout: Duration? = nil
     ) async throws -> (events: AsyncStream<CBv2Event>, retirement: CBv2RequestRetirement) {
-        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now(), requestTimeout: requestTimeout))
+        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now(), requestTimeout: requestTimeout,
+                                                             ownerRequest: context.ownerRequest))
         let cancellation = DistributedAdmissionCancellation()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -51,7 +53,7 @@ extension DistributedCBv2Engine {
         _ request: CBv2Request, firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
     ) async throws -> CBv2FirstTokenDeadlineResult {
         try await submit(request, firstTokenDeadline: firstTokenDeadline,
-                         deadlineContext: deadlineContext(receivedAt: clock.now()))
+                         deadlineContext: deadlineContext(receivedAt: clock.now(), ownerRequest: false))
     }
 
     public func submit(
@@ -59,7 +61,8 @@ extension DistributedCBv2Engine {
         deadlineContext context: DistributedRequestDeadlineContext
     ) async throws -> CBv2FirstTokenDeadlineResult {
         let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now(),
-                                                             firstTokenDeadline: firstTokenDeadline.deadline))
+                                                             firstTokenDeadline: firstTokenDeadline.deadline,
+                                                             ownerRequest: context.ownerRequest))
         let cancellation = DistributedAdmissionCancellation()
         return try await withTaskCancellationHandler {
             try await submit(request, deadline: firstTokenDeadline, cancellation: cancellation,
@@ -74,7 +77,8 @@ extension DistributedCBv2Engine {
         cancellation: DistributedAdmissionCancellation,
         deadlineContext context: DistributedRequestDeadlineContext? = nil
     ) async throws -> CBv2FirstTokenDeadlineResult {
-        let local = deadlineContext(receivedAt: clock.now(), firstTokenDeadline: deadline.deadline)
+        let local = deadlineContext(receivedAt: clock.now(), firstTokenDeadline: deadline.deadline,
+                                    ownerRequest: context?.ownerRequest ?? false)
         let bounded = context.map { $0.restricted(to: local) } ?? local
         let effectiveFirst = min(deadline.deadline, bounded.firstTokenDeadline ?? deadline.deadline)
         let admission = CBv2FirstTokenDeadlineAdmission(deadline: effectiveFirst,

@@ -134,12 +134,13 @@ extension EngineV2Bridge {
     /// monotonic duration only at atomic engine admission. Existing local/test
     /// callers use the non-throwing overload.
     ///
-    /// The owner's request on the local API (`OwnerMemoryWait.current`, no
-    /// coordinator deadline, not a loop exit's continuation) waits for the
-    /// memory requests already running hold instead of a refusal at once
-    /// (`submittingOwnerRequest`), and on a pair for its first token, with no
-    /// first-token allowance (`OwnerMemoryWait.waitsForFirstToken`); every
-    /// other request is submitted once, with the pair's allowance.
+    /// Whose request this is is resolved here, once (`ServingRoute.current`),
+    /// and every limit that depends on it reads `RoutePolicy`. The owner's
+    /// request on the local API waits for the memory requests already running
+    /// hold instead of a refusal at once (`submittingOwnerRequest`), and on a
+    /// pair for its first token, with no first-token allowance
+    /// (`OwnerMemoryWait.waitsForFirstToken`); every other request is
+    /// submitted once, with the pair's allowance.
     public func submitTokenized(
         promptTokens: [Int],
         request: ChatCompletionRequest,
@@ -169,11 +170,7 @@ extension EngineV2Bridge {
         measurementPurpose: EngineMeasurementPurpose = .serving,
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
-        // The owner's request on the local API, its continuations included; only a first submission waits.
-        let ownerRequest = OwnerMemoryWait.servesOwnerRequest(firstContentDeadline: firstContentDeadline)
-        let ownerWait = OwnerMemoryWait.current.flatMap { wait in
-            ownerRequest && EngineAdmissionPriority.current == 0 ? wait : nil
-        }
+        let route = ServingRoute.current(firstContentDeadline: firstContentDeadline)
         var earlierAttempt = false
         func attempt(_ origin: ContinuousClock.Instant?, _ waitEnd: ContinuousClock.Instant?) async throws
             -> AsyncStream<GenerationEvent> {
@@ -192,17 +189,17 @@ extension EngineV2Bridge {
                 qwenMediaLifetime: qwenMediaLifetime, positionState: positionState,
                 hybridPrefixIdentity: hybridPrefixIdentity, mediaKind: mediaKind, tokenConstraint: tokenConstraint,
                 stopStringScope: stopStringScope, donationDemand: donationDemand,
-                firstContentDeadline: firstContentDeadline, profile: profile,
+                route: route, profile: profile,
                 serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
                 promptWork: promptWork, distributedDeadlineContext: distributedDeadlineContext,
-                distributedRequestOrigin: origin,
-                appliesDistributedFirstTokenBudget: ownerWait?.waitsForFirstToken != true,
-                ownerRequest: ownerRequest, holdsOwnerHead: ownerWait != nil, ownerWaitEnd: waitEnd,
+                distributedRequestOrigin: origin, ownerWaitEnd: waitEnd,
                 measurementPurpose: measurementPurpose, loopGuard: loopGuard)
         }
-        guard let wait = ownerWait else { return try await attempt(distributedRequestOrigin, nil) }
+        // Only the owner's request has a wait to wait with; every other route is submitted once.
+        guard case .waitsWithinOwnersBound = RoutePolicy.limits(for: route, at: servingFrontEnd).memory,
+              case .owner(let wait) = route else { return try await attempt(distributedRequestOrigin, nil) }
         let (worstCaseTokens, overflow) = promptTokens.count.addingReportingOverflow(
-            outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count, ownerRequest: ownerRequest))
+            outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count, route: route))
         return try await submittingOwnerRequest(
             wait, model: request.model, worstCaseTokens: overflow ? Int.max : worstCaseTokens,
             origin: distributedRequestOrigin, attempt: attempt)
@@ -232,26 +229,23 @@ extension EngineV2Bridge {
         /// Coordinator repeat-demand hint for the complete-checkpoint write
         /// gate; nil keeps the legacy write-every-checkpoint behaviour.
         donationDemand: SSDCheckpointDonationDemand? = nil,
-        firstContentDeadline: FirstContentDeadline?,
+        /// Whose request this is, with a coordinator's first-content budget: what every limit below that differs
+        /// by route reads, through `RoutePolicy`. No default: a caller that omits it cannot compile.
+        route: ServingRoute,
         profile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
         promptWork: PromptWork? = nil,
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
-        appliesDistributedFirstTokenBudget: Bool = true,
-        /// The owner's request (`OwnerMemoryWait`), a loop exit's continuation included: on a pair, the
-        /// protocol's hour.
-        ownerRequest: Bool = false,
-        /// The owner's first submission, which may wait: held until admission, streamed or not.
-        holdsOwnerHead: Bool = false,
         /// The owner's wait's end (`submittingOwnerRequest`): still queued then, it leaves as busy; nil, no end.
-        ownerWaitEnd: ContinuousClock.Instant? = nil,
+        ownerWaitEnd: ContinuousClock.Instant?,
         measurementPurpose: EngineMeasurementPurpose = .serving,
         /// Stops the row as `length` once its answer repeats verbatim
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        let firstContentDeadline = route.firstContentDeadline
         let reasoningBudget: CBv2ReasoningBudget?
         do {
             if let budget = request.nativeReasoningBudget {
@@ -393,7 +387,7 @@ extension EngineV2Bridge {
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
         let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count,
-                                           ownerRequest: ownerRequest)
+                                           route: route)
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
             maxOutputTokens: max(0, maxOutputTokens),
@@ -943,7 +937,7 @@ extension EngineV2Bridge {
         var engineAdmittedAt = ContinuousClock.now
         // A pair's first-token allowance as its engine arms it, also for a
         // request without a coordinator budget (the wedge monitor's backstop).
-        // The owner's local request has none (`appliesDistributedFirstTokenBudget`):
+        // The owner's local request has none (`RouteLimits.FirstToken`):
         // its request deadline bounds it, and the pair's collective progress
         // limit still ends a stalled rank.
         var distributedFirstTokenAllowance: ContinuousClock.Instant?
@@ -967,13 +961,21 @@ extension EngineV2Bridge {
                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
                 : nil)
         let distributed = engine as? DistributedCBv2Engine
+        // What this route gets from the engine the request is submitted to, decided in one place.
+        let limits = RoutePolicy.limits(for: route, at: distributed == nil ? .oneMac : .pair)
         // The owner's request on a pair runs for the worker protocol's hour, not the setup's request timeout.
-        let distributedRequestTimeout = ownerRequest ? DistributedCBv2Engine.ownerRequestTimeout : nil
+        let distributedRequestTimeout: Duration? = switch limits.requestDeadline {
+        case .protocolHour: DistributedCBv2Engine.ownerRequestTimeout
+        case .setupRequestTimeout, .enginesOwn: nil
+        }
         let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
                                                          firstTokenDeadline: firstContentDeadline?.instant,
                                                          requestTimeout: distributedRequestTimeout,
-                                                         ownerRequest: ownerRequest)
-        let firstTokenPolicy = appliesDistributedFirstTokenBudget ? distributedFirstTokenBudgetPolicy : nil
+                                                         ownerRequest: limits.context.servesOwner)
+        let firstTokenPolicy: DistributedFirstTokenBudgetPolicy? = switch limits.firstToken {
+        case .pairAllowance: distributedFirstTokenBudgetPolicy
+        case .noAllowance: nil
+        }
         do {
             let selectedContext = try originContext.map { original in
                 let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
@@ -1225,7 +1227,7 @@ extension EngineV2Bridge {
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
             let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributed?.profile,
-                                                                    ownerRequest: ownerRequest)
+                                                                    route: route)
             let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
             // Refusals are typed, as on one Mac: thrown before any stream
             // exists, so a streamed request gets its status rather than a 200
@@ -1279,6 +1281,10 @@ extension EngineV2Bridge {
         // `submittingOwnerRequest`). Its prompt progress starts there too. A pair's API, whose queue is before its
         // engine, says its prompt now.
         // Held before the pump starts, so the pump's terminal finds it (`recordHeadHoldRefusal`).
+        let holdsOwnerHead = switch limits.engineQueue {
+        case .heldAndSubmittedAgain: true
+        case .endsWithTheEnginesLease, .noQueue: false
+        }
         let holdsHead = (prefillProgress != nil || holdsOwnerHead) && distributed == nil && LocalHeadHold.enabled
         if holdsHead {
             heldHeads[id] = .waiting

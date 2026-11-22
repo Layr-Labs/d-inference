@@ -5,9 +5,10 @@ import MLXLMCommon
 
 /// The owner's request on this Mac's local API (a pair's, on its leader), when it can't start now because requests
 /// already running hold the memory it needs: it waits for them, instead of the memory 503 at once. The local API binds
-/// this around each request it serves through `MultiModelBatchSchedulerEngine`, and `EngineV2Bridge.submitTokenized`
-/// reads it. Nil for every other request: a Darkbloom request is refused at once, as before, so the coordinator sends
-/// it elsewhere within its first-content budget; Nemotron Super's local engines keep their own admission.
+/// this around each request it serves through `MultiModelBatchSchedulerEngine`, and it makes the request the owner's
+/// where the bridge resolves whose it is (`ServingRoute.current`). Nil for every other request: a Darkbloom request is
+/// refused at once, as before, so the coordinator sends it elsewhere within its first-content budget; Nemotron Super's
+/// local engines keep their own admission. What each limit decides for the owner's request is `RoutePolicy`'s.
 ///
 /// - The request waits in arrival order behind the owner's requests already waiting on the slot (`OwnerMemoryQueue`).
 ///   The first one is tried again when a request on the slot ends, and at least every `retryInterval` (memory freed by
@@ -27,13 +28,6 @@ import MLXLMCommon
 struct OwnerMemoryWait: Sendable {
     @TaskLocal static var current: OwnerMemoryWait?
 
-    /// Whether the request this task serves is the owner's on the local API (`current` is bound; a request with a
-    /// coordinator's first-content budget never is), a loop exit's continuation included. On a pair it is held to
-    /// what the pair serves its owner (`DistributedResidentExecutionProfile.ownerServed`) and runs for the protocol's
-    /// hour. The one rule the scheduler's `max_tokens` cut and the bridge's submission read.
-    static func servesOwnerRequest(firstContentDeadline: FirstContentDeadline?) -> Bool {
-        current != nil && firstContentDeadline == nil
-    }
     /// The client's own bound on this request's wait (`requestLimitHeaderName`), bound by the local API around the
     /// request that names one.
     @TaskLocal static var requestLimit: Duration?

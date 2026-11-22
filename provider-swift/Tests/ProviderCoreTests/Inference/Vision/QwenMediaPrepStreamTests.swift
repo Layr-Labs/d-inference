@@ -197,6 +197,18 @@ struct QwenMediaPrepStreamTests {
         #expect(ownPositions.decodeDeltas == sharedPositions.decodeDeltas)
     }
 
+    @Test("a failed preparation's error propagates and its stream scope ends")
+    func failedPreparationPropagates() async throws {
+        struct PreparationFailure: Error {}
+        await #expect(throws: PreparationFailure.self) {
+            try await EngineV2VisionPrefill.onMediaPrepStream(true) {
+                #expect(!MLXProcessStreams.isOnDefaultGPUStream)
+                throw PreparationFailure()
+            }
+        }
+        #expect(MLXProcessStreams.isOnDefaultGPUStream)
+    }
+
     @Test("only Qwen 3.5-family wrappers use their own stream")
     func onlyQwen35Wrappers() throws {
         let configuration = try mediaPrepStreamConfiguration()

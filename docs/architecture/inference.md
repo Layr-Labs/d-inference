@@ -5325,10 +5325,10 @@ requests 1 %), so `auto` requests, which return calls as generated, are left as 
   with `MLX.withError` right after `eval`
   (`provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`).
 - **Own GPU stream (Qwen 3.5 family).** The engine's steps run on the process
-  default GPU stream, and a recurrent Qwen step synchronizes it. On that stream
-  the tower's command buffers queued behind the running rows' steps, and each
-  step waited for the tower's buffers, so a busy Mac's media preparation took
-  several times its idle time. A `Qwen35` wrapper (and its MoE subclass) now
+  default GPU stream, whose command buffers execute in submission order. On that
+  stream the tower's command buffers queued behind the running rows' steps, and
+  each step behind the tower's buffers submitted before it, so a busy Mac's media
+  preparation took several times its idle time. A `Qwen35` wrapper (and its MoE subclass) now
   runs the processor and the tower inside `Stream.withNewDefaultStream`
   (`EngineV2VisionPrefill.onMediaPrepStream`). Every array of the submission is
   evaluated and the stream drained before the scope ends. The tower uses only

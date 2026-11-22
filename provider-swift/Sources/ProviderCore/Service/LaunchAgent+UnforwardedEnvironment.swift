@@ -41,7 +41,11 @@ extension LaunchAgent {
         /// service also runs, read in every build. It stays out of the service
         /// so an installed provider runs the release's defaults; it applies to
         /// foreground and local runs.
-        case developerSwitch
+        ///
+        /// Not a place for a variable only a developer's build should honour:
+        /// every build reads these. Such a variable is `debugOnly`, or a
+        /// `pathOverride`, and is gated where it is read.
+        case engineeringControl
         /// Retired: recognised only so startup can warn that it does nothing.
         case retired
         /// Open decision. Code or operator documentation presents the key as
@@ -227,7 +231,7 @@ extension LaunchAgent {
             "DARKBLOOM_GLM_CALIBRATION_APP_SHA256",
             "DARKBLOOM_GLM_CALIBRATION_PEER_SHA256",
         ]),
-        (.developerSwitch, [
+        (.engineeringControl, [
             // Scheduler and backend tuning and measurement.
             "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK",
             "DARKBLOOM_CBV2_MIXED_PREFILL_CAP",

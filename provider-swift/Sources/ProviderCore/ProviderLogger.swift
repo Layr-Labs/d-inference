@@ -38,7 +38,7 @@ struct ProviderLogger: Sendable {
     /// At the level unified logging keeps on disk, so `darkbloom logs --last` still shows it hours later (an info
     /// line lives only in memory). For the rare lines a person reads after the fact: a single Mac's update steps.
     func notice(_ message: ProviderOperationalMessage) {
-        publicLog(.notice, message)
+        publicLog(.info, message)  // red control: the in-memory level
     }
 
     func warning(_ message: ProviderOperationalMessage) {

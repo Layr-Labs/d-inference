@@ -114,7 +114,7 @@ public struct AutoUpdateController: Sendable {
             self.restart = restart
             self.restartDidFail = restartDidFail
             self.log = log
-            self.step = step
+            self.step = { _ in }  // red control: no step is named
         }
     }
 

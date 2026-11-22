@@ -446,6 +446,10 @@ public enum LaunchAgent: Sendable {
     /// closing it with the arguments it sent.
     /// `DARKBLOOM_QWEN_CALL_END_GUARD`: Qwen 3.5–3.8 admit no end of turn while
     /// a call frame is open, by default; an off word samples as before.
+    /// `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY`: GLM-5.3-Flash serves history
+    /// tool-call arguments and tool schemas in shapes vLLM and the OpenAI API
+    /// accept, by default; an off word restores refusing inexact numbers,
+    /// repeated keys and tool-call markers in arguments.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -529,6 +533,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT`: the owner's local request on a pair
     /// waits for its first token with no first-token allowance by default;
     /// `0`, `false`, `no` or `off` restores the pair's allowance.
+    /// `DARKBLOOM_GLM_SHARED_GRANT_WAIT`: a GLM request that fits GLM alone waits
+    /// for its share beside other loaded models by default; `0`, `false`, `no` or
+    /// `off` refuses it at once, as 0.10.17 did.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -582,6 +589,7 @@ public enum LaunchAgent: Sendable {
         NemotronSuperLocalBridgeBuilder.concurrentVideoKey,
         NemotronSuperLocalBridgeBuilder.firstContentRefusalKey,
         MediaIngest.maxImagesEnvironmentKey,
+        GLM5NextPromptPolicy.referenceToolHistoryEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,
@@ -602,6 +610,10 @@ public enum LaunchAgent: Sendable {
         // with a presence/frequency penalty speculate with exact acceptance;
         // `0`, `false`, `no` or `off` keeps them target-only (0.10.15).
         MTPPenaltyRows.environmentKey,
+        // SDK-read (`CBv2MTPConfig.envStopStringSpeculation`, once per process): rows
+        // with `stop` strings speculate on the builds that opt in; `0`, `false`, `no`
+        // or `off` keeps them target-only.
+        MTPStopStringRows.environmentKey,
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
@@ -626,6 +638,7 @@ public enum LaunchAgent: Sendable {
         MediaIngest.qwenVideoTokensEnvironmentKey,
         OwnerMemoryWait.environmentName,
         OwnerMemoryWait.firstTokenWaitEnvironmentName,
+        OwnerMemoryWait.sharedGrantWaitEnvironmentName,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

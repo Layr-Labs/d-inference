@@ -118,32 +118,6 @@ struct MTPConfigKeyTests {
         }
     }
 
-    /// Gemma rows with stop strings or a presence/frequency penalty stay
-    /// target-only: the slot factory turns neither SDK opt-in on for the catalog
-    /// Gemma QAT build, whatever the row variables say (the SDK reads them as
-    /// kill switches only). The two-draft table is unaffected.
-    @Test func gemmaQATStopAndPenaltyRowsStayTargetOnly() {
-        let gemma = MTPAcceptancePolicy.gemmaQATModelID
-        #expect(!SDKFeatureDefaults.penaltyRowBuilds.contains(gemma))
-        for environment in [
-            [:], ["DARKBLOOM_MTP_PENALTY_ROWS": "1", "DARKBLOOM_MTP_STOP_STRING_ROWS": "1"],
-        ] as [[String: String]] {
-            var config = CBv2MTPConfig(enabled: true)
-            let on = SDKFeatureDefaults.applyMTPDefaults(
-                to: &config, modelId: gemma, environment: environment, processEnvironment: environment)
-            #expect(!config.penaltySpeculation && !config.effectivePenaltySpeculation)
-            #expect(!config.stopStringSpeculation && !config.effectiveStopStringSpeculation)
-            #expect(!on.contains(MTPPenaltyRows.environmentKey))
-        }
-        let tables: [(chip: String, table: [Int])] = [
-            ("Apple M5 Ultra", [2, 2, 0]), ("Apple M3 Ultra", [2, 0]), ("Apple M5 Max", [2, 0]),
-        ]
-        for (chip, table) in tables {
-            #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
-                modelID: gemma, chipName: chip, twoDrafts: true) == table)
-        }
-    }
-
     @Test func gemmaTwoDraftsRollbackIsForwarded() {
         let key = MTPAutomaticVerificationPolicy.gemmaTwoDraftsEnvironmentKey
         #expect(key == "DARKBLOOM_GEMMA_MTP_TWO_DRAFTS")

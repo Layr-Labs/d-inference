@@ -25,10 +25,12 @@ extension PagedKVQuantizationPolicy {
     /// for the model (`MTPActivationStatus.configured`), whether or not it ever
     /// attaches: a slot built target-only (assistant or catalog metadata not
     /// ready, or skipped for memory) then encodes its checkpoints as an attached
-    /// slot does, so a hit answers the same either way. `mtp_mode = "off"`
-    /// (`configured` false) or the `DARKBLOOM_CBV2_MTP=0` kill switch keeps the
-    /// target-only layout. The benchmark construction
-    /// (`EngineV2Factory.makeProductionBuild`) keeps its attached-only rule.
+    /// slot does. `mtp_mode = "off"` (`configured` false) or the
+    /// `DARKBLOOM_CBV2_MTP=0` kill switch keeps the target-only layout, whether
+    /// seen by the SDK at process start (`CBv2MTPConfig.envEnabled`) or recorded
+    /// as a preparation fallback (`killSwitchDisabled`). The benchmark
+    /// construction (`EngineV2Factory.makeProductionBuild`) keeps its
+    /// attached-only rule.
     static func gemmaAssistantAccessExpected(
         assistantAttached: Bool, mtpEnabled: Bool, status: MTPActivationStatus,
         processMTPEnabled: Bool = CBv2MTPConfig.envEnabled

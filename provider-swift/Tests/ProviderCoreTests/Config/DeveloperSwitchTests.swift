@@ -5,17 +5,23 @@ import Testing
 
 /// `DeveloperSwitch` declares which builds honour each developer-only
 /// variable, and `value(environment:posture:)` is the only reader. The first
-/// half checks the declarations against every build posture, by the
-/// variables' literal names. The second half reads the sources with
-/// `ServiceEnvironmentReachTests.scan`: a variable that is developer-only by
-/// its declared reason or by its name is a switch, a switch's variable is
-/// spelled only in its declaration and no environment is read through a
-/// constant that holds its name, and the `DEBUG` condition becomes a value
-/// in one place.
+/// half checks the reader against the declarations in every build posture,
+/// and pins, by their literal names, the variables that were gated before
+/// they became switches and the ones production still honours. The second
+/// half reads the sources with `ServiceEnvironmentReachTests.scan`: a
+/// variable that is developer-only by its declared reason or by its name is
+/// a switch, a switch's variable is spelled only in its declaration and no
+/// environment is read through a constant that holds its name, and the
+/// `DEBUG` condition becomes a value in one place.
+///
+/// Nothing here is a copy of a list that grows: a switch, a location or a
+/// constant added later needs no entry in this file. Only `openDecisions` is
+/// exact, because it may only shrink.
 @Suite struct DeveloperSwitchTests {
     // MARK: - The declarations
 
-    /// The configuration axis: honoured by a debug build, by no signed build.
+    /// The variables a debug build read and no signed build did, before they
+    /// became switches. Each keeps that gate (the configuration axis).
     static let debugOnly: Set<String> = [
         "DARKBLOOM_ADDON_DEV_IDENTITY", "DARKBLOOM_AUTH_TOKEN_PATH", "DARKBLOOM_CLUSTER_FORCE_MODE",
         "DARKBLOOM_DEBUG_CACHE_KEY_FILE", "DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS",
@@ -26,8 +32,9 @@ import Testing
         "DARKBLOOM_VERIFIED_WEIGHTS_FILE", "DARKBLOOM_WATCHDOG_STATE",
     ]
 
-    /// The environment axis: honoured by every build but production's, a
-    /// signed DevNet or staging build included.
+    /// The variable every build but production's read, a signed DevNet or
+    /// staging build included, before it became a switch. It keeps that gate
+    /// (the environment axis).
     static let nonProduction: Set<String> = ["DARKBLOOM_CLUSTER_DEVELOPER_SSH"]
 
     /// The switches production's release build honours, each an open
@@ -46,15 +53,37 @@ import Testing
             .map(\.environmentKey))
     }
 
+    /// The variables of the switches whose declared availability `matches`.
+    static func declared(_ matches: (DeveloperSwitch.Availability) -> Bool) -> Set<String> {
+        Set(DeveloperSwitch.allCases.filter { matches($0.availability) }.map(\.environmentKey))
+    }
+
+    /// The reader against the declarations: every switch there is, so one
+    /// added later is checked without an entry here.
     @Test func eachBuildHonoursExactlyTheSwitchesDeclaredForIt() {
-        #expect(Set(BuildPosture.allCases).count == 6)
-        #expect(DeveloperSwitch.allCases.count == Self.debugOnly.count + Self.nonProduction.count + Self.openDecisions.count)
+        #expect(Set(BuildPosture.allCases).count == BuildPosture.Configuration.allCases.count * BuildEnvironment.allCases.count)
+        let debugOnly = Self.declared { $0 == .debugOnly }, nonProduction = Self.declared { $0 == .nonProduction }
+        let everyBuild = Self.declared { if case .everyBuild = $0 { true } else { false } }
+        #expect(debugOnly.count + nonProduction.count + everyBuild.count == DeveloperSwitch.allCases.count)
         for environment in BuildEnvironment.allCases {
-            let offProduction = environment == .prod ? [] : Self.nonProduction
+            let offProduction = environment == .prod ? [] : nonProduction
             #expect(Self.honoured(by: BuildPosture(configuration: .release, environment: environment))
-                    == Self.openDecisions.union(offProduction), "a release build for \(environment)")
+                    == everyBuild.union(offProduction), "a release build for \(environment)")
             #expect(Self.honoured(by: BuildPosture(configuration: .debug, environment: environment))
-                    == Self.debugOnly.union(Self.openDecisions).union(offProduction), "a debug build for \(environment)")
+                    == debugOnly.union(everyBuild).union(offProduction), "a debug build for \(environment)")
+        }
+    }
+
+    /// The variables that were gated before the move, by name: a debug build
+    /// of production's environment ignores the SSH switch, a signed DevNet
+    /// build honours it and none of the debug-only ones.
+    @Test func aSwitchThatWasGatedKeepsItsBuilds() {
+        for posture in BuildPosture.allCases {
+            let honoured = Self.honoured(by: posture)
+            #expect(honoured.intersection(Self.debugOnly) == (posture.configuration == .debug ? Self.debugOnly : []), "\(posture)")
+            #expect(honoured.intersection(Self.nonProduction) == (posture.environment == .prod ? [] : Self.nonProduction),
+                    "\(posture)")
+            #expect(honoured.isSuperset(of: Self.openDecisions), "\(posture)")
         }
     }
 
@@ -73,10 +102,8 @@ import Testing
         }
     }
 
-    @Test func productionsReleaseBuildHonoursOnlyTheOpenDecisions() {
-        let production = BuildPosture(configuration: .release, environment: .prod)
-        let undecided = Set(DeveloperSwitch.allCases.filter { $0.availability == .everyBuild(.undecided) }.map(\.environmentKey))
-        #expect(Self.honoured(by: production) == undecided)
+    @Test func theOpenDecisionsOnlyShrink() {
+        let undecided = Self.declared { $0 == .everyBuild(.undecided) }
         #expect(undecided.subtracting(Self.openDecisions).isEmpty, """
             declared undecided, which is closed to new switches; gate it, or give it a reason of its own: \
             \(undecided.subtracting(Self.openDecisions).sorted())
@@ -120,57 +147,60 @@ import Testing
         !Set(key.split(separator: "_")).isDisjoint(with: ["DEBUG", "DEV", "DEVELOPER", "TEST"])
     }
 
-    /// The constants that hold a switch's variable name: the file that
-    /// declares each, its type and its name. A name is for words, for a
-    /// test's environment and for what a process writes into a child's
-    /// environment. An environment read through one ignores the build.
-    static let variableNames: [(file: String, type: String, name: String)] = [
-        ("ProviderBuildEnvironment/KeychainAccessGroup.swift", "KeychainAccessGroup", "environmentKey"),
-        ("ProviderCore/Addon/AddonHoldPaths.swift", "AddonHoldPaths", "socketOverrideVariable"),
-        ("ProviderCore/Addon/AddonPeerPolicy.swift", "AddonPeerPolicy", "developmentIdentityVariable"),
-        ("ProviderCore/Coordinator/CoordinatorDebugCertificatePin.swift", "CoordinatorDebugCertificatePin", "environmentKey"),
-        ("ProviderCore/Inference/Distributed/Installed/ClusterBenchChip.swift", "ClusterBenchChip", "environmentName"),
-        ("ProviderCore/Inference/Distributed/Installed/DistributedInstalledPrefixSSD.swift", "DistributedInstalledPrefixSSD",
-         "directoryName"),
-        ("ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift", "DistributedInstalledDeveloperSSH",
-         "environmentKey"),
-        ("ProviderCore/Inference/Distributed/Onboarding/ClusterControlLeadership.swift", "ClusterControlSoloGrace", "environmentKey"),
-        ("ProviderCore/Inference/Distributed/Placement/ClusterForcedModeSetting.swift", "ClusterForcedModeSetting", "environmentName"),
-        ("ProviderCore/Inference/Distributed/Placement/ClusterPlannerBenchCap.swift", "ClusterPlannerBenchCap", "environmentName"),
-        ("ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift", "SSDDebugCacheKeyFile", "environmentKey"),
-        ("ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift", "SSDPrefixCacheFactory", "testRootEnvironmentKey"),
-        ("ProviderCore/Service/ClusterSupervision/ClusterMemberHealth.swift", "ClusterSupervisionFiles", "statePathEnvironmentKey"),
-        ("ProviderCore/Service/KVBackendGuard.swift", "KVBackendGuardStore", "pathEnvKey"),
-        ("darkbloom/Sandbox/SandboxAddon.swift", "SandboxAddon", "rootOverrideVariable"),
-    ]
-
-    /// `variableNames` as the scan reports a declaration: `file: name`.
-    static let listedNames = Set(variableNames.map { "\($0.file): \($0.name)" })
-
-    /// The words a source spells when it reads through a name: the names
-    /// above and a switch's own `environmentKey`.
-    static let variableNameWords = Set(variableNames.map(\.name) + ["environmentKey"])
-
     /// What the sources do with the switches, beyond the literals
     /// `ServiceEnvironmentReachTests.Literals` reads.
     struct Uses {
+        /// A constant initialised from a switch's `environmentKey`: a second
+        /// name for the variable. It is for words, for a test's environment
+        /// and for what a process writes into a child's environment.
+        struct Name: Hashable {
+            var file: String
+            /// The type that declares it.
+            var type: String
+            var name: String
+        }
+
+        /// An environment subscripted by a path of identifiers and not
+        /// assigned through.
+        struct Subscript: Hashable {
+            var file: String
+            /// The type whose body holds it, for a bare name declared in the
+            /// same file; empty otherwise.
+            var type: String
+            var expression: String
+        }
+
         /// The cases that sources outside the two declarations name.
         var referenced: Set<String> = []
-        /// Each constant initialised from a switch's `environmentKey`, as
-        /// `file: name`.
-        var names: Set<String> = []
-        /// Each environment subscripted by one of `variableNames` or by a
-        /// switch's `environmentKey`, as `file: expression`. An assignment is
-        /// not one.
-        var reads: [String] = []
+        var names: Set<Name> = []
+        var subscripts: [Subscript] = []
         /// The files where a `DEBUG` condition only selects a constant: a
         /// build configuration turned into a value.
         var debugConstants: Set<String> = []
 
         private let reference = #/DeveloperSwitch\.([a-z][A-Za-z0-9]*)/#
         private let name = #/let\s+(\w+)\s*=\s*(?:DeveloperSwitch|LocationOverride)\.\w+\.environmentKey\b/#
-        private let subscripted = #/(?:[eE]nvironment|\benv)\s*\[\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\](\s*=(?!=))?/#
+        // Two patterns, each led by plain text: one that starts with a choice costs five times as much.
+        private let subscripted = #/nvironment\[\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\](\s*=(?!=))?/#
+        private let subscriptedShort = #/\benv\[\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\](\s*=(?!=))?/#
+        private let typeDeclaration = #/\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|package|internal|fileprivate|private|open|final|indirect|nonisolated)\s+)*(?:enum|struct|class|actor|extension)\s+(?!func\b|var\b|let\b)([A-Za-z_][A-Za-z0-9_.]*)/#
         private let debugConstant = #/#if\s+!?DEBUG\s*\n\s*(?:return\s+|[^\n]*=\s*)?(?:true|false|\.debug|\.release|"debug"|"release")\s*\n\s*#else\s*\n\s*(?:return\s+|[^\n]*=\s*)?(?:true|false|\.debug|\.release|"debug"|"release")\s*\n\s*#endif/#
+
+        /// Each environment read through one of `names`, by its qualified
+        /// name anywhere or by its bare name in the type that declares it,
+        /// or through a switch's `environmentKey` itself: `file: expression`.
+        /// Such a read ignores the build.
+        var reads: [String] {
+            subscripts.filter { read in
+                if read.expression.hasSuffix(".environmentKey"),
+                   read.expression.hasPrefix("DeveloperSwitch.") || read.expression.hasPrefix("LocationOverride.") { return true }
+                return names.contains { name in
+                    let qualified = name.type + "." + name.name
+                    return read.expression == qualified || read.expression.hasSuffix("." + qualified)
+                        || (read.expression == name.name && read.file == name.file && read.type == name.type)
+                }
+            }.map { "\($0.file): \($0.expression)" }
+        }
 
         mutating func add(source: String, file: String) {
             // Most files name no switch. A search of the file's bytes, which costs a hundredth of a pattern's
@@ -182,19 +212,34 @@ import Testing
             if spells("DeveloperSwitch.") {
                 referenced.formUnion(source.matches(of: reference).map { String($0.output.1) })
             }
-            guard variableNameWords.contains(where: spells) else { return }
-            names.formUnion(source.matches(of: name).map { "\(file): \($0.output.1)" })
-            for match in source.matches(of: subscripted) where match.output.2 == nil {
-                let expression = String(match.output.1)
-                let throughAName = variableNames.contains {
-                    let qualified = $0.type + "." + $0.name
-                    return expression == qualified || expression.hasSuffix("." + qualified)
-                        || ($0.file == file && expression == $0.name)
-                }
-                let throughTheKey = expression.hasSuffix(".environmentKey")
-                    && (expression.hasPrefix("DeveloperSwitch.") || expression.hasPrefix("LocationOverride."))
-                if throughAName || throughTheKey { reads.append("\(file): \(expression)") }
+            let declaredHere = !spells(".environmentKey") ? [] : source.matches(of: name).map {
+                Name(file: file, type: enclosingType(of: $0.range.lowerBound, in: source), name: String($0.output.1))
             }
+            names.formUnion(declaredHere)
+            let patterns = [spells("nvironment[") ? subscripted : nil, spells("env[") ? subscriptedShort : nil]
+            for match in patterns.compactMap({ $0 }).flatMap({ source.matches(of: $0) }) where match.output.2 == nil {
+                let expression = String(match.output.1)
+                let bareName = declaredHere.contains { $0.name == expression }
+                subscripts.append(Subscript(file: file, type: bareName ? enclosingType(of: match.range.lowerBound, in: source) : "",
+                                            expression: expression))
+            }
+        }
+
+        /// The type whose body holds `position`: walking up the lines, the
+        /// first `enum`, `struct`, `class`, `actor` or `extension` line that
+        /// is indented less than every line passed on the way.
+        func enclosingType(of position: String.Index, in source: String) -> String {
+            let lines = source[..<position].split(separator: "\n", omittingEmptySubsequences: false)
+            var indentation = lines.last?.prefix { $0 == " " }.count ?? 0
+            for line in lines.dropLast().reversed() {
+                let indent = line.prefix { $0 == " " }.count, text = line.dropFirst(indent)
+                guard indent < indentation, !text.isEmpty, !text.hasPrefix("//"), !text.hasPrefix("#") else { continue }
+                indentation = indent
+                if let match = line.prefixMatch(of: typeDeclaration) {
+                    return String(match.output.1.split(separator: ".").last ?? "")
+                }
+            }
+            return ""
         }
     }
 
@@ -206,11 +251,9 @@ import Testing
         var undeclared: [String] = []
         /// A switch's variable spelled in a source that is not its declaration.
         var spelledElsewhere: [String] = []
-        /// An environment read through a switch's variable name.
+        /// An environment read through a constant that holds a switch's
+        /// variable name, or through its `environmentKey`.
         var readThroughAName: [String] = []
-        /// A constant that holds a switch's variable name and is not in
-        /// `variableNames`, or an entry there that no source declares.
-        var unlistedNames: [String] = []
         /// A case no source outside the declarations refers to.
         var unused: [String] = []
         /// Declared `debugOnly` to the service and honoured by a signed build.
@@ -234,7 +277,6 @@ import Testing
             return files.isEmpty ? nil : "\(key): \(files.joined(separator: ", "))"
         }.sorted()
         audit.readThroughAName = uses.reads.sorted()
-        audit.unlistedNames = uses.names.symmetricDifference(listedNames).sorted()
         audit.unused = switches.map { String(describing: $0) }.filter { !uses.referenced.contains($0) }.sorted()
         audit.honouredBySignedBuilds = declared.filter { reasons[$0.key] == .debugOnly && $0.value.availability != .debugOnly }
             .keys.sorted()
@@ -267,9 +309,9 @@ import Testing
             value(environment:posture:), or with ignoredValue where a build that ignores the switch must still \
             notice it is set: \(audit.readThroughAName)
             """)
-        #expect(audit.unlistedNames.isEmpty, """
-            the constants that hold a switch's variable name differ from variableNames here; list a new one so \
-            reads through it are found, and remove one that is gone: \(audit.unlistedNames)
+        #expect(uses.names.allSatisfy { !$0.type.isEmpty }, """
+            a constant holds a switch's variable name and the scan found no type around it, so a read through its \
+            qualified name would be missed: \(uses.names.filter { $0.type.isEmpty }.map { "\($0.file): \($0.name)" }.sorted())
             """)
         #expect(audit.unused.isEmpty, """
             no source refers to this case as DeveloperSwitch.<case>; remove it and its entry in \
@@ -292,22 +334,24 @@ import Testing
     /// The reads this suite exists for, in the shape each had before its fix:
     /// the developer SSH switch and the keychain group honoured by every
     /// build, a state file's variable read at its call site. Each is a
-    /// switch's variable spelled where a read ignores the build.
+    /// switch's variable spelled where a read ignores the build. The reasons,
+    /// the forwarded variable and the four switches are this test's own, so
+    /// no later declaration changes what it finds.
     @Test func aReadThatIgnoresTheBuildIsReported() {
-        let source = #"""
+        var literals = ServiceEnvironmentReachTests.Literals()
+        literals.add(source: #"""
             static func enabled(_ environment: [String: String]) -> Bool { environment["DARKBLOOM_CLUSTER_DEVELOPER_SSH"] == "1" }
             let group = environment["DARKBLOOM_KEYCHAIN_ACCESS_GROUP"] ?? signedApp
             let state = ProcessInfo.processInfo.environment["DARKBLOOM_STATE_FILE"].map(URL.init(fileURLWithPath:))
             let verbose = environment["DARKBLOOM_DEBUG_NEW_TRACE"] == "1", harness = environment["DARKBLOOM_NEW_HARNESS_SSH"]
-            let limit = environment["DARKBLOOM_NEW_LIMIT"], telemetry = environment["DARKBLOOM_MLX_RESOURCE_DEBUG"]
-            """#
-        var literals = ServiceEnvironmentReachTests.Literals()
-        literals.add(source: source, file: "Reader.swift")
+            let limit = environment["DARKBLOOM_NEW_LIMIT"], telemetry = environment["DARKBLOOM_NEW_FORWARDED_DEBUG"]
+            """#, file: "Reader.swift")
+        let switches: [DeveloperSwitch] = [.clusterDeveloperSSH, .keychainAccessGroup, .daemonStateFile, .sandboxRoot]
         var uses = Uses()
-        uses.referenced = Set(DeveloperSwitch.allCases.map { String(describing: $0) }).subtracting(["sandboxRoot"])
-        uses.names = Self.listedNames
-        let audit = Self.audit(spelled: literals.keys, uses: uses,
-                               reasons: LaunchAgent.unforwardedEnvKeys.merging(["DARKBLOOM_NEW_HARNESS_SSH": .debugOnly]) { $1 })
+        uses.referenced = ["clusterDeveloperSSH", "keychainAccessGroup", "daemonStateFile"]
+        let audit = Self.audit(spelled: literals.keys, uses: uses, forwarded: ["DARKBLOOM_NEW_FORWARDED_DEBUG"],
+                               reasons: ["DARKBLOOM_NEW_HARNESS_SSH": .debugOnly, "DARKBLOOM_NEW_LIMIT": .undecided],
+                               switches: switches)
         #expect(audit == Audit(
             undeclared: ["DARKBLOOM_DEBUG_NEW_TRACE", "DARKBLOOM_NEW_HARNESS_SSH"],
             spelledElsewhere: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH: Reader.swift", "DARKBLOOM_KEYCHAIN_ACCESS_GROUP: Reader.swift",
@@ -315,8 +359,8 @@ import Testing
             unused: ["sandboxRoot"]))
         // Declared debug-only to the service while a signed DevNet build honours it.
         uses.referenced.insert("sandboxRoot")
-        #expect(Self.audit(spelled: [:], uses: uses, reasons: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": .debugOnly])
-                == Audit(honouredBySignedBuilds: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH"]))
+        #expect(Self.audit(spelled: [:], uses: uses, forwarded: [], reasons: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": .debugOnly],
+                           switches: switches) == Audit(honouredBySignedBuilds: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH"]))
         // Through its declaration, production's release build reads none of the three.
         let production = BuildPosture(configuration: .release, environment: .prod)
         for developerSwitch in [DeveloperSwitch.clusterDeveloperSSH, .keychainAccessGroup, .daemonStateFile] {
@@ -325,28 +369,58 @@ import Testing
     }
 
     /// A constant that holds a switch's variable name reads an environment
-    /// as its literal would. Writing a child's environment, and reading the
-    /// one this process built for a child, are not reads of the variable.
+    /// as its literal would: by its qualified name anywhere, by its bare name
+    /// in its own type. The scan finds the constant and its type; nothing
+    /// lists them. Writing a child's environment, reading the one this
+    /// process built for a child, and another type's constant of the same
+    /// name are not reads of the variable.
     @Test func aReadThroughAVariableNameIsReported() {
         var uses = Uses()
         uses.add(source: #"""
-            guard environment[ClusterForcedModeSetting.environmentName] == nil else { return nil }
-            let group = processEnvironment[KeychainAccessGroup.environmentKey], state = env[LocationOverride.pidFile.environmentKey]
+            import Foundation
+
+            /// Forces a mode.
+            public enum ForcedMode {
+                struct Words { let text: String }
+
+                public static let environmentName = DeveloperSwitch.clusterForceMode.environmentKey
+
+                static func mode(environment: [String: String]) -> String? {
+                    #if DEBUG
+                    return environment[environmentName]
+                    #else
+                    return nil
+                    #endif
+                }
+            }
+
+            enum HandOffModes {
+                static let environmentName = "DARKBLOOM_CLUSTER_HANDOFF_MODES"
+                static func enabled(environment: [String: String]) -> Bool { environment[environmentName] == "1" }
+            }
+
+            extension Outer.GuardStore {
+                @available(macOS 14, *) public static let pathEnvKey = LocationOverride.kvBackendGuard.environmentKey
+            }
+            """#, file: "Declares.swift")
+        uses.add(source: #"""
+            guard environment[ForcedMode.environmentName] == nil else { return nil }
+            let path = processEnvironment[GuardStore.pathEnvKey], state = env[LocationOverride.pidFile.environmentKey]
             let root = ProcessInfo.processInfo.environment[DeveloperSwitch.sandboxRoot.environmentKey]
             effectiveEnvironment[DeveloperSwitch.prefixCacheTestPersistentKey.environmentKey] = "1"
-            guard configured[DistributedInstalledPrefixSSD.directoryName] != nil else { return nil }
-            let other = environment[ClusterHandOffModes.environmentName], result = [SandboxAddon.rootOverrideVariable: root]
-            static let newName = DeveloperSwitch.debugLocalErrors.environmentKey
+            guard configured[ForcedMode.environmentName] != nil else { return nil }
+            let other = environment[HandOffModes.environmentName], result = [ForcedMode.environmentName: root]
+            let bare = environment[environmentName], unrelated = environment[pathEnvKey]
             """#, file: "Reader.swift")
-        uses.add(source: "let seconds = environment[environmentKey], other = environment[otherKey]",
-                 file: "ProviderCore/Inference/Distributed/Onboarding/ClusterControlLeadership.swift")
-        #expect(uses.reads == [
-            "Reader.swift: ClusterForcedModeSetting.environmentName", "Reader.swift: KeychainAccessGroup.environmentKey",
-            "Reader.swift: LocationOverride.pidFile.environmentKey", "Reader.swift: DeveloperSwitch.sandboxRoot.environmentKey",
-            "ProviderCore/Inference/Distributed/Onboarding/ClusterControlLeadership.swift: environmentKey",
+        #expect(uses.names == [
+            Uses.Name(file: "Declares.swift", type: "ForcedMode", name: "environmentName"),
+            Uses.Name(file: "Declares.swift", type: "GuardStore", name: "pathEnvKey"),
         ])
-        #expect(uses.names == ["Reader.swift: newName"])
-        #expect(Self.audit(spelled: [:], uses: uses).unlistedNames.contains("Reader.swift: newName"))
+        #expect(Self.audit(spelled: [:], uses: uses, forwarded: [], reasons: [:]).readThroughAName == [
+            "Declares.swift: environmentName", "Reader.swift: DeveloperSwitch.sandboxRoot.environmentKey",
+            "Reader.swift: ForcedMode.environmentName", "Reader.swift: GuardStore.pathEnvKey",
+            "Reader.swift: LocationOverride.pidFile.environmentKey",
+        ])
     }
 
     @Test func aDebugConditionThatOnlySelectsAConstantIsRecognised() {

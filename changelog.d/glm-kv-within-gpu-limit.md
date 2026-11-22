@@ -11,5 +11,5 @@
   within the live GPU limit, less the resident weights and the activation
   reserve. At the macOS default GLM's grant is about 47.9 GiB instead of
   55.6 GiB. Macs with the raised limit (`iogpu.wired_limit_mb=245760`) keep
-  the full grant, and other models are unchanged. `darkbloom doctor` says when
+  the full grant, and sets without GLM are unchanged. `darkbloom doctor` says when
   the lower limit holds GLM's KV cache.

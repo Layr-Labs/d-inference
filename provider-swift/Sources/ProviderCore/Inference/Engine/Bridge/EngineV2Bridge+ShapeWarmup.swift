@@ -160,7 +160,10 @@ extension EngineV2Bridge {
             modelCalibration.interrupted = false
         }
         let elapsedMs = Int((WedgeMonitor.seconds(clock.now - started) * 1_000).rounded())
-        if preemption == nil, outcome == "complete" { await runInkling2DepthWarmupIfDue(width: width) }
+        if preemption == nil, outcome == "complete" {
+            await runInkling2DepthWarmupIfDue(width: width)
+            resetInkling2MTPCostLearning()
+        }
         let summary = preemption.map { "preempted (\($0))" } ?? outcome
         let probe = modelCalibration.shaderCacheProbeRuns.map {
             String(Int((WedgeMonitor.seconds($0) * 1_000).rounded()))
@@ -170,6 +173,19 @@ extension EngineV2Bridge {
             + (cellsStoppedEarly == 0 ? "" : ", \(cellsStoppedEarly) stopped early")
         Self.shapeWarmupLogger.info(
             "Shape warmup \(modelId): \(summary) \(finished)/\(cells.count) cells in \(elapsedMs) ms (\(detail))")
+    }
+
+    /// The shape cells above ran through this serving engine, and its MTP depth
+    /// policy keeps one plain-step cost sample for the engine's life. A cold
+    /// first step (first kernel use, cold caches) left that sample slow and the
+    /// drafts too deep (one row, M5 Ultra: 61 vs 123 tok/s). Forget the warm-up's
+    /// costs while the slot is idle so the first served request measures them.
+    /// Tokens are unaffected.
+    private func resetInkling2MTPCostLearning() {
+        guard modelCalibration.shapeWarmupPlan == .inkling2, active.isEmpty, pendingSubmissionIDs.isEmpty,
+            let engine = ownedEngine as? EngineV2, engine.resetMTPCostLearning()
+        else { return }
+        Self.shapeWarmupLogger.info("MTP cost learning reset after warm-up \(modelId)")
     }
 
     /// Inkling 2's per-depth warm-up (`Inkling2DepthWarmup`) after its shape

@@ -34,3 +34,7 @@
   other model. Before, its loads reported the prefix cache disabled (`unsupported_layout`).
 - Inkling 2 prefills in 2,048-token chunks with no solo stripe. Under the generic 512-token chunk and 2,048-token
   solo stripe, the engine's fixed prefill grid refused every prefix checkpoint, so follow-up turns reused nothing.
+- After its load warm-up, Inkling 2 resets the MTP depth policy's measured step costs (`EngineV2.resetMTPCostLearning`),
+  so the first served request measures them. The warm-up's cold first steps had recorded a plain decode step at 96-99 ms
+  (it normally takes 15 ms), every draft round then looked free, and the policy drafted at its maximum depth: one served
+  stream of code on an M5 Ultra ran at 107 tok/s, and runs at 121-123 with the reset. Tokens are unchanged.

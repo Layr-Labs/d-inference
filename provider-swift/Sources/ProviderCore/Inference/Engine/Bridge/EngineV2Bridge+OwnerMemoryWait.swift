@@ -128,6 +128,8 @@ final class OwnerMemoryAttempt: @unchecked Sendable {
 enum OwnerMemoryRefusal: Equatable, Sendable {
     /// The slot would hold the request with nothing else running: requests already running hold the memory.
     case busy
+    /// A co-resident model holds part of the grant. It may stay loaded indefinitely.
+    case sharedGrant
     /// The request is larger than the slot holds with nothing else running.
     case exceedsIdle
 
@@ -215,7 +217,8 @@ extension EngineV2Bridge {
         attempt: (_ origin: ContinuousClock.Instant?, _ waitEnd: ContinuousClock.Instant?) async throws
             -> AsyncStream<GenerationEvent>
     ) async throws -> AsyncStream<GenerationEvent> {
-        let deadline = wait.effectiveLimit.map { ContinuousClock.now.advanced(by: $0) }
+        let start = ContinuousClock.now
+        var deadline = wait.effectiveLimit.map { start.advanced(by: $0) }
         let makeRoom = MeFirstOwnerRequest.makeRoom
         var origin = origin
         var ticket: UUID?
@@ -240,8 +243,11 @@ extension EngineV2Bridge {
             } catch {
                 guard let refusal = await ownerMemoryRefusal(error, worstCaseTokens: worstCaseTokens, attempt: note)
                 else { throw error }
-                guard refusal == .busy else {
+                guard refusal != .exceedsIdle else {
                     throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.exceedsIdleRefusal)
+                }
+                if refusal == .sharedGrant, deadline == nil {
+                    deadline = start.advanced(by: .seconds(120))
                 }
                 if waitsHere == nil { waitsHere = await wait.waits(model: model) }
                 guard waitsHere == true else {
@@ -270,7 +276,20 @@ extension EngineV2Bridge {
         guard case .tokenBudgetExhausted(let message)? = error as? MultiModelBatchSchedulerEngineError else {
             return nil
         }
-        if message == Self.serviceAllowanceExhausted, effectiveServingConcurrency == 0 { return .exceedsIdle }
+        let noRows = message == Self.serviceAllowanceExhausted && effectiveServingConcurrency == 0
+        if noRows || message.contains(Self.glm5NextExceedsSlotCapacity) {
+            if let glmSoloGrant, let bytes = requestReservationBytes(tokenCount: worstCaseTokens), bytes > 0 {
+                if let grant = await glmSoloGrant() {
+                    let raw = Int(clamping: grant)
+                    let usable = raw - Int(Double(raw) * EngineV2Factory.glm5NextAdmissionWatermarkFraction)
+                    if bytes <= usable - glm5NextStepSetupBytes { return .sharedGrant }
+                } else if bytes <= admissionCapacityBytes(), effectiveServingConcurrency > 0 {
+                    // The peer left and the real grant grew during the hop to the slot owner.
+                    return .busy
+                }
+            }
+            return .exceedsIdle
+        }
         if message.hasSuffix(Self.sharedKVNoHeadroom) {
             guard let kvBudget,
                   let bytes = attempt?.sharedKVRefusedBytes ?? requestReservationBytes(tokenCount: worstCaseTokens),
@@ -282,6 +301,10 @@ extension EngineV2Bridge {
             return figures.needed > native.capacity().kvBytesCapacity ? .exceedsIdle : .busy
         }
         return OwnerMemoryRefusal(refusal: message)
+    }
+
+    func installGLMSoloGrant(_ quote: @escaping @Sendable () async -> UInt64?) {
+        glmSoloGrant = quote
     }
 
     /// The owner's request's place in the slot's queue, or the busy refusal when the queue is full.

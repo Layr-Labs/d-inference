@@ -537,7 +537,16 @@ extension ProviderLoop {
         // proportional shares shrink too; kept for self-healing when a
         // previous state left a slot under-granted).
         await completeNewcomerReslice(reslice)
+        if bundle.bridge.isGLM5NextManaged {
+            await bundle.bridge.installGLMSoloGrant { [weak self] in await self?.glmSoloGrant(for: modelId) }
+        }
         return EngineV2SlotBuild(bundle: bundle, sizing: sizing)
+    }
+
+    private func glmSoloGrant(for id: String) -> UInt64? {
+        let peers = Set(modelSlots.keys).union(modelsLoading).subtracting([id])
+        guard modelSlots[id] != nil, !peers.isEmpty else { return nil }
+        return fleetKVBudgetBytes(extraWeightBytes: 0, excludingModelIDs: peers)
     }
 
     /// A newcomer's re-sliced grant with every survivor's target and restore

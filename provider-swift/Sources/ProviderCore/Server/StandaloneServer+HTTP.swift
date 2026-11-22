@@ -331,8 +331,7 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
 /// window while another of its requests held a pair's memory, 2026-11-17).
 enum LocalMemoryRefusal {
     /// Requests already running hold the memory: retry when they finish.
-    static let busy = "This Mac is at capacity: requests already running are using the memory this request needs. "
-        + "Retry in a moment, when they finish."
+    static let busy = "This Mac is at capacity. Retry when more memory is available."
     /// The request reached its overall deadline before it finished (`LocalDeadlineOutcome`): busy, retry later.
     static let deadline = "This Mac is busy: the request reached its time limit before it finished. "
         + "Retry in a moment."

@@ -279,8 +279,9 @@ private func reject(_ body: () throws -> Void) throws {
     static func earlierReleaseWorker(_ f: InstalledFixture) throws {
         let root = f.root.appendingPathComponent("doctor-updated", isDirectory: true)
         let app = root.appendingPathComponent("app", isDirectory: true), kept = root.appendingPathComponent("kept", isDirectory: true)
-        for directory in [root, app, kept] {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        // The app and its kept copy have the umask's folder modes, as the installer and `snapshotLiveAsPredecessor` leave them.
+        for (directory, mode) in [(root, 0o700), (app, 0o755), (kept, 0o755)] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: mode])
         }
         // The setup pins the worker this Mac ran when the pair was set up (the probe stands for it).
         let installed = app.appendingPathComponent("darkbloom-cluster-worker")

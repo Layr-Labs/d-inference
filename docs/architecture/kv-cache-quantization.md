@@ -1,6 +1,6 @@
 # KV execution and checkpoint quantization
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-22
 
 The provider defaults to native attention execution and independently requests
 `balanced` storage for eligible encrypted checkpoints, the two-Mac cluster's
@@ -160,8 +160,14 @@ rotates keys and overlays original recent rows; it keeps the existing sparse
 selection and bounds the decoded output to that selection.
 Recurrent, convolution and assistant state stay native. When Gemma's assistant
 is active, its last owning full and sliding target rows also stay native because
-the assistant reads those arrays directly. Remaining eligible Gemma rows use
-the selected profile.
+the assistant reads those arrays directly. They stay native as well while an
+assistant is configured but not attached yet: a slot that starts target-only
+(catalog metadata not ready, or the assistant skipped for memory) takes the
+assistant later through the idle upgrade, and checkpoints written before and
+after it encode those rows the same way
+(`EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected`). The MTP switch
+and the spec-dec kill switch keep the target-only layout. Remaining eligible
+Gemma rows use the selected profile.
 
 DiffusionGemma reads packed committed history alongside its native ephemeral
 canvas. A denoising pass does not append canvas state; encoder commits occur

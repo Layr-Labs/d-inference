@@ -123,4 +123,52 @@ struct EngineV2KVQuantizationPolicyTests {
             layerKinds: [full], dtypes: [.float32], config: .init(
                 capacityBytes: 64 << 20, quantization: format)) == 160)
     }
+
+    /// A Gemma slot built target-only (catalog metadata not ready, or the
+    /// assistant skipped for memory) takes its assistant later through the idle
+    /// upgrade. It keeps the same native access layers, so checkpoints written
+    /// before and after the upgrade store the target rows the same way.
+    @Test func gemmaAccessLayersStayNativeBeforeTheAssistantAttaches() {
+        let window = CBv2LayerKind(attention: .slidingWindow(1024), headDim: 64, kvHeads: 2, queryHeads: 4)
+        let full = CBv2LayerKind(attention: .full, headDim: 64, kvHeads: 2, queryHeads: 4)
+        let kinds = [window, full, window, full]
+        func expected(
+            attached: Bool, mtp: Bool = true, _ status: MTPActivationStatus, process: Bool = true
+        ) -> Bool {
+            EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
+                assistantAttached: attached, mtpEnabled: mtp, status: status, processMTPEnabled: process)
+        }
+        func layers(_ active: Bool) -> Set<Int> {
+            EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(layerKinds: kinds, gemmaAssistantActive: active)
+        }
+        let attached = layers(expected(attached: true, .disabled(.configDisabled, configured: true)))
+        #expect(attached == [2, 3])
+        for reason in [MTPFallbackReason.artifactNotCached, .catalogUnavailable, .assistantMemoryUnavailable] {
+            #expect(layers(expected(attached: false, .disabled(reason, configured: true))) == attached, "\(reason)")
+        }
+        // MTP switched off keeps the target-only layout, attached or not.
+        #expect(!expected(attached: true, mtp: false, .disabled(.configDisabled, configured: true)))
+        #expect(!expected(attached: false, .disabled(.configDisabled, configured: false)))
+        #expect(!expected(attached: false, .disabled(.killSwitchDisabled, configured: true)))
+        #expect(!expected(attached: false, .disabled(.artifactNotCached, configured: true), process: false))
+    }
+
+    @Test func theSlotFactoryKeepsAccessLayersForAConfiguredAssistant() throws {
+        let source = try String(
+            contentsOf: Self.sources.appendingPathComponent(
+                "ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift"),
+            encoding: .utf8
+        ).filter { !$0.isWhitespace }
+        #expect(source.contains(
+            "EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(assistantAttached:"
+                + "assistantHandle?.drafter!=nil,mtpEnabled:mtpConfig.effectiveEnabled,status:mtpStatus)"))
+    }
+
+    static let sources = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()  // Engine
+        .deletingLastPathComponent()  // Inference
+        .deletingLastPathComponent()  // ProviderCoreTests
+        .deletingLastPathComponent()  // Tests
+        .deletingLastPathComponent()  // provider-swift
+        .appendingPathComponent("Sources")
 }

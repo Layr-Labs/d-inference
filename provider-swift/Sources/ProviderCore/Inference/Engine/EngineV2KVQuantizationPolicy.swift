@@ -19,6 +19,22 @@ extension PagedKVQuantizationPolicy {
         }
     }
 
+    /// Whether a Gemma slot keeps the assistant's two access layers native
+    /// (`nativeAssistantAccessLayers`). With the assistant attached, MTP decides
+    /// as before. Without it, they stay native while an assistant is configured
+    /// for the model: a slot built target-only (catalog metadata not ready yet,
+    /// or the assistant skipped for memory) takes it later through the idle
+    /// upgrade, and checkpoints written before and after the upgrade must encode
+    /// the target rows the same way. The process MTP switch and the spec-dec kill
+    /// switch keep the target-only layout.
+    static func gemmaAssistantAccessExpected(
+        assistantAttached: Bool, mtpEnabled: Bool, status: MTPActivationStatus,
+        processMTPEnabled: Bool = CBv2MTPConfig.envEnabled
+    ) -> Bool {
+        if assistantAttached { return mtpEnabled }
+        return processMTPEnabled && status.configured && status.reason != .killSwitchDisabled
+    }
+
     /// Gemma's active assistant reads these two owning rows without copying history.
     static func nativeAssistantAccessLayers(
         layerKinds: [CBv2LayerKind], gemmaAssistantActive: Bool

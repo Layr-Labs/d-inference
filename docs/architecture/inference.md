@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3643,7 +3643,17 @@ stops such a row early.
   single-Mac MLX slots, the native GLM-5.3 and MiMo engines, and the cluster
   pairs; and for one Mac's image and video requests
   (`EngineV2VisionPrefill`, the same function's media path), with the same
-  rule. The pairs' media routes and MiMo's native media pass no guard.
+  rule. A route that passes no guard names its exemption where it submits
+  (`GenerationLoopGuardPolicy.RouteExemption`; `exempt(_:)` gives no guard):
+  `pairMedia` (the pairs' image and video routes), `nativeMiMoMedia` (MiMo's
+  native media on one Mac), `mimoDecodedMedia`
+  (`MiMoV26ServingLoad.submitDecodedMedia`), `directSubmit`
+  (`EngineV2Bridge.submit(request:)`, which production uses for the pair
+  warm-up) and `modelCalibration` (model calibration's rows).
+  `GenerationLoopGuardCallSiteTests`
+  (`provider-swift/Tests/ProviderCoreTests/Inference/Streaming/GenerationLoopGuardCallSiteTests.swift`)
+  reads every `submitTokenized` call under `provider-swift/Sources` and fails
+  on one that neither passes `loopGuard:` nor names an exemption.
   Super's coordinator and local requests take the owner's own route
   (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
   `NemotronSuperLocalImageHTTP`). The HTTP hook resolves the guard for text;
@@ -3669,6 +3679,16 @@ stops such a row early.
   `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
   (Super), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0` (or `off`)
   turns it off; a comma-separated list of `model_type`s replaces the default list.
+  The default list is read from one decision per served model type
+  (`GenerationLoopGuardPolicy.decision(_:)`), a switch without a `default:`
+  over `ServedModelType`
+  (`provider-swift/Sources/ProviderCore/Inference/Engine/ServedModelType.swift`).
+  A decision is `guarded` with the type's exit from a repeating thought (`on`,
+  `provenBuilds` with their ids, `optIn`, or `keepsLength` with a reason), or
+  `unguarded` with a reason (`diffusion_gemma`, `flint`,
+  `prism_hadamard_qwen35`, `qwen3_vl_moe`). The exit's lists below
+  (`markersByModelType`, `defaultModelTypes`, `provenBuilds`) are read from the
+  same decisions, so a new served model type does not build until it has one.
 - **A loop inside a Gemma 4, GPT-OSS, Qwen 3.5 9B/35B or Qwen 3.6 35B thought (or a named Qwen 3.8
   27B or Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
   For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
@@ -5450,6 +5470,15 @@ records tiny-model correctness and remaining release gates.
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; paged KV supports its positioned wrapper attention. Prefix reuse, compiled decode, packed prefill and MTP capabilities remain disabled. |
 | `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
 | `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
+
+`ServedModelType`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/ServedModelType.swift`)
+is the closed list of served `model_type`s: the types above and
+`prism_hadamard_qwen35`, `flint`, `mimo_v2`, `glm5_next` and
+`nemotron_h_omni`. It names engine architectures, never a model id, revision
+or repository. `EngineV2SupportedModels.isSupported(modelType:)` switches over
+it without a `default:`, so a new type does not build until that rule admits
+or refuses it.
 
 Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else

@@ -106,17 +106,22 @@ public enum EngineV2SupportedModels {
     /// Whether the v2 engine can serve this `model_type` (config.json).
     /// nil/unknown types are unsupported — fail closed.
     public static func isSupported(modelType: String?) -> Bool {
-        guard let raw = normalized(modelType) else { return false }
+        guard let raw = normalized(modelType), let type = ServedModelType(rawValue: raw) else { return false }
+        // No `default:`: a new served type fails to build until it is admitted here.
+        switch type {
+        case .gptOSS, .gemma4, .gemma4Text, .diffusionGemma, .qwen35, .qwen35MoE, .qwen3VLMoE,
+            .qwen4Exp, .qwen4ExpText, .prismHadamardQwen35:
+            return true
         // MiMo has an explicit strict native loader, not generic registry
         // fallback. Its dispatch requires the exact canonical declaration.
-        if raw == "mimo_v2" { return modelType == "mimo_v2" }
-        if raw == "flint" { return modelType == "flint" }
-        if raw == "gpt_oss" { return true }
-        if raw == "diffusion_gemma" { return true }
-        if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }
-        if raw == "qwen3_vl_moe" { return true }
-        if raw == "qwen4_exp" || raw == "qwen4_exp_text" { return true }
-        return gemma4TargetTypes.contains(raw)
+        // Flint is admitted only as declared too.
+        case .mimoV2, .flint:
+            return modelType == type.rawValue
+        // Admitted by model id only (`isSupported(model:)`): the type alone
+        // stays unsupported.
+        case .glm5Next, .nemotronH, .nemotronHOmni:
+            return false
+        }
     }
 
     /// Split an advertised-model list into (supported, unsupported) by the

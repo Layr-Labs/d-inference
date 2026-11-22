@@ -1494,7 +1494,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 logitBias: engineV2Sampling?.logitBias, seed: engineV2Sampling?.seed),
             requestId: id, cacheScope: cacheScope, cacheEnabled: false, usageSignal: requestUsage,
             clusterStillImages: host.wire, mediaKind: .image, firstContentDeadline: firstContentDeadline, profile: profile,
-            measurementPurpose: measurementPurpose)
+            measurementPurpose: measurementPurpose, loopGuard: GenerationLoopGuardPolicy.exempt(.pairMedia))
         do {
             try checkFirstContentDeadline()
             // The rendered image prompt may already leave a think block open.
@@ -1589,7 +1589,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 logitBias: engineV2Sampling?.logitBias, seed: engineV2Sampling?.seed),
             requestId: id, cacheScope: cacheScope, cacheEnabled: false,
             usageSignal: requestUsage, clusterGLMMedia: host.wire, mediaKind: host.mediaKind,
-            firstContentDeadline: firstContentDeadline, profile: profile, measurementPurpose: measurementPurpose)
+            firstContentDeadline: firstContentDeadline, profile: profile, measurementPurpose: measurementPurpose,
+            loopGuard: GenerationLoopGuardPolicy.exempt(.pairMedia))
         do {
             try checkFirstContentDeadline()
             // Seed the parser from the rendered media prompt: reasoning for an
@@ -1668,7 +1669,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 requestId: id, cacheScope: cacheScope, cacheEnabled: false,
                 usageSignal: requestUsage, clusterQwenMedia: wire, qwenMediaLifetime: host.lifetime,
                 mediaKind: host.mediaKind, firstContentDeadline: firstContentDeadline,
-                profile: profile, measurementPurpose: measurementPurpose)
+                profile: profile, measurementPurpose: measurementPurpose,
+                loopGuard: GenerationLoopGuardPolicy.exempt(.pairMedia))
         }
         do {
             try checkFirstContentDeadline()
@@ -1728,7 +1730,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed),
                 requestId:id,cacheScope:cacheScope,cacheEnabled:true,usageSignal:requestUsage,
                 mimoClusterImages:host.wire,firstContentDeadline:firstContentDeadline,profile:profile,
-                measurementPurpose:measurementPurpose)
+                measurementPurpose:measurementPurpose,loopGuard:GenerationLoopGuardPolicy.exempt(.pairMedia))
             do {
                 return try makeEventStream(upstream:upstream,cancelUpstream:{ await bridge.cancel(requestId:id) },
                     toolHandler:toolHandler,prepared:prepared,releaseBox:acquired.releaseToken,
@@ -1789,7 +1791,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             multimodal:native.request.multimodal,
             stopStringScope:ReasoningStopScope.scope(reasoningParser:request.reasoningParser,reasoningPrefix:nil,parsesToolCalls:toolHandler != nil),
             firstContentDeadline:firstContentDeadline,profile:profile,
-            measurementPurpose:measurementPurpose)
+            measurementPurpose:measurementPurpose,loopGuard:GenerationLoopGuardPolicy.exempt(.nativeMiMoMedia))
         // Install the ONE existing router/forwarder before any post-submit
         // cancellation veto. Its protected mode drains actual terminal/error.
         do {

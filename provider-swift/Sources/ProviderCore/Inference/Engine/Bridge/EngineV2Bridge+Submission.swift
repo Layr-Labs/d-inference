@@ -37,7 +37,8 @@ extension EngineV2Bridge {
         }
         return await submitTokenized(
             promptTokens: promptTokens, request: request, requestId: requestId,
-            cacheScope: "", cacheEnabled: cacheEnabled, measurementPurpose: measurementPurpose
+            cacheScope: "", cacheEnabled: cacheEnabled, measurementPurpose: measurementPurpose,
+            loopGuard: GenerationLoopGuardPolicy.exempt(.directSubmit)
         )
     }
 

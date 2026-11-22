@@ -40,7 +40,7 @@ extension PagedKVQuantizationPolicy {
         beforeAttach: Bool = gemmaNativeRowsBeforeAssistantEnabled
     ) -> Bool {
         if assistantAttached { return mtpEnabled }
-        return beforeAttach && processMTPEnabled && status.configured
+        return processMTPEnabled && status.configured
             && status.reason != .killSwitchDisabled
     }
 

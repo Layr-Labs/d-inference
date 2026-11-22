@@ -118,7 +118,7 @@ struct DistributedHTTPOriginTests {
         let now = ContinuousClock.now
         let earlier = DistributedRequestDeadlineContext(
             generationDeadline: now.advanced(by: .seconds(10)),
-            firstTokenDeadline: now.advanced(by: .seconds(2)))
+            firstTokenDeadline: now.advanced(by: .seconds(2)), ownerRequest: false)
         let stream = try await bridge.submitTokenized(
             promptTokens: [1, 2, 3], request: .init(model: owner.base.identity.modelID,
                 messages: [], temperature: 0, max_tokens: 2),

@@ -377,8 +377,8 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
     }
 
     /// The client-facing text. With the profile it names the model's limits, the owner's for the owner's request
-    /// (`DistributedResidentExecutionProfile.limits(ownerRequest:)`).
-    public func message(_ profile: DistributedResidentExecutionProfile?, ownerRequest: Bool = false) -> String {
+    /// (`DistributedResidentExecutionProfile.limits(ownerRequest:)`). No default: a caller says whose request it is.
+    public func message(_ profile: DistributedResidentExecutionProfile?, ownerRequest: Bool) -> String {
         let limit = Self.limit, served = profile?.limits(ownerRequest: ownerRequest)
         switch self {
         case .emptyPrompt: return "The prompt is empty."
@@ -426,7 +426,8 @@ extension DistributedResidentExecutionProfile {
     /// serve it. The engine refuses with it before any reservation; the owner
     /// checks it again before anything reaches a worker. Sizes are held to
     /// what the selected mode serves (`served`), the owner's request to what it serves the owner (`ownerServed`).
-    func refusal(for request: CBv2Request, ownerRequest: Bool = false) -> DistributedRequestRefusal? {
+    /// No default: a caller says whose request it is.
+    func refusal(for request: CBv2Request, ownerRequest: Bool) -> DistributedRequestRefusal? {
         let served = limits(ownerRequest: ownerRequest)
         let p = request.sampling
         if request.multimodal != nil || request.positionState != nil { return .mediaUnsupported }

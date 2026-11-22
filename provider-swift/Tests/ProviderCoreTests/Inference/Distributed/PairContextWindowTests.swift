@@ -115,11 +115,12 @@ struct PairContextWindowTests {
         #expect(answer.body.contains(#""finish_reason":"length""#))
         #expect(owner.reservedRequests.map(\.maxTokens) == [5])
         // Without the window in play, the output limit cuts it; an output within both is kept.
-        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 100) == Self.output)
-        #expect(bridge.outputTokens(requested: 1_000, promptTokens: 100) == 1_000)
-        #expect(bridge.outputTokens(requested: nil, promptTokens: 250_000) == Self.context - 250_000)
+        let route = ServingRoute.coordinator(nil)
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 100, route: route) == Self.output)
+        #expect(bridge.outputTokens(requested: 1_000, promptTokens: 100, route: route) == 1_000)
+        #expect(bridge.outputTokens(requested: nil, promptTokens: 250_000, route: route) == Self.context - 250_000)
         // A prompt that fills the context is left for the pair to refuse.
-        #expect(bridge.outputTokens(requested: 64, promptTokens: Self.context) == 64)
+        #expect(bridge.outputTokens(requested: 64, promptTokens: Self.context, route: route) == 64)
         await bridge.shutdown()
     }
 
@@ -193,10 +194,11 @@ struct PairContextWindowTests {
             #expect(profile.served.contextTokens == 262_144 && profile.served.promptTokens == 262_143
                 && profile.served.outputTokens == 32_768, "\(mode)")
             // What a Gemma pair advertises and refuses, before either rank is asked.
-            #expect(profile.refusal(for: request(prompt: 40_000, maxTokens: 32_768)) == nil, "\(mode)")
-            #expect(profile.refusal(for: request(prompt: 262_143, maxTokens: 1)) == nil, "\(mode)")
-            #expect(profile.refusal(for: request(prompt: 262_144, maxTokens: 1)) == .contextLengthExceeded, "\(mode)")
-            #expect(DistributedRequestRefusal.contextLengthExceeded.message(profile) == windowRefusalWords(262_144))
+            #expect(profile.refusal(for: request(prompt: 40_000, maxTokens: 32_768), ownerRequest: false) == nil, "\(mode)")
+            #expect(profile.refusal(for: request(prompt: 262_143, maxTokens: 1), ownerRequest: false) == nil, "\(mode)")
+            #expect(profile.refusal(for: request(prompt: 262_144, maxTokens: 1), ownerRequest: false) == .contextLengthExceeded, "\(mode)")
+            #expect(DistributedRequestRefusal.contextLengthExceeded.message(profile, ownerRequest: false)
+                    == windowRefusalWords(262_144))
         }
         let glm = try capability(.glm5NextLayerStage, model: "registered_glm53_flash",
             profile: "registered_glm53_flash_greedy_generation_v1", prompt: 1_048_575, output: 65_536,

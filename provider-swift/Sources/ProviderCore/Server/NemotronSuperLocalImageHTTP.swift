@@ -201,9 +201,13 @@ private struct SuperHTTPEngine: MLXServerEngine {
             let bridge = owner.bridge, body = self.body, toolGrammar = self.toolGrammar
             let servesPair = await bridge.servesDistributedPair, nativeTracked = await bridge.tracksNativeShutdown
             let runsTokenConstraints = !servesPair && !nativeTracked
+            // Whose request the bridge will take this for (its submission carries no budget). Super's route binds
+            // no owner's wait, so a local request is never the owner's here (`ServingRoute.internal`).
+            let servingRoute = ServingRoute.current(firstContentDeadline: nil)
             let toolConstraint: @Sendable ([Int]) -> (any CBv2TokenConstraint)? = { tokens in
                 // The engine refuses a constraint whose budget differs from its request's.
-                let maxTokens = bridge.outputTokens(requested: plan.request.maxTokens, promptTokens: tokens.count)
+                let maxTokens = bridge.outputTokens(requested: plan.request.maxTokens, promptTokens: tokens.count,
+                                                    route: servingRoute)
                 if let toolGrammar { return toolGrammar(plan, body, tokens, maxTokens) }
                 return NemotronSuperToolGrammar.constraint(plan: plan, body: body, tokenizer: bridge.tokenizer,
                     promptTokens: tokens, stopTokenIDs: bridge.stopTokenIds, maxTokens: maxTokens,

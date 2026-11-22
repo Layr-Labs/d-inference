@@ -297,18 +297,25 @@ enum EngineV2Translation {
     /// `.unsupportedOutputControl` → 400 on the non-throwing submit path.
     static let unsupportedOutputControlPrefix = "unsupported_output_control"
 
-    static func admissionErrorMessage(for error: Error) -> String {
-        admissionErrorMessage(for: error, distributedProfile: nil)
+    /// On a bridge that may serve a pair: a pair's refusal of a request by its limits names the limits the pair
+    /// serves the request's route, the owner's for the owner's request (`RoutePolicy`). Every other failure, and a
+    /// refusal with no profile to name limits from, reads as below.
+    static func admissionErrorMessage(for error: Error, distributedProfile: DistributedResidentExecutionProfile?,
+                                      route: ServingRoute) -> String {
+        guard let distributedProfile, case .refused(let refusal)? = error as? DistributedEngineError else {
+            return admissionErrorMessage(for: error)
+        }
+        let served = RoutePolicy.limits(for: route, at: .pair).context
+        return distributedRefusalMessage(refusal, text: refusal.message(distributedProfile,
+                                                                        ownerRequest: served.servesOwner))
     }
 
-    /// `ownerRequest`: the owner's request on a pair's own API, whose refusal names the limits the pair serves it.
-    static func admissionErrorMessage(for error: Error, distributedProfile: DistributedResidentExecutionProfile?,
-                                      ownerRequest: Bool = false) -> String {
+    static func admissionErrorMessage(for error: Error) -> String {
         if let distributed = error as? DistributedEngineError {
             switch distributed {
             case .refused(let refusal):
-                return distributedRefusalMessage(refusal, text: refusal.message(distributedProfile,
-                                                                                ownerRequest: ownerRequest))
+                // No profile here: the words name no limit, so no route is read.
+                return distributedRefusalMessage(refusal, text: refusal.message(nil, ownerRequest: false))
             case .unavailable:
                 return distributedUnavailableMessage
             case .shuttingDown:
@@ -444,13 +451,19 @@ extension EngineV2Bridge {
     ///   so a client that sizes `max_tokens` from the list is served.
     /// Resolving the result again for the same prompt gives the same value, so
     /// the text path can name it on the request before the bridge resolves it.
-    /// `ownerRequest`: the owner's request on the pair's own API, which a pair cuts to what it serves the owner
-    /// (`pairOwnerLimits`).
-    nonisolated func outputTokens(requested: Int?, promptTokens: Int, ownerRequest: Bool = false) -> Int {
-        let pair = ownerRequest ? pairOwnerLimits : pairServedLimits
+    /// `route`: whose request it is. A pair cuts the owner's request on its own API to what it serves the owner
+    /// (`pairOwnerLimits`), and that request's default output to the owner's context (`RoutePolicy`).
+    nonisolated func outputTokens(requested: Int?, promptTokens: Int, route: ServingRoute) -> Int {
+        let pair: (outputTokens: Int, contextTokens: Int)?, defaultContextLimit: Int?
+        switch RoutePolicy.limits(for: route, at: servingFrontEnd).context {
+        case .modelWindow: (pair, defaultContextLimit) = (nil, defaultOutputContextLimit)
+        case .pairServed: (pair, defaultContextLimit) = (pairServedLimits, defaultOutputContextLimit)
+        case .pairOwnerServed:
+            (pair, defaultContextLimit) = (pairOwnerLimits, pairOwnerLimits?.contextTokens ?? defaultOutputContextLimit)
+        }
         guard let requested else {
             return EngineV2Translation.defaultOutputTokens(defaultMaxTokens, promptTokens: promptTokens,
-                contextLimit: ownerRequest ? pair?.contextTokens ?? defaultOutputContextLimit : defaultOutputContextLimit)
+                contextLimit: defaultContextLimit)
         }
         guard let limits = pair ?? modelWindowTokens.map({ (outputTokens: $0, contextTokens: $0) }),
               promptTokens < limits.contextTokens else { return requested }

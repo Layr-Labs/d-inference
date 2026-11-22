@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -556,6 +556,27 @@ minute on an M5 Ultra with Qwen3.5-9B). One the engine admits at once gets its
 headers within a few milliseconds. A client that limits how long it waits for
 headers must allow a cold model load and, on a busy Mac, that wait, or send
 `X-Darkbloom-Max-Wait: <seconds>` to get the busy 503 at that bound instead.
+
+### Limits that depend on whose request it is
+
+Your own request on the local API gets a different limit from a Darkbloom
+request in five places: it waits for memory instead of a refusal at once; one
+the engine queued and could not admit is submitted again; on a two-Mac pair
+it has no first-token allowance, runs for up to the protocol's hour, and is
+held to what the pair serves its owner. One rule decides whose request it is,
+and one table what each of these limits does with it
+([the serving route and its policy table](../architecture/inference.md#the-serving-route-and-its-policy-table)).
+
+Three limits do not make that difference today:
+
+- A request with images or video that the media memory gate cannot hold now
+  is refused at once, yours too: HTTP `503` without `Retry-After`. The memory
+  wait above covers the engine's memory, not this gate.
+- On a pair, a request waiting for a lane is refused with `503` at the queue's
+  ceiling, which is counted from the setup's request timeout even though your
+  requests ahead of it may each run for the hour.
+- Nemotron Super's local requests never wait for memory, and wait for a busy
+  slot at most 1 second (a media request at most 3) before `429`.
 
 ### Reasoning effort
 

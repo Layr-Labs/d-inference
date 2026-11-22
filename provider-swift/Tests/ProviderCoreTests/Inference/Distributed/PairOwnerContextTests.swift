@@ -102,10 +102,10 @@ struct PairOwnerContextTests {
             requestTimeout: .seconds(315))
         let long = Self.request(prompt: 200_000, maxTokens: 50_000)
         #expect(profile.refusal(for: long, ownerRequest: true) == nil)
-        #expect(profile.refusal(for: long) == .contextLengthExceeded)
+        #expect(profile.refusal(for: long, ownerRequest: false) == .contextLengthExceeded)
         #expect(profile.refusal(for: Self.request(prompt: 32_768, maxTokens: 32_768), ownerRequest: true) == nil)
-        #expect(profile.refusal(for: Self.request(prompt: 32_768, maxTokens: 32_768)) == nil)
-        #expect(profile.refusal(for: Self.request(prompt: 40_000, maxTokens: 1)) == .promptTooLong)
+        #expect(profile.refusal(for: Self.request(prompt: 32_768, maxTokens: 32_768), ownerRequest: false) == nil)
+        #expect(profile.refusal(for: Self.request(prompt: 40_000, maxTokens: 1), ownerRequest: false) == .promptTooLong)
         #expect(profile.refusal(for: Self.request(prompt: 262_143, maxTokens: 1), ownerRequest: true) == nil)
         #expect(profile.refusal(for: Self.request(prompt: 262_144, maxTokens: 1), ownerRequest: true)
             == .contextLengthExceeded)
@@ -113,7 +113,8 @@ struct PairOwnerContextTests {
             == .outputTooLong)
         #expect(profile.refusal(for: Self.request(prompt: 200_000, maxTokens: 62_145), ownerRequest: true)
             == .contextTooLong)
-        #expect(DistributedRequestRefusal.contextLengthExceeded.message(profile) == windowRefusalWords(65_536))
+        #expect(DistributedRequestRefusal.contextLengthExceeded.message(profile, ownerRequest: false)
+            == windowRefusalWords(65_536))
         #expect(DistributedRequestRefusal.contextLengthExceeded.message(profile, ownerRequest: true)
             == windowRefusalWords(262_144))
         #expect(DistributedRequestRefusal.outputTooLong.message(profile, ownerRequest: true)
@@ -126,12 +127,12 @@ struct PairOwnerContextTests {
         let owner = DistributedRequestDeadlineContext(generationDeadline: now.advanced(by: .seconds(3600)),
             ownerRequest: true)
         let shorter = DistributedRequestDeadlineContext(generationDeadline: now.advanced(by: .seconds(10)),
-            firstTokenDeadline: now.advanced(by: .seconds(5)))
+            firstTokenDeadline: now.advanced(by: .seconds(5)), ownerRequest: false)
         let restricted = owner.restricted(to: shorter)
         #expect(restricted.ownerRequest && restricted.generationDeadline == shorter.generationDeadline)
         #expect(restricted.firstTokenDeadline == shorter.firstTokenDeadline)
         #expect(!shorter.restricted(to: owner).ownerRequest)
-        #expect(!DistributedRequestDeadlineContext(generationDeadline: now).ownerRequest)
+        #expect(!DistributedRequestDeadlineContext(generationDeadline: now, ownerRequest: false).ownerRequest)
     }
 
     /// A pair at a GLM pipeline's limits, with no capability: the profile's, Darkbloom's and the owner's.
@@ -178,10 +179,13 @@ struct PairOwnerContextTests {
         let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(errors.first ?? "")
         #expect(errors.count == 1 && typed.errorDescription == windowRefusalWords(65_536), "\(errors)")
         #expect(owner.reservedRequests.isEmpty)
-        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 100) == 32_768)
-        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 100, ownerRequest: true) == 65_536)
-        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 250_000, ownerRequest: true) == 12_144)
-        #expect(bridge.outputTokens(requested: nil, promptTokens: 250_000, ownerRequest: true) == 12_144)
+        let owners = ServingRoute.owner(OwnerMemoryWait())
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 100, route: .coordinator(nil)) == 32_768)
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 100, route: owners) == 65_536)
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 250_000, route: owners) == 12_144)
+        #expect(bridge.outputTokens(requested: nil, promptTokens: 250_000, route: owners) == 12_144)
+        // A loop exit's continuation of the owner's request is cut as the request was.
+        #expect(bridge.outputTokens(requested: 300_000, promptTokens: 100, route: .ownerContinuation) == 65_536)
         let owned = await bridge.ownedEngine
         let engine = try #require(owned as? DistributedCBv2Engine)
         let reported = engine.requestLimits()

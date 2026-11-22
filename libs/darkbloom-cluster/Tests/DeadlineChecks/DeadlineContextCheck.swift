@@ -15,7 +15,8 @@ private func rejects(_ error: DistributedRequestDeadlineError, _ body: () throws
     static func main() throws {
         let origin = ContinuousClock.now
         let context = DistributedRequestDeadlineContext(generationDeadline: origin.advanced(by: .seconds(100)),
-                                                        firstTokenDeadline: origin.advanced(by: .seconds(40)))
+                                                        firstTokenDeadline: origin.advanced(by: .seconds(40)),
+                                                        ownerRequest: false)
         // Thirty seconds of preparation/queue wait are already gone at reserve.
         let queued = try context.localDeadlines(at: origin.advanced(by: .seconds(30)), uptimeBeforeNow: 1_000,
             maximumRemaining: .seconds(100), lifetimeDeadline: 200_000_001_000)
@@ -29,10 +30,12 @@ private func rejects(_ error: DistributedRequestDeadlineError, _ body: () throws
             maximumRemaining: .seconds(20), lifetimeDeadline: 200_000_001_000)
         try require(profile.generation == 20_000_001_000, "profile clamp")
         let earlier = context.restricted(to: .init(generationDeadline: origin.advanced(by: .seconds(200)),
-                                                   firstTokenDeadline: origin.advanced(by: .seconds(300))))
+                                                   firstTokenDeadline: origin.advanced(by: .seconds(300)),
+                                                   ownerRequest: false))
         try require(earlier == context, "later policy replenished budget")
         let tighter = context.restricted(to: .init(generationDeadline: origin.advanced(by: .seconds(80)),
-                                                   firstTokenDeadline: origin.advanced(by: .seconds(10))))
+                                                   firstTokenDeadline: origin.advanced(by: .seconds(10)),
+                                                   ownerRequest: false))
         try require(tighter.generationDeadline == origin.advanced(by: .seconds(80)) &&
                     tighter.firstTokenDeadline == origin.advanced(by: .seconds(10)), "separate restriction")
         try rejects(.generationExpired) { try context.checkAdmission(at: origin.advanced(by: .seconds(100))) }
@@ -60,7 +63,8 @@ private func rejects(_ error: DistributedRequestDeadlineError, _ body: () throws
         }
         // Omitting TTFT keeps admission bounded by generation; it does not invent
         // a first-token policy. A later reserve loses the actual elapsed budget.
-        let ordinary = DistributedRequestDeadlineContext(generationDeadline: origin.advanced(by: .seconds(10)))
+        let ordinary = DistributedRequestDeadlineContext(generationDeadline: origin.advanced(by: .seconds(10)),
+                                                         ownerRequest: false)
         let later = try ordinary.localDeadlines(at: origin.advanced(by: .seconds(4)), uptimeBeforeNow: 50,
             maximumRemaining: .seconds(100), lifetimeDeadline: 20_000_000_000)
         try require(later.generation == 6_000_000_050 && later.admission == later.generation, "ordinary duration reset")

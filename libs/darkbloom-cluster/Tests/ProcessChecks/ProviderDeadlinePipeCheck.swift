@@ -73,13 +73,13 @@ private func require(_ condition: Bool, _ message: String) throws { if !conditio
             let request = CBv2Request(id: .init(7), promptTokens: [1, 2, 3], sampling: .init(temperature: 0), maxTokens: 2)
             do {
                 _ = try owner.reserve(request, identity: identity, profileID: profile.id, capacityLimit: 1800,
-                    deadlineContext: .init(generationDeadline: ContinuousClock.now))
+                    deadlineContext: .init(generationDeadline: ContinuousClock.now, ownerRequest: false))
                 throw Failure(message: "expired origin admitted")
             } catch DistributedRequestDeadlineError.generationExpired { }
             try require(owner.readiness() != nil, "pre-reserve expiry poisoned idle workers")
             let first = ContinuousClock.now.advanced(by: slow ? .milliseconds(30) : .seconds(1))
             let context = DistributedRequestDeadlineContext(generationDeadline: ContinuousClock.now.advanced(by: .seconds(20)),
-                                                           firstTokenDeadline: first)
+                                                           firstTokenDeadline: first, ownerRequest: false)
             if slow {
                 let began = ContinuousClock.now
                 do {
@@ -93,7 +93,8 @@ private func require(_ condition: Bool, _ message: String) throws { if !conditio
                 try require(!workers.contains(where: \.observedExit) && owner.readiness() != nil,
                     "one request's first-token deadline ended the pair")
                 let next = try owner.reserve(request, identity: identity, profileID: profile.id, capacityLimit: 1800,
-                    deadlineContext: .init(generationDeadline: ContinuousClock.now.advanced(by: .seconds(20))))
+                    deadlineContext: .init(generationDeadline: ContinuousClock.now.advanced(by: .seconds(20)),
+                                           ownerRequest: false))
                 next.cancel(); await next.waitUntilRetired(); next.releaseResources()
             } else {
                 let lease = try owner.reserve(request, identity: identity, profileID: profile.id,

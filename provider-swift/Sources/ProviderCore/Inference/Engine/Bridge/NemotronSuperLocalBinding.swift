@@ -216,7 +216,9 @@ actor NemotronSuperLocalBinding {
                     cancelFirst: { await bridge.cancel(requestId: requestID) },
                     exit: exit,
                     promptTokens: tokens,
-                    outputBudget: bridge.outputTokens(requested: request.max_tokens, promptTokens: tokens.count),
+                    // As the bridge took the row above: no budget, and no owner's wait is bound on this route.
+                    outputBudget: bridge.outputTokens(requested: request.max_tokens, promptTokens: tokens.count,
+                                                      route: .current(firstContentDeadline: nil)),
                     submit: { continuationPrompt, budget, cancelled in
                         guard await bridge.waitForRowRelease(requestId: requestID, within: .seconds(5)) else {
                             throw LoopExitThinkingContinuation.RowNotReleased()

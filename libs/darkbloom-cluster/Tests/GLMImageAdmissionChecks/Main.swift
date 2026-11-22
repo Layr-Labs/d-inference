@@ -33,9 +33,9 @@ struct ClusterSetupLocalModel { let modelID, artifactSHA256: String }
    let profile = try DistributedResidentExecutionProfile(id: id, vocabularySize: 100, maxPromptTokens: 16,
     maxOutputTokens: 4, maxContextTokens: 20, requestTimeout: .seconds(10))
    request.clusterStillImages = nil
-   try expect(profile.refusal(for: request) == nil, "text preserved " + id)
+   try expect(profile.refusal(for: request, ownerRequest: false) == nil, "text preserved " + id)
    request.clusterStillImages = try encoder.encode(media)
-   try expect(profile.refusal(for: request) == (id == ClusterGLMImageCandidate.profileID ? nil : .mediaUnsupported), "media profile " + id)
+   try expect(profile.refusal(for: request, ownerRequest: false) == (id == ClusterGLMImageCandidate.profileID ? nil : .mediaUnsupported), "media profile " + id)
   }
   func frame(_ profile: String, _ image: ClusterStillImages?) throws -> Data {
    try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: UUID(), sequence: 0, requestID: UUID(), command: .reserve(.init(

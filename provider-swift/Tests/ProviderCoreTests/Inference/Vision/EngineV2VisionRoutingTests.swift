@@ -1287,6 +1287,43 @@ struct EngineV2VisionRoutingTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
+    /// The owner's media request on the local API is refused by the media
+    /// memory gate at once as well: the owner's memory wait (`OwnerMemoryWait`,
+    /// with no bound here) covers the engine's memory, not this gate. Today's
+    /// behaviour, named here so that it is a decision rather than an accident.
+    @Test("the owner's vision request the media memory gate can't hold is refused at once too")
+    func mediaGateRefusesTheOwnersRequestAtOnce() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            GlobalKVCacheBudget.MemorySnapshot(
+                total: UnifiedMemoryCap.minimumReserveBytes + 64 * 1024 * 1024,
+                active: 0, cache: 0, systemAvailable: .max)
+        }
+        let gate = VisionMemoryGate(kvBudget: budget, fp16KVBytesPerToken: 1 << 20, contextLength: 4096)
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let prepareCalls = PrepareCallCounter()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, _ in
+                prepareCalls.increment()
+                throw MediaIngest.MediaError.imageDecodeFailed
+            },
+            emitTelemetry: { _ in })
+        var router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: makeBridge(engine: engine, kvBudget: budget),
+            plumbing: plumbing, visionGate: gate)
+        router.ownerMemoryWait = OwnerMemoryWait()
+
+        do {
+            _ = try await router.streamChatCompletion(request: imageRequest())
+            Issue.record("expected mediaMemoryUnavailable throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .mediaMemoryUnavailable)
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 503)
+        }
+        #expect(prepareCalls.count == 0)
+        #expect(engine.submitted.isEmpty)
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     /// The production preparer applies the request model's image cap: the
     /// 9B's 65th image is refused (`media_too_large`) before the processor or
     /// the tower runs (the 9B takes 64 under its image budget).

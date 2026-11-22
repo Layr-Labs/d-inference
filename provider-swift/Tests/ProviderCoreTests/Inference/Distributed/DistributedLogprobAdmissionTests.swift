@@ -33,14 +33,14 @@ import Testing
         for captures in [false, true] {
             let profile = try distributedTestProfile(supportsLogprobs: captures)
             var request = distributedTestRequest()
-            #expect(profile.refusal(for: request) == nil)
+            #expect(profile.refusal(for: request, ownerRequest: false) == nil)
             for count in [-1, ClusterWorkerSampling.maximumTopLogprobs + 1] {
                 request.sampling.topLogprobs = count
-                #expect(profile.refusal(for: request) == .logprobsUnsupported)
+                #expect(profile.refusal(for: request, ownerRequest: false) == .logprobsUnsupported)
             }
             for count in [1, ClusterWorkerSampling.maximumTopLogprobs] {
                 request.sampling.topLogprobs = count
-                #expect(profile.refusal(for: request) == (captures ? nil : .logprobCaptureUnsupported))
+                #expect(profile.refusal(for: request, ownerRequest: false) == (captures ? nil : .logprobCaptureUnsupported))
             }
         }
     }
@@ -48,7 +48,8 @@ import Testing
     @Test func unsupportedCaptureIsAClientErrorWithAnAccurateReason() throws {
         let profile = try distributedTestProfile()
         let message = EngineV2Translation.admissionErrorMessage(
-            for: DistributedEngineError.refused(.logprobCaptureUnsupported), distributedProfile: profile)
+            for: DistributedEngineError.refused(.logprobCaptureUnsupported), distributedProfile: profile,
+            route: .coordinator(nil))
         let error = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
         guard case .distributedRequestRefused(let reason, let detail) = error else {
             Issue.record("Capture refusal lost its deterministic request classification")

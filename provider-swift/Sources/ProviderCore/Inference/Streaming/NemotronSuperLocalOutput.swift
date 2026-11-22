@@ -52,17 +52,21 @@ struct NemotronSuperLocalOutput {
         // client as raw XML.
         let offersNoTools = plan.toolPolicy.mode == .auto && plan.toolPolicy.tools?.isEmpty != false
         // The scheduler's decision, for this owner's family (`ToolCallExposure`).
-        var switches = ToolCallExposure.Switches.current
-        switches.native = streamNativeToolCalls
-        switches.forced.native = streamForcedToolCalls
+        // Its plan prompt-forces a forced call, so no strategy enforces one.
+        var forcedCalls = ToolStreamPreparation.streamsForcedToolCallsByDefault
+        forcedCalls.native = streamForcedToolCalls
         let streamsCalls = ToolCallExposure.resolve(
             family: .superOwner, parser: .nemotron,
             request: .init(
                 mode: plan.toolPolicy.mode, clientStreams: plan.toolPolicy.clientStreams,
                 rendersFragments: streaming && plan.request.streamToolCallDeltas,
                 offersTools: !offersNoTools,
-                withholdsJSONAnswer: plan.request.responseFormat?.requiresJSONOutput == true),
-            switches: switches).streams
+                withholdsJSONAnswer: plan.request.responseFormat?.requiresJSONOutput == true,
+                forcedStrategy: .none),
+            switches: .init(
+                toolCalls: ToolStreamPreparation.streamsToolCallsByDefault, forced: forcedCalls,
+                native: streamNativeToolCalls, glm: ToolStreamPreparation.streamsGLMToolCallsByDefault)
+        ).streams
         let allowed = plan.toolPolicy.allowedToolNames
         handler = offersNoTools ? nil : BatchedToolStreamHandler(format: .nemotron,
             tools: plan.toolPolicy.tools?.map { $0.toolSpec() },
@@ -74,6 +78,10 @@ struct NemotronSuperLocalOutput {
         channel = NemotronSuperReasoningChannel(controls: plan.controls)
         self.maximumBytes = maximumBytes
     }
+
+    /// True when this response's calls leave as `.toolCallDelta` events while
+    /// generated; false when they are withheld until validation.
+    var streamsToolCalls: Bool { callRouter != nil }
 
     private var withholdsContent: Bool {
         plan.toolPolicy.requiresToolCall || plan.request.responseFormat?.requiresJSONOutput == true

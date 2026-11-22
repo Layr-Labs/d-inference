@@ -53,19 +53,28 @@ enum ToolStreamPreparation {
         streamGLMToolCalls: Bool = streamsGLMToolCallsByDefault,
         streamForcedToolCalls: ForcedCalls = streamsForcedToolCallsByDefault
     ) -> Bool {
-        exposure(request: request, prepared: prepared, modelType: modelType, parser: .glm5,
-            switches: .init(toolCalls: streamToolCalls, forced: streamForcedToolCalls, glm: streamGLMToolCalls))
+        // The strategy is read for a framed family's forced calls alone, never
+        // for GLM's own frames; a choice nothing enforces has none.
+        let context = ChatTemplateFixContext(modelId: request.model, modelType: modelType)
+        let strategy = (try? ToolChoiceEnforcementPolicy.forcedStrategy(mode: prepared.mode, modelContext: context))
+            ?? .none
+        return exposure(request: request, prepared: prepared, modelType: modelType, parser: .glm5,
+            forcedStrategy: strategy,
+            switches: .init(toolCalls: streamToolCalls, forced: streamForcedToolCalls,
+                native: streamsNativeToolCallsByDefault, glm: streamGLMToolCalls))
             == .streamed(.glmFrames)
     }
 
     /// How one request's calls leave on the scheduler's path
     /// (`ToolCallExposure.resolve`): its model's family, the parser its
-    /// handler resolved and its prepared choice.
+    /// handler resolved, its prepared choice and the strategy that enforces a
+    /// forced one.
     static func exposure(
         request: OpenAIChatCompletionRequest,
         prepared: ToolChoicePromptPolicy.Prepared,
         modelType: String?,
         parser: ToolCallFormat,
+        forcedStrategy: ToolChoiceEnforcementPolicy.Strategy,
         switches: ToolCallExposure.Switches
     ) -> ToolCallExposure {
         ToolCallExposure.resolve(
@@ -75,7 +84,8 @@ enum ToolStreamPreparation {
                 mode: prepared.mode, clientStreams: prepared.clientStreams,
                 rendersFragments: request.streamToolCallDeltas,
                 offersTools: prepared.tools?.isEmpty == false,
-                withholdsJSONAnswer: prepared.glmResponseFormat != nil),
+                withholdsJSONAnswer: prepared.glmResponseFormat != nil,
+                forcedStrategy: forcedStrategy),
             switches: switches)
     }
 
@@ -169,8 +179,9 @@ enum ToolStreamPreparation {
         try ToolChoiceEnforcementPolicy.validateParser(
             format, strategy: strategy, modelContext: context)
         let resolved = exposure(request: request, prepared: prepared, modelType: modelType, parser: format,
+            forcedStrategy: strategy,
             switches: .init(toolCalls: streamToolCalls, forced: streamForcedToolCalls,
-                native: streamNativeToolCalls))
+                native: streamNativeToolCalls, glm: streamsGLMToolCallsByDefault))
         return BatchedToolStreamHandler(format: format,
             tools: (isMiMo && prepared.mode == .none ? request.tools : prepared.tools)?.map { $0.toolSpec() },
             strictGemma: modelType == "diffusion_gemma",

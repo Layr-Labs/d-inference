@@ -16,6 +16,11 @@ import Testing
 /// Nemotron 3.5 Super's request plan, output and relay; then the service's
 /// own frames.
 ///
+/// Only a family and tool choice whose two clients take different paths is a
+/// comparison of the streamed path with the withheld one. Where both clients
+/// take one path (`singlePath`) the cells compare that path with itself and
+/// are kept out of the agreement test and its count.
+///
 /// Where the two paths disagree today the cell is listed in
 /// `knownDivergences` with both outcomes. That list may only shrink: a cell
 /// that starts to agree fails until its entry is removed, and a cell that
@@ -213,6 +218,10 @@ struct ToolCallPathConformanceTests {
         var check: String?
         /// The request's tool-call tally, when its owner recorded one.
         var tally: ToolCallTally?
+        /// Whether the owner exposed this response's calls while generated;
+        /// nil when the request was refused before an owner took it. Not
+        /// compared: it names the path, which the two clients differ by.
+        var streamsCalls: Bool?
 
         static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.calls == rhs.calls && lhs.finishReason == rhs.finishReason && lhs.text == rhs.text
@@ -231,10 +240,16 @@ struct ToolCallPathConformanceTests {
         }
     }
 
-    /// Every call an engine stream finished, read beside the service's frames.
+    /// Every call an engine stream finished, read beside the service's
+    /// frames, and the path its owner resolved.
     final class FinishedCalls: @unchecked Sendable {
         private let lock = NSLock()
         private var calls: [String] = []
+        private var path: Bool?
+
+        /// The owner's own answer: its calls leave while generated.
+        func note(streamsCalls: Bool) { lock.withLock { path = streamsCalls } }
+        var streamsCalls: Bool? { lock.withLock { path } }
 
         func record(_ event: MLXServerGenerationEvent) {
             let call: ToolCall? = switch event {
@@ -319,6 +334,7 @@ struct ToolCallPathConformanceTests {
                 glmWithholdsReasoning: GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType),
                 reasoningPrefix: promptReasoningPrefix, promptReasoningPrefix: promptReasoningPrefix,
                 promptThinkState: { ReasoningPromptProbe.streamingPrefix(forPromptTail: promptTail) })
+            finished.note(streamsCalls: handler?.streamsCalls == true || routing.streamsGLMCalls)
             let events = upstream
             return try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
                 upstream: AsyncStream { continuation in
@@ -338,6 +354,7 @@ struct ToolCallPathConformanceTests {
         ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
             let plan = try NemotronSuperRequestPlan(body: body, formatted: request)
             let output = try NemotronSuperLocalOutput(plan: plan, streaming: request.stream == true)
+            finished.note(streamsCalls: output.streamsToolCalls)
             let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(
                 bufferingPolicy: .bufferingOldest(4096))
             let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output, usageSignal: usage)
@@ -380,6 +397,7 @@ struct ToolCallPathConformanceTests {
             outcome = Self.refused(error)
         }
         outcome.tally = usage.toolCalls
+        outcome.streamsCalls = finished.streamsCalls
         return outcome
     }
 
@@ -443,22 +461,86 @@ struct ToolCallPathConformanceTests {
         ]),
     ].flatMap { outcomes, cells in cells.map { ($0, outcomes) } })
 
-    @Test("every served model type has a row")
-    func everyServedTypeHasARow() {
-        #expect(Set(Self.families.map(\.type)) == Set(ServedModelType.allCases))
-        let cells = Set(Self.families.flatMap { family in
-            Choice.allCases.flatMap { choice in Scenario.allCases.map { Self.cell(family, choice, $0) } }
-        })
-        #expect(Set(Self.knownDivergences.keys).isSubset(of: cells), "a listed cell is not in the matrix")
+    /// Which paths the two clients of one family and tool choice take.
+    enum Paths: String, Sendable {
+        /// The streaming client's calls stream and the other's are withheld:
+        /// the only cells that compare the two paths.
+        case compared
+        /// Both clients' calls stream: a framed family's `auto` calls leave
+        /// as fragments on any surface that renders them.
+        case streamedOnly
+        /// Both clients' calls are withheld: the family streams nothing.
+        case withheldOnly
+        /// Refused before any output: the family's default parser admits no
+        /// forced call (`ToolChoiceEnforcementPolicy.validateParser`).
+        case refused
     }
 
-    @Test("the two paths end alike, except the listed cells", arguments: families)
+    static func pair(_ family: Family, _ choice: Choice) -> String { "\(family.name) / \(choice.rawValue)" }
+
+    /// Family and tool choice pairs whose two clients take one path, or
+    /// none. Their cells compare nothing, so they are not part of the
+    /// agreement test or its count. Every other pair is `compared`.
+    static let singlePath: [String: Paths] = Dictionary(uniqueKeysWithValues: [
+        (Paths.streamedOnly, [
+            "Gemma 4 / auto", "Gemma 4 text / auto", "GPT-OSS / auto", "Qwen 3.5 and 3.8 dense / auto",
+            "Qwen 3.5 and 3.6 MoE / auto", "Qwen3-VL / auto",
+        ]),
+        (.withheldOnly, [
+            "Qwen 4 / auto", "Qwen 4 / required", "Qwen 4 / named",
+            "Qwen 4 text / auto", "Qwen 4 text / required", "Qwen 4 text / named",
+            "diffusion Gemma / auto", "diffusion Gemma / required", "diffusion Gemma / named",
+            "Flint / auto", "Flint / required", "Flint / named",
+        ]),
+        (.refused, ["Qwen3-VL / required", "Qwen3-VL / named"]),
+    ].flatMap { paths, pairs in pairs.map { ($0, paths) } })
+
+    static func paths(_ family: Family, _ choice: Choice) -> Paths {
+        singlePath[pair(family, choice)] ?? .compared
+    }
+
+    /// The paths two responses to the same request took.
+    static func paths(streaming: Outcome, notStreaming: Outcome) -> Paths? {
+        switch (streaming.streamsCalls, notStreaming.streamsCalls) {
+        case (true?, false?): .compared
+        case (true?, true?): .streamedOnly
+        case (false?, false?): .withheldOnly
+        case (nil, nil): .refused
+        default: nil
+        }
+    }
+
+    @Test("every served model type has a row, and 200 of its 360 cells compare the two paths")
+    func everyServedTypeHasARow() {
+        #expect(Set(Self.families.map(\.type)) == Set(ServedModelType.allCases))
+        var cells: [Paths: Set<String>] = [:]
+        for family in Self.families {
+            for choice in Choice.allCases {
+                for scenario in Scenario.allCases {
+                    cells[Self.paths(family, choice), default: []].insert(Self.cell(family, choice, scenario))
+                }
+            }
+        }
+        #expect(cells[.compared]?.count == 200)
+        #expect(cells[.streamedOnly]?.count == 48)
+        #expect(cells[.withheldOnly]?.count == 96)
+        #expect(cells[.refused]?.count == 16)
+        let pairs = Set(Self.families.flatMap { family in Choice.allCases.map { Self.pair(family, $0) } })
+        #expect(Set(Self.singlePath.keys).isSubset(of: pairs), "a listed pair is not in the matrix")
+        #expect(Set(Self.knownDivergences.keys).isSubset(of: cells[.compared] ?? []),
+            "a listed cell does not compare the two paths")
+    }
+
+    @Test("where the two clients take different paths, the paths end alike, except the listed cells",
+          arguments: families)
     func streamedAndWithheldAgree(family: Family) async {
-        for choice in Choice.allCases {
+        for choice in Choice.allCases where Self.paths(family, choice) == .compared {
             for scenario in Scenario.allCases {
                 let cell = Self.cell(family, choice, scenario)
                 let streamed = await Self.serve(family, choice, scenario, clientStreams: true)
                 let withheld = await Self.serve(family, choice, scenario, clientStreams: false)
+                #expect(Self.paths(streaming: streamed, notStreaming: withheld) == .compared,
+                    "\(cell) no longer compares the two paths: list it in singlePath")
                 let pinned = Self.knownDivergences[cell]
                 if streamed == withheld {
                     #expect(pinned == nil, "\(cell) agrees now (\(streamed)): remove it from knownDivergences")
@@ -470,16 +552,31 @@ struct ToolCallPathConformanceTests {
         }
     }
 
-    /// Forced choices a family refuses before any output: its default parser
-    /// admits no forced call (`ToolChoiceEnforcementPolicy.validateParser`).
-    /// Their cells agree above without output, so they are listed here, never
-    /// counted as served.
-    static let refusedBeforeOutput: Set<String> = ["Qwen3-VL / required", "Qwen3-VL / named"]
+    /// Not an agreement of two paths: one path serves both clients, and the
+    /// client's own `stream` changes nothing else about the response.
+    @Test("where both clients take one path, it is the listed one and serves them alike", arguments: families)
+    func singlePathPairsTakeTheListedPath(family: Family) async {
+        for choice in Choice.allCases {
+            let listed = Self.paths(family, choice)
+            guard listed != .compared else { continue }
+            for scenario in Scenario.allCases {
+                let cell = Self.cell(family, choice, scenario)
+                let streaming = await Self.serve(family, choice, scenario, clientStreams: true)
+                let notStreaming = await Self.serve(family, choice, scenario, clientStreams: false)
+                #expect(Self.paths(streaming: streaming, notStreaming: notStreaming) == listed, "\(cell)")
+                #expect(streaming == notStreaming, "\(cell): \(streaming), \(notStreaming)")
+            }
+        }
+    }
 
-    @Test("a complete call is one finished call on both paths", arguments: families)
+    /// Forced choices a family refuses before any output, never counted as
+    /// served.
+    static let refusedBeforeOutput = Set(singlePath.filter { $0.value == .refused }.keys)
+
+    @Test("a complete call is one finished call for both clients", arguments: families)
     func completeCallsFinish(family: Family) async {
         for choice in Choice.allCases {
-            let refused = Self.refusedBeforeOutput.contains("\(family.name) / \(choice.rawValue)")
+            let refused = Self.refusedBeforeOutput.contains(Self.pair(family, choice))
             for clientStreams in [true, false] {
                 let served = await Self.serve(family, choice, .complete, clientStreams: clientStreams)
                 let cell = "\(family.name) / \(choice.rawValue), client streams: \(clientStreams): \(served)"
@@ -503,7 +600,7 @@ struct ToolCallPathConformanceTests {
     /// Without `strict`, an `auto` call that breaks only its schema is the
     /// model's call: returned as generated, never its markup as text or a
     /// failure, whichever path serves it.
-    @Test("an `auto` call that breaks only its schema is returned on both paths, except by the listed families",
+    @Test("an `auto` call that breaks only its schema is returned to both clients, except by the listed families",
           arguments: families)
     func schemaBreaksAreCalls(family: Family) async {
         for clientStreams in [true, false] {

@@ -43,18 +43,16 @@ struct NemotronSuperRequestPlan: Sendable {
         guard contentParts <= Self.maximumContentParts else { throw Failure.tooManyContentParts }
         let clientStreams: Bool
         (topLogprobs, clientStreams) = try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
-        // What the scheduler reads from the client's own body, read here
-        // too. The declarations as sent are what the call grammar
-        // (`NemotronSuperToolGrammar`) and the output's validator hold a
-        // `strict` call to. On the coordinator path `formatted` is always a
-        // stream; only a client that streams gets its tool calls as
-        // fragments (`NemotronSuperLocalOutput`). This owner holds a `strict`
-        // call to its schema even once the response started.
+        // The client itself streams: the body's own `stream`, as the
+        // scheduler reads it. On the coordinator path `formatted` is always
+        // a stream; only a client that streams gets its tool calls as
+        // fragments (`NemotronSuperLocalOutput`). This owner's validator
+        // reads the rendered declarations, not the body's as sent (only its
+        // call grammar reads those, `NemotronSuperToolGrammar`), and holds a
+        // `strict` call to its schema even once the response started.
         let prepared = try ToolChoicePromptPolicy.prepare(decoded,
             modelType: Self.modelType, allowInternalSchemaMetadata: trustsSchemaMetadata
-        ).serving(
-            declaredTools: (try? JSONDecoder().decode(ChatTemplateControls.self, from: body))?.declaredTools,
-            clientStreams: clientStreams, returnsStrictCallsAsGenerated: false)
+        ).serving(declaredTools: nil, clientStreams: clientStreams, returnsStrictCallsAsGenerated: false)
         var rendered = decoded
         rendered.messages = prepared.messages
         rendered.tools = prepared.tools

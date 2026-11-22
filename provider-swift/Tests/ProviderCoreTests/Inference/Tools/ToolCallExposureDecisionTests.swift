@@ -17,11 +17,11 @@ struct ToolCallExposureDecisionTests {
     /// Each served type's family for a build the catalog lists, on the
     /// scheduler's path.
     private static let pinned: [ServedModelType: String] = [
-        .gemma4: "framed, forced calls stream under gemma",
-        .gemma4Text: "framed, forced calls stream under gemma",
-        .gptOSS: "framed, forced calls stream under gptOSS",
-        .qwen35: "framed, forced calls stream under qwen",
-        .qwen35MoE: "framed, forced calls stream under qwen",
+        .gemma4: "framed, forced calls stream under gemmaGrammar",
+        .gemma4Text: "framed, forced calls stream under gemmaGrammar",
+        .gptOSS: "framed, forced calls stream under harmonyFraming",
+        .qwen35: "framed, forced calls stream under structuredPostValidation",
+        .qwen35MoE: "framed, forced calls stream under structuredPostValidation",
         .qwen3VLMoE: "framed, forced calls withheld",
         .prismHadamardQwen35: "native channel, qwen3_5 parser",
         .mimoV2: "native channel, mimo_v2 parser",
@@ -82,21 +82,82 @@ struct ToolCallExposureDecisionTests {
             == .nativeChannel(parser: .qwen35))
     }
 
-    /// The family is read from the type exactly as config.json declares it,
-    /// the only spelling whose model loads (`ModelTypeRegistry`).
-    @Test("a type that is not a served declaration is the unserved family")
-    func undeclaredTypes() {
-        let undeclared: [String?] = [
-            nil, "", "llama", "qwen3", "gemma4_vision", "glm5_next_text", "glm5_next_mtp", "GEMMA4", " gemma4 ",
-            "Qwen3_5", "MIMO_V2", "nemotron_h ",
-        ]
-        for modelType in undeclared {
-            #expect(Family.of(.init(modelId: "gemma-4-qwen3.5", modelType: modelType)) == Family.unserved,
-                "\(modelType.debugDescription)")
-        }
+    /// A served type under another spelling, for a listed build: the family
+    /// the replaced rules gave such a string. Spelled out so that a change
+    /// to how a spelling is read shows up as a diff of this table.
+    private static let respelled: [ServedModelType: String] = [
+        .gemma4: "framed, forced calls stream under gemmaGrammar",
+        .gemma4Text: "framed, forced calls stream under gemmaGrammar",
+        .gptOSS: "framed, forced calls stream under harmonyFraming",
+        .qwen35: "framed, forced calls stream under structuredPostValidation",
+        .qwen35MoE: "framed, forced calls stream under structuredPostValidation",
+        .qwen3VLMoE: "framed, forced calls withheld",
+        .prismHadamardQwen35: "withheld",
+        .mimoV2: "framed, forced calls withheld",
+        .nemotronH: "withheld",
+        .nemotronHOmni: "framed, forced calls withheld",
+        .glm5Next: "framed, forced calls withheld",
+        .qwen4Exp: "withheld",
+        .qwen4ExpText: "withheld",
+        .diffusionGemma: "withheld",
+        .flint: "framed, forced calls withheld",
+    ]
+
+    @Test("a served type under another letter case or with surrounding whitespace has the family pinned here")
+    func otherSpellings() {
+        #expect(Set(Self.respelled.keys) == Set(ServedModelType.allCases))
         for type in ServedModelType.allCases {
-            #expect(Family.of(.init(modelId: Self.listedModelID(type), modelType: type.rawValue))
-                == Family.served(type, modelID: Self.listedModelID(type)), "\(type)")
+            let id = Self.listedModelID(type)
+            let spellings = [
+                type.rawValue.uppercased(), type.rawValue.prefix(1).uppercased() + type.rawValue.dropFirst(),
+                " \(type.rawValue) ", "\t\(type.rawValue)\n",
+            ]
+            for spelling in spellings {
+                #expect(ServedModelType(normalizing: spelling) == type, "\(spelling.debugDescription)")
+                #expect(Self.summary(Family.of(.init(modelId: id, modelType: spelling))) == Self.respelled[type],
+                    "\(spelling.debugDescription)")
+            }
+            #expect(Family.of(.init(modelId: id, modelType: type.rawValue)) == Family.served(type, modelID: id),
+                "\(type)")
+        }
+        // An unlisted build is a framed family under any spelling.
+        for spelling in ["NEMOTRON_H", " prism_hadamard_qwen35\n"] {
+            #expect(Self.summary(Family.of(.init(modelId: "another-build", modelType: spelling)))
+                == "framed, forced calls withheld", "\(spelling.debugDescription)")
+        }
+    }
+
+    /// The supported set and this decision read a type through one
+    /// normalisation (`ServedModelType.init(normalizing:)`), so a string the
+    /// supported set admits is never an unserved type here.
+    @Test("every string the supported set admits names a served type for the exposure decision")
+    func oneNormalisation() {
+        var strings: [String?] = [nil, "", "  ", "llama", "gemma4_vision", "qwen3_5x", "glm5_next_text"]
+        for type in ServedModelType.allCases {
+            strings += [type.rawValue, type.rawValue.uppercased(), " \(type.rawValue)\n"]
+        }
+        var admitted = 0
+        for string in strings where EngineV2SupportedModels.isSupported(modelType: string) {
+            admitted += 1
+            #expect(ServedModelType(normalizing: string) != nil, "\(string.debugDescription)")
+        }
+        // Ten types are admitted under any spelling, MiMo and Flint as declared only.
+        #expect(admitted == 10 * 3 + 2)
+    }
+
+    /// A string that names no served type: GLM's component types take GLM's
+    /// family, and every other one is framed, its forced calls streaming
+    /// under the Gemma grammar alone (`gemma4_vision`, or no type and a
+    /// `gemma-4` model id, select it).
+    @Test("a type that names no served type is GLM's for its component types, and framed otherwise")
+    func unservedTypes() {
+        for modelType in ["glm5_next_text", "glm5_next_mtp"] {
+            #expect(Family.of(.init(modelId: "glm-5.3-flash", modelType: modelType)) == .glm, "\(modelType)")
+        }
+        let framed: [String?] = [nil, "", "llama", "qwen3", "gemma4_vision", "glm5_next_vision", "GLM5_NEXT_TEXT"]
+        for modelType in framed {
+            #expect(Self.summary(Family.of(.init(modelId: "gemma-4-qwen3.5", modelType: modelType)))
+                == "framed, forced calls stream under gemmaGrammar", "\(modelType.debugDescription)")
         }
     }
 
@@ -114,17 +175,35 @@ struct ToolCallExposureDecisionTests {
         }
     }
 
+    private static let everySwitchOn = ToolCallExposure.Switches(
+        toolCalls: true, forced: .all, native: true, glm: true)
+
+    private static func switches(_ change: (inout ToolCallExposure.Switches) -> Void) -> ToolCallExposure.Switches {
+        var switches = everySwitchOn
+        change(&switches)
+        return switches
+    }
+
+    /// What enforces a forced choice for a type's listed build, as the
+    /// scheduler resolves it; `.none` where nothing does.
+    private static func forcedStrategy(_ type: ServedModelType, _ choice: Choice) -> ToolChoiceEnforcementPolicy.Strategy {
+        guard type != .nemotronHOmni else { return .none }
+        let context = ChatTemplateFixContext(modelId: listedModelID(type), modelType: type.rawValue)
+        return (try? ToolChoiceEnforcementPolicy.forcedStrategy(mode: choice.mode, modelContext: context)) ?? .none
+    }
+
     /// The owner that serves the type, and the parser its requests resolve.
     private static func exposure(
-        _ type: ServedModelType, _ choice: Choice, clientStreams: Bool,
-        switches: ToolCallExposure.Switches = .init()
+        _ type: ServedModelType, _ choice: Choice, clientStreams: Bool, rendersFragments: Bool = true,
+        offersTools: Bool = true, json: Bool = false, parser: ToolCallFormat? = nil,
+        switches: ToolCallExposure.Switches = everySwitchOn
     ) throws -> ToolCallExposure {
         let family: Family = type == .nemotronHOmni ? .superOwner : .served(type, modelID: listedModelID(type))
         return ToolCallExposure.resolve(
             family: family,
-            parser: try ServerToolParser.resolve(requested: nil, modelType: type.rawValue),
-            request: .init(mode: choice.mode, clientStreams: clientStreams, rendersFragments: true,
-                offersTools: true, withholdsJSONAnswer: false),
+            parser: try parser ?? ServerToolParser.resolve(requested: nil, modelType: type.rawValue),
+            request: .init(mode: choice.mode, clientStreams: clientStreams, rendersFragments: rendersFragments,
+                offersTools: offersTools, withholdsJSONAnswer: json, forcedStrategy: forcedStrategy(type, choice)),
             switches: switches)
     }
 
@@ -140,6 +219,7 @@ struct ToolCallExposureDecisionTests {
         case .withheld(.jsonAnswerWithheld): "withheld, JSON answer"
         case .withheld(.parserRendersNoFragments): "withheld, parser renders no fragments"
         case .withheld(.parserOfAnotherFamily): "withheld, another family's parser"
+        case .withheld(.forcedByAnotherStrategy): "withheld, forced by another strategy"
         case .withheld(.family): "withheld, family"
         }
     }
@@ -200,28 +280,23 @@ struct ToolCallExposureDecisionTests {
     func reasons() throws {
         func tag(_ type: ServedModelType, _ choice: Choice = .auto, clientStreams: Bool = true,
                  rendersFragments: Bool = true, offersTools: Bool = true, json: Bool = false,
-                 parser: ToolCallFormat? = nil, switches: ToolCallExposure.Switches = .init()) throws -> String {
-            let family: Family = type == .nemotronHOmni ? .superOwner : .served(type, modelID: Self.listedModelID(type))
-            return Self.tag(ToolCallExposure.resolve(
-                family: family,
-                parser: try parser ?? ServerToolParser.resolve(requested: nil, modelType: type.rawValue),
-                request: .init(mode: choice.mode, clientStreams: clientStreams, rendersFragments: rendersFragments,
-                    offersTools: offersTools, withholdsJSONAnswer: json),
-                switches: switches))
+                 parser: ToolCallFormat? = nil, switches: ToolCallExposure.Switches = Self.everySwitchOn) throws -> String {
+            Self.tag(try Self.exposure(type, choice, clientStreams: clientStreams, rendersFragments: rendersFragments,
+                offersTools: offersTools, json: json, parser: parser, switches: switches))
         }
-        #expect(try tag(.gemma4, switches: .init(toolCalls: false)) == "withheld, toolCalls off")
+        #expect(try tag(.gemma4, switches: Self.switches { $0.toolCalls = false }) == "withheld, toolCalls off")
         #expect(try tag(.gemma4, rendersFragments: false) == "withheld, no fragments")
         #expect(try tag(.gemma4, .required, clientStreams: false) == "withheld, client does not stream")
-        #expect(try tag(.gemma4, .required, switches: .init(forced: .init(gemma: false)))
+        #expect(try tag(.gemma4, .required, switches: Self.switches { $0.forced.gemma = false })
             == "withheld, forcedToolCalls off")
         #expect(try tag(.qwen35, parser: .xmlFunction) == "withheld, parser renders no fragments")
         #expect(try tag(.qwen35, parser: .nemotron) == "withheld, another family's parser")
         #expect(try tag(.nemotronH, parser: .json) == "withheld, another family's parser")
         #expect(try tag(.mimoV2, clientStreams: false) == "withheld, client does not stream")
-        #expect(try tag(.mimoV2, switches: .init(native: false)) == "withheld, nativeToolCalls off")
-        #expect(try tag(.mimoV2, .named, switches: .init(forced: .init(native: false)))
+        #expect(try tag(.mimoV2, switches: Self.switches { $0.native = false }) == "withheld, nativeToolCalls off")
+        #expect(try tag(.mimoV2, .named, switches: Self.switches { $0.forced.native = false })
             == "withheld, forcedToolCalls off")
-        #expect(try tag(.glm5Next, switches: .init(glm: false)) == "withheld, glmToolCalls off")
+        #expect(try tag(.glm5Next, switches: Self.switches { $0.glm = false }) == "withheld, glmToolCalls off")
         #expect(try tag(.glm5Next, json: true) == "withheld, JSON answer")
         #expect(try tag(.glm5Next, offersTools: false) == "withheld, no tools")
         #expect(try tag(.nemotronHOmni, json: true) == "withheld, JSON answer")
@@ -229,25 +304,59 @@ struct ToolCallExposureDecisionTests {
         #expect(ToolCallExposure.resolve(
             family: .served(.gemma4, modelID: nil), parser: .gemma,
             request: .init(mode: .none, clientStreams: true, rendersFragments: true, offersTools: true,
-                withholdsJSONAnswer: false),
-            switches: .init()) == .withheld(.toolChoiceNone))
+                withholdsJSONAnswer: false, forcedStrategy: .none),
+            switches: Self.everySwitchOn) == .withheld(.toolChoiceNone))
+    }
+
+    /// A framed family's forced calls stream only when the strategy the
+    /// family names is what enforces the request: an id or a spelling that
+    /// selects another one keeps them withheld.
+    @Test("a forced call streams under its family's strategy alone")
+    func forcedStrategies() {
+        func exposure(_ family: Family, _ strategy: ToolChoiceEnforcementPolicy.Strategy, parser: ToolCallFormat)
+            -> ToolCallExposure
+        {
+            ToolCallExposure.resolve(
+                family: family, parser: parser,
+                request: .init(mode: .required, clientStreams: true, rendersFragments: true, offersTools: true,
+                    withholdsJSONAnswer: false, forcedStrategy: strategy),
+                switches: Self.everySwitchOn)
+        }
+        let families: [(Family, ToolCallFormat, ToolChoiceEnforcementPolicy.Strategy)] = [
+            (.served(.gemma4, modelID: nil), .gemma, .gemmaGrammar),
+            (.served(.gptOSS, modelID: nil), .harmony, .harmonyFraming),
+            (.served(.qwen35, modelID: nil), .qwen35, .structuredPostValidation),
+        ]
+        let strategies: [ToolChoiceEnforcementPolicy.Strategy] = [
+            .none, .gemmaGrammar, .structuredPostValidation, .harmonyFraming,
+        ]
+        for (family, parser, own) in families {
+            for strategy in strategies {
+                #expect(exposure(family, strategy, parser: parser)
+                    == (strategy == own ? .streamed(.parserFrames) : .withheld(.forcedByAnotherStrategy)),
+                    "\(own) under \(strategy)")
+            }
+        }
     }
 
     /// A type the engine does not serve keeps the rule every type had before
     /// the families were told apart: `auto` calls stream where the parser
-    /// renders fragments, and no forced call does.
-    @Test("an unserved type streams `auto` calls only")
-    func unservedTypes() {
-        func exposure(_ choice: Choice, parser: ToolCallFormat = .json) -> ToolCallExposure {
+    /// renders fragments, and a forced call only under the Gemma grammar.
+    @Test("an unserved type streams `auto` calls, and forced ones under the Gemma grammar alone")
+    func unservedExposure() {
+        let family = Family.unserved(.init(modelId: "unknown", modelType: "llama"))
+        func exposure(_ choice: Choice, _ strategy: ToolChoiceEnforcementPolicy.Strategy = .none,
+                      parser: ToolCallFormat = .json) -> ToolCallExposure {
             ToolCallExposure.resolve(
-                family: .unserved, parser: parser,
+                family: family, parser: parser,
                 request: .init(mode: choice.mode, clientStreams: true, rendersFragments: true, offersTools: true,
-                    withholdsJSONAnswer: false),
-                switches: .init())
+                    withholdsJSONAnswer: false, forcedStrategy: strategy),
+                switches: Self.everySwitchOn)
         }
         #expect(exposure(.auto) == .streamed(.parserFrames))
-        #expect(Self.tag(exposure(.required)) == "withheld, family")
-        #expect(Self.tag(exposure(.named)) == "withheld, family")
+        #expect(exposure(.required, .gemmaGrammar, parser: .gemma) == .streamed(.parserFrames))
+        #expect(exposure(.required, .structuredPostValidation) == .withheld(.forcedByAnotherStrategy))
+        #expect(exposure(.named, .harmonyFraming) == .withheld(.forcedByAnotherStrategy))
         #expect(exposure(.auto, parser: .nemotron) == .withheld(.parserOfAnotherFamily))
         #expect(exposure(.auto, parser: .glm5) == .withheld(.parserRendersNoFragments))
     }

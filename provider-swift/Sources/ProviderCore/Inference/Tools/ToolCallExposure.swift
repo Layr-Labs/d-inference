@@ -47,6 +47,9 @@ enum ToolCallExposure: Equatable, Sendable {
         /// The request's parser is MiMo's or Nemotron's, which stream for
         /// their own served builds alone, or is not its family's own.
         case parserOfAnotherFamily
+        /// The request's forced choice is enforced by another strategy than
+        /// the one this family's forced calls stream under.
+        case forcedByAnotherStrategy
         /// The family's own reason, on record in `Family`.
         case family(String)
     }
@@ -99,19 +102,23 @@ extension ToolCallExposure {
 
         /// A `framed` family's `required` and named calls.
         enum Forced: Equatable, Sendable {
-            /// Stream to a client that streams while this family's switch is
-            /// on. Each call is still checked in full when its frame closes,
-            /// and one that fails after it started is refused, never
-            /// finished (`FailedStreamedCallPolicy` does not apply to forced
-            /// calls). Withheld, a long forced answer had no first content
-            /// before generation ended and missed the coordinator's
-            /// first-content deadline.
-            case streams(ToolStreamPreparation.ForcedCalls.Family)
+            /// Stream to a client that streams when this strategy is what
+            /// enforces the request's choice
+            /// (`ToolChoiceEnforcementPolicy.forcedStrategy`), while that
+            /// strategy's switch is on (`ForcedCalls`). Each call is still
+            /// checked in full when its frame closes, and one that fails
+            /// after it started is refused, never finished
+            /// (`FailedStreamedCallPolicy` does not apply to forced calls).
+            /// Withheld, a long forced answer had no first content before
+            /// generation ended and missed the coordinator's first-content
+            /// deadline.
+            case streams(under: ToolChoiceEnforcementPolicy.Strategy)
             /// Keep validate-then-expose, for the reason on record.
             case withheld(reason: String)
         }
 
-        /// The family of a served model type on the scheduler's path.
+        /// The family of a served model type as config.json declares it, on
+        /// the scheduler's path.
         ///
         /// No `default:`: a new `ServedModelType` case fails to build until its
         /// exposure is decided here, so a family is never withheld because a
@@ -121,15 +128,15 @@ extension ToolCallExposure {
             case .gemma4, .gemma4Text:
                 // The sampler's grammar holds a forced call to a declared
                 // function and its schema.
-                return .framed(forced: .streams(.gemma))
+                return .framed(forced: .streams(under: .gemmaGrammar))
             case .gptOSS:
                 // The sampler admits only a declared function's Harmony
                 // header, then one JSON object of its schema.
-                return .framed(forced: .streams(.gptOSS))
+                return .framed(forced: .streams(under: .harmonyFraming))
             case .qwen35, .qwen35MoE:
                 // Prompt-forced, with reasoning split off before the frames
                 // (`splitsQwenReasoningBeforeTools`); checked at each close.
-                return .framed(forced: .streams(.qwen))
+                return .framed(forced: .streams(under: .structuredPostValidation))
             case .qwen3VLMoE:
                 return .framed(forced: .withheld(
                     reason: "its reasoning is not split off before its tool frames; no forced stream is qualified"))
@@ -155,17 +162,58 @@ extension ToolCallExposure {
             }
         }
 
-        /// A `model_type` the engine does not serve as config.json declares
-        /// it. No model of one loads, so only a test registry names one: its
-        /// `auto` calls stream as a framed family's, and nothing forces a
-        /// call on it to a stream.
-        static let unserved = Family.framed(
-            forced: .withheld(reason: "not a served model type; no forced stream is qualified"))
+        /// A served model type under another spelling: another letter case,
+        /// or surrounding whitespace. The supported set admits a type that
+        /// way (`ServedModelType.init(normalizing:)`), and a cluster pair's
+        /// slot takes its `model_type` as registered, so such a string can
+        /// reach the tool path. The rules this decision replaced each read
+        /// the type with their own tolerance; what they gave together is kept
+        /// here, one decision per type, so that reading the type through one
+        /// normalisation changed nothing.
+        static func respelled(_ type: ServedModelType, modelID: String?) -> Family {
+            switch type {
+            case .gptOSS, .gemma4, .gemma4Text, .qwen35, .qwen35MoE, .qwen3VLMoE, .nemotronHOmni, .qwen4Exp,
+                .qwen4ExpText, .diffusionGemma:
+                // Read under any spelling. (Gemma's forced calls still need
+                // the Gemma grammar, which no padded spelling selects.)
+                return served(type, modelID: modelID)
+            case .prismHadamardQwen35, .nemotronH:
+                // A listed build keeps its native framing under any spelling,
+                // but its stream was read from the exact type: nothing
+                // streams. An unlisted build is a framed family either way.
+                let declared = served(type, modelID: modelID)
+                if case .nativeChannel = declared {
+                    return .withheld(
+                        reason: "a listed native-channel build whose type is not spelled as config.json declares it")
+                }
+                return declared
+            case .mimoV2, .glm5Next, .flint:
+                // Recognised only as declared. Under another spelling it has
+                // neither its native framing nor a forced strategy.
+                return .framed(forced: .withheld(
+                    reason: "its type is not spelled as config.json declares it; no forced stream is qualified"))
+            }
+        }
 
-        /// The family of a request's model on the scheduler's path.
+        /// A `model_type` that names no served type under any spelling, or no
+        /// type at all. Its `auto` calls stream as a framed family's. Two
+        /// rules that read such a request are kept: GLM's text and MTP
+        /// component types take GLM's stream (`GLM5NextPromptPolicy.applies`),
+        /// and a forced call streams under the Gemma grammar alone, which
+        /// `Gemma4TemplateFix.applies` selects for `gemma4_vision` and, with
+        /// no type, for a model id that holds `gemma-4`.
+        static func unserved(_ context: ChatTemplateFixContext) -> Family {
+            GLM5NextPromptPolicy.applies(modelType: context.modelType)
+                ? .glm : .framed(forced: .streams(under: .gemmaGrammar))
+        }
+
+        /// The family of a request's model on the scheduler's path. The type
+        /// is read as the supported set reads it, so the two cannot disagree
+        /// about which strings name a served type.
         static func of(_ context: ChatTemplateFixContext) -> Family {
-            guard let type = context.modelType.flatMap(ServedModelType.init(rawValue:)) else { return unserved }
-            return served(type, modelID: context.modelId)
+            guard let type = ServedModelType(normalizing: context.modelType) else { return unserved(context) }
+            return context.modelType == type.rawValue
+                ? served(type, modelID: context.modelId) : respelled(type, modelID: context.modelId)
         }
     }
 }
@@ -187,21 +235,25 @@ extension ToolCallExposure {
         /// The answer is a JSON value this owner withholds until it
         /// validates: GLM's (`Prepared.glmResponseFormat`) and Super's.
         var withholdsJSONAnswer: Bool
+        /// What enforces the request's forced choice on the scheduler's path
+        /// (`ToolChoiceEnforcementPolicy.forcedStrategy`); `.none` for
+        /// `auto`, and for Super's owner, whose plan prompt-forces its calls.
+        /// Read for a `framed` family's forced calls alone.
+        var forcedStrategy: ToolChoiceEnforcementPolicy.Strategy
     }
 
     /// The streaming switches, each read once per process
-    /// (`ToolStreamPreparation`).
+    /// (`ToolStreamPreparation`). No member has a default: an owner states
+    /// every switch it resolves under, so none is left on by omission.
     struct Switches: Equatable, Sendable {
-        var toolCalls = true
-        var forced = ToolStreamPreparation.ForcedCalls.all
-        var native = true
-        var glm = true
-
-        static let current = Switches(
-            toolCalls: ToolStreamPreparation.streamsToolCallsByDefault,
-            forced: ToolStreamPreparation.streamsForcedToolCallsByDefault,
-            native: ToolStreamPreparation.streamsNativeToolCallsByDefault,
-            glm: ToolStreamPreparation.streamsGLMToolCallsByDefault)
+        /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS`.
+        var toolCalls: Bool
+        /// `DARKBLOOM_TTFT_STREAM_FORCED_TOOL_CALLS` and each family's own.
+        var forced: ToolStreamPreparation.ForcedCalls
+        /// `DARKBLOOM_TTFT_STREAM_NATIVE_TOOL_CALLS`.
+        var native: Bool
+        /// `DARKBLOOM_TTFT_STREAM_GLM_TOOL_CALLS`.
+        var glm: Bool
     }
 
     /// The exposure of one request's calls. `parser` is the format its tool
@@ -254,11 +306,27 @@ extension ToolCallExposure {
             break
         case .withheld(let reason):
             return .withheld(.family(reason))
-        case .streams(let family):
+        case .streams(let strategy):
             guard request.clientStreams else { return .withheld(.clientDoesNotStream) }
+            guard request.forcedStrategy == strategy, let family = forcedSwitch(of: strategy) else {
+                return .withheld(.forcedByAnotherStrategy)
+            }
             guard switches.forced[family] else { return .withheld(.switchedOff(.forcedToolCalls)) }
         }
         return parserFrames(parser)
+    }
+
+    /// The switch that governs the forced calls a strategy enforces; nil for
+    /// `.none`, which forces no call.
+    private static func forcedSwitch(
+        of strategy: ToolChoiceEnforcementPolicy.Strategy
+    ) -> ToolStreamPreparation.ForcedCalls.Family? {
+        switch strategy {
+        case .gemmaGrammar: .gemma
+        case .structuredPostValidation: .qwen
+        case .harmonyFraming: .gptOSS
+        case .none: nil
+        }
     }
 
     private static func nativeChannel(

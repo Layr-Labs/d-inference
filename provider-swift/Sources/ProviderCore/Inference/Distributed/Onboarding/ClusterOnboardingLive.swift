@@ -322,30 +322,39 @@ final class OnboardingLive: @unchecked Sendable {
     /// members, or the confirmation window passed with none reachable. A restarted Mac whose claim was superseded
     /// steps down meanwhile, and the command is then forwarded to the current leader instead of running here.
     /// `waiting` is told once, when the wait begins, so a screen that shows it says why nothing moves for up to
-    /// `seconds`.
+    /// `seconds`. The wait also covers the window the service publishes, up to twice `seconds`
+    /// (`ClusterUnconfirmedLeadership.windowWaitKey`). A refusal while the service says the other Mac doesn't answer is
+    /// marked `unconfirmedLeaderAlone`.
     func awaitConfirmedLeadership(seconds: Double = ClusterService.leaseTTLSeconds + 10,
                                   waiting: ((String) -> Void)? = nil) -> ClusterOnboardingFailure? {
-        Self.awaitLeadership(deadline: Date().addingTimeInterval(seconds), waiting: waiting,
+        let started = Date(), waitsWindow = ClusterUnconfirmedLeadership.waitsWindow()
+        return Self.awaitLeadership(deadline: started.addingTimeInterval(seconds),
+            latest: started.addingTimeInterval(waitsWindow ? 2 * seconds : seconds), waiting: waiting,
             leadsHere: { [self] in
                 guard case .local = route(), let pairing = try? ClusterSetupLinkExchange.pairing() else { return false }
                 return currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID
             },
             confirmed: { ClusterService.publishedLive()?.control.map { $0.leads && $0.confirmed == true } ?? false },
+            window: { ClusterService.publishedLive()?.control?.confirmsInSeconds.map(Double.init) },
             other: thereShort,
             failure: { [self] in
-                .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(there) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `\(Self.cli) cluster` again in a moment.")
+                .init(["This Mac's leadership is not confirmed yet (its cluster service has not heard from \(there) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `\(Self.cli) cluster` again in a moment."],
+                      unconfirmedLeaderAlone: ClusterService.publishedLive()?.control?.otherAnswering == false)
             },
             pause: { usleep(250_000) })
     }
 
     /// `awaitConfirmedLeadership`'s loop, with its claim, service, clock and pause passed in so the wait can be tested
-    /// without a service.
-    static func awaitLeadership(deadline: Date, waiting: ((String) -> Void)?, leadsHere: () -> Bool, confirmed: () -> Bool,
-                                other: String, failure: () -> ClusterOnboardingFailure, pause: () -> Void,
+    /// without a service. `window`: the seconds the service says confirmation takes with no member answering; the
+    /// deadline moves to 2 s past it, never past `latest`.
+    static func awaitLeadership(deadline: Date, latest: Date, waiting: ((String) -> Void)?, leadsHere: () -> Bool,
+                                confirmed: () -> Bool, window: () -> Double?, other: String,
+                                failure: () -> ClusterOnboardingFailure, pause: () -> Void,
                                 now: () -> Date = Date.init) -> ClusterOnboardingFailure? {
-        var said = false
+        var said = false, deadline = deadline
         while true {
             guard leadsHere(), !confirmed() else { return nil }
+            if let window = window() { deadline = min(latest, max(deadline, now().addingTimeInterval(window + 2))) }
             let left = deadline.timeIntervalSince(now())
             guard left > 0 else { return failure() }
             if !said {

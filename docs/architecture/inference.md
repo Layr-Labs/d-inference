@@ -11286,6 +11286,18 @@ reads both Macs, the wait is said once, when it begins
 confirm it leads the pair: it hasn't heard from the other Mac yet (at most 40 s)".
 A Mac whose claim is superseded steps down meanwhile, and the command is forwarded.
 
+The service publishes how long confirmation takes with no member answering
+(`ClusterServiceStatus.Control.confirmsInSeconds`, `ClusterControlNode.secondsUntilConfirmed`)
+and whether the other Mac answers (`otherAnswering`). The wait moves its end to
+2 s past that window, at most to twice the fixed wait (80 s), so a service that
+restarted a few seconds before the command doesn't refuse it. A refusal while the
+service says the other Mac doesn't answer is marked
+(`ClusterOnboardingFailure.unconfirmedLeaderAlone`), and `cluster stop --service`
+then stops this Mac's service alone, as `--local-only` does (`Cluster.Stop.finishStop`).
+`DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` and
+`DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` restore the fixed wait and the refusal
+(`ClusterUnconfirmedLeadership`).
+
 ### Planned cluster stop ordering
 
 `OnboardingLive.localStop` saves stopped intent, then waits up to 300 seconds for

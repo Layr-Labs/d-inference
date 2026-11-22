@@ -347,6 +347,14 @@ enum EngineV2SlotFactory {
             logInfo(
                 "engine_v2: \(modelId) suffix-automaton MTP enabled "
                     + "(max_draft=7, max_batch=16, mode=\(mtpVerification.mode), max_rect_tokens=\(suffixRectTokens), assistant_bytes=0)")
+        } else if let dflashDrafter = assistantHandle?.drafter as? Gemma4CBv2DFlashDrafter {
+            mtpConfig = makeDFlashMTPConfig(
+                drafter: dflashDrafter,
+                acceptance: mtpAcceptance.acceptance,
+                environment: environment)
+            logInfo(
+                "engine_v2: \(modelId) Gemma 4 DFlash block-diffusion MTP enabled "
+                    + "(block_size=\(1 + mtpConfig.maxDraftTokens), max_draft=\(mtpConfig.maxDraftTokens), max_batch=\(mtpConfig.maxSpeculativeBatch), max_rect_tokens=\(mtpConfig.maxAutomaticRectangularTokens), acceptance=\(mtpAcceptance.acceptance))")
         } else {
             mtpConfig = CBv2MTPConfig(
                 enabled: assistantHandle != nil,
@@ -401,7 +409,10 @@ enum EngineV2SlotFactory {
         // attention-only state. GLM's protected engine hosts neither resident
         // tier, so the operator's resident opt-in never reaches it: GLM keeps
         // its SSD checkpoints instead of refusing the load.
-        let hostsResidentTiers = EngineV2Factory.glm5NextTarget(model: servingModel) == nil
+        let hostsResidentTiers =
+            EngineV2Factory.glm5NextTarget(model: servingModel) == nil
+            && !EngineV2Factory.drafterBlocksAttentionPrefixReuse(
+                drafter: assistantHandle?.drafter, mtpConfig: mtpConfig)
         if !hostsResidentTiers, PrefixCachePolicy.isMemoryEnabled(environment: environment) {
             logWarning(
                 "engine_v2: \(modelId) has no resident prefix tier; ignoring "
@@ -441,7 +452,8 @@ enum EngineV2SlotFactory {
                     hybridPrefixCache: hybridPrefixCache,
                     nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
                         layerKinds: (servingModel as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
-                        gemmaAssistantActive: assistantHandle?.drafter != nil && mtpConfig.effectiveEnabled),
+                        gemmaAssistantActive: EngineV2Factory.gemmaNativeKVAssistantActive(
+                            drafter: assistantHandle?.drafter, mtpConfig: mtpConfig)),
                     pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(
@@ -780,5 +792,34 @@ enum EngineV2SlotFactory {
             // Only a resolved PAGED backend has pages whose dtype can
             // widen the rate; a contiguous build ignores the knob.
             pagedPoolDType: resolvedKind == .paged ? pagedPoolDType : nil)
+    }
+
+    private static func makeDFlashMTPConfig(
+        drafter: Gemma4CBv2DFlashDrafter,
+        acceptance: CBv2MTPAcceptance,
+        environment: [String: String]
+    ) -> CBv2MTPConfig {
+        let depth = drafter.maximumDraftTokens ?? CBv2MTPConfig.testedMaxDraftTokens
+        let maxBatch = drafter.maximumSpeculativeBatch ?? 2
+        let rectTokens: Int =
+            if let raw = environment["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                let explicit = Int(raw)
+            {
+                max(0, explicit)
+            } else {
+                max(32, 1 + depth)
+            }
+        let byRows: [Int]? = maxBatch >= 2 && depth > 3 ? [depth, 3] : nil
+        return CBv2MTPConfig(
+            enabled: true,
+            maxDraftTokens: depth,
+            maxSpeculativeBatch: maxBatch,
+            fixedDraftTokens: depth,
+            fixedDraftTokensByDecodeRows: byRows,
+            verificationMode: .automatic,
+            maxAutomaticRectangularTokens: rectTokens,
+            acceptance: acceptance,
+            allowExtendedBlockDraftDepth: depth > CBv2MTPConfig.testedMaxDraftTokens)
     }
 }

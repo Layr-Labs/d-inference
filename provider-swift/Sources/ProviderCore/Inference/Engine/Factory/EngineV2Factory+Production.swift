@@ -193,12 +193,14 @@ extension EngineV2Factory {
             kvBackend: kvBackend,
             maxContextLength: maxContextLength,
             environment: environment,
-            residentPrefixCache: residentPrefixCache,
+            residentPrefixCache: drafterBlocksAttentionPrefixReuse(
+                drafter: mtpDrafter, mtpConfig: mtpConfig) ? nil : residentPrefixCache,
             hybridPrefixCache: mtpDrafter == nil || mtpDrafter is any CBv2MTPPrefixCheckpointDrafter
                 ? hybridPrefixCache : nil,
             nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
                 layerKinds: (model as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
-                gemmaAssistantActive: mtpDrafter != nil && mtpConfig.effectiveEnabled),
+                gemmaAssistantActive: gemmaNativeKVAssistantActive(
+                    drafter: mtpDrafter, mtpConfig: mtpConfig)),
             pagedPreflightOverride: pagedPreflightOverride,
             schedulerPolicy: schedulerPolicy)
         let storageQuantization: PagedKVQuantizationConfig?
@@ -294,7 +296,9 @@ extension EngineV2Factory {
             capabilities: modelCapabilities, backend: backend) {
             throw EngineV2ProductionError.pagedUnavailable(violation)
         }
-        let effectivePrefixCache = modelCapabilities.supportsPrefixReuse
+        let effectivePrefixCache =
+            modelCapabilities.supportsPrefixReuse
+            && !drafterBlocksAttentionPrefixReuse(drafter: mtpDrafter, mtpConfig: mtpConfig)
             ? prefixCache : nil
         var schedulerConfig = preparedBackend.schedulerConfig
         schedulerConfig.enablePrefixCache =
@@ -430,5 +434,29 @@ extension EngineV2Factory {
             build.glm5NextMaximumContextTokens = (model as? GLM5NextProtectedModel)?.maximumContextLength
         }
         return build
+    }
+
+    /// Request-stateful drafters without prefix checkpoint restoration (e.g. DFlash)
+    /// must observe every prompt token from position 0, so attention-only prefix
+    /// reuse tiers stay off.
+    static func drafterBlocksAttentionPrefixReuse(
+        drafter: (any CBv2MTPDrafter)?,
+        mtpConfig: CBv2MTPConfig
+    ) -> Bool {
+        drafter is any CBv2MTPRequestStatefulDrafter
+            && !(drafter is any CBv2MTPPrefixCheckpointDrafter)
+            && mtpConfig.effectiveEnabled
+    }
+
+    /// True when an active Gemma 4 assistant directly snapshots target KV rows
+    /// (requiring native-precision KV on those layers). DFlash consumes tapped
+    /// hidden states instead of target KV rows.
+    static func gemmaNativeKVAssistantActive(
+        drafter: (any CBv2MTPDrafter)?,
+        mtpConfig: CBv2MTPConfig
+    ) -> Bool {
+        drafter != nil
+            && !(drafter is Gemma4CBv2DFlashDrafter)
+            && mtpConfig.effectiveEnabled
     }
 }

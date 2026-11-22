@@ -625,4 +625,76 @@ struct ProviderMTPFactoryTests {
         #expect(weakEngine == nil)
         #expect(weakOwner == nil)
     }
+
+    @Test("real loader detects and binds a Gemma 4 DFlash directory and rejects mismatched target geometry")
+    func dflashLoaderAndBind() async throws {
+        let vlm = try mtpFactoryVLM()
+        let gemmaTarget = vlm.textModel
+        let cfg = MLXLLM.Gemma4DFlashConfiguration(
+            hiddenSize: 32,
+            numHiddenLayers: 1,
+            numAttentionHeads: 2,
+            numKeyValueHeads: 1,
+            headDim: 16,
+            intermediateSize: 64,
+            vocabSize: 128,
+            numTargetLayers: 2,
+            blockSize: 16,
+            layerTypes: ["full_attention"],
+            slidingWindow: nil,
+            finalLogitSoftcapping: 30,
+            isCausal: nil,
+            maskTokenId: 4,
+            targetLayerIds: [0])
+        let draftModel = try MLXLLM.Gemma4DFlashDraftModel(cfg)
+        eval(draftModel)
+
+        let directory = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("provider-dflash-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try JSONEncoder().encode(cfg)
+            .write(to: directory.appendingPathComponent("config.json"))
+        let weights = Dictionary(uniqueKeysWithValues: draftModel.parameters().flattened())
+        try MLX.save(arrays: weights, url: directory.appendingPathComponent("model.safetensors"))
+
+        let artifact = try #require(SpecDecStore.inspectLocalArtifact(path: directory.path))
+        #expect(MLXLLM.Gemma4DFlashDraftModel.isDFlashDirectory(artifact.directory))
+        let loader = ProductionProviderMTPAssistantLoader()
+        let handle = try await loader.loadAndBind(artifact: artifact, target: gemmaTarget)
+        let dflashDrafter = try #require(handle.drafter as? MLXLLM.Gemma4CBv2DFlashDrafter)
+        #expect(dflashDrafter.target === gemmaTarget)
+        #expect(gemmaTarget.cbv2SupportsRequestStatefulMTP)
+
+        // Mismatched hidden_size must fail closed as bindFailed (.assistantTargetIncompatible).
+        let wrongConfigJSON = """
+            {
+              "model_type": "gemma4_text",
+              "vocab_size": 128,
+              "hidden_size": 64,
+              "intermediate_size": 128,
+              "num_hidden_layers": 2,
+              "num_attention_heads": 2,
+              "num_key_value_heads": 1,
+              "head_dim": 32,
+              "global_head_dim": 32,
+              "sliding_window": 16,
+              "layer_types": ["sliding_attention", "full_attention"],
+              "num_kv_shared_layers": 0,
+              "hidden_size_per_layer_input": 0,
+              "vocab_size_per_layer_input": 0,
+              "tie_word_embeddings": true
+            }
+            """
+        let wrongTarget = MLXLLM.Gemma4TextModel(
+            try JSONDecoder().decode(
+                MLXLLM.Gemma4TextConfiguration.self, from: Data(wrongConfigJSON.utf8)))
+        do {
+            _ = try await loader.loadAndBind(artifact: artifact, target: wrongTarget)
+            Issue.record("expected incompatible target geometry to throw")
+        } catch let error as ProviderMTPAssistantLoadError {
+            #expect(error.reason == .assistantTargetIncompatible)
+        }
+    }
 }

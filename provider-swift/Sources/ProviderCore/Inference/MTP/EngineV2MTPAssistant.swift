@@ -91,6 +91,22 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
                 String(describing: type(of: target)))
         }
 
+        if MLXLLM.Gemma4DFlashDraftModel.isDFlashDirectory(artifact.directory) {
+            let dflash: MLXLLM.Gemma4DFlashDraftModel
+            do {
+                dflash = try MLXLLM.Gemma4DFlashDraftModel.load(from: artifact.directory)
+            } catch {
+                throw ProviderMTPAssistantLoadError.loadFailed(String(describing: error))
+            }
+            do {
+                let drafter = try MLXLLM.Gemma4CBv2DFlashDrafter(
+                    drafter: dflash, target: gemmaTarget)
+                return ProviderMTPAssistantHandle(owner: dflash, drafter: drafter)
+            } catch {
+                throw ProviderMTPAssistantLoadError.bindFailed(String(describing: error))
+            }
+        }
+
         let assistant: MLXLLM.Gemma4AssistantDraftModel
         do {
             assistant = try await MLXLLM.Gemma4AssistantDraftModel.load(

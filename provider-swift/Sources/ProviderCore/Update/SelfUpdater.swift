@@ -907,8 +907,7 @@ public struct SelfUpdater: Sendable {
     public func keptRollbackWorker() -> (version: String, worker: URL)? {
         guard let store = recoveryStore(), let copy = try? store.loadState().predecessor,
               let bundle = try? store.resolvedRecoveryPath(copy.bundlePath) else { return nil }
-        return (copy.release.version, bundle.appendingPathComponent("Contents/Helpers", isDirectory: true)
-            .appendingPathComponent(ClusterBundledHelpers.workerName))
+        return (copy.release.version, ClusterRuntimeApprovalFacts.Installation(app: bundle).worker)
     }
 
     private func recoveryStore() -> UpdateRecoveryStore? {

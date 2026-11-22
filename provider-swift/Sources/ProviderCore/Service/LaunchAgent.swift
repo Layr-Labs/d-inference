@@ -529,6 +529,11 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT`: the owner's local request on a pair
     /// waits for its first token with no first-token allowance by default;
     /// `0`, `false`, `no` or `off` restores the pair's allowance.
+    ///
+    /// Every `DARKBLOOM_*` key the provider sources read is declared once: in
+    /// these lists, so it reaches the service, or in `unforwardedEnvKeyGroups`
+    /// with the reason it does not. `ServiceEnvironmentReachTests` scans the
+    /// sources and fails on a key in neither.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -4356,6 +4356,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_RETENTION` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentRetentionEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentHostZerosEnvironmentKey`) |
+| `DARKBLOOM_TTFT_MEDIA_PREP_STREAM` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`mediaPrepStreamEnvironmentKey`); `0`, `false`, `no` or `off` keeps Qwen 3.5-family media preparation on the process default GPU stream |
 | `DARKBLOOM_NATIVE_SEGMENT_RELEASE` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift` (`nativeSegmentReleaseIdleNanosDefault`); idle seconds (default 30), and any value that is not a positive number below a day (`0`, `off`) keeps an issued GLM pool's free segments until the pool retires |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | only when the shell value is exactly `1` (`GemmaOptimizationEnvironment.daemonDrainPassthrough`, `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`) |
 | `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | only when the shell value is exactly `1`; selects the [opt-in worker candidate](../reference/configuration.md#app-attest-worker-qualification) (`AppAttestWorkerSelection`, `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`) |

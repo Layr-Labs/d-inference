@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -5324,6 +5324,17 @@ requests 1 %), so `auto` requests, which return calls as generated, are left as 
   SigLIP tower is one image per forward pass already. Each image is checked
   with `MLX.withError` right after `eval`
   (`provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`).
+- **Own GPU stream (Qwen 3.5 family).** The engine's steps run on the process
+  default GPU stream, and a recurrent Qwen step synchronizes it. On that stream
+  the tower's command buffers queued behind the running rows' steps, and each
+  step waited for the tower's buffers, so a busy Mac's media preparation took
+  several times its idle time. A `Qwen35` wrapper (and its MoE subclass) now
+  runs the processor and the tower inside `Stream.withNewDefaultStream`
+  (`EngineV2VisionPrefill.onMediaPrepStream`). Every array of the submission is
+  evaluated and the stream drained before the scope ends. The tower uses only
+  MLX's built-in kernels, so the embeddings are identical; families whose fused
+  kernels require the default stream (`MLXProcessStreams`) keep it.
+  `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` restores the shared stream.
 - **N² budget.** `N_max = floor(sqrt(maxBufferLength / (headFactor ×
   attentionElementBytes)))` with `attentionElementBytes = 2`,
   `fusedAttentionHeadDims = {64, 80, 128}` (`headFactor = 1` when fused-eligible,

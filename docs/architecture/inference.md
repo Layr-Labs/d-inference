@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2004,6 +2004,16 @@ unowned cached allocations and is not native-retirement proof. Local `/metrics`
 reports the retained-fault state, retained owner-object count and charged bytes
 (`GLM5NextLoadFaultState`). `GLM5NextNativeOperationOwner.beginClosing`
 refuses a second close attempt, so a retained close is never re-driven.
+
+For a local GLM request, the current grant determines whether the engine
+may start. If another model holds part of the grant, a second calculation
+uses the same budget with the other slots' weights excluded. It decides
+only whether to wait, not whether to allocate. The owner retries through
+ordinary admission. Peer removal and redistribution are separate steps, so
+the peer remains visible to this decision until survivor grants are updated.
+`DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` installs no second calculation
+(`EngineV2Bridge.installGLMSoloGrant`), so every refusal reads as in 0.10.17,
+and selects 0.10.17's busy words (`LocalMemoryRefusal.busy`).
 
 Before weight allocation, `GLM5NextTokenizerPreflight.validate` renders through
 the selected local tokenizer using the provider's actual GLM defaults,

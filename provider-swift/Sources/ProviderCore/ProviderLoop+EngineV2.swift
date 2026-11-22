@@ -190,10 +190,11 @@ extension ProviderLoop {
     /// activation reserve, honoring the operator `memory_reserve_gb`.
     /// `activationReserveBytes` overrides the live serving-set reserve for a
     /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
-    private func fleetKVBudgetBytes(
+    func fleetKVBudgetBytes(
         extraWeightBytes: Int,
         activationReserveBytes: UInt64? = nil,
-        excludingModelIDs: Set<String> = []
+        excludingModelIDs: Set<String> = [],
+        quotingAfterRetirementOf: Set<String> = []
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
         for (id, slot) in modelSlots where !excludingModelIDs.contains(id) {
@@ -201,7 +202,8 @@ extension ProviderLoop {
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
         }
-        for (modelID, sizing) in nativeMiMoRetiringSizing where modelSlots[modelID] == nil {
+        for (modelID, sizing) in nativeMiMoRetiringSizing
+        where modelSlots[modelID] == nil && !quotingAfterRetirementOf.contains(modelID) {
             let (sum, overflow) = totalWeights.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
         }
@@ -537,7 +539,22 @@ extension ProviderLoop {
         // proportional shares shrink too; kept for self-healing when a
         // previous state left a slot under-granted).
         await completeNewcomerReslice(reslice)
+        if bundle.bridge.isGLM5NextManaged {
+            await bundle.bridge.installGLMSoloGrant { [weak self] in await self?.glmSoloGrant(for: modelId) }
+        }
         return EngineV2SlotBuild(bundle: bundle, sizing: sizing)
+    }
+
+    func glmSoloGrant(for id: String) -> UInt64? {
+        // MiMo moves its weights out of the slot and into retiring sizing before
+        // it waits for the native owner. Only the hypothetical quote may omit
+        // them, and only while successful retirement remains possible.
+        let retiring = nativeMiMoRegistry.hasRetainedFault ? Set<String>() : Set(nativeMiMoRetiringSizing.keys)
+        let peers = Set(modelSlots.keys).union(modelsLoading).union(retiring)
+            .union(pendingSurvivorRegrowth.values).subtracting([id])
+        guard modelSlots[id] != nil, !peers.isEmpty else { return nil }
+        return fleetKVBudgetBytes(extraWeightBytes: 0, excludingModelIDs: peers,
+            quotingAfterRetirementOf: peers.intersection(retiring))
     }
 
     /// A newcomer's re-sliced grant with every survivor's target and restore

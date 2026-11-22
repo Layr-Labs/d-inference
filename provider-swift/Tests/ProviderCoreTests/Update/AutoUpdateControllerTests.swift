@@ -78,35 +78,37 @@ struct AutoUpdateControllerTests {
     /// Each path's steps, in order; the restart's step comes before the restart, which in production does not return.
     @Test("each path names its steps for the persisted log, the restart's before the restart")
     func eachPathNamesItsSteps() async {
-        func steps(_ fakes: Fakes) async -> (steps: [String], events: [String]) {
-            let recorder = Recorder(), stepLog = Recorder()
-            _ = await makeController(fakes, recorder: recorder, steps: stepLog).run()
-            return (stepLog.events, recorder.events)
+        func steps(_ fakes: Fakes) async -> [String] {
+            let stepLog = Recorder()
+            _ = await makeController(fakes, recorder: Recorder(), steps: stepLog).run()
+            return stepLog.events
         }
         let available = Fakes(checkResult: .updateAvailable(current: "1.0.0", latest: Self.release))
-        #expect(await steps(available).steps == ["available", "staged", "restarting"])
-        #expect(await steps(Fakes(checkResult: .restartRequired(current: "1.0.0", installed: "2.0.0"))).steps
+        #expect(await steps(available) == ["available", "staged", "restarting"])
+        #expect(await steps(Fakes(checkResult: .restartRequired(current: "1.0.0", installed: "2.0.0")))
             == ["installedNotRunning", "restarting"])
-        #expect(await steps(Fakes(checkResult: .upToDate(currentVersion: "1.0.0"))).steps == [], "an up-to-date check adds no line")
-        #expect(await steps(Fakes(checkResult: .checkFailed(.init(.noAnswer, "network down")))).steps == ["checkFailed"])
-        #expect(await steps(Fakes(checkResult: .quarantined(version: "2.0.0", reason: "crashed twice"))).steps == ["quarantined"])
+        #expect(await steps(Fakes(checkResult: .upToDate(currentVersion: "1.0.0"))) == [], "an up-to-date check adds no line")
+        #expect(await steps(Fakes(checkResult: .checkFailed(.init(.noAnswer, "network down")))) == ["checkFailed"])
+        #expect(await steps(Fakes(checkResult: .quarantined(version: "2.0.0", reason: "crashed twice"))) == ["quarantined"])
         var failing = available
         failing.stageResult = .failed("disk full")
-        #expect(await steps(failing).steps == ["available", "stageFailed"])
+        #expect(await steps(failing) == ["available", "stageFailed"])
         failing = available
         failing.drainReturns = false
-        #expect(await steps(failing).steps == ["available", "staged", "deferred"])
+        #expect(await steps(failing) == ["available", "staged", "deferred"])
         failing = available
         failing.commitResult = .failed("rename failed")
-        #expect(await steps(failing).steps == ["available", "staged", "installFailed"])
+        #expect(await steps(failing) == ["available", "staged", "installFailed"])
         failing = available
         failing.prepareRestartResult = .failed("App Attest worker has not exited")
-        #expect(await steps(failing).steps == ["available", "staged", "restartFailed"])
+        #expect(await steps(failing) == ["available", "staged", "restartFailed"])
         failing = available
         failing.restartThrows = true
-        let thrown = await steps(failing)
-        #expect(thrown.steps == ["available", "staged", "restarting", "restartFailed"])
-        #expect(thrown.events.firstIndex(of: "restart")! > thrown.events.firstIndex(of: "commit")!)
+        #expect(await steps(failing) == ["available", "staged", "restarting", "restartFailed"])
+        // One recorder for the calls and the steps: the restart's step comes after the commit, before the restart.
+        let both = Recorder()
+        _ = await makeController(available, recorder: both, steps: both).run()
+        #expect(both.events.suffix(4) == ["commit", "prepareRestart", "restarting", "restart"])
     }
 
     // MARK: - No-op paths

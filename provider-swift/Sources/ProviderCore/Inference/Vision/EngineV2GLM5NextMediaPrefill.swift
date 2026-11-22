@@ -30,7 +30,7 @@ extension EngineV2VisionPrefill {
         // Media in a system, assistant or tool message is placed by the template
         // too (it renders media in every role); without such media only user
         // messages carry parts, as before.
-        let everyRole = MediaIngest.everyRoleEnabled && MediaIngest.hasNonUserMedia(request)
+        let everyRole = MediaIngest.placesNonUserMedia(request)
         for index in request.messages.indices {
             let message = request.messages[index]
             if case .parts(let parts) = message.content {
@@ -60,8 +60,7 @@ extension EngineV2VisionPrefill {
             let message = request.messages[index]
             guard message.role == .user || everyRole, case .parts(let parts) = message.content else { continue }
             // The policy's typed message (same indices as `messages`).
-            let rendered = prepared.messages.indices.contains(index + prefix)
-                ? prepared.messages[index + prefix].textContent : nil
+            let rendered = prepared.messages[index + prefix].textContent
             var media = try parts.map { part -> [String: String] in
                 switch part {
                 case .text(let text): return ["type": "text", "text": text]
@@ -73,7 +72,7 @@ extension EngineV2VisionPrefill {
             }
             // An instruction the text policy appended to a system message
             // (tool_choice) stays after its parts.
-            if message.role != .user, let rendered, rendered.count > message.textContent.count,
+            if message.role != .user, rendered.count > message.textContent.count,
                 rendered.hasPrefix(message.textContent) {
                 media.append(["type": "text", "text": String(rendered.dropFirst(message.textContent.count))])
             }

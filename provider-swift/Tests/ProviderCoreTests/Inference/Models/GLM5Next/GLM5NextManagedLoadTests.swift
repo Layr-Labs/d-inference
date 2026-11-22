@@ -405,7 +405,8 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
     /// GLM's template renders media in every role, so an assistant or system
     /// image now reaches the bounded decode (which refuses this one as a URL)
     /// instead of a role refusal.
-    @Test func httpMediaInNonUserRolesReachesTheBoundedDecode() async throws {
+    @Test(.enabled(if: MediaIngest.everyRoleEnabled, "DARKBLOOM_MEDIA_ON_EVERY_ROLE is off"))
+    func httpMediaInNonUserRolesReachesTheBoundedDecode() async throws {
         for role in ["assistant", "system"] {
             let body = Data(
                 """

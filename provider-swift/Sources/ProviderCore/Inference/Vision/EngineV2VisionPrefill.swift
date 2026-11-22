@@ -347,7 +347,7 @@ public enum EngineV2VisionPrefill {
         let nativeToolMessages = nativeToolModelType != nil
         // Media in a system, assistant or tool message is kept and placed by
         // the chat template; a request without such media is built as before.
-        let everyRole = MediaIngest.everyRoleEnabled && MediaIngest.hasNonUserMedia(request)
+        let everyRole = MediaIngest.placesNonUserMedia(request)
         var userInput = try await MediaIngest.buildUserInput(
             from: request, templateControls: templateControls,
             tools: nativeToolMessages ? request.tools?.map { $0.toolSpec() } : nil,
@@ -487,7 +487,7 @@ public enum EngineV2VisionPrefill {
         userInput: UserInput,
         towerLimits: VisionTowerBudget.Limits,
         mlxErrors: MLX.ErrorBox,
-        placementCheck: Bool = false
+        placementCheck: Bool
     ) async throws -> PreparedSubmission {
         if let wrapper = ctx.model as? MLXVLM.Qwen4Exp, !wrapper.servesVision {
             throw EngineV2VisionPrefillError.unsupportedMedia(MLXVLM.Qwen4Exp.mediaRejectedMessage)
@@ -919,18 +919,18 @@ public enum EngineV2VisionPrefill {
 
     /// Coarse media shape of `request` (image / video / mixed), for
     /// telemetry tagging on paths where the processor never ran (refusals
-    /// can fire before `prepare` produced anything). Scans USER messages
-    /// only — the media the processor actually consumes
-    /// (`buildUserInput` drops media parts on non-user roles), so refusal
-    /// tags match the success path's `lmInput`-derived kind. Callers only
-    /// invoke this for requests that already passed `hasMedia`; a request
-    /// whose media all sits on non-user roles reports `.image` here but
-    /// never reaches refusal telemetry (it maps to the deterministic
-    /// `noProcessedMedia` 400 instead).
+    /// can fire before `prepare` produced anything). Scans the messages whose
+    /// media the processor consumes: user messages, and every message when
+    /// media outside user messages is placed (`MediaIngest.placesNonUserMedia`),
+    /// so refusal tags match the success path's `lmInput`-derived kind.
+    /// Callers only invoke this for requests that already passed `hasMedia`;
+    /// with the switch off, a request whose media all sits on non-user roles
+    /// reports `.image` here but never reaches refusal telemetry (it maps to
+    /// the deterministic `noProcessedMedia` 400 instead).
     static func mediaKind(of request: OpenAIChatCompletionRequest) -> EngineV2MediaKind {
         var hasImage = false
         var hasVideo = false
-        let everyRole = MediaIngest.everyRoleEnabled && MediaIngest.hasNonUserMedia(request)
+        let everyRole = MediaIngest.placesNonUserMedia(request)
         for message in request.messages where message.role == .user || everyRole {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {

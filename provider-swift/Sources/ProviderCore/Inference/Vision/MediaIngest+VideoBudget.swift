@@ -80,7 +80,7 @@ extension MediaIngest {
             return nil
         }
         var videoCount = 0
-        let everyRole = everyRoleEnabled && hasNonUserMedia(request)
+        let everyRole = placesNonUserMedia(request)
         for message in request.messages where message.role == .user || everyRole {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {

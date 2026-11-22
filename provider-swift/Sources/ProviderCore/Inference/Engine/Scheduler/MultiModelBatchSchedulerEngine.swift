@@ -1028,6 +1028,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // The refusal's cause, content-safe by construction
                     // (`refusalDetail`): our own error cases or a type name.
                     Self.mediaGateLogger.notice("media prefill construction refused", metadata: [
+                        "model_id": .string(modelId),
                         "media_kind": .string(mediaKind.rawValue),
                         "detail": .string(EngineV2VisionPrefill.refusalDetail(for: error))])
                     plumbing.emitTelemetry(

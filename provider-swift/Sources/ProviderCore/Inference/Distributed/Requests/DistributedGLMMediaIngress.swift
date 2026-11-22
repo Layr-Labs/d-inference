@@ -122,7 +122,7 @@ public struct DistributedGLMMediaIngress: Sendable {
         // messages' parts in order, and every message's when media outside
         // user messages is placed (`MediaIngest.everyRoleEnabled`).
         var imageBytes: [Data] = [], videoBytes: [Data] = []
-        let everyRole = MediaIngest.everyRoleEnabled && MediaIngest.hasNonUserMedia(request)
+        let everyRole = MediaIngest.placesNonUserMedia(request)
         for message in request.messages where message.role == .user || everyRole {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {

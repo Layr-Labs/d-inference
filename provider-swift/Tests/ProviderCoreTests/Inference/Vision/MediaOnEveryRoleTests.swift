@@ -137,7 +137,8 @@ struct MediaOnEveryRoleTests {
 
     /// GLM-5.3-Flash renders media in every role: a system image keeps its
     /// placeholder in the system message and its pixels in the input.
-    @Test func glmPlacesASystemImageInItsMessage() async throws {
+    @Test(.enabled(if: MediaIngest.everyRoleEnabled, "DARKBLOOM_MEDIA_ON_EVERY_ROLE is off"))
+    func glmPlacesASystemImageInItsMessage() async throws {
         let request = try Self.decode([
             ["role": "system", "content": [Self.text("Reference:"), Self.image(Self.imageURL(.red))]],
             ["role": "user", "content": "What is the reference image?"],
@@ -230,7 +231,8 @@ struct MediaOnEveryRoleTests {
 
     /// GLM keeps an instruction its text policy appends to a system message
     /// (here `tool_choice: none`) after that message's media parts.
-    @Test func glmKeepsAnAppendedSystemInstruction() async throws {
+    @Test(.enabled(if: MediaIngest.everyRoleEnabled, "DARKBLOOM_MEDIA_ON_EVERY_ROLE is off"))
+    func glmKeepsAnAppendedSystemInstruction() async throws {
         let body: [String: Any] = ["model": "vision-model", "tool_choice": "none",
             "tools": [["type": "function", "function": ["name": "screenshot", "parameters": ["type": "object", "properties": [:]]]]],
             "messages": [["role": "system", "content": [Self.text("Reference:"), Self.image(try Self.imageURL(.red))]],
@@ -243,7 +245,8 @@ struct MediaOnEveryRoleTests {
         let system = try #require(messages.first { $0["content"] is [[String: String]] })
         let parts = try #require(system["content"] as? [[String: String]])
         #expect(parts.prefix(2).map { $0["type"] } == ["text", "image"])
-        #expect(parts.count == 3 && parts[2]["type"] == "text" && !(parts[2]["text"] ?? "").isEmpty)
+        #expect(parts.count == 3 && parts[2]["type"] == "text")
+        #expect(parts.last?["text"] == "\n\nDo not call any tool. Answer the user directly without emitting a tool call.")
     }
 
     /// `DARKBLOOM_MEDIA_ON_EVERY_ROLE` is this change's switch: an installed

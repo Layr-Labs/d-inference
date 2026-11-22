@@ -121,7 +121,13 @@ struct GLMClusterTensorParallelMediaTests {
         let system = OpenAIChatCompletionRequest(model: "m", messages: [.init(role: .system,
             content: .parts([.imageURL("data:image/png;base64," + Self.png)])),
             .init(role: .user, content: .text("What is the reference image?"))])
-        _ = try await ingress.prepare(request: system, controls: .init(), tokenizer: GLMTensorParallelMediaTokenizer())
+        if MediaIngest.everyRoleEnabled {
+            _ = try await ingress.prepare(request: system, controls: .init(), tokenizer: GLMTensorParallelMediaTokenizer())
+        } else {
+            await #expect(throws: (any Error).self) {
+                _ = try await ingress.prepare(request: system, controls: .init(), tokenizer: GLMTensorParallelMediaTokenizer())
+            }
+        }
         // A configuration other than the loaded peers' is refused at binding.
         #expect(throws: (any Error).self) {
             _ = try DistributedGLMMediaIngress(configuration: bytes,

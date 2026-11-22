@@ -173,6 +173,13 @@ public enum MediaIngest {
     static let everyRoleEnabled = !ToolOutputLeniencySwitch.isOff(
         ProcessInfo.processInfo.environment[everyRoleEnvironmentKey])
 
+    /// Whether `request`'s media outside user messages is kept and placed by
+    /// the chat template: the switch is on and such media exists. False for
+    /// every request whose media is only in user messages.
+    static func placesNonUserMedia(_ request: OpenAIChatCompletionRequest) -> Bool {
+        everyRoleEnabled && hasNonUserMedia(request)
+    }
+
     /// Classification only; the actual loaded native audio profile is still
     /// required. Generic text/vision/diffusion paths must not drop this part.
     public static func hasAudio(_ request: OpenAIChatCompletionRequest) -> Bool {

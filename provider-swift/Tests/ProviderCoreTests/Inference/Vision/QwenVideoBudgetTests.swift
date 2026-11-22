@@ -56,7 +56,11 @@ struct QwenVideoBudgetTests {
         request.messages.append(
             .init(role: .assistant, content: .parts([.videoURL("data:video/mp4;base64,AA==")])))
         let five = try #require(MediaIngest.videoProcessing(for: request, environment: [:]))
-        #expect(five.maxPixels == (4_096 / 5) * 2_048, "4,096 tokens / 5 clips")
+        if MediaIngest.everyRoleEnabled {
+            #expect(five.maxPixels == (4_096 / 5) * 2_048, "4,096 tokens / 5 clips")
+        } else {
+            #expect(five == processing, "DARKBLOOM_MEDIA_ON_EVERY_ROLE off: the assistant video is dropped")
+        }
     }
 
     @Test("other models keep their processor's defaults")

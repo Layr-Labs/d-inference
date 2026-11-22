@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -5360,6 +5360,43 @@ requests 1 %), so `auto` requests, which return calls as generated, are left as 
   `fusedAttentionHeadDims = {64, 80, 128}` (`headFactor = 1` when fused-eligible,
   else `numHeads`); `DARKBLOOM_VISION_MAX_TOWER_PATCHES` is a lower-only ceiling
   (`provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`).
+- **Who owns a tower limit.** A tower refusal carries a `MediaLimitOwner`
+  (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaFailure.swift`):
+  `artifact` (every provider refuses the request the same way), `operatorLimit`
+  (`DARKBLOOM_VISION_MAX_TOWER_PATCHES` below the device's bound) or `device`
+  (the largest buffer Metal allocates on this GPU). `VisionTowerBudget.admit`
+  returns it with the rejection: the device when its own bound refuses the
+  patch count, the operator when only the lower ceiling does, the artifact for
+  a grid whose patch count overflows. `VisionTowerBudget.glm5FrameLimits` names
+  it for each of its limits, and GLM's 960,000-patch aggregate is the
+  artifact's. The owner rides `EngineV2VisionPrefillError.towerBudgetExceeded`;
+  the error's `description`, and so the refusal event and message, show only
+  the detail.
+- **One answer per media failure.** `MediaFailure.outward` maps every throw of
+  a media preparation on the three routes that share the vision prefill's
+  errors (`MediaFailure.Route`: `singleMac`, `glmPair`, `qwenPair`). MiMo's
+  native media and Nemotron Super map their own failures
+  (`MiMoV26EncodedMediaIngress.outwardFailure`, `SuperHTTPErrors.map`). A
+  `PreContentDeadlineFailure`, a `CancellationError`, a `MediaIngest.MediaError`
+  and a `MultiModelBatchSchedulerEngineError` leave unchanged. Every other throw
+  gets one `MediaFailure.Disposition`: `clientFault` (400 `invalid_media`:
+  `noProcessedMedia`, `unsupportedMedia`, the processor's refusal of the media,
+  a reader that failed twice without a transient code), `decodeUnavailable`
+  (503 `capacity`, `media_memory_unavailable`: a reader that failed twice with
+  a transient code) or `constructionRefusal` (503 `capacity`, `capacity_busy`:
+  anything else; when the failure is a chat template that did not render, the
+  refusal's text names its type and `classifyInferenceErrorReason` answers
+  `jinja_template`, failure code `template_render`, on the same 503).
+  `EngineV2VisionPrefillError.disposition` is a `switch` without
+  a `default:`, so a new case does not compile until its answer is chosen. A
+  refusal the coordinator reroutes is published as the ERROR
+  `engine_v2_vision_refusal` event on `singleMac` and `glmPair`; `qwenPair`
+  publishes none (`MediaFailure.Route.publishesRefusalTelemetry`). An
+  artifact-owned tower limit and `videoPlaceholderUnavailable` are answered
+  `constructionRefusal`, not `clientFault`.
+  `provider-swift/Tests/ProviderCoreTests/Inference/Vision/MediaFailureDispositionTests.swift`
+  pins status, failure code and error reason for every case on every route, and
+  lists these and the other answers it pins as they are in `KnownDivergence`.
 - **Media caps** (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`):
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
@@ -6391,7 +6428,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Refusal taxonomy, retired env knobs | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` (`EngineV2RefusalReason`) |
 | Deadlines | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`, `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes`, `MeasuredDecodeStep`, `IsolatedPrefillAdmissionRate`) |
 | MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
-| Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
+| Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/MediaFailure.swift` (`MediaFailure`, `MediaLimitOwner`) |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
 | Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`JSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift` (`JSONAnswerProfile`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |

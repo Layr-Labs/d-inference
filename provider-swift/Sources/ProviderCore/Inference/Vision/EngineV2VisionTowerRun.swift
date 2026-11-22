@@ -125,8 +125,8 @@ extension EngineV2VisionPrefill {
             {
             case .admit:
                 break
-            case .reject(let reason):
-                throw EngineV2VisionPrefillError.towerBudgetExceeded(reason)
+            case .reject(let owner, let reason):
+                throw EngineV2VisionPrefillError.towerBudgetExceeded(owner, reason)
             }
 
             let single = try wrapper.cbv2VisionFeatures(
@@ -188,14 +188,15 @@ extension EngineV2VisionPrefill {
             {
             case .admit:
                 break
-            case .reject(let reason):
-                // Refuse RETRIABLY. The bound is `MTLDevice.maxBufferLength`,
-                // which scales with the machine, so the same request can
-                // succeed on a larger node — the coordinator's pre-content
-                // failover is the right place to find one. A 4xx here would
-                // tell the caller their image is invalid when it is only too
-                // large for THIS box.
-                throw EngineV2VisionPrefillError.towerBudgetExceeded(reason)
+            case .reject(let owner, let reason):
+                // The device's bound is `MTLDevice.maxBufferLength`, which
+                // scales with the machine, so the same request can succeed on
+                // a larger node: the coordinator's pre-content failover is
+                // the right place to find one. A 4xx would tell the caller
+                // their image is invalid when it is only too large for THIS
+                // box, so the owner travels with the refusal and
+                // `EngineV2VisionPrefillError.disposition` answers it.
+                throw EngineV2VisionPrefillError.towerBudgetExceeded(owner, reason)
             }
 
             let single = try wrapper.visionFeatures(
@@ -251,8 +252,8 @@ extension EngineV2VisionPrefill {
             {
             case .admit:
                 break
-            case .reject(let reason):
-                throw EngineV2VisionPrefillError.towerBudgetExceeded(reason)
+            case .reject(let owner, let reason):
+                throw EngineV2VisionPrefillError.towerBudgetExceeded(owner, reason)
             }
             let single = try wrapper.visionFeatures(
                 imagePixels: nil, imageGrids: nil,

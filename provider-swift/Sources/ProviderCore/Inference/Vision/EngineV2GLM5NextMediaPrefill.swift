@@ -177,7 +177,7 @@ extension EngineV2VisionPrefill {
             for (item, grid) in grids.enumerated() {
                 guard grid.t > 0, modality != .image || grid.t == 1,
                     let count = VisionTowerBudget.patchCount(grid), count <= 960_000 - aggregatePatches else {
-                    throw EngineV2VisionPrefillError.towerBudgetExceeded("GLM aggregate patch limit")
+                    throw EngineV2VisionPrefillError.towerBudgetExceeded(.artifact, "GLM aggregate patch limit")
                 }
                 aggregatePatches += count
                 let one = THW(1, grid.h, grid.w)

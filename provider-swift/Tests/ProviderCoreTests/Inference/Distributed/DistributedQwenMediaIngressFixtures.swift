@@ -32,9 +32,14 @@ extension QwenIngressFixtures {
     }
 }
 
+/// What `QwenIngressTokenizer` throws when its template does not render.
+struct QwenIngressUnrenderableTemplate: Error {}
+
 struct QwenIngressTokenizer: Tokenizer {
     var completionPieces: [Int: String] = [:]
     var templateCapture: QwenIngressTemplateCapture? = nil
+    /// False makes the chat template throw, as one that cannot render does.
+    var rendersTemplate = true
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         let markers = ["<|image_pad|>", "<|video_pad|>", "<|vision_start|>", "<|vision_end|>"]
         var rest = text[...], result: [Int] = []
@@ -58,6 +63,7 @@ struct QwenIngressTokenizer: Tokenizer {
     var unknownToken: String? { nil }
     func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?) throws -> [Int] {
+        guard rendersTemplate else { throw QwenIngressUnrenderableTemplate() }
         templateCapture?.record(messages)
         var tokens = [1]
         for message in messages {

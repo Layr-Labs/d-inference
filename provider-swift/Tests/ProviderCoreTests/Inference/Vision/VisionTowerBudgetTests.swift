@@ -175,7 +175,7 @@ struct VisionTowerBudgetIncidentTests {
         #expect(aggregate == 6 * maxResolutionImagePatches)
 
         // Before: one tower call over the concatenated stream.
-        guard case .reject(let reason) = VisionTowerBudget.admit(
+        guard case .reject(_, let reason) = VisionTowerBudget.admit(
             grids: grids, subject: "this request", limits: limits())
         else {
             Issue.record("batched six-image call must be refused on an M2 Ultra")
@@ -195,7 +195,7 @@ struct VisionTowerBudgetIncidentTests {
 
     @Test("the crash's own patch count is refused with both numbers in the reason")
     func crashPatchCountIsRefused() {
-        guard case .reject(let reason) = VisionTowerBudget.admit(
+        guard case .reject(_, let reason) = VisionTowerBudget.admit(
             patches: crashPatchCount, subject: "image 1 of 6", limits: limits())
         else {
             Issue.record("the production crash's patch count must be refused")
@@ -273,7 +273,7 @@ struct VisionTowerBudgetIncidentTests {
 
     @Test("with only an operator ceiling the reason omits a bogus device limit")
     func reasonOmitsUnknownDeviceLimit() {
-        guard case .reject(let reason) = VisionTowerBudget.admit(
+        guard case .reject(_, let reason) = VisionTowerBudget.admit(
             patches: 10_000, subject: "this image",
             limits: limits(maxBufferBytes: 0, operatorMaxPatches: 4_096))
         else {
@@ -310,7 +310,7 @@ struct VisionTowerBudgetIncidentTests {
 
     @Test("an unrepresentable grid is refused, never silently truncated")
     func overflowingGridIsRefused() {
-        guard case .reject(let reason) = VisionTowerBudget.admit(
+        guard case .reject(_, let reason) = VisionTowerBudget.admit(
             grids: [THW(1, Int.max, 4)], subject: "image 1 of 1", limits: limits())
         else {
             Issue.record("an overflowing grid must be refused")

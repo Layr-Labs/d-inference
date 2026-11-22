@@ -152,8 +152,8 @@ public struct DistributedQwenMediaIngress: Sendable {
                     span.length == range.count / 4 else {
                     throw EngineV2VisionPrefillError.unsupportedMedia("Qwen preparation exceeds admitted geometry")
                 }
-                if case .reject(let reason) = VisionTowerBudget.admit(grids: [grid], subject: "Qwen media", limits: limits) {
-                    throw EngineV2VisionPrefillError.towerBudgetExceeded(reason)
+                if case .reject(let owner, let reason) = VisionTowerBudget.admit(grids: [grid], subject: "Qwen media", limits: limits) {
+                    throw EngineV2VisionPrefillError.towerBudgetExceeded(owner, reason)
                 }
                 let stride = ClusterQwenMedia.patchWidth * MemoryLayout<Float>.stride
                 let lower = bytes.startIndex + range.lowerBound * stride

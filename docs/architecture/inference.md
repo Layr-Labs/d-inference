@@ -5534,7 +5534,9 @@ and contiguous checkpoints encode older attention rows and restore into native
 state, preserving exact recent and recurrent/auxiliary state. Older reconstructed
 rows remain lossy. On the paged backend Gemma 4's two assistant-access rows stay
 native whenever an assistant is configured for the slot, attached or not
-(`EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected`). That rule,
+(`EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected`;
+`DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` restores the attached-only
+rule with MTP left on). That rule,
 effective native fallback and the unchanged opt-in live packed path are
 described in the
 [precision architecture](kv-cache-quantization.md); controls are in the

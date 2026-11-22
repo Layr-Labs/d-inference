@@ -1,29 +1,32 @@
 import Foundation
 
 /// The control leader's automatic steps that stop the pair only to start it again: the re-plan after a Darkbloom update
-/// (`checkForUpdate`) and a change of the pair's cluster approval (`checkApproval`). Both keep three invariants:
-/// - A failed stop never loses the pair's saved start. Their stop is the one a person's stop runs
+/// (`checkForUpdate`), the memory re-plan (`replanForMemory`) and a change of the pair's cluster approval
+/// (`checkApproval`). Each runs as one restarting stop (`ClusterRestartingStop.run`), which keeps the first of three
+/// invariants for all of them; the steps keep the other two:
+/// - A step never loses the pair's saved start. Their stop is the one a person's stop runs
 ///   (`OnboardingLive.localStop`, never counted as asked for: `ClusterSetupRecord.stopsAsked`): it clears the saved start
-///   before it stops anything. Both steps act only while the start is saved, and nothing else starts a pair again, so
-///   every failure from the stop on, including the stop's own, puts it back (`restoreStart`).
+///   before it stops anything. The steps act only while the start is saved, and nothing else starts a pair again, so
+///   the start is put back when a step ends, whichever of its parts failed, the stop included, and by the service's
+///   next run when the service was ended in the middle of the step (`resumeInterruptedRestart`).
 /// - A stop the owner made is never undone. Every stop of the pair holds the control command lock (a person's, typed
 ///   here or forwarded by the other Mac, and `releaseForSingleMac`'s), and once a step holds it, it stops and starts the
-///   pair only while the start is still saved: the re-plan reads it again (`commandLockIfStillStarted`), and the
+///   pair only while the start is still saved: the re-plans read it again (`commandLockIfStillStarted`), and the
 ///   approval change decides again.
-/// - Neither acts on an unconfirmed claim: each checks `leadershipConfirmed` before it begins and again once it holds
+/// - None acts on an unconfirmed claim: each checks `leadershipConfirmed` before it begins and again once it holds
 ///   the control command lock. The Macs restart into an update seconds apart, and the one back first may take control
 ///   meanwhile: the other Mac then refuses the stop of a leader whose saved claim it superseded.
 ///
-/// The memory re-plan (`replanForMemory`) starts the pair too, and takes the command lock as the re-plan does: it never
-/// starts a pair its owner stopped while it waited, nor acts on a claim that moved meanwhile. Its adoption stops a
-/// serving pair first (`localAdopt`), and as with the steps, every failure from there puts the start back.
-///
-/// The steps, and the memory re-plan, take the command lock beside this service's own files: on a Mac, the one every
-/// cluster command takes.
+/// The steps take the command lock beside this service's own files: on a Mac, the one every cluster command takes.
 ///
 /// A DevNet pair, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted
 /// into the update, and the pair stayed stopped on both Macs until `darkbloom cluster` was run.
 extension ClusterService {
+    /// This service's restarting stops, with its switches (`resumesInterruptedUpdateReplan`, `updateReplanGuard`).
+    var restartingStops: ClusterRestartingStop {
+        .init(store: store, localUpdateRestart: resumesInterruptedUpdateReplan, updateReplanGuard: updateReplanGuard)
+    }
+
     /// The steps of the re-plan after an update, as the control leader's onboarding operations run them (`controlLive`);
     /// tests stand in.
     struct UpdateReplan {
@@ -33,121 +36,97 @@ extension ClusterService {
         var planModels: () -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure>
         var adopt: (Int) -> Result<[String], ClusterOnboardingFailure>
         var serve: () -> Result<[String], ClusterOnboardingFailure>
-        /// Puts the pair's saved start back (`ClusterService.restoreStart`).
-        var restoreStart: () -> Void
     }
 
     /// Sets the cluster up again for `model` (its id) once both Macs run one build: both Macs reached, both parts stopped
     /// and their memory waited for, then the same model planned again, adopted and served. Both Macs refuse the old parts
     /// once their workers changed, and planned while they run, a tensor-parallel pair does not fit "now" and a pipeline is
-    /// chosen in its place. The model's choice as planned, or why the cluster was not set up again.
-    static func replanAfterUpdate(model: String, _ steps: UpdateReplan) -> Result<ClusterOnboardingModelChoice, ClusterOnboardingFailure> {
-        // Nothing is stopped yet: the saved start is as it was.
-        if case .failure(let failure) = steps.reachMembers() { return .failure(failure) }
-        // From the stop on, every failure puts the saved start back, including the stop's own, so the next check tries
-        // again.
-        func failed(_ failure: ClusterOnboardingFailure) -> Result<ClusterOnboardingModelChoice, ClusterOnboardingFailure> {
-            steps.restoreStart()
-            return .failure(failure)
+    /// chosen in its place. One restarting stop: a failure, of its stop too, leaves the saved start as it was, so the
+    /// next check tries again. The model's choice as planned, or why the cluster was not set up again; nil, with
+    /// nothing run, while this Mac's update restarts this service next or the setup record cannot be read
+    /// (`ClusterRestartingStop.run`).
+    func replanAfterUpdate(model: String, _ steps: UpdateReplan) -> Result<ClusterOnboardingModelChoice, ClusterOnboardingFailure>? {
+        restartingStops.run(.updateReplan) {
+            // Nothing is stopped while the other Mac is not reached: the saved start is still as it was.
+            if case .failure(let failure) = steps.reachMembers() { return .failure(failure) }
+            if case .failure(let failure) = steps.stop() { return .failure(failure) }
+            steps.awaitReleased()
+            let choices: [ClusterOnboardingModelChoice]
+            switch steps.planModels() {
+            case .success(let value): choices = value
+            case .failure(let failure): return .failure(failure)
+            }
+            // `model` is the model's id (the record keeps ids; the screens show catalog names).
+            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
+                return .failure(.init("\(model) is not offered on these Macs with this release: "
+                    + (choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")))
+            }
+            if case .failure(let failure) = steps.adopt(index) { return .failure(failure) }
+            if case .failure(let failure) = steps.serve() { return .failure(failure) }
+            return .success(choices[index])
         }
-        if case .failure(let failure) = steps.stop() { return failed(failure) }
-        steps.awaitReleased()
-        let choices: [ClusterOnboardingModelChoice]
-        switch steps.planModels() {
-        case .success(let value): choices = value
-        case .failure(let failure): return failed(failure)
-        }
-        // `model` is the model's id (the record keeps ids; the screens show catalog names).
-        guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
-            return failed(.init("\(model) is not offered on these Macs with this release: "
-                + (choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")))
-        }
-        if case .failure(let failure) = steps.adopt(index) { return failed(failure) }
-        if case .failure(let failure) = steps.serve() { return failed(failure) }
-        return .success(choices[index])
     }
 
-    /// `checkApproval`'s stop of both parts before it changes the cluster approval on both Macs (`ClusterApprovalSync.apply`):
-    /// nil once both stopped (or the pair was not serving), else the line why not, with the pair's saved start put back,
-    /// so it serves as before and the next check tries again.
-    static func stopForApprovalChange(serving: Bool, stop: () -> Result<[String], ClusterOnboardingFailure>, drained: () -> Bool,
-                                      restoreStart: () -> Void) -> String? {
+    /// The stop, the wait for both parts to end, and the start of an approval change, as the control leader's
+    /// onboarding operations run them (`controlLive`), and its sends to the other Mac; tests stand in.
+    struct ApprovalChange {
+        var stop: () -> Result<[String], ClusterOnboardingFailure>
+        var drained: () -> Bool
+        var serve: () -> Result<[String], ClusterOnboardingFailure>
+        var sendToPeer: (ClusterServiceCommand) throws -> Void
+    }
+
+    /// `checkApproval`'s change for `step` on both Macs (`ClusterApprovalSync.apply`), under the command lock. A pair
+    /// that serves is stopped for it and started again as one restarting stop: when the stop or the start fails, the
+    /// saved start is as it was, so the pair serves as before and the next check tries again. What the change did;
+    /// nil, with nothing run, while this Mac's update restarts this service next or the setup record cannot be read
+    /// (`ClusterRestartingStop.run`).
+    func changeApproval(_ step: ClusterApprovalCheck.Step, serving: Bool, _ steps: ApprovalChange,
+                        say: (String) -> Void) -> ClusterApprovalSync.Result? {
+        restartingStops.run(.approvalChange) {
+            ClusterApprovalSync.apply(step, grace: Self.soloGraceSeconds, paths: context.paths,
+                providerConfiguration: settings.wizard.providerConfiguration, pairingStore: pairingStore,
+                scratch: store.paths.directory, now: Date().timeIntervalSince1970,
+                stop: { Self.stopForApprovalChange(serving: serving, stop: steps.stop, drained: steps.drained) },
+                serve: { if let line = Self.restartAfterApprovalChange(serving: serving, serve: steps.serve) { say(line) } },
+                sendToPeer: steps.sendToPeer)
+        }
+    }
+
+    /// The approval change's stop of both parts before it changes the cluster approval on both Macs
+    /// (`ClusterApprovalSync.apply`): nil once both stopped (or the pair was not serving), else the line why not.
+    static func stopForApprovalChange(serving: Bool, stop: () -> Result<[String], ClusterOnboardingFailure>,
+                                      drained: () -> Bool) -> String? {
         guard serving else { return nil }
         if case .failure(let failure) = stop() {
-            restoreStart()
             return "could not stop the parts to change the cluster approval: " + failure.lines.joined(separator: " ")
                 + " The pair stays started; the change is tried again at the next check."
         }
-        guard drained() else {
-            restoreStart()
-            return "a part did not stop within 5 minutes: the cluster approval stays as it is"
-        }
+        guard drained() else { return "a part did not stop within 5 minutes: the cluster approval stays as it is" }
         return nil
     }
 
-    /// `checkApproval`'s start of both parts again once the cluster approval changed (`ClusterApprovalSync.apply` calls
-    /// it after every stop that succeeded): nil once started (or the pair was not serving), else the line why not, with
-    /// the pair's saved start put back, so the service starts this Mac's part again and syncs the other Mac's.
-    static func restartAfterApprovalChange(serving: Bool, serve: () -> Result<[String], ClusterOnboardingFailure>,
-                                           restoreStart: () -> Void) -> String? {
+    /// The approval change's start of both parts again once the cluster approval changed (`ClusterApprovalSync.apply`
+    /// calls it after every stop that succeeded): nil once started (or the pair was not serving), else the line why
+    /// not. The service then starts this Mac's part again and syncs the other Mac's.
+    static func restartAfterApprovalChange(serving: Bool, serve: () -> Result<[String], ClusterOnboardingFailure>) -> String? {
         guard serving, case .failure(let failure) = serve() else { return nil }
-        restoreStart()
         return "could not start the parts again after the cluster approval changed: " + failure.lines.joined(separator: " ")
     }
 
-    /// Puts the pair's saved start back after an automatic step stopped it to start it again, and drops the stop request a
-    /// stop that failed midway keeps (this Mac's part had not released yet): left in place, it would hold off every start,
-    /// sync and hand-over (`OnboardingLive.localServe`, `syncMembers`). Both steps call it under the control command lock,
-    /// which every stop of the pair holds, so no person's stop is under way.
-    func restoreStart() {
-        try? store.updateRecord { $0.leadership?.serving = true; $0.stopDrain = nil }
-    }
-
-    /// A re-plan after an update marks the record before its stop (`ClusterSetupRecord.updateReplan`): true once marked.
-    /// A local-only pair serves on the leading Mac's local API and drains for no update, so `darkbloom update` restarts
-    /// the cluster service at once (`ClusterLocalPairUpdate`), which may end this service in the middle of the re-plan.
-    /// Another pair's coordinated update installs before it restarts the services, so a re-plan begun in between is
-    /// ended the same way (`ClusterUpdateReplanGuard`, which also keeps the check from beginning one then). A mark that
-    /// cannot be written leaves the re-plan as it was.
-    func markUpdateReplan(localOnly: Bool) -> Bool {
-        guard localOnly ? resumesInterruptedUpdateReplan : updateReplanGuard else { return false }
-        return (try? store.updateRecord {
-            $0.updateReplan = .init(stopsAsked: $0.stopsAsked ?? 0, startedAt: Date().timeIntervalSince1970)
-        }) != nil
-    }
-
-    /// The re-plan ended: it served, or it put the start back itself.
-    func clearUpdateReplanMark() {
-        _ = try? store.updateRecord { $0.updateReplan = nil }
-    }
-
-    /// The mark of a re-plan the previous run of this service began and never ended (it was ended in the middle of it,
-    /// on a DevNet pair): the start its stop cleared is put back, as the re-plan's own failure would have
-    /// (`restoreStart`), so the pair is set up again once both Macs run one build. Only a recent mark of a re-plan this
-    /// Mac still leads is acted on (its control claim, `followsPeer`: the re-plan runs on the derived control leader,
+    /// The marks of steps the previous run of this service, or a registration on this Mac, began and never ended (a
+    /// service ended in the middle of a re-plan after an update, on DevNet pairs): the start the step's stop cleared is
+    /// put back, as the step's own end would have (`ClusterRestartingStop.resume`). Only a recent mark of a step this
+    /// Mac still leads is acted on (its control claim, `followsPeer`: the steps run on the derived control leader,
     /// whichever Mac drove the onboarding), and only while the start is still cleared and no stop a person asked for was
     /// counted since (`ClusterSetupRecord.stopsAsked`; a stop while the pair is down, which isn't counted, drops the
-    /// mark: `forgetInterruptedUpdateReplan`). Any mark is dropped, also with its switch off (`ClusterLocalPairUpdate` for
-    /// a local-only pair, `ClusterUpdateReplanGuard` for another). The line for the log, or nil when there was nothing to
-    /// put back.
-    func resumeInterruptedUpdateReplan(now: Double = Date().timeIntervalSince1970) -> String? {
-        var resumedAfter: Double?
+    /// marks: `forgetInterruptedRestart`). Every mark is dropped, the re-plan after an update's also with its switch
+    /// off (`ClusterLocalPairUpdate` for a local-only pair, `ClusterUpdateReplanGuard` for another). The line for the
+    /// log, or nil when there was nothing to put back.
+    func resumeInterruptedRestart(now: Double = Date().timeIntervalSince1970) -> String? {
         let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore)
-        _ = try? store.updateRecord { record in
-            guard let mark = record.updateReplan else { return }
-            record.updateReplan = nil
-            let age = now - mark.startedAt
-            let resumes = record.leadership?.scope.isLocalOnly == true ? resumesInterruptedUpdateReplan : updateReplanGuard
-            guard resumes, (0...Self.interruptedUpdateReplanSeconds).contains(age),
-                  (record.stopsAsked ?? 0) == mark.stopsAsked, Self.leadsByControl(record: record, pairing: pairing),
-                  record.leadership?.serving == false else { return }
-            record.leadership?.serving = true
-            record.stopDrain = nil
-            resumedAfter = age
-        }
-        return resumedAfter.map { "the previous run of this Mac's cluster service was ended while it set the cluster up "
-            + "again after an update (\(Int($0)) s ago), after it stopped the pair: the pair's start is put back, so it is set "
-            + "up again once both Macs run one build" }
+        return restartingStops.resume(now: now) { Self.leadsByControl(record: $0, pairing: pairing) }
+            .map { ClusterRestartingStop.resumedLine($0.step, secondsAgo: $0.secondsAgo) }
     }
 
     /// Whether this Mac holds the recorded control claim (`followsPeer`); with the pairing unreadable (a locked
@@ -157,21 +136,15 @@ extension ClusterService {
         return !followsPeer(record: record, pairing: pairing)
     }
 
-    /// How old a mark `resumeInterruptedUpdateReplan` acts on may be: the update's restart follows a re-plan within
-    /// minutes; an older mark is one a failed write left behind.
-    static let interruptedUpdateReplanSeconds: Double = 3600
-
     /// A person stopped this Mac's pair while it was down (`darkbloom stop`, which counts no stop then, or `darkbloom
-    /// start --solo` releasing this Mac's part, `releaseForSingleMac`): a re-plan after an update that the update's
-    /// restart ended is not resumed. (Single-Mac serving started without a part to release holds the part back anyway.)
-    public static func forgetInterruptedUpdateReplan() {
-        guard let paths = try? ClusterUserPaths() else { return }
-        forgetInterruptedUpdateReplan(store: ClusterSetupStore(paths: ClusterSetupPaths(paths: paths)))
-    }
-
-    static func forgetInterruptedUpdateReplan(store: ClusterSetupStore) {
-        guard (try? store.readRecord())?.updateReplan != nil else { return }
-        _ = try? store.updateRecord { $0.updateReplan = nil }
+    /// start --solo` releasing this Mac's part, `releaseForSingleMac`): a step that a restart ended is not resumed.
+    /// (Single-Mac serving started without a part to release holds the part back anyway.) False when this Mac's record
+    /// could not be read or written (`ClusterRestartingStop.forget`). `darkbloom stop` goes on all the same: it has
+    /// this Mac's provider to drain and stop yet.
+    @discardableResult
+    public static func forgetInterruptedRestart() -> Bool {
+        guard let paths = try? ClusterUserPaths() else { return true }
+        return ClusterRestartingStop(store: ClusterSetupStore(paths: ClusterSetupPaths(paths: paths))).forget()
     }
 
     /// The control command lock for a re-plan of the pair (`checkForUpdate`, `replanForMemory`), taken within 5 s; nil

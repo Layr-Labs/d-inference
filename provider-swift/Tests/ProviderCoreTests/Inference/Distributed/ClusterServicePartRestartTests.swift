@@ -77,7 +77,7 @@ struct ClusterServicePartRestartTests {
             // The memory re-plan comes due only after two refusals; this one stands in, so nothing is planned. The
             // switch is set on, whatever this test process's environment says.
             leader.service.memoryReplan = .init(reachMembers: { .failure(.init("fixture: not re-planned")) },
-                planModels: { .success([]) }, adopt: { _ in .success([]) }, serve: { .success([]) }, restoreStart: {})
+                planModels: { .success([]) }, adopt: { _ in .success([]) }, serve: { .success([]) })
             leader.service.memoryRefusalReplan = true
             leader.service.lock.withLock { leader.service.backoff = 24 }
             leader.run()

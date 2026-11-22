@@ -108,9 +108,9 @@ struct Stop: AsyncParsableCommand {
             print(pair.leftoverStopLine)
             try await Start.releaseLeftoverPart(pair)
         }
-        // A stop while the pair is down counts no stop: the pair is not set up again for an update's re-plan its
-        // restart ended.
-        if stop == .stopHere { ClusterService.forgetInterruptedUpdateReplan() }
+        // A stop while the pair is down counts no stop: the pair's start is not put back for a step that a restart
+        // ended after it stopped the pair (an update's re-plan, a memory re-plan, an approval change, a registration).
+        if stop == .stopHere { ClusterService.forgetInterruptedRestart() }
         // Stopping single-Mac serving here: a choice of it made before no longer stands.
         if pair.paired { Start.clearSoloChoice() }
         let wasLoaded = LaunchAgent.isLoaded()

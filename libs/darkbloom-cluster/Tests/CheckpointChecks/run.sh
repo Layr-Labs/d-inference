@@ -36,6 +36,7 @@ compile_checks() {
     "$R/Support/CanonicalJSON.swift" \
     "$R/Support/ClusterMetadataHashing.swift" \
     "$R/Support/ClusterRuntimeError.swift" \
+    "$R/Support/ClusterLoadPhaseClock.swift" \
     "$R/Models/Metadata/LayerStageTensorMetadata.swift" \
     "$R/Models/Metadata/LayerStageStorageConservation.swift" \
     "$R/Models/Metadata/LayerStageCapturedTensorHeaders.swift" \

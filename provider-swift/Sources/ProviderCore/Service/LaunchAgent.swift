@@ -449,6 +449,10 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_MEDIA_ON_EVERY_ROLE`: media in a system, assistant or tool
     /// message is rendered where the chat template renders it, by default; an
     /// off word keeps only user-message media again.
+    /// `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY`: GLM-5.3-Flash serves history
+    /// tool-call arguments and tool schemas in shapes vLLM and the OpenAI API
+    /// accept, by default; an off word restores refusing inexact numbers,
+    /// repeated keys and tool-call markers in arguments.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -586,6 +590,7 @@ public enum LaunchAgent: Sendable {
         NemotronSuperLocalBridgeBuilder.firstContentRefusalKey,
         MediaIngest.maxImagesEnvironmentKey,
         MediaIngest.everyRoleEnvironmentKey,
+        GLM5NextPromptPolicy.referenceToolHistoryEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,

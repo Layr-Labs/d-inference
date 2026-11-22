@@ -229,6 +229,19 @@ struct EngineV2ResliceUnwindTests {
         await survivor.shutdown()
     }
 
+    @Test func soloQuoteExcludesRetiringMiMoButTheLiveGrantKeepsItsWeight() async throws {
+        let loop = try makeUnwindLoop()
+        await loop.setEngineV2SlotHooksForTesting(.init(eosTokenIds: [2], physicalMemoryBytes: unwindPhysicalBytes,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        let survivor = await installSurvivorA(loop, runtime: EngineV2Runtime(), grant: 40,
+            sizingA: sizing(weightsGiB: 15, kvRate: 20_480), onUpdate: { _ in })
+        let alone = await loop.fleetKVBudgetBytes(extraWeightBytes: 0)
+        await loop.setRetiringSizingForSoloQuoteTest(sizing(weightsGiB: 8, kvRate: 1))
+        #expect(await loop.glmSoloGrant(for: Self.gemmaId) == alone)
+        #expect(await loop.fleetKVBudgetBytes(extraWeightBytes: 0) == alone - 8 * unwindGiB)
+        await survivor.bridge.shutdown()
+    }
+
     @Test func soloQuoteRemainsAvailableBetweenRemovalAndRegrowth() async throws {
         let loop = try makeUnwindLoop()
         await loop.setEngineV2SlotHooksForTesting(.init(eosTokenIds: [2], physicalMemoryBytes: unwindPhysicalBytes,
@@ -424,5 +437,11 @@ struct EngineV2ResliceUnwindTests {
             "survivors must regrow only AFTER the aborted newcomer's weights are released")
         #expect(box.container == nil)
         #expect(engineA.kvBytesCapacity == grantA0)
+    }
+}
+
+private extension ProviderLoop {
+    func setRetiringSizingForSoloQuoteTest(_ value: SlotSizingSnapshot) {
+        nativeMiMoRetiringSizing["mimo"] = value
     }
 }

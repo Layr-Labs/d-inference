@@ -20,14 +20,8 @@ extension ModelDownloader {
         requestTimeout: TimeInterval = ModelDownloader.defaultRequestTimeout,
         onChunk: (@Sendable (Int64) -> Void)?
     ) async throws -> Bool {
-        let partial = job.destination.appendingPathExtension("part")
+        // RED CONTROL: the single-stream download only, as before the change.
         let size = job.file.sizeBytes
-        if segmentsPerFile > 1, size >= segmentMinimumFileBytes, let url = URL(string: urlString),
-           try await servesRanges(url, size: size, label: job.file.path, attempts: attempts, requestTimeout: requestTimeout) {
-            try await downloadInSegments(job, from: url, attempts: attempts, requestTimeout: requestTimeout, onChunk: onChunk)
-            return true
-        }
-        try SegmentedPartFile.collapseToPrefix(partial: partial, size: size)
         return try await downloadFile(
             from: urlString, to: job.destination, label: job.file.path, onProgress: nil, required: true,
             expectedSHA256: job.file.sha256.lowercased(), maximumBytes: size, attempts: attempts,

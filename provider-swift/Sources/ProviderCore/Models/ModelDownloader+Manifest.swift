@@ -21,7 +21,9 @@ extension ModelDownloader {
     /// range record when it has one, not the pre-sized length): the resume
     /// credit of the progress and the free-disk checks.
     static func resumableBytes(_ job: (file: ManifestFile, destination: URL, url: String)) -> Int64 {
-        SegmentedPartFile.accountedBytes(partial: job.destination.appendingPathExtension("part"), size: job.file.sizeBytes)
+        // RED CONTROL: the `.part`'s length, as before the change.
+        (try? FileManager.default.attributesOfItem(
+            atPath: job.destination.appendingPathExtension("part").path)[.size] as? Int64) ?? 0
     }
 
     /// Verify the aggregate hash over the staged files, then publish the snapshot

@@ -83,11 +83,11 @@ extension ModelDownloader {
         // Resume: skip files already staged + valid; only the not-yet-valid files
         // are enqueued below.
         let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
-        // The foreground per-file downloader now byte-resumes (streams to a stable
-        // `.part` and appends via HTTP `Range`), so credit any bytes already saved
-        // in each `.part`: a near-complete resume of a big shard must not be charged
+        // The foreground per-file downloader byte-resumes (a `.part` prefix, or
+        // the ranges its record counts), so credit any bytes already saved in
+        // each `.part`: a near-complete resume of a big shard must not be charged
         // disk room equal to the whole shard.
-        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
+        let partBytes = jobs.map(Self.resumableBytes)
         try Self.ensureAvailableCapacity(
             at: snapshotsDir,
             requiredBytes: Self.remainingBytesToFetch(
@@ -108,13 +108,13 @@ extension ModelDownloader {
         }
 
         // Seed each pending file with any bytes already saved in its `.part` (a
-        // resumed prefix) so progress starts from the real bytes on disk.
+        // resumed prefix or ranges) so progress starts from the real bytes on disk.
         let progress = ManifestDownloadProgress()
         for job in pending {
             progress.register(
                 label: job.file.path,
                 expectedBytes: job.file.sizeBytes,
-                initialBytes: fileSize(job.destination.appendingPathExtension("part"))
+                initialBytes: Self.resumableBytes(job)
             )
         }
 
@@ -131,8 +131,13 @@ extension ModelDownloader {
             }
         }
 
-        let transfer: @Sendable ((file: ManifestFile, destination: URL, url: String)) async throws -> Void = { job in
-            try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
+        // Files download `concurrency` at a time; their ranges together stay
+        // within `ModelDownloadSegments.maximumConnections`.
+        var worker = self
+        worker.segmentsPerFile = ModelDownloadSegments.perFile(
+            requested: segmentsPerFile, filesAtOnce: min(concurrency, pending.count))
+        let transfer: @Sendable ((file: ManifestFile, destination: URL, url: String)) async throws -> Void = { [worker] job in
+            try await worker.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
                 progress.update(label: job.file.path, downloadedBytes: bytes)
             })
             progress.complete(label: job.file.path)
@@ -171,8 +176,7 @@ extension ModelDownloader {
             // failure doesn't leave a stray staging dir behind. (A promoted file is
             // full-size + SHA-verified; size/SHA failures delete the `.part` first.)
             let hasResumable = jobs.contains {
-                fileSize($0.destination) == $0.file.sizeBytes
-                    || fileSize($0.destination.appendingPathExtension("part")) > 0
+                fileSize($0.destination) == $0.file.sizeBytes || Self.resumableBytes($0) > 0
             }
             if !hasResumable {
                 try? FileManager.default.removeItem(at: stagingDir)

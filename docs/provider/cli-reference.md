@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-23
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -3489,6 +3489,11 @@ the catalog's display name:
 
 `darkbloom models download` then prints `Cached at <path>`. The picker prints
 nothing more for the model.
+
+Files of 256 MiB or more are fetched over several byte ranges at once (4 by
+default, `DARKBLOOM_DOWNLOAD_SEGMENTS`; `1` keeps one connection per file), when
+the source serves ranges; see the
+[configuration reference](../reference/configuration.md#operator-facing-daemon-paths-updates).
 
 Sizes are decimal, as the catalog gives them. The rate leaves out bytes that an
 interrupted download already had on disk; the download resumes from them. Code:

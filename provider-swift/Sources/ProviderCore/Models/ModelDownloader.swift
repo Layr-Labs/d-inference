@@ -6,6 +6,7 @@
 ///   - ModelDownloader+Download.swift  manifest/legacy download orchestration
 ///   - ModelDownloader+Prefetch.swift  resume-aware background prefetch
 ///   - ModelDownloader+HTTP.swift       low-level file fetch/stream/hash/publish
+///   - ModelDownloader+Segments.swift   ranged transfer of one large file
 
 import Foundation
 import ProviderCoreFoundation
@@ -55,6 +56,18 @@ public struct ModelDownloader: Sendable {
     /// per-file and aggregate hashing), as the cluster's model copy over the cable does, so fetching a model does not
     /// take memory from a model load. Off by default: single-Mac downloads keep their behaviour.
     public var uncachedWrites = false
+    /// Byte ranges, each over its own connection, that one large manifest file is fetched over
+    /// (`DARKBLOOM_DOWNLOAD_SEGMENTS`, `ModelDownloadSegments`); 1 fetches every file over one connection.
+    var segmentsPerFile = ModelDownloadSegments.count()
+    /// Files below this size are fetched over one connection.
+    var segmentMinimumFileBytes = ModelDownloadSegments.minimumFileBytes
+    /// Range requests take the background network service type, so they yield to the Mac's
+    /// other traffic; `prefetch` (Autopilot placements, revisions, background prefetch) sets it.
+    var backgroundRanges = false
+    /// Whether a directory's volume keeps a pre-sized `.part` sparse; ranges need it.
+    var sparseFilesSupported: @Sendable (URL) -> Bool = { ModelDownloadSegments.volumeSupportsSparseFiles($0) }
+    /// Tests observe the writer each ranged transfer opens.
+    var segmentedWriterOpened: (@Sendable (SegmentedPartWriter) -> Void)?
 
     public init(
         r2CDNURL: String? = nil,

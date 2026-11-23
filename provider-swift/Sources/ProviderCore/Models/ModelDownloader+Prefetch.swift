@@ -93,8 +93,9 @@ extension ModelDownloader {
         // need no extra headroom.
         // Count bytes already saved in each file's resumable `.part` so a tight-
         // disk resume isn't rejected for lacking room equal to a whole shard when
-        // the byte-resume below will only append the missing suffix via `Range`.
-        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
+        // the byte-resume below will only fetch the missing bytes via `Range`.
+        // A ranged `.part` is pre-sized (sparse): only its counted bytes are credited.
+        let partBytes = jobs.map(Self.resumableBytes)
         let remainingBytes = Self.remainingBytesToFetch(
             sizes: jobs.map(\.file.sizeBytes),
             alreadyValid: alreadyValid,
@@ -104,13 +105,17 @@ extension ModelDownloader {
 
         // Sequential downloads (one at a time) so prefetch yields to inference
         // and never saturates bandwidth the way the foreground 4-way concurrent
-        // download does. Each file: skip-if-valid, else fetch + verify.
+        // download does: one file's ranges (`segmentsPerFile`, 4 by default),
+        // of the background network service type (`backgroundRanges`).
+        // Each file: skip-if-valid, else fetch + verify.
+        var worker = self
+        worker.backgroundRanges = true
         for job in jobs {
             try Task.checkCancellation()
             if Self.fileMatches(job.destination, size: job.file.sizeBytes, sha256: job.file.sha256) {
                 continue
             }
-            try await downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact)
+            try await worker.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact)
             progress.add(job.file.sizeBytes)
             onByteProgress?(progress.done, total)
         }

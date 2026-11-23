@@ -17,6 +17,13 @@ extension ModelDownloader {
         }
     }
 
+    /// Bytes of the job's file already in its resumable `.part` (counted by its
+    /// range record when it has one, not the pre-sized length): the resume
+    /// credit of the progress and the free-disk checks.
+    static func resumableBytes(_ job: (file: ManifestFile, destination: URL, url: String)) -> Int64 {
+        SegmentedPartFile.accountedBytes(partial: job.destination.appendingPathExtension("part"), size: job.file.sizeBytes)
+    }
+
     /// Verify the aggregate hash over the staged files, then publish the snapshot
     /// (immutable revision + optional `refs/main`) so `ModelScanner` discovers it. Shared by
     /// the normal completion path and the finish-on-restart short-circuit.

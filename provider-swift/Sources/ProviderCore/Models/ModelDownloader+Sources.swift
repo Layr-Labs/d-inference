@@ -9,8 +9,9 @@ extension ModelDownloader {
 
     /// Download a single manifest file into its staging destination, resuming
     /// from a `.part` file when present, verifying size + SHA-256 before
-    /// promoting to the final staged path. Reuses the resume-capable
-    /// `downloadFile` helper (Range requests, Content-Range validation, retries).
+    /// promoting to the final staged path. Each source goes through
+    /// `fetchManifestFile`: byte ranges for a large file, else the
+    /// resume-capable `downloadFile` (Range requests, Content-Range validation, retries).
     ///
     /// `onChunk(bytesOnDisk)` reports cumulative bytes-on-disk for this file as
     /// it streams, so the foreground path can show live progress; the
@@ -23,10 +24,8 @@ extension ModelDownloader {
         if let artifact = huggingFaceArtifact {
             let hfURL = try artifact.downloadURL(for: job.file.path)
             do {
-                let ok = try await downloadFile(
-                    from: hfURL.absoluteString, to: job.destination, label: job.file.path,
-                    onProgress: nil, required: true, expectedSHA256: job.file.sha256.lowercased(),
-                    maximumBytes: job.file.sizeBytes, attempts: 1,
+                let ok = try await fetchManifestFile(
+                    job, from: hfURL.absoluteString, attempts: 1,
                     requestTimeout: Self.huggingFaceIdleTimeout, onChunk: onChunk)
                 if ok, fileSize(job.destination) == job.file.sizeBytes { return }
             } catch is CancellationError {
@@ -37,24 +36,12 @@ extension ModelDownloader {
                 Self.sourceLogger.warning("Hugging Face download failed; falling back to R2",
                     metadata: ["file": "\(job.file.path)", "error": "\(error)"])
             }
-            // Never carry a potentially corrupt HF prefix into the R2 fallback.
-            let partial = job.destination.appendingPathExtension("part")
-            if FileManager.default.fileExists(atPath: partial.path) {
-                try FileManager.default.removeItem(at: partial)
-            }
+            // Never carry potentially corrupt HF bytes (a prefix or ranges) into the R2 fallback.
+            try SegmentedPartFile.remove(partial: job.destination.appendingPathExtension("part"))
             onChunk?(0)
         }
         try Task.checkCancellation()
-        let ok = try await downloadFile(
-            from: job.url,
-            to: job.destination,
-            label: job.file.path,
-            onProgress: nil,
-            required: true,
-            expectedSHA256: job.file.sha256.lowercased(),
-            maximumBytes: job.file.sizeBytes,
-            onChunk: onChunk
-        )
+        let ok = try await fetchManifestFile(job, from: job.url, onChunk: onChunk)
         guard ok else {
             throw ModelCatalogError.downloadFailed("\(job.file.path): required file could not be fetched")
         }

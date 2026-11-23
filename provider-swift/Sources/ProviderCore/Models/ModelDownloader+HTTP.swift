@@ -6,6 +6,9 @@ import Darwin
 import CryptoKit
 
 extension ModelDownloader {
+    static let defaultAttempts = 3
+    static let defaultRequestTimeout: TimeInterval = 6 * 60 * 60
+
     internal func downloadFileForTesting(
         from urlString: String,
         to destination: URL,
@@ -32,8 +35,8 @@ extension ModelDownloader {
         required: Bool,
         expectedSHA256: String? = nil,
         maximumBytes: Int64? = nil,
-        attempts: Int = 3,
-        requestTimeout: TimeInterval = 6 * 60 * 60,
+        attempts: Int = ModelDownloader.defaultAttempts,
+        requestTimeout: TimeInterval = ModelDownloader.defaultRequestTimeout,
         onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws -> Bool {
         guard let url = URL(string: urlString) else {
@@ -70,8 +73,7 @@ extension ModelDownloader {
                 }
 
                 if let expectedSHA256 {
-                    let actual = uncachedWrites ? (Self.sha256Uncached(partial).map(Self.hex) ?? "<unreadable>")
-                                                : Self.sha256HexForVerification(of: partial)
+                    let actual = verificationSHA256Hex(of: partial)
                     let size = fileSize(partial)
                     guard actual == expectedSHA256 else {
                         // The `.part` is corrupt (hash mismatch). Delete it so the
@@ -180,7 +182,7 @@ extension ModelDownloader {
         }
     }
 
-    private static func downloadFailureMessage(label: String, error: Error?) -> String {
+    static func downloadFailureMessage(label: String, error: Error?) -> String {
         guard let error else { return "\(label): unknown error" }
         if case .downloadFailed(let detail) = error as? ModelCatalogError {
             return detail.hasPrefix("\(label):") ? detail : "\(label): \(detail)"
@@ -248,6 +250,13 @@ extension ModelDownloader {
     }
 
     static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+
+    /// The SHA-256 a downloaded `.part` must match before it is promoted, read with the file cache off
+    /// under `uncachedWrites`.
+    func verificationSHA256Hex(of partial: URL) -> String {
+        uncachedWrites ? (Self.sha256Uncached(partial).map(Self.hex) ?? "<unreadable>")
+                       : Self.sha256HexForVerification(of: partial)
+    }
 
     static func sha256HexForVerification(of url: URL) -> String {
         sha256HexForVerification(of: url, hasher: sha256Hex)

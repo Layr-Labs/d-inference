@@ -23,7 +23,7 @@ extension ModelDownloader {
                     let jobs = try manifestJobs(manifest, stagingDir: staging)
                     bytes = Self.remainingBytesToFetch(sizes: jobs.map(\.file.sizeBytes),
                         alreadyValid: jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) },
-                        partBytes: jobs.map { fileSize($0.destination.appendingPathExtension("part")) })
+                        partBytes: jobs.map(Self.resumableBytes))
                 }
             } else {
                 guard model.sizeGb.isFinite, model.sizeGb > 0, model.sizeGb < 4096 else {

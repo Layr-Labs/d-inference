@@ -207,6 +207,27 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
     await explicit.shutdown()
 }
 
+/// The automatic width (no reviewed profile) holds at thermal state fair, where
+/// a Mac Studio under sustained load sits; serious, critical and Low Power Mode
+/// still return it to the unqualified width. Reviewed profiles keep nominal.
+@Test func automaticWidthHoldsAtThermalFairButNotSeriousOrLowPower() async {
+    #expect(ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: false, thermalState: .nominal))
+    #expect(ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: false, thermalState: .fair))
+    #expect(!ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: false, thermalState: .serious))
+    #expect(!ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: false, thermalState: .critical))
+    #expect(!ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: true, thermalState: .nominal))
+    #expect(!ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: true, thermalState: .fair))
+
+    let budget = GlobalKVCacheBudget(memorySnapshot: {
+        .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+    })
+    let automatic = EngineV2Bridge(engine: ProfileContextSentinelEngine(), modelId: "generic-model",
+        tokenizer: TokenizerHandle(ProfileContextTokenizer()), eosTokenIds: [],
+        maxConcurrentRequests: 8, unqualifiedMaxConcurrentRequests: 4, kvBudget: budget)
+    #expect(await automatic.widthPostureAllowsExpansion == ServingPerformanceProfiles.postureAllowsAutomaticWidth)
+    await automatic.shutdown()
+}
+
 /// W14/W8d.6: right after a start on a warm Mac the automatic width falls back
 /// to 4, and a local stream holding its head sits in both the active map and
 /// the pending set until its submit returns. Each request counts once, so a

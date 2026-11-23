@@ -2259,9 +2259,11 @@ resolved KV backend, GPU/RAM bin and the entire configured context limit.
 Unknown profiles retain the legacy policy, except that models on the native
 `auto` paged allowlist start at the legacy ceiling of 8 instead of 4 on M5 Pro,
 Max and Ultra (`ServingPerformanceProfiles.automaticConcurrency`; chip identity comes from one
-sysctl, not full hardware detection). That width, like a profile
-width, returns to the configured width under Low Power Mode or thermal pressure
-(`EngineV2Bridge.hasPostureGatedWidth`). The concurrency/chunk catalogs remain empty;
+sysctl, not full hardware detection). With Low Power Mode off, the automatic
+width holds at nominal or fair thermal state. Low Power Mode, serious or critical
+thermal state, or an unknown state restores the configured width. Reviewed
+profile widths and deadline profiles require nominal thermal state
+(`EngineV2Bridge.widthPostureAllowsExpansion`). The concurrency/chunk catalogs remain empty;
 the [qualification procedure](../developer/serving-performance-qualification.md)
 is required before any width above 8 or model-specific chunk policy activates.
 Qualified engines share one whole-Mac service allowance and retain physical KV,

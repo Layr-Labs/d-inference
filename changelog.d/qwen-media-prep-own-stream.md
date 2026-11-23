@@ -7,7 +7,9 @@
   buffers run in submission order, so its tower queues behind their steps and
   their steps behind the tower.
 - The kernels and inputs are unchanged, so the embeddings and outputs are
-  expected to be identical. The option stays off by default until first-use
+  expected to be identical. In this change's hardware run, one start with the
+  option on gave a different answer for its first images after a cold start,
+  which is not yet explained; the option stays off by default until first-use
   identity after a cold start is proven on hardware. Other model families
   always keep the shared stream.
 - The setting is forwarded to the launchd provider job.

@@ -140,12 +140,19 @@ class SigningValidationTests(unittest.TestCase):
 
     def make_archive(self, directory, mutate=False, info_updates=None, version="test-version",
                      app=PROD_NAMES["appBundleName"], executable=PROD_NAMES["cliName"],
-                     name=PROD_NAMES["appDisplayName"], packaging=None):
+                     name=PROD_NAMES["appDisplayName"], packaging=None,
+                     enclave=PROD_NAMES["enclaveName"], modes=None):
         source = directory / "source"
         (source / "validation-inputs").mkdir(parents=True)
         app_contents = source / app / "Contents"
         app_contents.mkdir(parents=True)
         write_app_with_cluster_helpers(source / app)
+        for path in [app_contents / "MacOS" / executable, app_contents / "MacOS" / enclave,
+                     app_contents / "Helpers" / VALIDATION.FAN_HELPER]:
+            path.write_bytes(MACHO_ARM64)
+            path.chmod(0o755)
+        for relative, mode in (modes or {}).items():
+            (app_contents / relative).chmod(mode)
         info = {"CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": version,
                 "CFBundleShortVersionString": version, "CFBundleExecutable": executable,
                 "CFBundleName": name}
@@ -246,6 +253,132 @@ class SigningValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "build-cluster-helpers.sh"):
             VALIDATION.stage_cluster_helpers(None, Path("/nonexistent"))
 
+    def staged_from_private_build(self, root):
+        """Stages SwiftPM products and cluster helpers that a build under
+        umask 077 left at mode 0700, as a private release build does."""
+        products = root / "bin"
+        products.mkdir()
+        for product in [*PRODUCTS.values(), VALIDATION.FAN_HELPER]:
+            (products / product).write_bytes(MACHO_ARM64 + product.encode())
+            (products / product).chmod(0o700)
+        (root / "mlx.metallib").write_bytes(b"metallib")
+        helpers = cluster_helper_source(root)
+        for name in VALIDATION.CLUSTER_HELPER_EXECUTABLES:
+            (helpers / name).chmod(0o700)
+        # Resource staging needs ditto; the paged-source match is the cluster tests' to check.
+        with mock.patch.object(VALIDATION.subprocess, "run"), \
+                mock.patch.object(VALIDATION.subprocess, "check_output", return_value=""), \
+                mock.patch.object(VALIDATION, "check_cluster_helpers"):
+            VALIDATION.stage(argparse.Namespace(source=ROOT, bin=products, metallib=root / "mlx.metallib",
+                output=root / "stage", version=PROD, cluster_helpers=helpers))
+        return products
+
+    def executable_paths(self, app, names=PROD_NAMES):
+        return [app / "Contents/MacOS" / names["cliName"], app / "Contents/MacOS" / names["enclaveName"],
+                *[app / "Contents/Helpers" / name for name in (VALIDATION.FAN_HELPER, *VALIDATION.CLUSTER_HELPER_EXECUTABLES)]]
+
+    def test_stage_pack_and_unpack_keep_every_executable_0755_under_umask_077(self):
+        previous = os.umask(0o077)
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                products = self.staged_from_private_build(root)
+                app = root / "stage" / PROD_NAMES["appBundleName"]
+                staged = self.executable_paths(app)
+                self.assertEqual([path.stat().st_mode & 0o7777 for path in staged], [0o755] * 5)
+                # Only the executables change mode; the build outputs keep theirs and every byte.
+                self.assertEqual((app / "Contents/MacOS/mlx.metallib").stat().st_mode & 0o777,
+                                 (root / "mlx.metallib").stat().st_mode & 0o777)
+                for product, name in [(PRODUCTS["cli"], PROD_NAMES["cliName"]), (VALIDATION.FAN_HELPER, None)]:
+                    self.assertEqual((products / product).stat().st_mode & 0o777, 0o700)
+                    packaged = app / ("Contents/MacOS/" + name if name else "Contents/Helpers/" + product)
+                    self.assertEqual(packaged.read_bytes(), (products / product).read_bytes())
+                archive = root / "unsigned-provider.tar.gz"
+                with tarfile.open(archive, "w:gz") as output:
+                    output.add(root / "stage", arcname=".")
+                with tarfile.open(archive) as packed:
+                    members = {member.name: member.mode for member in packed}
+                for path in staged:
+                    self.assertEqual(members["./" + str(path.relative_to(root / "stage"))], 0o755)
+                with mock.patch.object(VALIDATION, "check_cluster_helpers"):
+                    VALIDATION.unpack(argparse.Namespace(archive=archive, output=root / "readback",
+                        source_sha="", version=PROD))
+                readback = self.executable_paths(root / "readback" / PROD_NAMES["appBundleName"])
+                self.assertEqual([path.stat().st_mode & 0o7777 for path in readback], [0o755] * 5)
+        finally:
+            os.umask(previous)
+
+    def test_unpack_refuses_an_executable_whose_mode_is_not_0755(self):
+        executables = [f"MacOS/{PROD_NAMES['cliName']}", f"MacOS/{PROD_NAMES['enclaveName']}",
+                       f"Helpers/{VALIDATION.FAN_HELPER}",
+                       *[f"Helpers/{name}" for name in VALIDATION.CLUSTER_HELPER_EXECUTABLES]]
+        for relative in executables:
+            # Modes every supported Python's tar extraction keeps as archived.
+            for mode in [0o700, 0o744, 0o644]:
+                with self.subTest(executable=relative, mode=f"{mode:04o}"), \
+                        tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    archive = self.make_archive(root, modes={relative: mode})
+                    # A cluster helper without every execute bit already fails its own check.
+                    with self.assertRaisesRegex(ValueError, f"has mode {mode:04o}|is not executable"):
+                        VALIDATION.unpack(argparse.Namespace(archive=archive, output=root / "output",
+                            source_sha="test-source", version="test-version"))
+
+    def test_executable_modes_cover_every_macho_file_and_refuse_links(self):
+        for scenario in ["valid", "extra-macho", "missing-fan", "fan-symlink"]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                app = Path(temporary) / PROD_NAMES["appBundleName"]
+                write_app_with_cluster_helpers(app)
+                for path in self.executable_paths(app)[:3]:
+                    path.write_bytes(MACHO_ARM64)
+                    path.chmod(0o755)
+                fan = app / "Contents/Helpers" / VALIDATION.FAN_HELPER
+                if scenario == "extra-macho":
+                    (app / "Contents/Resources/tool").write_bytes(MACHO_ARM64)
+                    (app / "Contents/Resources/tool").chmod(0o644)
+                if scenario == "missing-fan":
+                    fan.unlink()
+                if scenario == "fan-symlink":
+                    fan.unlink()
+                    fan.symlink_to(app / "Contents/Helpers/darkbloom-cluster-worker")
+                if scenario == "valid":
+                    VALIDATION.check_executable_modes(app, VALIDATION.packaging(release_identity.DOCUMENT, PROD))
+                else:
+                    with self.assertRaisesRegex(ValueError, "Resources/tool has mode 0644|not a regular file"):
+                        VALIDATION.check_executable_modes(app, VALIDATION.packaging(release_identity.DOCUMENT, PROD))
+
+    def test_release_signing_copy_keeps_executable_modes_under_umask_077(self):
+        release = (ROOT / ".github/workflows/release-provider.yml").read_text()
+        step = release.split("- name: Stage bundle and smoke it before signing", 1)[1].split("\n      - name:", 1)[0]
+        copy = next(line.strip() for line in step.splitlines() if '"$UNSIGNED_ROOT/$APP_NAME" "$APP"' in line)
+        check = 'provider-signing-validation.py executable-modes --app "$APP" --version "$VERSION"'
+        self.assertIn(check, step)
+        self.assertLess(step.index(copy), step.index(check))
+        self.assertLess(step.index(check), step.index("runtime-smoke"))
+        self.assertLess(release.index(check), release.index("- name: Import Developer ID certificate"))
+        script = ROOT / "scripts/provider-signing-validation.py"
+        for command, valid in [(copy, True), (copy.replace("cp -pR", "cp -R"), False)]:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                unsigned = root / "qualified-unsigned"
+                write_app_with_cluster_helpers(unsigned / PROD_NAMES["appBundleName"])
+                for path in self.executable_paths(unsigned / PROD_NAMES["appBundleName"])[:3]:
+                    path.write_bytes(MACHO_ARM64)
+                    path.chmod(0o755)
+                app = root / "bundle" / PROD_NAMES["appBundleName"]
+                app.parent.mkdir()
+                environment = dict(os.environ, UNSIGNED_ROOT=str(unsigned), APP_NAME=PROD_NAMES["appBundleName"],
+                                   APP=str(app), VERSION=PROD)
+                subprocess.run(["bash", "-c", "set -euo pipefail; umask 077; " + command], env=environment, check=True)
+                result = subprocess.run([sys.executable, str(script), "executable-modes", "--app", str(app),
+                                         "--version", PROD], capture_output=True, text=True)
+                if valid:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual([path.stat().st_mode & 0o7777 for path in self.executable_paths(app)], [0o755] * 5)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("has mode 0700", result.stderr)
+
     def test_release_workflows_build_ship_and_sign_the_cluster_helpers(self):
         # The release body lives in the reusable workflow release-swift.yml calls per environment.
         release = (ROOT / ".github/workflows/release-provider.yml").read_text()
@@ -297,7 +430,7 @@ class SigningValidationTests(unittest.TestCase):
 
     def test_dev_version_requires_the_dev_app_identity(self):
         layouts = {version: {"app": names["appBundleName"], "executable": names["cliName"],
-                             "name": names["appDisplayName"]}
+                             "name": names["appDisplayName"], "enclave": names["enclaveName"]}
                    for version, names in [(PROD, PROD_NAMES), (DEV, DEV_NAMES), (STAGING, STAGING_NAMES)]}
         for scenario, layout, version, valid in [
                 ("dev", layouts[DEV], DEV, True), ("prod", layouts[PROD], PROD, True),
@@ -423,13 +556,12 @@ class SigningValidationTests(unittest.TestCase):
     def test_unpack_checks_the_recorded_names(self):
         packaged = {"cliName": "candidate-cli", "enclaveName": "candidate-enclave",
                     "appBundleName": "Candidate.app", "appDisplayName": "Candidate", "products": PRODUCTS}
+        recorded = {"app": "Candidate.app", "executable": "candidate-cli", "name": "Candidate",
+                    "enclave": "candidate-enclave"}
         for scenario, layout, packaging, valid in [
-                ("recorded", {"app": "Candidate.app", "executable": "candidate-cli", "name": "Candidate"},
-                 packaged, True),
-                ("layout-differs", {"app": "Candidate.app", "executable": "other-cli", "name": "Candidate"},
-                 packaged, False),
-                ("unsafe-name", {"app": "Candidate.app", "executable": "candidate-cli", "name": "Candidate"},
-                 dict(packaged, appBundleName="../Candidate.app"), False)]:
+                ("recorded", recorded, packaged, True),
+                ("layout-differs", dict(recorded, executable="other-cli"), packaged, False),
+                ("unsafe-name", recorded, dict(packaged, appBundleName="../Candidate.app"), False)]:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 archive = self.make_archive(root, version=DEV, packaging=packaging, **layout)

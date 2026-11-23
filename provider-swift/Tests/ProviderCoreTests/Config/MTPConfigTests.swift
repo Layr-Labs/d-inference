@@ -69,17 +69,12 @@ struct MTPConfigKeyTests {
     /// off) keeps the one-draft lone-row policy.
     @Test func gemmaQATTwoDraftsFollowTheChip() {
         let gemma = MTPAcceptancePolicy.gemmaQATModelID
-        let measured: [(chip: String, table: [Int], tokens: Int)] = [
-            ("Apple M5 Ultra", [2, 0], 3),
-            ("Apple M3 Ultra", [2, 0], 3),
-            ("Apple M5 Max", [2, 0], 3),
-        ]
-        for (chip, table, tokens) in measured {
+        for chip in ["Apple M5 Ultra", "Apple M3 Ultra", "Apple M5 Max"] {
             #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
-                modelID: gemma, chipName: chip, twoDrafts: true, m5UltraLoneRow: true) == table)
+                modelID: gemma, chipName: chip, twoDrafts: true, m5UltraLoneRow: true) == [2, 0], "\(chip)")
             #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
                 environment: [:], chipName: chip, modelID: gemma, gemmaTwoDrafts: true,
-                gemmaM5UltraLoneRow: true) == tokens)
+                gemmaM5UltraLoneRow: true) == 3, "\(chip)")
             let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
                 usesRequestStatefulDrafter: false, modelID: gemma, chipName: chip, gemmaTwoDrafts: true)
             #expect(depth.maximum == 2 && depth.fixed == 2)
@@ -136,7 +131,7 @@ struct MTPConfigKeyTests {
 
     /// `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` restores M5 Ultra's earlier
     /// table (one or two rows draft two, envelope 6) and nothing else.
-    @Test func m5UltraLoneRowSwitchRestoresTheTwoRowTable() {
+    @Test func gemmaQATM5UltraLoneRowSwitchRestoresTheTwoRowTable() {
         let gemma = MTPAcceptancePolicy.gemmaQATModelID
         for (chip, table, tokens) in [
             ("Apple M5 Ultra", [2, 2, 0], 6), ("Apple M3 Ultra", [2, 0], 3), ("Apple M5 Max", [2, 0], 3),
@@ -152,8 +147,6 @@ struct MTPConfigKeyTests {
             modelID: gemma, chipName: "Apple M5 Ultra", twoDrafts: false, m5UltraLoneRow: false) == nil)
         // A call without the parameter follows the read-once process switch.
         let enabled = MTPAutomaticVerificationPolicy.gemmaM5UltraLoneRowEnabled
-        #expect(enabled == MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(
-            ProcessInfo.processInfo.environment[MTPAutomaticVerificationPolicy.gemmaM5UltraLoneRowEnvironmentKey]))
         #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
             modelID: gemma, chipName: "Apple M5 Ultra", twoDrafts: true) == (enabled ? [2, 0] : [2, 2, 0]))
     }

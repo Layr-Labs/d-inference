@@ -35,7 +35,8 @@ struct FlintJSONGrammar: Sendable {
     enum Kind: Sendable { case any, object, array, string, integer, number, literal }
 
     struct Property: Sendable {
-        let name: [UInt8]
+        /// Canonical JSON key after its opening quote, including the closing quote.
+        let spelling: [UInt8]
         let node: Int32
     }
 
@@ -89,7 +90,11 @@ struct FlintJSONGrammar: Sendable {
             }
             var object = Node(kind: .object, literals: nullable, openMembers: properties.isEmpty && allowsAdditional)
             for (index, property) in properties.enumerated() {
-                object.properties.append(.init(name: Array(property.name.utf8), node: try add(property.schema)))
+                let spelling = Self.keySuffix(property.name)
+                guard !forbiddenMarkup.contains(where: { Self.contains(spelling, $0) }) else {
+                    throw ToolConstraintSchemaError.unsupported("response property name contains protocol markup")
+                }
+                object.properties.append(.init(spelling: spelling, node: try add(property.schema)))
                 if property.required { object.required.insert(index) }
             }
             node = object
@@ -156,6 +161,21 @@ struct FlintJSONGrammar: Sendable {
         return bytes
     }
 
+    /// The caller already consumed `"`. No alternative spelling (including an
+    /// optional Unicode or solidus escape) can address the same declared key.
+    private static func keySuffix(_ key: String) -> [UInt8] {
+        var bytes: [UInt8] = []
+        for byte in key.utf8 {
+            switch byte {
+            case 34, 92: bytes += [92, byte]
+            case 0..<32: bytes += Array(String(format: "\\u%04x", Int(byte)).utf8)
+            default: bytes.append(byte)
+            }
+        }
+        bytes.append(34)
+        return bytes
+    }
+
     private static func contains(_ haystack: [UInt8], _ needle: [UInt8]) -> Bool {
         guard needle.count <= haystack.count else { return false }
         return (0...(haystack.count - needle.count)).contains { haystack[$0..<($0 + needle.count)].elementsEqual(needle) }
@@ -180,7 +200,7 @@ struct FlintJSONState: Hashable {
         case value(Int32)
         case literal(set: Int32, lower: Int32, upper: Int32, depth: Int32)
         case string(key: Bool, escape: StringEscape)
-        case key([UInt8])
+        case key(depth: Int, excluded: FlintJSONPropertySet)
         case number(integer: Bool, part: NumberPart, digits: Int8)
         case objectOpen, objectNext, arrayOpen, afterValue
         case colon(Int32)
@@ -237,8 +257,8 @@ struct FlintJSONState: Hashable {
             return consume(byte, grammar: grammar)
         case .string(let key, let escape):
             return consumeString(byte, key: key, escape: escape)
-        case .key(let prefix):
-            return consumeKey(byte, prefix: prefix, grammar: grammar)
+        case .key(let depth, let excluded):
+            return consumeKey(byte, depth: depth, excluded: excluded, grammar: grammar)
         case .number(let integer, let part, let digits):
             return consumeNumber(byte, integer: integer, part: part, digits: digits, grammar: grammar)
         case .objectOpen, .objectNext:
@@ -251,7 +271,7 @@ struct FlintJSONState: Hashable {
                     return true
                 }
                 guard Self.hasUnseenProperty(frame, node) else { return false }
-                lexer = .key([])
+                lexer = .key(depth: 0, excluded: frame.seen)
                 return true
             }
             guard byte == 125, lexer == .objectOpen else { return false }
@@ -421,25 +441,26 @@ struct FlintJSONState: Hashable {
         }
     }
 
-    /// Declared names match `^[a-zA-Z0-9_-]{1,64}$`, so a key never needs an
-    /// escape that could alias a declared name or hide a duplicate.
-    private mutating func consumeKey(_ byte: UInt8, prefix: [UInt8], grammar: FlintJSONGrammar) -> Bool {
+    private mutating func consumeKey(_ byte: UInt8, depth: Int, excluded: FlintJSONPropertySet,
+                                     grammar: FlintJSONGrammar) -> Bool {
         guard let frame = stack.last else { return false }
         let properties = grammar.nodes[Int(frame.node)].properties
-        if byte == 34 {
-            guard let index = properties.indices.first(where: {
-                !frame.seen.contains($0) && properties[$0].name == prefix
-            }) else { return false }
-            stack[stack.count - 1].seen.insert(index)
-            lexer = .colon(properties[index].node)
-            return true
+        var rejected = excluded
+        var matched = false
+        for i in properties.indices where !excluded.contains(i) {
+            let property = properties[i]
+            if property.spelling[depth] != byte {
+                rejected.insert(i)
+            } else if depth + 1 == property.spelling.count {
+                stack[stack.count - 1].seen.insert(i)
+                lexer = .colon(property.node)
+                return true
+            } else {
+                matched = true
+            }
         }
-        let extended = prefix + [byte]
-        guard properties.indices.contains(where: {
-            !frame.seen.contains($0) && properties[$0].name.starts(with: extended)
-        }) else { return false }
-        lexer = .key(extended)
-        return true
+        if matched { lexer = .key(depth: depth + 1, excluded: rejected) }
+        return matched
     }
 
     private static func hasUnseenProperty(_ frame: Frame, _ node: FlintJSONGrammar.Node) -> Bool {

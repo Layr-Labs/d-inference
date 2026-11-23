@@ -61,7 +61,8 @@ enum QwenJSONSchemaRewrite {
               var payload = format.jsonSchema else { return nil }
         let schema = payload.schema
         for (relaxing, widening) in [(false, Widening.rewritten), (true, .relaxed)] {
-            guard let rewritten = ResponseSchemaRewrite.subset(schema, relaxingAssertions: relaxing) else { continue }
+            guard let rewritten = ResponseSchemaRewrite.subset(schema, relaxingAssertions: relaxing,
+                                                                propertyNames: .response) else { continue }
             payload.schema = rewritten
             if let answer = compiled(.jsonSchema(payload)) { return (answer.unchecked(), widening) }
         }

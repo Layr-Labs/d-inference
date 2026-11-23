@@ -1024,6 +1024,29 @@ extension PrefixDiskTierTests {
         #expect(!FileManager.default.fileExists(atPath: url.path) && second.stats.expirations == 1)
     }
 
+    @Test func aFailedRetirementIsNeverOfferedAndTheNextPassRemovesIt() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tier = try openTier(configuration(root) { $0.expirySweepSeconds = 0 })
+        defer { tier.close() }
+        let prompt = Array(0..<40)
+        tier.persist(scope: "s", tokens: prompt, states: states(committed: 39, frontiers: [], seed: 3), blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 5))
+        let url = try onlyRecord(tier)
+        // The unlink fails (no write permission on the rank directory).
+        #expect(chmod(tier.directory.path, 0o500) == 0)
+        tier.forget(scope: "s", tokens: prompt, frontier: 39)
+        #expect(tier.drain(timeoutSeconds: 5))
+        #expect(chmod(tier.directory.path, 0o700) == 0)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(tier.frontiers(scope: "s", tokens: prompt, maximumFrontier: 39).isEmpty)
+        let later = Date().timeIntervalSince1970 + Double(tier.configuration.ttlSeconds) + 1
+        tier.now = { later }
+        tier.runExpiryPass()
+        #expect(tier.drain(timeoutSeconds: 5))
+        #expect(!FileManager.default.fileExists(atPath: url.path) && tier.stats.expirations == 1)
+    }
+
     @Test(arguments: [true, false])
     func combinedBudgetCountsHeldPlanButNotRemovedPlan(held: Bool) throws {
         let root = try temporaryRoot()

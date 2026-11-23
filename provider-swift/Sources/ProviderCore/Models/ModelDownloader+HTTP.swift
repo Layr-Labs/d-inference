@@ -73,8 +73,7 @@ extension ModelDownloader {
                 }
 
                 if let expectedSHA256 {
-                    let actual = uncachedWrites ? (Self.sha256Uncached(partial).map(Self.hex) ?? "<unreadable>")
-                                                : Self.sha256HexForVerification(of: partial)
+                    let actual = verificationSHA256Hex(of: partial)
                     let size = fileSize(partial)
                     guard actual == expectedSHA256 else {
                         // The `.part` is corrupt (hash mismatch). Delete it so the
@@ -251,6 +250,13 @@ extension ModelDownloader {
     }
 
     static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+
+    /// The SHA-256 a downloaded `.part` must match before it is promoted, read with the file cache off
+    /// under `uncachedWrites`.
+    func verificationSHA256Hex(of partial: URL) -> String {
+        uncachedWrites ? (Self.sha256Uncached(partial).map(Self.hex) ?? "<unreadable>")
+                       : Self.sha256HexForVerification(of: partial)
+    }
 
     static func sha256HexForVerification(of url: URL) -> String {
         sha256HexForVerification(of: url, hasher: sha256Hex)

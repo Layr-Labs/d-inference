@@ -370,12 +370,15 @@ HTTP downloads or model serving.
 `SegmentedModelDownloadTests` drives `ModelDownloader` against a `URLProtocol`
 CDN that serves byte ranges of a 1 MiB body, with the range threshold lowered
 to 64 KiB: the probe and exact ranges, the single-stream rollback, sources that
-ignore ranges or report another size, misplaced and corrupt ranges, a cancel
+ignore ranges or report another size, range answers that refuse ranges (a
+200, a 416, other bytes) continuing over one connection, a SHA-256 mismatch
+fetched again over one connection and one that uses up the attempts, a cancel
 that keeps exactly the written bytes and the resume that fetches only the rest,
 a single-stream prefix credited to the ranges, the collapse back to a prefix,
-unusable records, the Hugging Face retry and its R2 fallback, `F_NOCACHE` on the
-writer's descriptor, free-disk planning from counted bytes, and the
-16-connection ceiling. It needs no model, GPU or network.
+unusable records, the Hugging Face retry and its R2 fallbacks, `F_NOCACHE` on
+the writer's descriptor, free-disk planning from counted bytes, and the
+16-connection ceiling, also for records saved with more ranges. It needs no
+model, GPU or network.
 
 ```bash
 swift test --skip-build --filter SegmentedModelDownloadTests

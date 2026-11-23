@@ -8,7 +8,9 @@
 - An interrupted ranged download resumes each range where it stopped, after a
   cancel or a restart too; a partial single-connection file is kept and
   continued. Every file is still checked against its SHA-256 before it is
-  used, and the model against its aggregate digest.
+  used, and the model against its aggregate digest. A source that answers a
+  range request without that range, and a file that fails its check, continue
+  over one connection, as before.
 - `DARKBLOOM_DOWNLOAD_SEGMENTS` sets the number of ranges (1–8); `1` restores
   one connection per file. A foreground download opens at most 16 connections
   over all its files; background downloads still fetch one file at a time.

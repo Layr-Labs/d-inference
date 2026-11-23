@@ -8,8 +8,8 @@ import Foundation
 /// before a byte lands, so no byte is placed where the server did not say it
 /// belongs. Each chunk is handed to `write` synchronously, so the socket is
 /// throttled to disk speed, as in `StreamingFileDownloadDelegate`. A transport
-/// drop or a cancellation keeps every byte already written; `write` counted
-/// them in the range's record.
+/// drop or a cancellation keeps every byte already written: `write` counted
+/// them, and the writer's next checkpoint or `close()` saves them in the record.
 final class RangeSegmentDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let label: String
     private let range: Range<Int64>
@@ -63,13 +63,17 @@ final class RangeSegmentDownloadDelegate: NSObject, URLSessionDataDelegate, @unc
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
         let contentRange = http?.value(forHTTPHeaderField: "Content-Range")
         let expected = (first: range.lowerBound, last: range.upperBound - 1, total: totalBytes)
-        guard http?.statusCode == 206, let parsed = contentRange.flatMap(Self.parseContentRange),
+        let answer = "\(label): bytes \(expected.first)-\(expected.last) answered HTTP \(status) "
+            + (contentRange.map { "with Content-Range \($0)" } ?? "without Content-Range")
+        guard status == 206, let parsed = contentRange.flatMap(Self.parseContentRange),
               parsed.first == expected.first, parsed.last == expected.last, parsed.total == expected.total else {
-            failure = ModelCatalogError.downloadFailed(
-                "\(label): bytes \(expected.first)-\(expected.last) answered HTTP \(http?.statusCode ?? 0) "
-                    + (contentRange.map { "with Content-Range \($0)" } ?? "without Content-Range"))
+            // A 200, a 416 or a 206 for other bytes says the source does not serve this file's
+            // ranges, whatever its probe said; any other status may pass and is retried.
+            failure = [200, 206, 416].contains(status) ? RangesRefused(description: answer)
+                                                       : ModelCatalogError.downloadFailed(answer)
             completionHandler(.cancel)
             return
         }
@@ -109,4 +113,10 @@ final class RangeSegmentDownloadDelegate: NSObject, URLSessionDataDelegate, @unc
               let total = Int64(halves[1]), first <= last, last < total else { return nil }
         return (first, last, total)
     }
+}
+
+/// A range request answered in a way that shows the source does not serve the
+/// file's byte ranges; the file continues from this source over one connection.
+struct RangesRefused: Error, CustomStringConvertible {
+    let description: String
 }

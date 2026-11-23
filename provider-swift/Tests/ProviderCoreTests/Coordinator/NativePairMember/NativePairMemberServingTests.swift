@@ -69,7 +69,10 @@ final class RecordingServingHost: NativePairMemberServingHost, @unchecked Sendab
 /// process and native child (the key-only fixture, CPU only) and the mock
 /// coordinator: the session hands its launched owner to the serving host and
 /// sends its release receipt only after the host retired what it served.
-/// Control flow and ownership only, never a pair, mesh or model.
+/// Control flow and ownership only, never a pair, mesh or model. A test that
+/// fails ends its session and waits, bounded, for its run to finish before it
+/// closes, so the next test does not start beside a running session (the wait
+/// does not prove the owner exited).
 @Suite("Owned native member serving a committed start", .serialized, .timeLimit(.minutes(3)))
 struct NativePairMemberServingTests {
     @Test func bothMembersHandTheirOwnerToTheHostAndReleaseOnlyAfterItRetired() async throws {
@@ -115,7 +118,12 @@ struct NativePairMemberServingTests {
                     == ["native_pair_prepared", "native_pair_hello", "native_pair_confirmation", "native_pair_owner_released"])
             }
             for peer in peers { await peer.close() }
-        } catch { for peer in peers { await peer.close() }; throw error }
+        } catch {
+            await withTaskGroup(of: Void.self) { group in
+                for peer in peers { group.addTask { await peer.closeAfterJoiningSession() } }
+            }
+            throw error
+        }
     }
 
     /// A host that cannot serve (the pair did not form within its readiness
@@ -143,7 +151,7 @@ struct NativePairMemberServingTests {
             let frames = peer.mock.snapshot().nativePairs.map(\.type)
             #expect(frames.first == "native_pair_prepared" && frames.last == "native_pair_owner_released" && frames.contains("native_pair_cancel"))
             await peer.close()
-        } catch { await peer.close(); throw error }
+        } catch { formed.signal(); await peer.closeAfterJoiningSession(); throw error }
     }
 
     /// The coordinator cancels a served start: the host is told at once, and
@@ -167,7 +175,7 @@ struct NativePairMemberServingTests {
             try fixture.requireRetired(0, confirmed: false)
             #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_prepared", "native_pair_hello", "native_pair_owner_released"])
             await peer.close()
-        } catch { await peer.close(); throw error }
+        } catch { await peer.closeAfterJoiningSession(); throw error }
     }
 
     /// A member stop (pub2 on hardware: the leader closed its control
@@ -199,7 +207,7 @@ struct NativePairMemberServingTests {
             #expect(host.framesWhenStopped?.contains("native_pair_owner_released") == false)
             try fixture.requireRetired(0, confirmed: false)
             await peer.close()
-        } catch { await peer.close(); throw error }
+        } catch { await peer.closeAfterJoiningSession(); throw error }
     }
 
     /// The coordinator's cancel repeats the session's first grant expiry even
@@ -239,7 +247,7 @@ struct NativePairMemberServingTests {
             try await Task.sleep(for: .milliseconds(300))
             #expect(peer.context.isLive)
             await peer.close()
-        } catch { await peer.close(); throw error }
+        } catch { await peer.closeAfterJoiningSession(); throw error }
     }
 
     /// An immediate host failure needs no binding or coordinator cancel:

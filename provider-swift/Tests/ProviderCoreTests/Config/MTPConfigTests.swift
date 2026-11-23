@@ -76,9 +76,10 @@ struct MTPConfigKeyTests {
         ]
         for (chip, table, tokens) in measured {
             #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
-                modelID: gemma, chipName: chip, twoDrafts: true) == table)
+                modelID: gemma, chipName: chip, twoDrafts: true, m5UltraLoneRow: true) == table)
             #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
-                environment: [:], chipName: chip, modelID: gemma, gemmaTwoDrafts: true) == tokens)
+                environment: [:], chipName: chip, modelID: gemma, gemmaTwoDrafts: true,
+                gemmaM5UltraLoneRow: true) == tokens)
             let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
                 usesRequestStatefulDrafter: false, modelID: gemma, chipName: chip, gemmaTwoDrafts: true)
             #expect(depth.maximum == 2 && depth.fixed == 2)
@@ -108,7 +109,7 @@ struct MTPConfigKeyTests {
         // benchmark override never take the table.
         #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
             environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "2"], chipName: "Apple M5 Ultra",
-            modelID: gemma, gemmaTwoDrafts: true) == 2)
+            modelID: gemma, gemmaTwoDrafts: true, gemmaM5UltraLoneRow: true) == 2)
         #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
             modelID: gemma, chipName: "Apple M5 Ultra", hasBenchmarkVerificationOverride: true,
             twoDrafts: true) == nil)
@@ -123,12 +124,46 @@ struct MTPConfigKeyTests {
     /// two tokens.
     @Test func gemmaQATTwoRowsOnM5UltraDecodeWithoutDrafts() throws {
         let table = try #require(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
-            modelID: MTPAcceptancePolicy.gemmaQATModelID, chipName: "Apple M5 Ultra", twoDrafts: true))
+            modelID: MTPAcceptancePolicy.gemmaQATModelID, chipName: "Apple M5 Ultra", twoDrafts: true,
+            m5UltraLoneRow: true))
         #expect(table.first == 2, "a lone row drafts two")
         #expect(table.dropFirst().allSatisfy { $0 == 0 }, "two or more rows draft nothing: \(table)")
+        // Two rows verify chained only when even one draft each does not fit.
         #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
             environment: [:], chipName: "Apple M5 Ultra", modelID: MTPAcceptancePolicy.gemmaQATModelID,
-            gemmaTwoDrafts: true) < 2 * 3, "no [2, 3] verification")
+            gemmaTwoDrafts: true, gemmaM5UltraLoneRow: true) < 2 * 2, "no two-row verification")
+    }
+
+    /// `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` restores M5 Ultra's earlier
+    /// table (one or two rows draft two, envelope 6) and nothing else.
+    @Test func m5UltraLoneRowSwitchRestoresTheTwoRowTable() {
+        let gemma = MTPAcceptancePolicy.gemmaQATModelID
+        for (chip, table, tokens) in [
+            ("Apple M5 Ultra", [2, 2, 0], 6), ("Apple M3 Ultra", [2, 0], 3), ("Apple M5 Max", [2, 0], 3),
+        ] {
+            #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+                modelID: gemma, chipName: chip, twoDrafts: true, m5UltraLoneRow: false) == table, "\(chip)")
+            #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+                environment: [:], chipName: chip, modelID: gemma, gemmaTwoDrafts: true,
+                gemmaM5UltraLoneRow: false) == tokens, "\(chip)")
+        }
+        #expect(MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName: "Apple M4 Ultra", m5UltraLoneRow: false) == nil)
+        #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+            modelID: gemma, chipName: "Apple M5 Ultra", twoDrafts: false, m5UltraLoneRow: false) == nil)
+        // A call without the parameter follows the read-once process switch.
+        let enabled = MTPAutomaticVerificationPolicy.gemmaM5UltraLoneRowEnabled
+        #expect(enabled == MTPAutomaticVerificationPolicy.gemmaLoneRowEnabled(
+            ProcessInfo.processInfo.environment[MTPAutomaticVerificationPolicy.gemmaM5UltraLoneRowEnvironmentKey]))
+        #expect(MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+            modelID: gemma, chipName: "Apple M5 Ultra", twoDrafts: true) == (enabled ? [2, 0] : [2, 2, 0]))
+    }
+
+    @Test func gemmaM5UltraLoneRowRollbackIsForwarded() {
+        let key = MTPAutomaticVerificationPolicy.gemmaM5UltraLoneRowEnvironmentKey
+        #expect(key == "DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW")
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
     }
 
     @Test func gemmaTwoDraftsRollbackIsForwarded() {

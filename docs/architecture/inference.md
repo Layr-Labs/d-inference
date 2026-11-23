@@ -3360,8 +3360,11 @@ On measured chips the catalog `gemma-4-26b-qat-4bit` drafts two tokens a round
 at fixed depth (`MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName:)`): on
 M5 Ultra, M3 Ultra and M5 Max only a lone row drafts (per-row table
 `fixedDraftTokensByDecodeRows = [2, 0]`, envelope 3, one `[1, 3]` rectangle).
-Two or more rows get depth 0 and run ordinary chained decode. Width-3 verification
-below 64 expert assignments (such as `[1, 3]`), outside the batch-decode and
+Two or more rows get depth 0 and run ordinary chained decode.
+`DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` restores M5 Ultra's earlier table: one
+or two rows draft (`[2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at most). Width-3
+verification below 64 expert assignments (`[1, 3]`, and `[2, 3]` under that
+switch), outside the batch-decode and
 prompt projection scopes, takes Gemma's compiled feed-forward trace, with the
 eager graph's bytes (`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0` runs it eager).
 Every other chip, or `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0`, keeps the lone-row policy that

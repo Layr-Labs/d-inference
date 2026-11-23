@@ -774,6 +774,15 @@ extension PrefixDiskTierTests {
             #expect(history.tokens.asData(access: .copy).data == historyBytes(tokens, frontier: frontier))
             #expect(sameHistory(history, captured.first { $0.committedTokens == frontier }!.speculativeHistory))
         }
+        if shared {
+            // A shorter prompt that covers a kept frontier restores it, and the record stays.
+            let shorter = Array(tokens[0..<20])
+            let restored = try #require(try tier.restore(scope: scope, tokens: shorter, frontier: 16, check: {}))
+            let history = try #require(restored.speculativeHistory)
+            #expect(history.tokens.asData(access: .copy).data == historyBytes(tokens, frontier: 16))
+            #expect(sameHistory(history, captured.first { $0.committedTokens == 16 }!.speculativeHistory))
+            #expect(tier.recordCount == 1 && FileManager.default.fileExists(atPath: url.path))
+        }
         tier.close()
     }
 

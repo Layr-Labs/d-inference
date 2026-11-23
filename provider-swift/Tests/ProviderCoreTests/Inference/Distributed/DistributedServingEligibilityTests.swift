@@ -26,6 +26,17 @@ import DarkbloomClusterProtocol
         #expect(DistributedServingEligibility.memberCapabilities(chipFamily: .m5) == [.appleM5])
     }
 
+    /// A member registers and attests `cache_policy_v1` beside its hardware,
+    /// so a pair of this build can take `memory_only` requests.
+    @Test func memberRegistersTheCachePolicyCapability() {
+        for family in families {
+            let registered = DistributedServingEligibility.memberRegistrationCapabilities(chipFamily: family)
+            #expect(registered == DistributedServingEligibility.memberCapabilities(chipFamily: family).union([.cachePolicy]))
+            #expect(!registered.contains(.mlxNAX))
+        }
+        #expect(DistributedServingEligibility.memberRegistrationCapabilities(chipFamily: .m5) == [.appleM5, .cachePolicy])
+    }
+
     /// The 27B on an M3 Ultra and an M5 Max, in either order, in the mode
     /// family both orders' checks ran (the hand-off family), and on Macs no
     /// check ran (2x M4 Max): every rank of every placement passes on its own

@@ -256,6 +256,7 @@ struct PrefixDiskTierTests {
         bytes[bytes.count - 40] ^= 0x01
         try bytes.write(to: url)
         #expect(try tier.restore(scope: scope, tokens: tokens, frontier: 39, check: {}) == nil)
+        #expect(tier.drain(timeoutSeconds: 5))
         #expect(!FileManager.default.fileExists(atPath: url.path))
         #expect(tier.frontiers(scope: scope, tokens: tokens, maximumFrontier: 39).isEmpty)
         #expect(tier.stats.failedRestores == 1)
@@ -868,7 +869,7 @@ extension PrefixDiskTierTests {
         #expect(tier.frontiers(scope: "s", tokens: tokens, maximumFrontier: 39).isEmpty)
         #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 39, check: {}) == nil)
         let deadline = Date().addingTimeInterval(5)
-        while FileManager.default.fileExists(atPath: url.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        while tier.stats.expirations == 0, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
         #expect(!FileManager.default.fileExists(atPath: url.path))
         #expect(tier.recordCount == 0 && tier.stats.expirations == 1)
         tier.close()
@@ -918,5 +919,108 @@ extension PrefixDiskTierTests {
         while FileManager.default.fileExists(atPath: url.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
         #expect(!FileManager.default.fileExists(atPath: url.path))
         other.close()
+    }
+
+    @Test func pinnedExpiredDuplicateIsCountedAndDoesNotReplaceItsReader() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tier = try openTier(configuration(root) { $0.expirySweepSeconds = 0; $0.refreshesOnUse = false })
+        defer { tier.close() }
+        let tokens = Array(0..<40), captured = states(committed: 39, frontiers: [], seed: 4)
+        tier.persist(scope: "s", tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 5))
+        let url = try onlyRecord(tier), old = try Data(contentsOf: url)
+        var requested = false
+        let result = try tier.restore(scope: "s", tokens: tokens, frontier: 39) {
+            if !requested {
+                requested = true
+                let later = Date().timeIntervalSince1970 + 2_000
+                tier.now = { later }
+                tier.persist(scope: "s", tokens: tokens, states: captured, blockTokens: block)
+            }
+        }
+        #expect(requested && result != nil && tier.stats.droppedPersists == 1 && tier.stats.persisted == 1)
+        #expect(try Data(contentsOf: url) == old)
+        #expect(tier.frontiers(scope: "s", tokens: tokens, maximumFrontier: 39).isEmpty)
+        tier.persist(scope: "s", tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 5) && tier.stats.persisted == 2)
+        #expect(try Data(contentsOf: url) != old)
+    }
+
+    @Test func refusedReplacementLeavesOldBytesUnavailableUntilCleanup() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prompt = Array(50..<90), capture = states(committed: 39, frontiers: [], seed: 11)
+        let initial = try openTier(configuration(root))
+        initial.persist(scope: "s", tokens: prompt, states: capture, blockTokens: block)
+        #expect(initial.drain(timeoutSeconds: 5))
+        let url = try onlyRecord(initial), bytes = try Data(contentsOf: url)
+        initial.close()
+
+        let tier = try openTier(configuration(root) {
+            $0.expirySweepSeconds = 0; $0.ttlSeconds = 600; $0.maximumWriteBytesPerDay = 1
+        })
+        defer { tier.close() }
+        #expect(try String(contentsOf: tier.directory.appendingPathComponent("expiry-ttl"), encoding: .utf8) == "600\n")
+        let later = Date().timeIntervalSince1970 + 601
+        tier.now = { later }
+        tier.persist(scope: "s", tokens: prompt, states: capture, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 5) && tier.stats.droppedPersists == 1 && tier.stats.persisted == 0)
+        #expect(try Data(contentsOf: url) == bytes)
+        #expect(try tier.restore(scope: "s", tokens: prompt, frontier: 39, check: {}) == nil)
+        tier.runExpiryPass()
+        #expect(tier.stats.expirations == 1 && !FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test func closeKeepsLeaseUntilAdmittedExpiryPassReturns() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tier = try openTier(configuration(root) {
+            $0.expirySweepSeconds = 0
+            $0.closeBounds = QwenStagePrefixDiskPolicy.closeBounds(stopMarginMilliseconds: 1_000)
+        })
+        let entered = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
+        let complete = DispatchGroup()
+        tier.now = {
+            entered.signal()
+            _ = resume.wait(timeout: .now() + 10)
+            return Date().timeIntervalSince1970
+        }
+        DispatchQueue(label: "prefix-test-pass").async(group: complete) { tier.runExpiryPass() }
+        #expect(entered.wait(timeout: .now() + 5) == .success)
+        tier.now = { Date().timeIntervalSince1970 }
+        tier.close(timeoutSeconds: 0)
+        let fd = Darwin.open(tier.planDirectory.appendingPathComponent("in-use").path, O_RDONLY)
+        #expect(fd >= 0)
+        defer { if fd >= 0 { Darwin.close(fd) } }
+        #expect(flock(fd, LOCK_EX | LOCK_NB) != 0)
+        resume.signal()
+        #expect(complete.wait(timeout: .now() + 5) == .success)
+        let deadline = Date().addingTimeInterval(5)
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 && Date() < deadline { usleep(1_000) }
+        #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        tier.now = { Issue.record("closed tier admitted an expiry pass"); return 0 }
+        tier.runExpiryPass()
+    }
+
+    @Test func failedOtherPlanLeaseRetainsRecordForRetry() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try openTier(configuration(root) { $0.expirySweepSeconds = 0 }, plan: "a")
+        let prompt = Array(0..<40)
+        first.persist(scope: "s", tokens: prompt, states: states(committed: 39, frontiers: [], seed: 1), blockTokens: block)
+        #expect(first.drain(timeoutSeconds: 5))
+        let url = try onlyRecord(first), lease = first.planDirectory.appendingPathComponent("in-use")
+        first.close()
+        let second = try openTier(configuration(root) { $0.expirySweepSeconds = 0 }, plan: "b")
+        defer { second.close() }
+        let later = Date().timeIntervalSince1970 + 2_000
+        second.now = { later }
+        try FileManager.default.removeItem(at: lease)
+        second.runExpiryPass()
+        #expect(FileManager.default.fileExists(atPath: url.path) && second.stats.expirations == 0)
+        try Data().write(to: lease)
+        second.runExpiryPass()
+        #expect(!FileManager.default.fileExists(atPath: url.path) && second.stats.expirations == 1)
     }
 }

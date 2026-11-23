@@ -680,6 +680,7 @@ struct PrefixDiskEncodingTests {
                 try handle.seek(toOffset: UInt64(opened.dataStart + unit.offset + 5))
                 try handle.write(contentsOf: Data([byte[0] ^ 0x40])); try handle.close()
                 #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 300, check: {}) == nil)
+                #expect(tier.drain(timeoutSeconds: 5))
                 #expect(!FileManager.default.fileExists(atPath: url.path) && tier.stats.failedRestores == 1)
                 tier.close()
             }
@@ -690,6 +691,7 @@ struct PrefixDiskEncodingTests {
                 let handle = try FileHandle(forUpdating: url)
                 try handle.truncate(atOffset: try handle.seekToEnd() - 1); try handle.close()
                 #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 300, check: {}) == nil)
+                #expect(tier.drain(timeoutSeconds: 5))
                 #expect(!FileManager.default.fileExists(atPath: url.path))
                 tier.close()
             }
@@ -712,6 +714,7 @@ struct PrefixDiskEncodingTests {
                 try handle.seek(toOffset: UInt64(opened.dataStart + unit.offset))
                 try handle.write(contentsOf: box.ciphertext + box.tag); try handle.close()
                 #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 300, check: {}) == nil)
+                #expect(tier.drain(timeoutSeconds: 5))
                 #expect(!FileManager.default.fileExists(atPath: url.path))
                 tier.close()
             }

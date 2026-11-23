@@ -2,6 +2,7 @@
 
 import Darwin
 import Foundation
+import os
 import Testing
 @testable import ProviderCore
 
@@ -25,8 +26,8 @@ struct ClusterPrefixRecordExpiryTests {
     private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
 
     private func temporaryRoot() -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("pair-expiry-\(UUID().uuidString)")
-            .resolvingSymlinksInPath()
+        URL(fileURLWithPath: CacheStorage.canonicalPath(FileManager.default.temporaryDirectory.path), isDirectory: true)
+            .appendingPathComponent("pair-expiry-\(UUID().uuidString)", isDirectory: true)
     }
 
     @Test("a pass deletes only expired records of plans no rank holds")
@@ -41,15 +42,22 @@ struct ClusterPrefixRecordExpiryTests {
         let notRank = try file(root, "\(Self.plan)/ranks/\(Self.record("d"))", age: 1_900)
         let held = try file(root, "\(Self.livePlan)/rank0/\(Self.record("e"))", age: 1_900)
         let staging = try file(root, "staging/epoch/rank0/\(Self.record("f"))", age: 1_900)
+        let idleLock = try file(root, "\(Self.plan)/in-use", age: 0)
+        let noncanonical = try ["rank-1", "rank64", "rank00", "rank+1"].map {
+            try file(root, "\(Self.plan)/\($0)/\(Self.record("a"))", age: 1900)
+        }
+        let target = ClusterPrefixRecordExpiry.Target(root: root, ttlSeconds: 1800)
         // A running rank of the live plan holds its lock shared.
         let inUse = Darwin.open(root.appendingPathComponent("\(Self.livePlan)/in-use").path, O_RDWR | O_CREAT, 0o600)
         #expect(inUse >= 0 && flock(inUse, LOCK_SH) == 0)
-        #expect(ClusterPrefixRecordExpiry.sweep(root: root, ttlSeconds: 1_800, now: Date().timeIntervalSince1970) == 1)
+        #expect(ClusterPrefixRecordExpiry.sweep(target, now: Date().timeIntervalSince1970) == 1)
         #expect(!exists(expired))
-        for kept in [fresh, hidden, other, misnamed, notRank, held, staging] { #expect(exists(kept), "\(kept.path)") }
+        for kept in [fresh, hidden, other, misnamed, notRank, held, staging, idleLock] + noncanonical {
+            #expect(exists(kept), "\(kept.path)")
+        }
         // Once no rank holds it, its expired record goes too.
         Darwin.close(inUse)
-        #expect(ClusterPrefixRecordExpiry.sweep(root: root, ttlSeconds: 1_800, now: Date().timeIntervalSince1970) == 1)
+        #expect(ClusterPrefixRecordExpiry.sweep(target, now: Date().timeIntervalSince1970) == 1)
         #expect(!exists(held) && exists(fresh))
     }
 
@@ -58,36 +66,24 @@ struct ClusterPrefixRecordExpiryTests {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let record = try file(root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 0)
+        _ = try file(root, "\(Self.plan)/in-use", age: 0)
         let expiry = ClusterPrefixRecordExpiry()
-        // The record is live at the first pass and expired from half a second on: a later pass deletes it.
-        let begin = Date()
+        // Record is live on the first pass. The second pass sees it expired.
+        let passes = OSAllocatedUnfairLock(initialState: 0)
+        let begin = Date().timeIntervalSince1970
         expiry.start(intervalSeconds: 1, now: {
-            Date().timeIntervalSince1970 + (Date().timeIntervalSince(begin) > 0.5 ? 1_805 : 0)
-        }, target: { (root, 1_800) })
+            passes.withLock { n in n += 1; return n == 1 ? begin : begin + 1_805 }
+        }, target: { .init(root: root, ttlSeconds: 1_800) })
         defer { expiry.stop() }
         let deadline = ContinuousClock.now + .seconds(15)
         while exists(record), ContinuousClock.now < deadline { try await taskSleep(.milliseconds(20)) }
         #expect(!exists(record))
     }
 
-    @Test("the pass sweeps the ranks' root and TTL: the saved selection, a leader's shorter TTL")
-    func targetIsTheRanksRootAndTTL() throws {
+    @Test("maintenance uses the saved volume and a rank's last applied duration")
+    func pinnedSelectionAndDuration() throws {
         let environment = ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "1200"]
-        let own = try #require(ClusterPrefixRecordExpiry.target(environment: environment, providerConfiguration: nil,
-                                                                leaderChoices: { $0 }))
-        #expect(own.root == ClusterPrefixCacheSettings.product(cacheSettings: CacheSettings(), environment: environment,
-                                                               freeBytes: { _ in nil }).root)
-        #expect(own.ttlSeconds == 1_200)
-        func led(_ seconds: Int) -> ClusterPrefixRecordExpiry.Target? {
-            ClusterPrefixRecordExpiry.target(environment: environment, providerConfiguration: nil,
-                                             leaderChoices: { var value = $0; value.ttlSeconds = seconds; return value })
-        }
-        #expect(led(600)?.ttlSeconds == 600)
-        #expect(led(1_800)?.ttlSeconds == 1_200, "never longer than this Mac's own")
-
-        // The saved selection, not this process's: a pinned directory on its saved volume is swept, a changed one not.
-        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-            .appendingPathComponent(".pair-expiry-\(UUID().uuidString)", isDirectory: true)
+        let directory = temporaryRoot()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -96,10 +92,27 @@ struct ClusterPrefixRecordExpiryTests {
             let file = directory.appendingPathComponent("provider-\(uuid.prefix(8)).toml")
             try Data("[cache]\ndirectory = \"\(directory.path)\"\nvolume_uuid = \"\(uuid)\"\n".utf8).write(to: file)
             chmod(file.path, 0o600)
-            return ClusterPrefixRecordExpiry.target(environment: environment, providerConfiguration: file, leaderChoices: { $0 })
+            _ = try ClusterPrefixCacheSettings.savedCacheSettings(providerConfiguration: file)
+            return ClusterPrefixRecordExpiry.target(environment: environment, providerConfiguration: file)
         }
         let selected = try #require(try pinned(uuid: volume.uuid))
         #expect(selected.root.path.hasPrefix(directory.path + "/") && selected.root.lastPathComponent == "cluster-prefix-v1")
-        #expect(try pinned(uuid: "00000000-0000-0000-0000-000000000000") == nil)
+        let record = try file(selected.root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 900)
+        _ = try file(selected.root, "\(Self.plan)/in-use", age: 0)
+        let stamp = record.deletingLastPathComponent().appendingPathComponent("expiry-ttl")
+        try Data("600\n".utf8).write(to: stamp)
+        let wrong = try #require(try pinned(uuid: "00000000-0000-0000-0000-000000000000"))
+        #expect(ClusterPrefixRecordExpiry.sweep(wrong, now: Date().timeIntervalSince1970) == 0 && exists(record))
+        let fd = try #require(ClusterPrefixRecordExpiry.openRoot(selected))
+        defer { Darwin.close(fd) }
+        let moved = selected.root.appendingPathExtension("old")
+        try FileManager.default.moveItem(at: selected.root, to: moved)
+        let replacement = try file(selected.root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 2400)
+        _ = try file(selected.root, "\(Self.plan)/in-use", age: 0)
+        #expect(ClusterPrefixRecordExpiry.sweep(openRoot: fd, localTTL: selected.ttlSeconds, now: Date().timeIntervalSince1970) == 1)
+        #expect(exists(replacement) && !exists(moved.appendingPathComponent("\(Self.plan)/rank0/\(Self.record("a"))")))
+        let invalid = directory.appendingPathComponent("bad.toml")
+        try Data([0xff]).write(to: invalid); chmod(invalid.path, 0o600)
+        #expect(ClusterPrefixRecordExpiry.target(environment: environment, providerConfiguration: invalid) == nil)
     }
 }

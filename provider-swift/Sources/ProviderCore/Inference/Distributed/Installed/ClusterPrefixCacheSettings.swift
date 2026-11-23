@@ -1,4 +1,5 @@
 import Darwin
+import DarkbloomClusterProtocol
 import Foundation
 
 /// The product's caching surface as it reaches the pair: the SAME saved
@@ -198,7 +199,7 @@ public struct ClusterPrefixSSDInspection: Equatable, Sendable, Encodable {
             plans += 1
             let planURL = root.appendingPathComponent(plan, isDirectory: true)
             for name in ((try? fileManager.contentsOfDirectory(atPath: planURL.path)) ?? []).sorted() {
-                guard name.hasPrefix("rank"), let rank = Int(name.dropFirst(4)), rank >= 0 else { continue }
+                guard let rank = ClusterPrefixRecordDirectory.rank(name) else { continue }
                 let directory = planURL.appendingPathComponent(name, isDirectory: true)
                 var records = 0, bytes = 0
                 for file in (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? [] where isRecordName(file) {
@@ -213,11 +214,11 @@ public struct ClusterPrefixSSDInspection: Equatable, Sendable, Encodable {
     }
 
     static func isPlanDirectoryName(_ name: String) -> Bool {
-        name.hasPrefix("v1-") && name.utf8.count == 27 && name.dropFirst(3).allSatisfy { $0.isHexDigit && !$0.isUppercase }
+        ClusterPrefixRecordDirectory.isPlan(name)
     }
 
     static func isRecordName(_ name: String) -> Bool {
-        name.hasSuffix(".dbpx") && name.utf8.count == 37 && name.dropLast(5).allSatisfy { $0.isHexDigit && !$0.isUppercase }
+        ClusterPrefixRecordDirectory.isRecord(name)
     }
 
     /// One line for the status output.
@@ -251,10 +252,9 @@ public enum ClusterPrefixSSDReclaim {
         for name in names where ClusterPrefixSSDInspection.isPlanDirectoryName(name) {
             let plan = root.appendingPathComponent(name, isDirectory: true)
             let lock = Darwin.open(plan.appendingPathComponent("in-use").path, O_RDONLY | O_NOFOLLOW)
-            if lock >= 0 {
-                defer { Darwin.close(lock) }
-                guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { report.keptLive += 1; continue }
-            }
+            guard lock >= 0 else { report.problems.append("\(name): cannot open plan lock"); continue }
+            defer { Darwin.close(lock) }
+            guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { report.keptLive += 1; continue }
             do { try fileManager.removeItem(at: plan); report.removedPlans += 1 }
             catch { report.problems.append("\(name): \(error.localizedDescription)") }
         }

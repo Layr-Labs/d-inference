@@ -1,7 +1,8 @@
 /// Ranged model-file downloads: how many byte ranges one large manifest file
 /// is fetched over (`DARKBLOOM_DOWNLOAD_SEGMENTS`), and the resumable on-disk
-/// state of such a download (a pre-sized `.part` plus its range record).
-/// The transfer itself is in `ModelDownloader+Segments.swift`.
+/// state of such a download (a pre-sized `.part` plus its range record, and
+/// the writer that keeps them). The transfer itself is in
+/// `ModelDownloader+Segments.swift`.
 
 import Darwin
 import Foundation
@@ -102,7 +103,7 @@ struct SegmentedPartLayout: Codable, Equatable {
 enum SegmentedPartFile {
     enum Saved: Equatable {
         /// No record: any `.part` is a single-stream prefix.
-        case none
+        case noRecord
         case valid(SegmentedPartLayout)
         /// A record that cannot be read or does not match the `.part`: none of
         /// the `.part`'s bytes can be accounted for.
@@ -115,7 +116,7 @@ enum SegmentedPartFile {
 
     static func saved(partial: URL, size: Int64) -> Saved {
         let record = recordURL(for: partial)
-        guard FileManager.default.fileExists(atPath: record.path) else { return .none }
+        guard FileManager.default.fileExists(atPath: record.path) else { return .noRecord }
         guard let data = try? Data(contentsOf: record),
               let layout = try? JSONDecoder().decode(SegmentedPartLayout.self, from: data),
               layout.isConsistent(size: size, partBytes: byteCount(partial)) else { return .unusable }
@@ -127,7 +128,7 @@ enum SegmentedPartFile {
     /// pre-sized `.part`'s apparent size.
     static func accountedBytes(partial: URL, size: Int64) -> Int64 {
         switch saved(partial: partial, size: size) {
-        case .none: return byteCount(partial)
+        case .noRecord: return byteCount(partial)
         case .valid(let layout): return layout.doneBytes
         case .unusable: return 0
         }
@@ -146,7 +147,7 @@ enum SegmentedPartFile {
             try remove(partial: partial)
             layout = .planned(size: size, count: count, prefix: 0)
             try save(layout, partial: partial)
-        case .none:
+        case .noRecord:
             var prefix = byteCount(partial)
             if prefix > size {
                 try FileManager.default.removeItem(at: partial)
@@ -177,7 +178,7 @@ enum SegmentedPartFile {
     /// unusable. Without a record the `.part` is already a prefix.
     static func collapseToPrefix(partial: URL, size: Int64) throws {
         switch saved(partial: partial, size: size) {
-        case .none:
+        case .noRecord:
             return
         case .unusable:
             try remove(partial: partial)
@@ -204,5 +205,108 @@ enum SegmentedPartFile {
 
     private static func byteCount(_ url: URL) -> Int64 {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+    }
+}
+
+/// Writes the ranges of one ranged download into its pre-sized `.part` and
+/// keeps its record (`SegmentedPartFile`). Bytes are written at each range's
+/// next offset; the record is saved only after the `.part` is synced, so it
+/// never counts a byte that is not on disk. Progress (`onChunk`) is the sum of
+/// every range's bytes, reported in order under one lock, so it only grows.
+final class SegmentedPartWriter: @unchecked Sendable {
+    /// Bytes written between two saves of the record.
+    static let checkpointBytes: Int64 = 32 << 20
+
+    let size: Int64
+    /// The `.part`'s descriptor took `F_NOCACHE`: every `pwrite` on it skips the file cache.
+    let cachingDisabled: Bool
+    private let partial: URL
+    private let descriptor: Int32
+    private let onChunk: (@Sendable (Int64) -> Void)?
+
+    private let lock = NSLock()
+    private var layout: SegmentedPartLayout
+    private var unsavedBytes: Int64 = 0
+    private var closed = false
+    /// Serializes record saves, so a later save never precedes an earlier one.
+    private let checkpointLock = NSLock()
+
+    init(partial: URL, layout: SegmentedPartLayout, uncached: Bool, onChunk: (@Sendable (Int64) -> Void)?) throws {
+        let descriptor = Darwin.open(partial.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw ModelCatalogError.downloadFailed(
+                "\(partial.lastPathComponent): could not open for writing (\(String(cString: strerror(errno))))")
+        }
+        self.descriptor = descriptor
+        self.cachingDisabled = uncached && fcntl(descriptor, F_NOCACHE, 1) == 0
+        self.partial = partial
+        self.layout = layout
+        self.size = layout.size
+        self.onChunk = onChunk
+        onChunk?(layout.doneBytes)
+    }
+
+    /// The bytes range `index` still needs; nil once it is complete.
+    func remaining(_ index: Int) -> Range<Int64>? {
+        lock.withLock {
+            let range = layout.ranges[index]
+            return range.isComplete ? nil : range.next..<range.end
+        }
+    }
+
+    /// Write `data` at range `index`'s next offset. Only that range's one
+    /// request calls this, one chunk at a time.
+    func write(_ data: Data, range index: Int) throws {
+        let (offset, end, open) = lock.withLock { (layout.ranges[index].next, layout.ranges[index].end, !closed) }
+        let count = Int64(data.count)
+        guard open else { throw CancellationError() }
+        guard count <= end - offset else {
+            throw ModelCatalogError.downloadFailed("\(partial.lastPathComponent): response exceeds its byte range")
+        }
+        try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            var written = 0
+            while written < buffer.count {
+                let result = Darwin.pwrite(descriptor, buffer.baseAddress! + written, buffer.count - written,
+                                           off_t(offset) + off_t(written))
+                if result < 0 {
+                    if errno == EINTR { continue }
+                    throw ModelCatalogError.downloadFailed(
+                        "\(partial.lastPathComponent): write failed (\(String(cString: strerror(errno))))")
+                }
+                written += result
+            }
+        }
+        let checkpointDue: Bool = lock.withLock {
+            layout.ranges[index].done += count
+            onChunk?(layout.doneBytes)
+            unsavedBytes += count
+            guard unsavedBytes >= Self.checkpointBytes else { return false }
+            unsavedBytes = 0
+            return true
+        }
+        if checkpointDue { try checkpoint() }
+    }
+
+    /// Sync the `.part`, then save the record of what was written before the sync.
+    func checkpoint() throws {
+        try checkpointLock.withLock {
+            let snapshot = lock.withLock { layout }
+            guard fsync(descriptor) == 0 else {
+                throw ModelCatalogError.downloadFailed(
+                    "\(partial.lastPathComponent): sync failed (\(String(cString: strerror(errno))))")
+            }
+            try SegmentedPartFile.save(snapshot, partial: partial)
+        }
+    }
+
+    /// Save the record a last time and close the `.part`. Idempotent.
+    func close() throws {
+        let first = lock.withLock { () -> Bool in
+            defer { closed = true }
+            return !closed
+        }
+        guard first else { return }
+        defer { Darwin.close(descriptor) }
+        try checkpoint()
     }
 }

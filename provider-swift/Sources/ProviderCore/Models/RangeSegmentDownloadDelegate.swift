@@ -8,8 +8,8 @@ import Foundation
 /// before a byte lands, so no byte is placed where the server did not say it
 /// belongs. Each chunk is handed to `write` synchronously, so the socket is
 /// throttled to disk speed, as in `StreamingFileDownloadDelegate`. A transport
-/// drop or a cancellation keeps every byte already written; `write` counted
-/// them in the range's record.
+/// drop or a cancellation keeps every byte already written: `write` counted
+/// them, and the writer's next checkpoint or `close()` saves them in the record.
 final class RangeSegmentDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let label: String
     private let range: Range<Int64>

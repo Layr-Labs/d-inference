@@ -1,10 +1,9 @@
 /// ModelDownloader ranged transfer of one large manifest file: a ranged probe,
 /// then several byte ranges at once, each over its own connection, into a
-/// pre-sized `.part` (`SegmentedPartFile`), verified by the file's SHA-256
-/// before it is promoted. Everything else takes the single-stream
-/// `downloadFile`.
+/// pre-sized `.part` (`SegmentedPartFile`, written by `SegmentedPartWriter`),
+/// verified by the file's SHA-256 before it is promoted. Everything else takes
+/// the single-stream `downloadFile`.
 
-import Darwin
 import Foundation
 
 extension ModelDownloader {
@@ -104,8 +103,7 @@ extension ModelDownloader {
         }
 
         let expected = job.file.sha256.lowercased()
-        let actual = uncachedWrites ? (Self.sha256Uncached(partial).map(Self.hex) ?? "<unreadable>")
-                                    : Self.sha256HexForVerification(of: partial)
+        let actual = verificationSHA256Hex(of: partial)
         guard actual == expected else {
             try? SegmentedPartFile.remove(partial: partial)
             throw ModelCatalogError.downloadFailed(
@@ -130,32 +128,32 @@ extension ModelDownloader {
         let session = URLSession(configuration: urlSession.configuration)
         defer { session.finishTasksAndInvalidate() }
         var fruitless = 0
-        var lastError: Error?
         while let remaining = writer.remaining(index) {
             try Task.checkCancellation()
-            let before = remaining.lowerBound
+            let failure: Error
             do {
                 try await streamRange(remaining, of: index, into: writer, session: session, url: url,
                                       label: label, requestTimeout: requestTimeout)
-                if writer.remaining(index) == nil { return }
-                lastError = ModelCatalogError.downloadFailed("\(label): bytes \(before)- ended early")
+                failure = ModelCatalogError.downloadFailed(
+                    "\(label): bytes \(remaining.lowerBound)-\(remaining.upperBound - 1) ended early")
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 try Task.checkCancellation()
                 if (error as? URLError)?.code == .cancelled { throw error }
-                lastError = error
+                failure = error
             }
-            if let now = writer.remaining(index)?.lowerBound, now > before {
+            guard let now = writer.remaining(index) else { return }
+            if now.lowerBound > remaining.lowerBound {
                 fruitless = 0
                 continue
             }
             fruitless += 1
-            guard fruitless < attempts else { break }
+            guard fruitless < attempts else {
+                throw ModelCatalogError.downloadFailed(Self.downloadFailureMessage(label: label, error: failure))
+            }
             try await taskSleep(retryBackoff * fruitless)
         }
-        if writer.remaining(index) == nil { return }
-        throw ModelCatalogError.downloadFailed(Self.downloadFailureMessage(label: label, error: lastError))
     }
 
     private func streamRange(
@@ -179,108 +177,5 @@ extension ModelDownloader {
         } onCancel: {
             task.cancel()
         }
-    }
-}
-
-/// Writes the ranges of one ranged download into its pre-sized `.part` and
-/// keeps its record (`SegmentedPartFile`). Bytes are written at each range's
-/// next offset; the record is saved only after the `.part` is synced, so it
-/// never counts a byte that is not on disk. Progress (`onChunk`) is the sum of
-/// every range's bytes, reported in order under one lock, so it only grows.
-final class SegmentedPartWriter: @unchecked Sendable {
-    /// Bytes written between two saves of the record.
-    static let checkpointBytes: Int64 = 32 << 20
-
-    let size: Int64
-    /// The `.part`'s descriptor took `F_NOCACHE`: every `pwrite` on it skips the file cache.
-    let cachingDisabled: Bool
-    private let partial: URL
-    private let descriptor: Int32
-    private let onChunk: (@Sendable (Int64) -> Void)?
-
-    private let lock = NSLock()
-    private var layout: SegmentedPartLayout
-    private var unsavedBytes: Int64 = 0
-    private var closed = false
-    /// Serializes record saves, so a later save never precedes an earlier one.
-    private let checkpointLock = NSLock()
-
-    init(partial: URL, layout: SegmentedPartLayout, uncached: Bool, onChunk: (@Sendable (Int64) -> Void)?) throws {
-        let descriptor = Darwin.open(partial.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else {
-            throw ModelCatalogError.downloadFailed(
-                "\(partial.lastPathComponent): could not open for writing (\(String(cString: strerror(errno))))")
-        }
-        self.descriptor = descriptor
-        self.cachingDisabled = uncached && fcntl(descriptor, F_NOCACHE, 1) == 0
-        self.partial = partial
-        self.layout = layout
-        self.size = layout.size
-        self.onChunk = onChunk
-        onChunk?(layout.doneBytes)
-    }
-
-    /// The bytes range `index` still needs; nil once it is complete.
-    func remaining(_ index: Int) -> Range<Int64>? {
-        lock.withLock {
-            let range = layout.ranges[index]
-            return range.isComplete ? nil : range.next..<range.end
-        }
-    }
-
-    /// Write `data` at range `index`'s next offset. Only that range's one
-    /// request calls this, one chunk at a time.
-    func write(_ data: Data, range index: Int) throws {
-        let (offset, end, open) = lock.withLock { (layout.ranges[index].next, layout.ranges[index].end, !closed) }
-        let count = Int64(data.count)
-        guard open else { throw CancellationError() }
-        guard count <= end - offset else {
-            throw ModelCatalogError.downloadFailed("\(partial.lastPathComponent): response exceeds its byte range")
-        }
-        try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
-            var written = 0
-            while written < buffer.count {
-                let result = Darwin.pwrite(descriptor, buffer.baseAddress! + written, buffer.count - written,
-                                           off_t(offset) + off_t(written))
-                if result < 0 {
-                    if errno == EINTR { continue }
-                    throw ModelCatalogError.downloadFailed(
-                        "\(partial.lastPathComponent): write failed (\(String(cString: strerror(errno))))")
-                }
-                written += result
-            }
-        }
-        let checkpointDue: Bool = lock.withLock {
-            layout.ranges[index].done += count
-            onChunk?(layout.doneBytes)
-            unsavedBytes += count
-            guard unsavedBytes >= Self.checkpointBytes else { return false }
-            unsavedBytes = 0
-            return true
-        }
-        if checkpointDue { try checkpoint() }
-    }
-
-    /// Sync the `.part`, then save the record of what was written before the sync.
-    func checkpoint() throws {
-        try checkpointLock.withLock {
-            let snapshot = lock.withLock { layout }
-            guard fsync(descriptor) == 0 else {
-                throw ModelCatalogError.downloadFailed(
-                    "\(partial.lastPathComponent): sync failed (\(String(cString: strerror(errno))))")
-            }
-            try SegmentedPartFile.save(snapshot, partial: partial)
-        }
-    }
-
-    /// Save the record a last time and close the `.part`. Idempotent.
-    func close() throws {
-        let first = lock.withLock { () -> Bool in
-            defer { closed = true }
-            return !closed
-        }
-        guard first else { return }
-        defer { Darwin.close(descriptor) }
-        try checkpoint()
     }
 }

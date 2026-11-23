@@ -53,6 +53,10 @@ public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
     /// Whether a restore or a reuse restarts a record's TTL (`..._TTL_MODE`:
     /// `sliding`, the default, or anything else, which fixes it at the write).
     public var refreshesOnUse = true
+    /// How often a running rank deletes the records past their TTL, as the
+    /// single-Mac tier's whole-root maintenance (60 s): an idle rank deletes
+    /// one at most this long after it expires. 0 turns the sweep off (tests).
+    public var expirySweepSeconds: Double = 60
     public var strideTokens = 2048
     public var minimumTokens = 1024
     public var maximumWriteBytesPerDay = 750 * 1_000_000_000

@@ -179,7 +179,7 @@ struct CheckpointTokenFreeStorageTests {
         let fixture = try SSDHybridCheckpointTestFixture(paged: true)
         defer { fixture.remove() }
         let identity = fixture.identity, layout = fixture.backendLayout
-        // Format 1's epoch, as 0.10.17 and 0.10.18 compute it.
+        // Format 1's epoch, as builds before this change compute it.
         var formatOne = Data("darkbloom-complete-checkpoint-envelope-v1".utf8)
         for value in [identity.modelAggregateHash, identity.promptContractID, identity.buildID,
                       identity.numericsFingerprint, layout] {

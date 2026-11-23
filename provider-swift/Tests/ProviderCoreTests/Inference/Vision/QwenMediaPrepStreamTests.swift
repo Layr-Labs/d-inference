@@ -151,6 +151,12 @@ private struct MediaPrepStreamFixture {
         try await EngineV2VisionPrefill.prepare(
             container: container, request: request, ownMediaPrepStream: ownStream)
     }
+
+    /// The serving call: no override, the switch read from `environment`.
+    func prepare(environment: [String: String]) async throws -> EngineV2VisionPrefill.PreparedSubmission {
+        try await EngineV2VisionPrefill.prepare(
+            container: container, request: request, environment: environment)
+    }
 }
 
 private func qwen3VLExclusionFixture() throws -> MLXVLM.Qwen3VL {
@@ -332,6 +338,17 @@ struct QwenMediaPrepStreamTests {
 
         #expect(empty.mlxArrays.isEmpty)
         #expect(before === after)
+    }
+
+    @Test("the environment opt-in reaches prepare, and its absence keeps the default stream")
+    func environmentOptInReachesPrepare() async throws {
+        let key = EngineV2VisionPrefill.mediaPrepStreamEnvironmentKey
+        let fixture = try MediaPrepStreamFixture()
+        _ = try await fixture.prepare(environment: [key: "1"])
+        _ = try await fixture.prepare(environment: [:])
+        _ = try await fixture.prepare(environment: [key: "0"])
+
+        #expect(fixture.processor.onProcessDefaultStream == [false, true, true])
     }
 
     @Test("the switch keeps media preparation on the process default GPU stream")

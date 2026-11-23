@@ -295,7 +295,7 @@ struct FlintResponseFormatPolicyTests {
             #"{"type":"array","items":{"type":"string"},"maxItems":64}"#,
             #"{"type":"object","properties":{"a":{"nullable":true}}}"#,
             #"{"type":"string","enum":["<think>"]}"#,
-            #"{"type":"object","properties":{"bad key":{"type":"string"}}}"#,
+            #"{"type":"object","properties":{"":{"type":"string"}}}"#,
             #"{"type":"object","properties":{"a":{"type":"string","x-darkbloom-original-boolean-schema":true}}}"#,
         ]
         for format in schemas.map(F.schemaFormat) + [#"{"type":"json_schema"}"#] {

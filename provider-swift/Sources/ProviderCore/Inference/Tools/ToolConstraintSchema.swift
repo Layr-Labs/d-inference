@@ -200,10 +200,16 @@ enum ToolConstraintSchemaCompiler {
         }
         if case .object(let properties)? = object["properties"] {
             for (name, child) in properties.sorted(by: { $0.key < $1.key }) {
-                try requireExplicitResponseTypes(child, path: "\(path).properties.\(name)")
+                try requireExplicitResponseTypes(child, path: propertyPath(path, name))
             }
         }
         if let items = object["items"] { try requireExplicitResponseTypes(items, path: "\(path).items") }
+    }
+
+    /// Preserve identifier diagnostics; never place arbitrary response-key
+    /// text (possibly multiline) in a diagnostic.
+    private static func propertyPath(_ path: String, _ name: String) -> String {
+        ToolChoicePromptPolicy.isValidFunctionName(name) ? "\(path).properties.\(name)" : "\(path).properties[]"
     }
 
     private static func grammarCost(_ schema: ToolValueSchema) -> Int {
@@ -465,6 +471,9 @@ enum ToolConstraintSchemaCompiler {
             throw ToolConstraintSchemaError.invalid(
                 "\(path) has more than \(maxProperties) properties")
         }
+        if propertyNames == .json, !rawProperties.keys.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 }) {
+            throw ToolConstraintSchemaError.unsupported("response property names must be 1–256 UTF-8 bytes")
+        }
         let required: Set<String>
         if let value = object["required"] {
             guard case .array(let values) = value else {
@@ -473,7 +482,8 @@ enum ToolConstraintSchemaCompiler {
             }
             var names = Set<String>()
             for value in values {
-                guard case .string(let name) = value, let index = rawProperties.index(forKey: name),
+                guard case .string(let name) = value, name.utf8.count <= propertyNames.maxBytes,
+                      let index = rawProperties.index(forKey: name),
                       propertyNames != .json || rawProperties[index].key.utf8.elementsEqual(name.utf8) else {
                     throw ToolConstraintSchemaError.invalid(
                         "\(path).required contains an undeclared property")
@@ -502,18 +512,14 @@ enum ToolConstraintSchemaCompiler {
         var properties: [ToolValueSchema.Property] = []
         properties.reserveCapacity(rawProperties.count)
         for (name, raw) in rawProperties.sorted(by: { $0.key < $1.key }) {
-            if propertyNames == .json {
-                guard !name.isEmpty, name.utf8.count <= propertyNames.maxBytes else {
-                    throw ToolConstraintSchemaError.unsupported("response property names must be 1–256 UTF-8 bytes")
-                }
-            } else if !ToolChoicePromptPolicy.isValidFunctionName(name) {
+            if propertyNames == .identifiers, !ToolChoicePromptPolicy.isValidFunctionName(name) {
                 throw ToolConstraintSchemaError.unsupported(
                     "\(path) property names must match ^[a-zA-Z0-9_-]{1,64}$")
             }
             properties.append(.init(
                 name: name,
                 schema: try compileSchema(
-                    raw, depth: depth + 1, path: "\(path).properties.\(name)",
+                    raw, depth: depth + 1, path: propertyPath(path, name),
                     allowRenderMetadata: allowRenderMetadata, propertyNames: propertyNames),
                 required: required.contains(name)))
         }

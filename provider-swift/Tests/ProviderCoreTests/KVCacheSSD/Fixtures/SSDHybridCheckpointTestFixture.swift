@@ -69,6 +69,8 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
                    donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
                    keyFingerprint: String = "fixture-key", incrementalCheckpoints: Bool = false,
                    parallelStage: Bool = true, ttlMode: SSDPrefixCachePolicy.TTLMode = .sliding,
+                   // Red control: the tier argument of the change, ignored here.
+                   memoryOnlyTier: MemoryOnlyCheckpointTier? = nil,
                    writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) throws -> SSDHybridCheckpointStore {
         let epochStore: SSDCacheEpochStore? = epoch ? try .init(root: modelRoot, binding: .init(
             modelId: "fixture-model", modelAggregateHash: identity.modelAggregateHash,

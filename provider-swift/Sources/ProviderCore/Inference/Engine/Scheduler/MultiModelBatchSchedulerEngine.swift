@@ -762,7 +762,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // bridge's `tokenBudgetExhausted` admission refusal (capacity,
             // not a construction fault), and every media fault
             // `EngineV2VisionPrefill.clientFault(for:)` answers with 400:
-            // `noProcessedMedia` (media on non-user roles only),
+            // `noProcessedMedia` (no media consumed), `mediaRoleNotRendered`
+            // (media the chat template does not place),
             // `unsupportedMedia` (the loaded family rejects this shape) and
             // the processor's refusal of the media itself (e.g. an image side
             // below Qwen's resize factor). Rerouting those would fail
@@ -1024,6 +1025,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // Construction failures are retryable; deterministic input faults,
                     // cancellation and deadlines above keep their original mappings.
                     let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
+                    // The refusal's cause, content-safe by construction
+                    // (`refusalDetail`): our own error cases or a type name.
+                    Self.mediaGateLogger.notice("media prefill construction refused", metadata: [
+                        "model_id": .string(modelId),
+                        "media_kind": .string(mediaKind.rawValue),
+                        "detail": .string(EngineV2VisionPrefill.refusalDetail(for: error))])
                     plumbing.emitTelemetry(
                         EngineV2VisionPrefill.refusalTelemetryEvent(
                             modelId: modelId, mediaKind: mediaKind, error: error))

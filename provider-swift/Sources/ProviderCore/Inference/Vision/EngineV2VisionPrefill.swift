@@ -105,8 +105,8 @@ public enum EngineV2MediaKind: String, Sendable {
 /// Construction failures of the v2 media-prefill submission. Every case is
 /// caught by the scheduler engine and REFUSED loudly (ERROR telemetry + a
 /// retriable 503; the coordinator reroutes) except deterministic request
-/// shapes (`noProcessedMedia` and `unsupportedMedia`), which map to 400
-/// (`EngineV2VisionPrefill.clientFault(for:)`).
+/// shapes (`noProcessedMedia`, `mediaRoleNotRendered` and `unsupportedMedia`),
+/// which map to 400 (`EngineV2VisionPrefill.clientFault(for:)`).
 /// Messages are operator-facing and must never embed prompt or media content.
 enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// The slot's loaded module is not a supported Gemma 4 or Qwen wrapper.
@@ -115,13 +115,19 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// provider, so rerouting cannot make the request serveable.
     case unsupportedMedia(String)
     /// The processor produced neither image nor video pixels for a media
-    /// request — every media part sits on a non-user role, which
-    /// `buildUserInput` drops (identically on the legacy path). This shape
+    /// request — with `DARKBLOOM_MEDIA_ON_EVERY_ROLE` off, every media part
+    /// sits on a non-user role, which `buildUserInput` then drops. This shape
     /// is deterministic for the request on EVERY provider, so the routing
     /// engine maps this one case to a 400 client fault instead of a
     /// retriable refusal (failover would burn retries on an identical
     /// outcome).
     case noProcessedMedia
+    /// Media in a system, assistant or tool message that the model's chat
+    /// template raises on or leaves without a placeholder, so the model could
+    /// not see it. Deterministic for the request on every provider; maps to a
+    /// 400 (`MultiModelBatchSchedulerEngineError.mediaRoleNotRendered`), as the
+    /// reference server refuses an item without a placeholder.
+    case mediaRoleNotRendered
     /// The tower/projector seam returned zero feature arrays for media the
     /// processor did produce pixels for.
     case emptyVisionFeatures(kind: EngineV2VisionPrefill.SpanKind)
@@ -178,6 +184,8 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
             return "engine_v2 media prefill: unsupported media \(detail)"
         case .noProcessedMedia:
             return "engine_v2 media prefill: processor produced no image or video pixels"
+        case .mediaRoleNotRendered:
+            return "engine_v2 media prefill: the chat template did not render media in its message role"
         case .emptyVisionFeatures(let kind):
             return "engine_v2 media prefill: vision tower returned no \(kind.rawValue) features"
         case .misalignedDeepstack(let index):
@@ -408,10 +416,14 @@ public enum EngineV2VisionPrefill {
             return nil
         }
         let nativeToolMessages = nativeToolModelType != nil
+        // Media in a system, assistant or tool message is kept and placed by
+        // the chat template; a request without such media is built as before.
+        let everyRole = MediaIngest.placesNonUserMedia(request)
         var userInput = try await MediaIngest.buildUserInput(
             from: request, templateControls: templateControls,
             tools: nativeToolMessages ? request.tools?.map { $0.toolSpec() } : nil,
             preserveTemplateFields: nativeToolMessages,
+            keepNonUserMedia: everyRole,
             modelType: nativeToolModelType)
         // The pair's Qwen media path keeps its contract's single-block clips.
         if let video = MediaIngest.videoProcessing(for: request) {
@@ -444,13 +456,15 @@ public enum EngineV2VisionPrefill {
                     ) {
                         let submission = try await Self.buildSubmission(
                             ctx: ctx, userInput: userInput, towerLimits: towerLimits,
-                            mlxErrors: mlxErrors)
+                            mlxErrors: mlxErrors, placementCheck: everyRole)
                         try Self.throwIfMLXFaulted(mlxErrors)
                         return submission
                     }
                 }
             } catch let mlxError as MLX.MLXError {
                 throw Self.visionPrefillError(for: mlxError)
+            } catch let error where everyRole && Self.isUnrenderedMedia(error) {
+                throw EngineV2VisionPrefillError.mediaRoleNotRendered
             }
         }
     }
@@ -478,6 +492,58 @@ public enum EngineV2VisionPrefill {
         return try makeResult()
     }
 
+    /// Whether a submission with media outside user messages failed because
+    /// the media and the rendered placeholders do not pair: the processor
+    /// consumed none, or span carving found fewer or more placeholder runs
+    /// than media (video frames are paired only here). Tower, MLX and other
+    /// processor faults are not, and keep their retriable refusal.
+    static func isUnrenderedMedia(_ error: Error) -> Bool {
+        guard let prefill = error as? EngineV2VisionPrefillError else { return false }
+        switch prefill {
+        case .noProcessedMedia, .placeholderRunMissing, .unexpectedTrailingPlaceholders:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Qwen's processor finding a different number of vision placeholders
+    /// than media (`QwenVL.replacePaddingTokens`, before any tower work).
+    static let qwenPlaceholderCountMismatch = "Number of placeholder tokens does not match number of frames"
+
+    /// Whether the processor refused a request with media outside user
+    /// messages because the template did not place that media: the template's
+    /// own media refusal (Qwen 3.5-3.8: "System message cannot contain
+    /// images." / "... videos.") or Qwen's placeholder count check. Any other
+    /// template or processor error keeps its existing mapping.
+    static func isTemplatePlacementRefusal(_ error: Error) -> Bool {
+        if let processorError = error as? VLMError, case .processing(let detail) = processorError {
+            return detail == qwenPlaceholderCountMismatch
+        }
+        guard classifyInferenceErrorReason(error) == .jinjaTemplate else { return false }
+        let described = String(describing: error) + "\n" + error.localizedDescription
+        return described.contains("cannot contain images") || described.contains("cannot contain videos")
+    }
+
+    /// The image placeholder token of a loaded Gemma 4 or Qwen wrapper.
+    static func imagePlaceholderTokenId(of model: any LanguageModel) -> Int? {
+        if let gemma = model as? MLXVLM.Gemma4 { return gemma.imagePlaceholderTokenId }
+        if let qwen = model as? MLXVLM.Qwen3VL { return qwen.imagePlaceholderTokenId }
+        if let qwen = model as? any QwenVisionSeamModel { return qwen.imagePlaceholderTokenId }
+        return nil
+    }
+
+    /// The number of maximal runs of `id` in `tokens`: one per expanded image.
+    static func placeholderRuns(in tokens: [Int], of id: Int) -> Int {
+        var runs = 0
+        var previous: Int?
+        for token in tokens {
+            if token == id, previous != id { runs += 1 }
+            previous = token
+        }
+        return runs
+    }
+
     /// The pure half of ``throwIfMLXFaulted(_:)`` — `MLX.ErrorBox` has no
     /// public initializer, so the translation lives here where tests can
     /// reach it.
@@ -496,7 +562,8 @@ public enum EngineV2VisionPrefill {
         ctx: ModelContext,
         userInput: UserInput,
         towerLimits: VisionTowerBudget.Limits,
-        mlxErrors: MLX.ErrorBox
+        mlxErrors: MLX.ErrorBox,
+        placementCheck: Bool
     ) async throws -> PreparedSubmission {
         if let wrapper = ctx.model as? MLXVLM.Qwen4Exp, !wrapper.servesVision {
             throw EngineV2VisionPrefillError.unsupportedMedia(MLXVLM.Qwen4Exp.mediaRejectedMessage)
@@ -506,7 +573,12 @@ public enum EngineV2VisionPrefill {
                 qwen3VLUnsupportedVideoDetail)
         }
         try Task.checkCancellation()
-        let lmInput = try await ctx.processor.prepare(input: userInput)
+        let lmInput: LMInput
+        do {
+            lmInput = try await ctx.processor.prepare(input: userInput)
+        } catch let error where placementCheck && isTemplatePlacementRefusal(error) {
+            throw EngineV2VisionPrefillError.mediaRoleNotRendered
+        }
         guard lmInput.image != nil || lmInput.video != nil else {
             throw EngineV2VisionPrefillError.noProcessedMedia
         }
@@ -515,6 +587,12 @@ public enum EngineV2VisionPrefill {
         // [1, L] → [Int]. Forces evaluation of the (tiny, host-built)
         // token array only.
         let promptTokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
+        // Media outside user messages: every image must have its placeholder
+        // before any tower work (Gemma 4's processor does not count them).
+        if placementCheck, lmInput.image != nil, let imageId = imagePlaceholderTokenId(of: ctx.model),
+            placeholderRuns(in: promptTokens, of: imageId) != userInput.images.count {
+            throw EngineV2VisionPrefillError.mediaRoleNotRendered
+        }
 
         if let wrapper = ctx.model as? MLXVLM.Qwen3VL {
             return try buildQwen3VLSubmission(
@@ -917,18 +995,17 @@ public enum EngineV2VisionPrefill {
 
     /// Coarse media shape of `request` (image / video / mixed), for
     /// telemetry tagging on paths where the processor never ran (refusals
-    /// can fire before `prepare` produced anything). Scans USER messages
-    /// only — the media the processor actually consumes
-    /// (`buildUserInput` drops media parts on non-user roles), so refusal
-    /// tags match the success path's `lmInput`-derived kind. Callers only
-    /// invoke this for requests that already passed `hasMedia`; a request
-    /// whose media all sits on non-user roles reports `.image` here but
-    /// never reaches refusal telemetry (it maps to the deterministic
-    /// `noProcessedMedia` 400 instead).
+    /// can fire before `prepare` produced anything). Scans the messages whose
+    /// media the processor consumes (`MediaIngest.messagesKeepingMedia`), so
+    /// refusal tags match the success path's `lmInput`-derived kind.
+    /// Callers only invoke this for requests that already passed `hasMedia`;
+    /// with the switch off, a request whose media all sits on non-user roles
+    /// reports `.image` here but never reaches refusal telemetry (it maps to
+    /// the deterministic `noProcessedMedia` 400 instead).
     static func mediaKind(of request: OpenAIChatCompletionRequest) -> EngineV2MediaKind {
         var hasImage = false
         var hasVideo = false
-        for message in request.messages where message.role == .user {
+        for message in MediaIngest.messagesKeepingMedia(of: request) {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
                 switch part {
@@ -1027,6 +1104,8 @@ public enum EngineV2VisionPrefill {
                 return .multimodalRejected(
                     "multimodal_rejected: media parts must be attached to user "
                         + "messages; none of this request's media was consumable")
+            case .mediaRoleNotRendered:
+                return .mediaRoleNotRendered
             case .unsupportedMedia(let detail):
                 return .multimodalRejected("multimodal_rejected: \(detail)")
             default:

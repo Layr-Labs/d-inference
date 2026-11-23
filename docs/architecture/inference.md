@@ -5389,6 +5389,26 @@ MTP drafting by default: on Qwen 3.6 that cost about 8 % of single-request decod
 requests 1 %), so `auto` requests, which return calls as generated, are left as they are.
 `DARKBLOOM_QWEN_CALL_END_GUARD=0` (or `off`, `false`, `no`) turns it off; forwarded to the LaunchAgent.
 
+### No tool-call close without an open call on Gemma 4
+
+Gemma 4 sometimes ends a tool-calling answer after four tokens: it opens a thought (`<|channel>thought`), writes the
+call close `<tool_call|>` (id 49) with no `<|tool_call>` (id 48) before it, then `<|tool_response>` (id 50), one of its
+end tokens. The client gets no call and no text: the row ends `stop` with one reasoning delta. `GemmaOrphanCallGuard`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaOrphanCallGuard.swift`) samples Gemma 4 text requests
+(`gemma4`, `gemma4_text`) that declare tools with `tool_choice` `auto` under a token constraint with three states: no
+call open, a call open, a call just closed. `on` refuses `<tool_call|>` with no call open and right after a close;
+`strict` also refuses `<|tool_response>` except right after a close, the only place the chat template expects it. Every
+other token stays allowed in every state, so an answer that never draws those tokens is unchanged. The masks are the
+vocabulary less at most two tokens, built once per process; the constraint opts in to chained decode, and both open
+states are free spans for drafting where `DARKBLOOM_CONSTRAINT_SPANS` covers the build (it does not cover Gemma today,
+so a guarded row decodes without drafting).
+
+It applies on one Mac that runs token constraints, to requests without media or a presence or frequency penalty, when no
+other constraint serves them. Forced tool choices keep `GemmaToolCallTokenConstraint`, whose grammar admits a close only
+after a call. The loop guard's exit-thinking continuation keeps the guard, from the state the row reached
+(`GemmaOrphanCallGuardConstraint.continuing`). `DARKBLOOM_GEMMA_ORPHAN_CALL_GUARD` is `on`, `strict`, or off (unset or
+any other value, the default); forwarded to the LaunchAgent.
+
 ### Vision constraints
 
 - **One image per tower pass.** `EngineV2VisionTowerRun` drives the Qwen

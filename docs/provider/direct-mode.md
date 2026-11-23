@@ -463,7 +463,7 @@ chat-upload interception → the upstream `MLXLMServer` router
 |---|---|---|
 | GET | `/health`, `/v1/health` | Unauthenticated |
 | GET | `/models`, `/v1/models` | Advertised catalog, not just resident models, merged by the [local router](#when-this-mac-cant-take-a-request-the-local-router) |
-| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
+| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`), and the [cache policy counters](#cache-policy-of-local-requests); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap; at most 64 requests ([refused request shapes](#refused-request-shapes)) |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
@@ -506,6 +506,23 @@ finishing the cancelled request
 while it runs ends instead with that refusal's error chunk, after the tokens
 already sent: `code` `request_exceeds_node_budget` and the busy memory 503's words
 ([refused request shapes](#refused-request-shapes)).
+
+### Cache policy of local requests
+
+`DARKBLOOM_LOCAL_CACHE_POLICY=memory_only` serves every request on this API
+with its prefix cache off, as a coordinator request whose sealed
+[`cache_policy`](../reference/protocol-messages.md#sealed-cache-policy) is
+`memory_only`: nothing it sends is read from, staged on or written to the SSD
+tier (`RequestCachePolicy.localServing`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/RequestCachePolicy.swift`).
+Unset, empty or `default` keeps the cache; any other value is `memory_only`.
+Coordinator requests never read it. `/metrics` counts the coordinator's
+requests by policy (`darkbloom_cache_policy_requests_total{policy}`), the SSD
+tier's refusals of a `memory_only` request's engine calls
+(`darkbloom_memory_only_ssd_refusals_total`) and every time one reached an SSD
+read, write or index path, each refused there
+(`darkbloom_memory_only_ssd_tier_touches_total`, which stays 0)
+(`RequestCachePolicyCounters`).
 
 ### A long prompt's progress
 

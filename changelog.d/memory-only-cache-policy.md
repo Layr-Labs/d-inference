@@ -1,0 +1,6 @@
+### A request can keep its prompt off the SSD cache, and cached prompts no longer store token IDs
+
+- A coordinator request whose sealed cache settings say `memory_only` is served with its prompt cache off: nothing it sends is read from, staged on or written to the Mac's encrypted SSD cache, on one Mac or a pair. Any value but `default` counts as `memory_only`. Providers report `cache_policy_v1` in their registration and attestation so the coordinator can route such requests.
+- Complete checkpoints now store a keyed digest of the prompt prefix instead of its token IDs, and a speculative head's token history as zeros; a restore rebuilds both from the request's own prompt. A pair's prefix records store their history tokens the same way. Records in the earlier formats are removed when the cache opens, after an update and after a rollback.
+- `DARKBLOOM_SSD_KV_TTL_MODE=fixed` makes every cache entry expire 30 minutes (or the configured TTL) after it was written, however often it is reused. `DARKBLOOM_LOCAL_CACHE_POLICY=memory_only` serves this Mac's local API the same way as a `memory_only` request. Both are forwarded to the background service.
+- The local `/metrics` counts requests by cache policy and the SSD cache's refusals of `memory_only` requests.

@@ -2663,6 +2663,25 @@ cannot advertise a successor's prompt. Ready anchors describe actual input
 checkpoints, and billing retains the engine's actual matched/saved token counts
 (`EngineV2Bridge+PrefixCache.swift`, `ResidentPrefixCacheEvidence.swift`).
 
+### A request's cache policy
+
+A coordinator request's sealed `cache_policy`
+([protocol](../reference/protocol-messages.md#sealed-cache-policy)) reaches the
+bridge with the scope (`ProviderLoop.handleInferenceRequest`, the scheduler
+engine and the Nemotron Super owner pass it on), and
+`PrefixCacheSubmissionPolicy` decides there what it changes
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+CachePolicy.swift`).
+A `memory_only` request runs with `prefixCacheEnabled` off, on one Mac and on a
+pair alike: the engine then makes no prefix lookup, capture or donation, the
+bridge stages nothing and registers no SSD ready receipt or donation demand,
+the scheduler skips the prompt-token piece cache, and a pair's ranks get
+`ClusterWorkerPrefixCache.disabled`. Its receipt, were its cache on, would be
+minted in the memory-only range, which every SSD store refuses
+(`MemoryOnlyReceipt`). Its answer and usage are otherwise those of an
+uncached request. The local API serves its requests under
+`DARKBLOOM_LOCAL_CACHE_POLICY` instead ([local
+API](../provider/direct-mode.md#cache-policy-of-local-requests)).
+
 ### `CBv2RequestTiming`
 
 Stamped by the engine thread only; instants are nanoseconds from the enqueue

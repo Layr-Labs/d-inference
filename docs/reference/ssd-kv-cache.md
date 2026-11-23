@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-23
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -35,6 +35,30 @@ The `.write-budget` ledger remains at the built-in root for production even when
 payloads use another disk. Existing internal usage survives disk selection and
 restart; an external volume cannot reset it. Explicit isolated test roots keep
 their own ledgers (`CacheStorage.writeBudgetRoot`).
+
+## What one request can leave on disk
+
+A request whose sealed `cache_policy` is `memory_only`
+([protocol](protocol-messages.md#sealed-cache-policy)) leaves nothing below:
+it runs with its prefix cache off, and every SSD store refuses a memory-only
+receipt besides (`PrefixCacheSubmissionPolicy`, `MemoryOnlyReceipt`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/RequestCachePolicy.swift`).
+No file below holds a token ID or text. Another request may cause these:
+
+| File | Written when | Holds |
+|---|---|---|
+| `kv3/<model>/<fanout>/<tag>.dbk3`, attention block | The request donates its prefix | One block's KV rows, encrypted; the public header holds the keyed lookup tag, weight hash, layout epoch, shapes and `createdAt` |
+| `kv3/<complete model>/<fanout>/<tag>.dbk3`, complete checkpoint | The request donates a checkpoint | Encrypted manifest (a keyed digest of the prefix, tenant scope, position, tensor layout, codec) and tensors (KV, recurrent state, MTP hidden rows, the MTP token tensor as zeros); see [below](#no-token-ids-in-complete-checkpoints) |
+| `<tag>.dbk3.darkbloom-tmp.<UUID>` | During either write | Partial ciphertext; removed on failure, a crash orphan after `crashTempTTLSeconds` |
+| `kv3/<model>/cache-epoch.json` | A model's first load; each SSD-tier `prefix_cache_lookup_v2` or `prefix_cache_ready_v2` the request sends | Epoch, binding (model ID, hashes, layout epoch, key fingerprint), the next evidence sequence number |
+| `kv3/.write-budget` | Each charged write | 25 hourly byte counts and a checksum |
+| An existing file's mtime | A hit, under the sliding TTL | — |
+| `cluster-prefix-v1/v1-<plan>/rank<r>/<tag>.dbpx`, on a pair | The request's prefix on that rank | Encrypted attention rows, recurrent state, MTP hidden rows (history tokens as zeros); the sealed header holds the scope, frontier counts and unkeyed SHA-256 record keys of scope and prompt. See [cluster records](#cluster-prompt-prefix-records) |
+| `cluster-prefix-v1/…/rank<r>/key-check`, `write-window`, `staging/<epoch>/…` | A rank's first record; each record; during a write | A keyed tag of a constant; the window's start and byte count; a partial record |
+
+MLX and Metal caches (the metallib, compiled kernels and pipelines) belong to
+the model and binary and hold no request data. Model-weight files and the
+provider's logs are described in their own references.
 
 ## DBK3 file format
 
@@ -111,10 +135,18 @@ consumer (`SSDNativePrefixBuilder.swift`, `SSDPrefixCache.swift`, `stage`).
 Complete recurrent and historical attention checkpoints use separate
 domain-separated model roots within the same `kv3/`
 hierarchy and box-wide maintainer. Its DBK3 header describes opaque byte
-segments; encrypted chunk 0 contains the complete manifest, including exact
-prefix token IDs, tenant scope, checkpoint position, tensor roles/shapes/dtypes
-and MTP codec. No public header field exposes those token boundaries
+segments; encrypted chunk 0 contains the manifest: a keyed digest of the
+prefix, tenant scope, checkpoint position, tensor roles/shapes/dtypes and MTP
+codec. No public header field exposes those token boundaries
 (`SSDHybridCheckpointStoreFactory.swift`, `SSDHybridCheckpointEnvelope.swift`).
+
+### No token IDs in complete checkpoints
+
+| Contract | Behavior | Code |
+|---|---|---|
+| Prefix | Chunk 0 stores `prefixDigest` = `HMAC-SHA256(K_lookup, "dbkv3-checkpoint-prefix-v1" ‖ u64le(count) ‖ each token as u32le)` in place of the manifest's `prefixTokens` (or the diffusion layout's `packedPrefixTokens`). A restore recomputes it from the request's own prompt and rebuilds the manifest with that prompt's tokens; another prompt is refused as an incompatible file | `SSDLookupKeys.swift` (`checkpointPrefixDigest`), `SSDHybridCheckpointEnvelope.swift` (`storedManifestBytes`, `decodeManifest`) |
+| MTP token tensor | An `assistantTokens` tensor of `n` int32 elements is the prefix's last `n` tokens (Qwen and Nemotron `n = position - 1`, MiMo `n = position`, Super its queued rows): every assistant's codec checks exactly that. The writer checks it and stores zeros (a different tensor is never written), and a restore streams the prompt's tokens in their place | `SSDHybridCheckpointEnvelope.swift` (`storedSegment`, `tokenTensorBytes`), `SSDHybridCheckpointStore+Write.swift`, `SSDHybridCheckpointStore+ChainRead.swift` (`streamChain`) |
+| Format | Format 2 folds `darkbloom-complete-checkpoint-envelope-v2` into each file's layout epoch and the model's epoch-record binding; the model directory keeps its format-1 name (`directoryEpoch`). Opening a store with either format finds the other's binding in `cache-epoch.json` and removes every file before the scan, after an update and after a rollback to 0.10.17 or 0.10.18 alike; a format-1 chunk 0 that reached a reader anyway is refused as corrupt and deleted | `SSDHybridCheckpointEnvelope.swift` (`layoutEpoch`, `directoryEpoch`), `SSDCacheEpochStore.swift` (`init`), `SSDHybridCheckpointStoreFactory.swift` (`namespace`) |
 
 | Contract | Bound / behavior | Code |
 |---|---|---|
@@ -324,9 +356,9 @@ Names and effects only; defaults and parsing rules are in
 [`configuration.md`](configuration.md). Installed launchd daemons receive only
 the allowlisted variables in `passthroughEnvKeys`
 (`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`). The cache
-switches `DARKBLOOM_PREFIX_CACHE` and `DARKBLOOM_PREFIX_CACHE_MEMORY`, and the
-delta-checkpoint rollback `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS`, are
-on that list; the test-root and persistent-key benchmark controls are not.
+switches `DARKBLOOM_PREFIX_CACHE` and `DARKBLOOM_PREFIX_CACHE_MEMORY`, the
+delta-checkpoint rollback `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` and
+`DARKBLOOM_SSD_KV_TTL_MODE` are on that list; the test-root and persistent-key benchmark controls are not.
 
 | Variable | Effect | Code |
 |---|---|---|
@@ -334,6 +366,7 @@ on that list; the test-root and persistent-key benchmark controls are not.
 | `DARKBLOOM_PREFIX_CACHE_DISK_GB` | Box-wide disk budget override | `PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` | Cadence of the local stats line and typed per-store heartbeat snapshot; `0` disables both | `PrefixCachePolicy.swift` (`statsIntervalSecs`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | Sliding TTL; can only shorten `maxTTLSeconds` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`ttlSeconds`) |
+| `DARKBLOOM_SSD_KV_TTL_MODE` | `sliding` (default) or `fixed`: a hit no longer extends an entry's life, on `kv3` and on a pair's records (`DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_MODE` on the rank). Forwarded to the launchd provider job | `SSDPrefixCachePolicy.swift` (`ttlMode`), `ClusterPrefixCacheSettings.swift` (`rankSwitches`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | Daily write cap; `0` = unlimited | `SSDPrefixCachePolicy.swift` (`maxWriteBytesPerDay`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | Adoption-benefit floor (raise-only against the long-hybrid floor) | `SSDPrefixCachePolicy.swift` (`minEffectiveTokens`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` | Max staged bytes per adoption; when set, also overrides the large-memory complete-checkpoint default | `SSDPrefixCachePolicy.swift` (`maxStageBytes`, `completeCheckpointMaxStageBytes`) |
@@ -395,7 +428,7 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 | Eviction order | LRU by last hit across the whole `kv3/` root; eviction is `unlink` + index removal | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift` |
 | Active-store victim selection | Linear oldest probe with lexicographic tag tie-break. A successful first retirement needs no snapshot. Busy or undeletable candidates fall back to one snapshot taken after the first attempt, excluding that tag, that yields the same order from a binary heap: O(n) to copy and build, O(log n) per candidate tried. External-removal reconciliation stops the pass so the budget can recheck usage. A closed store is never reopened: a pass makes no attempt in a store closed when it starts, and ends at the first attempt that frees nothing once the store has closed. Other refusals (unsafe root, lost or unreadable epoch record) do not end the pass. | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift` (`evictOldest`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift` (`oldestFirstSnapshot`) |
 | Maintenance sweep | `SSDWholeRootMaintainer`, `intervalSeconds = 60` and after each write job (one donation's blocks, or one complete checkpoint): TTL expiry, budget eviction, crash-temp cleanup. A readable DBK3 header is each file's ownership proof. A pass remembers each readable header with the file's `lstat` identity (device, inode, size, modification and status-change times) and parses again only new, changed or unreadable files, including files a hit touched. Before it reuses a remembered file, the pass makes the header read's directory checks once for that file's fanout (`fanoutPassesReadChecks`). A failed read is never remembered, because it can fail outside the file. | `SSDPrefixCacheFactory.swift` (`startWholeRootMaintenance`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWholeRootMaintainer.swift` (`readableHeaderIdentities`, `fanoutPassesReadChecks`) |
-| TTL | `defaultTTLSeconds = 1800`, `maxTTLSeconds = 1800`, sliding on hit. A complete checkpoint's file mtime, which restart scans and whole-root maintenance read, lags its last hit by up to `ttlSeconds / 30`. If every hit overlaps another request, as with simultaneous bursts, no hit refreshes it. Whole-root TTL expiry of a loaded store's file therefore checks the store's index under the file lease: a file hit within the TTL stays, and its last hit becomes its mtime. A restart scan before that sweep (`intervalSeconds = 60`) still ages the file from the old mtime, and whole-root budget eviction orders files by mtime. Raising either needs the sign-off recorded in `docs/threat-model.yaml` (T-041, SEC-035) | `SSDPrefixCachePolicy.swift` |
+| TTL | `defaultTTLSeconds = 1800`, `maxTTLSeconds = 1800`, sliding on hit. With `DARKBLOOM_SSD_KV_TTL_MODE=fixed` no hit or reuse refreshes an entry's index recency, its mtime or a parent's recency, so every file expires `ttlSeconds` after it was written and budget eviction follows write order; a delta whose parent expired first is never a candidate (`SSDPrefixCachePolicy.ttlMode`). A complete checkpoint's file mtime, which restart scans and whole-root maintenance read, lags its last hit by up to `ttlSeconds / 30`. If every hit overlaps another request, as with simultaneous bursts, no hit refreshes it. Whole-root TTL expiry of a loaded store's file therefore checks the store's index under the file lease: a file hit within the TTL stays, and its last hit becomes its mtime. A restart scan before that sweep (`intervalSeconds = 60`) still ages the file from the old mtime, and whole-root budget eviction orders files by mtime. Raising either needs the sign-off recorded in `docs/threat-model.yaml` (T-041, SEC-035) | `SSDPrefixCachePolicy.swift` |
 | Daily write cap | `defaultMaxWriteBytesPerDay = 4_000 * 1_000_000_000` | `SSDPrefixCachePolicy.swift` |
 | Complete-checkpoint repeat reserve | Demand gate first: a not-yet-durable checkpoint is written only when the coordinator's `cache_repeated_prefix_tokens >= minEffectiveTokens` or the local `SSDCheckpointDemand` history has seen the tag within the cache TTL; otherwise it settles `skipped_novel` with no bytes written and no write budget charged. Without a hint (older coordinator, standalone/local serving) the legacy write-every-checkpoint behavior stays (`SSDCheckpointDemand.admitsWrite`, `SSDHybridCheckpointStore.donationWritePolicy`). Admitted novel checkpoint tags use a 90% burst/refill sub-budget. A checkpoint whose own position is covered by the authenticated `cache_repeated_prefix_tokens` hint, or whose tag was observed again locally within the cache TTL, can use the full shared budget. Merely satisfying the donation floor does not classify a deeper unique extension as repeated. Both debit the original total cap; unlimited mode stays unlimited. The 4,096-entry volatile tag history is an admission input as well as a priority signal; durable duplicates authenticate and bypass both the gate and write consumption. Novel-share exhaustion reports `write_priority_limited`; total-budget exhaustion remains `write_rate_limited`. | `SSDCheckpointDemand.swift`, `SSDHybridCheckpointStore+DemandAdmission.swift`, `SSDHybridCheckpointStore+Write.swift`, `SSDWriteRateLimiter.swift` |
 | Complete-checkpoint maintenance | Per-file removals run under the store's `removalLock` (`performIndexedRemoval`): unlink plus index and accounting update, serialized with other removals, refused once the store is closed or no longer owns its epoch. Whole-root external deletion reconciles missing index entries before the barrier lifts. Targeted eviction and corrupt-file removal update only their known index entries, avoiding a full filesystem scan per victim. No per-file removal rotates the model epoch; the coordinator learns of a removed checkpoint through the next lookup miss, or a hit at a shorter boundary, on that provider. A reader that finds its file gone reports `miss_absent` without counting corruption. Whole-root maintenance brackets a removal only through a registered store that still owns its root (`ownsEvictionRoot`); if every registered store for the root is closed or disowned it uses the unloaded-root path, so TTL expiry and budget eviction never wait for a disowned store to close. | `SSDHybridCheckpointStore+Maintenance.swift`, `performExternalDestructiveChange`, `reconcileExternalRemovals` |
@@ -622,6 +655,7 @@ per family and bindings are in the
 | Encoded entry | Header `nativeFrom` = committed tokens less the profile's `recentTokenCount` (128): per head, rows below it encoded (`encodedRowBytes`: codes, FP32 scales, FP32 offsets), the rest native; absent means every row native | `QwenStagePrefixDiskEncodedRows` |
 | Record encoding | Header `encoding` (`quantization`, `identity`, `family`), absent for native records; must equal the tier's, and every entry's `nativeFrom` must be what that encoding writes, or the record is refused and deleted | `QwenStagePrefixDiskRestoreWork`, `QwenStagePrefixDiskTier` (`loadIndex`) |
 | Always native | Recurrent and convolution state, speculative (MTP) history (a NextN history a record keeps as an attention entry included), GLM index keys and pool gates | `QwenStagePrefixDiskFamily`, `QwenStagePrefixDiskEncoding.nativeLayers` |
+| History tokens | Header versions 3 (per frontier) and 4 (shared): a speculative history's `tokens` unit holds zeros of its size; a restore fills it with the prompt's tokens `[1, f)`, the prompt whose key matched. Versions 1 and 2, which held the IDs, are refused, so the index load deletes them; 0.10.18 and earlier accept only 1 and 2 and delete 3 and 4 the same way | `QwenStagePrefixDiskHeader.version`, `QwenStagePrefixDiskRestoreWork.fillHistoryTokens` |
 | Restore | Decoded into page-aligned native buffers the arrays own: `[1, heads, frontier, width]` of the captured dtype, as a native record restores; older rows approximate | `QwenStagePrefixDiskRestoreWork.place` |
 | Restored rows written again | An encoded row whose native bytes equal the decode of the same row in the record holding the prompt's deepest kept prefix on this rank is stored as that record's bytes, not encoded again (the codec is not idempotent on its own output); that record is pinned until the new one is written, and if it cannot be read the new record is dropped (`reason=verbatim_source_unreadable`). The `persist` line logs `verbatim_rows` | `QwenStagePrefixDiskVerbatimSource`, `QwenStagePrefixDiskTier.persist` |
 | Switch | `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION` on the rank, from the owner ([configuration](configuration.md#cluster-ssd-prefix-record-precision)) | `QwenStagePrefixDiskEncoding.fromEnvironment` |

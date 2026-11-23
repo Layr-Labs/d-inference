@@ -1613,6 +1613,7 @@ private func fullInferenceProfile() -> InferenceProfile {
     e.prefixLookupNs = maxNs
     e.prefixAdoptionNs = maxNs
     e.finishReason = .stopSequence
+    e.mtpIneligible = allMTPGatesFailed()
     p.engine = e
     var d = DeadlineDecisionProfile()
     d.verdict = .expiredBeforeSubmit
@@ -1657,6 +1658,27 @@ private func fullCapacityTelemetry() -> CapacityTelemetry {
         mlxNumResources: 1_000_000_000,
         inAdmission: 1_000_000_000,
         inflightTasks: 1_000_000_000)
+}
+
+/// The fixed `engine.mtp_ineligible` keys (shared with the coordinator).
+private let mtpIneligibleKeys: Set<String> = [
+    "media", "reasoning_budget", "grammar", "sampling", "logprobs", "logit_bias",
+    "repetition_penalty", "penalties", "stop_strings", "multimodal_history",
+]
+
+private func allMTPGatesFailed() -> EngineMTPIneligibility {
+    var gates = EngineMTPIneligibility()
+    gates.media = true
+    gates.reasoningBudget = true
+    gates.grammar = true
+    gates.sampling = true
+    gates.logprobs = true
+    gates.logitBias = true
+    gates.repetitionPenalty = true
+    gates.penalties = true
+    gates.stopStrings = true
+    gates.multimodalHistory = true
+    return gates
 }
 
 /// Exact key set of `object`, recursing into nested objects as "a.b" paths.
@@ -2008,12 +2030,14 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     let profile = fullInferenceProfile()
     assertNoStrings(profile, label: "InferenceProfile")
     assertNoStrings(try #require(profile.engine), label: "EngineProfile")
+    assertNoStrings(try #require(profile.engine?.mtpIneligible), label: "EngineMTPIneligibility")
     assertNoStrings(try #require(profile.deadlineDecision), label: "DeadlineDecisionProfile")
     assertNoStrings(fullSlotTelemetry(), label: "SlotTelemetry")
     assertNoStrings(fullCapacityTelemetry(), label: "CapacityTelemetry")
     // 2 anchors + 20 offsets + 7 durations + 25 counts/flags + 3 enums + engine + deadline decision.
     #expect(Mirror(reflecting: profile).children.count == 59)
-    #expect(Mirror(reflecting: try #require(profile.engine)).children.count == 30)
+    #expect(Mirror(reflecting: try #require(profile.engine)).children.count == 31)
+    #expect(Mirror(reflecting: try #require(profile.engine?.mtpIneligible)).children.count == 10)
 }
 
 @Test func profilerSharedFixtureRoundTripsAndKeySetsMatch() throws {
@@ -2062,6 +2086,10 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(fullProfile.cancelStage == .postTerminal)
     #expect(fullProfile.engine?.finishReason == .stop)
     #expect(fullProfile.engine?.mtpAccepted == 96)
+    #expect(fullProfile.engine?.mtpIneligible == allMTPGatesFailed())
+    let fixtureEngine = (completeFrame["profile"] as? [String: Any])?["engine"] as? [String: Any]
+    let fixtureIneligible = try #require(fixtureEngine?["mtp_ineligible"] as? [String: Any])
+    #expect(Set(fixtureIneligible.keys) == mtpIneligibleKeys)
     try expectSameKeys(
         completeFrame["profile"] as? [String: Any],
         completeReencoded["profile"] as? [String: Any], "inference_complete_full.profile")

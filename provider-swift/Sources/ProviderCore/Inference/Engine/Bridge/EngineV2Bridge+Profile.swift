@@ -43,9 +43,28 @@ extension EngineProfile {
         detokDelayFirstNs = ns(t.detokDelayFirstNanos)
         prefixLookupNs = ns(t.prefixLookupNanos)
         prefixAdoptionNs = ns(t.prefixAdoptionNanos)
+        mtpIneligible = t.mtpIneligibility.map(EngineMTPIneligibility.init)
         if let finishReason {
             self.finishReason = EngineFinishReason(reason: finishReason)
         }
+    }
+}
+
+extension EngineMTPIneligibility {
+    /// One key per failed gate; gates that passed stay absent.
+    init(_ gates: CBv2MTPIneligibility) {
+        self.init()
+        func failed(_ gate: CBv2MTPIneligibility) -> Bool? { gates.contains(gate) ? true : nil }
+        media = failed(.media)
+        reasoningBudget = failed(.reasoningBudget)
+        grammar = failed(.grammar)
+        sampling = failed(.sampling)
+        logprobs = failed(.logprobs)
+        logitBias = failed(.logitBias)
+        repetitionPenalty = failed(.repetitionPenalty)
+        penalties = failed(.penalties)
+        stopStrings = failed(.stopStrings)
+        multimodalHistory = failed(.multimodalHistory)
     }
 }
 

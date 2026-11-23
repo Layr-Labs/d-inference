@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2570,7 +2570,8 @@ the prompt leaves; a pair keeps its own limits) → resident probe / useful SSD 
 only; segmented paged admission and backing use the shared native process owner) → final deadline
 check → engine request-id mint → `engine.submit`. The terminal `CBv2Usage`
 carries `CBv2RequestTiming`, copied verbatim onto the wire and folded into
-`EngineProfile` (`EngineV2Bridge+Profile.swift`).
+`EngineProfile` (`EngineV2Bridge+Profile.swift`), including the whole-request
+MTP gates a row failed (`mtp_ineligible`, evaluated once at its first token).
 
 A streamed request on the local API carries a `LocalPrefillProgress`
 (`provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`, the task-local

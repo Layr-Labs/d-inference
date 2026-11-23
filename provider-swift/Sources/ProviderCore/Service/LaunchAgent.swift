@@ -448,6 +448,8 @@ public enum LaunchAgent: Sendable {
     /// closing it with the arguments it sent.
     /// `DARKBLOOM_QWEN_CALL_END_GUARD`: Qwen 3.5–3.8 admit no end of turn while
     /// a call frame is open, by default; an off word samples as before.
+    /// `DARKBLOOM_GEMMA_ORPHAN_CALL_GUARD`: `on` or `strict` refuses a Gemma 4
+    /// tool-call close with no call open on `auto` tool rows; off by default.
     /// `DARKBLOOM_MEDIA_ON_EVERY_ROLE`: media in a system, assistant or tool
     /// message is rendered where the chat template renders it, by default; an
     /// off word keeps only user-message media again.
@@ -586,6 +588,7 @@ public enum LaunchAgent: Sendable {
         StrictToolCallPolicy.environmentKey,
         FailedStreamedCallPolicy.environmentKey,
         QwenCallEndGuard.environmentKey,
+        GemmaOrphanCallGuard.environmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         JSONAnswerPolicy.glmEnvironmentKey,
         GLM5NextSchemaMiss.environmentKey,

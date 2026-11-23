@@ -1195,6 +1195,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
             profile?.markDuration(.toolConstraint, start: start)
         }
+        // Gemma 4 `auto` tool rows: no tool-call close while no call is open
+        // (`GemmaOrphanCallGuard`, off unless switched on); everything else
+        // free. A request the guard declines is served as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           GemmaOrphanCallGuard.isCandidate(prepared: prepared, modelType: modelType) {
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = GemmaOrphanCallGuard.constraint(
+                prepared: prepared, request: request, tokenizer: tokenizer, modelType: modelType,
+                maxTokens: request.maxTokens ?? bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                runsTokenConstraints: !pair && !native, logitsWidth: bridge.logitsWidth)
+        }
         // GPT-OSS `auto` calls: a header that names a function is held to a
         // declared name and that function's schema; everything else stays
         // free. A request the grammar declines is served as before.
@@ -1341,6 +1353,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // The continuation's prompt ends at the next assistant message, as
             // the request's does, so a GPT-OSS `auto` grammar starts over there.
             let autoToolGrammar = tokenConstraint as? GPTOSSAutoToolConstraint
+            // A Gemma orphan-call guard continues from the row's own state.
+            let gemmaOrphanGuard = tokenConstraint as? GemmaOrphanCallGuardConstraint
             let spliced = LoopExitThinkingContinuation.splice(
                 first: upstream,
                 cancelFirst: cancelUpstream,
@@ -1366,7 +1380,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard !cancelled() else { throw CancellationError() }
                     var next = base
                     next.maxTokens = budget
-                    let continuationConstraint = try autoToolGrammar?.withMaxTokens(budget)
+                    var continuationConstraint: (any CBv2TokenConstraint)? = try autoToolGrammar?.withMaxTokens(budget)
+                    if continuationConstraint == nil, let gemmaOrphanGuard {
+                        continuationConstraint = gemmaOrphanGuard.continuing(
+                            after: Array(continuationPrompt.dropFirst(promptTokens.count)), maxTokens: budget)
+                    }
                     // As model calibration submits: the request's prompt progress
                     // has ended, and the owner's make-room hook is the row's.
                     return try await LocalPrefillProgress.$current.withValue(nil) {

@@ -37,7 +37,7 @@ struct MemoryOnlyCheckpointReleaseTests {
         let tier = MemoryOnlyCheckpointTierTests.tier(fixture, pool: shared)
         defer { tier.close() }
         let marked = MemoryOnlyCheckpointTierTests.marked
-        try #require(try await MemoryOnlyCheckpointTierTests.donate(tier, fixture, receipt: marked(1)) == [256])
+        try #require(try await MemoryOnlyCheckpointTierTests.donate(tier, fixture, pool: shared, receipt: marked(1)))
         try await release()
         #expect(await MemoryOnlyCheckpointTierTests.stage(tier, fixture, receipt: marked(2)).disposition == .missAbsent)
     }

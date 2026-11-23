@@ -65,7 +65,6 @@ struct MemoryOnlyPrefixCacheHandlerTests {
             tokenizer: TokenizerHandle(tokenizer), engineV2: bridge,
             sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 128,
                           maxContextLength: 8192, defaultMaxTokens: 4096))
-        let touchesBefore = RequestCachePolicyCounters.shared.snapshot.ssdTierTouches
 
         func send(_ id: String) async throws -> UsageInfo {
             let receiver = NodeKeyPair.generate()
@@ -107,8 +106,9 @@ struct MemoryOnlyPrefixCacheHandlerTests {
         #expect(second.cacheTier == .memory && second.cacheOutcome == .hit)
         #expect(pool.snapshot.lookups[.hit] == 1 && pool.snapshot.unmarkedRefusals == 0)
 
+        // The SSD store wrote, staged and kept nothing for these receipts.
         #expect(store.stats().filesWritten == 0 && store.stats().stages == 0)
-        #expect(RequestCachePolicyCounters.shared.snapshot.ssdTierTouches == touchesBefore)
+        #expect(store.lock.withLock { store.readyReceipts.isEmpty })
         await bridge.shutdown()
         _ = await runtime.unregister(modelId: "fixture-model")
         #expect(pool.snapshot.entries == 0, "unload releases the slot's RAM entries")

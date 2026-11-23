@@ -74,8 +74,9 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
 
     // MARK: - Donation
 
-    /// Always calls `completion`; a nonempty result means the checkpoint is
-    /// held. The donor's KV stays owned by the engine until then.
+    /// Always calls `completion`, with no positions: a RAM entry is not a
+    /// durable commit, so the engine publishes no ready evidence for it. The
+    /// donor's KV stays owned by the engine until then.
     func donate(
         _ source: CBv2CompleteCheckpointExport, requestID: CBv2RequestID?,
         tokens: [Int], cacheSalt: String?, completion: @escaping @Sendable ([Int]) -> Void
@@ -108,10 +109,9 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
     /// Copies the export into one wired region: the encoded manifest first,
     /// then each segment, zeroing the engine's transient copy of it.
     private func store(_ donation: Donation) {
-        var positions: [Int] = []
         defer {
             donation.source.close()
-            donation.completion(positions)
+            donation.completion([])
         }
         guard !isClosed else { return pool.recordStoreRefusal(.refusedPolicy) }
         // In shared process mode the provider owns the engine's segment copies,
@@ -158,8 +158,7 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
             createdAt: pool.now)
         guard admission.commit(key: .init(namespace: namespace, tag: donation.tag), entry: entry) else { return }
         // A close that raced the commit has already released the namespace.
-        if isClosed { return pool.releaseAll(namespace: namespace, reason: .unload) }
-        positions = [manifest.position]
+        if isClosed { pool.releaseAll(namespace: namespace, reason: .unload) }
     }
 
     static func layout(manifest: CBv2CompleteCheckpointManifest, manifestBytes: Int)

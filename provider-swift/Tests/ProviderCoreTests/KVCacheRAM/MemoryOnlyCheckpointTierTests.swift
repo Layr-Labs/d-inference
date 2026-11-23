@@ -32,14 +32,20 @@ struct MemoryOnlyCheckpointTierTests {
             kvBudget: fixture.budget, pool: pool, wire: wire)
     }
 
+    /// Whether the donation was stored. The tier always completes with no
+    /// positions: a RAM entry is not a durable commit.
     static func donate(_ tier: MemoryOnlyCheckpointTier, _ fixture: SSDHybridCheckpointTestFixture,
-                       receipt: CBv2RequestID?, position: Int = 256, scope: String = "tenant-a") async throws -> [Int] {
+                       pool: MemoryOnlyCheckpointPool, receipt: CBv2RequestID?, position: Int = 256,
+                       scope: String = "tenant-a") async throws -> Bool {
         let source = try fixture.source(position: position, scope: scope)
-        return await withCheckedContinuation { continuation in
+        let stored = pool.snapshot.stores[.stored] ?? 0
+        let positions = await withCheckedContinuation { continuation in
             tier.donate(source, requestID: receipt, tokens: fixture.tokens, cacheSalt: scope) {
                 continuation.resume(returning: $0)
             }
         }
+        #expect(positions.isEmpty)
+        return (pool.snapshot.stores[.stored] ?? 0) > stored
     }
 
     static func stage(_ tier: MemoryOnlyCheckpointTier, _ fixture: SSDHybridCheckpointTestFixture,
@@ -72,7 +78,7 @@ struct MemoryOnlyCheckpointTierTests {
         defer { tier.close() }
 
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(1)).disposition == .missAbsent)
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
         let snapshot = pool.snapshot
         #expect(snapshot.entries == 1 && snapshot.bytes > 0 && snapshot.stores[.stored] == 1)
 
@@ -98,9 +104,9 @@ struct MemoryOnlyCheckpointTierTests {
         let tier = Self.tier(fixture, pool: pool)
         defer { tier.close() }
 
-        #expect(try await Self.donate(tier, fixture, receipt: CBv2RequestID(1)).isEmpty)
-        #expect(try await Self.donate(tier, fixture, receipt: nil).isEmpty)
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        #expect(!(try await Self.donate(tier, fixture, pool: pool, receipt: CBv2RequestID(1))))
+        #expect(!(try await Self.donate(tier, fixture, pool: pool, receipt: nil)))
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
         let result = await Self.stage(tier, fixture, receipt: CBv2RequestID(2))
         #expect(result.disposition == .skippedPolicy && result.tier == .memory)
         #expect(pool.snapshot.unmarkedRefusals == 3 && pool.snapshot.entries == 1)
@@ -114,7 +120,7 @@ struct MemoryOnlyCheckpointTierTests {
         let tier = Self.tier(fixture, pool: pool)
         defer { tier.close() }
 
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1), scope: "tenant-a") == [256])
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1), scope: "tenant-a"))
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(2), scope: "tenant-b").disposition == .missAbsent)
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(3), scope: "tenant-a").staged)
     }
@@ -126,7 +132,7 @@ struct MemoryOnlyCheckpointTierTests {
         let before = Self.listing(fixture.root)
         let pool = Self.pool()
         let tier = Self.tier(fixture, pool: pool)
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(2)).staged)
         tier.completeStaging(requestID: Self.marked(2))
         await tier.closeAndWait()
@@ -139,10 +145,10 @@ struct MemoryOnlyCheckpointTierTests {
         defer { fixture.remove() }
         let pool = Self.pool()
         let tier = Self.tier(fixture, pool: pool)
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
         await tier.closeAndWait()
         #expect(pool.snapshot.entries == 0 && pool.bytesInUse == 0 && pool.snapshot.evictions[.unload] == 1)
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(2)).isEmpty)
+        #expect(!(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(2))))
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(3)).disposition == .skippedPolicy)
     }
 
@@ -155,7 +161,7 @@ struct MemoryOnlyCheckpointTierTests {
         let pool = Self.pool()
         let tier = Self.tier(fixture, pool: pool)
         defer { tier.close() }
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
         pool.releaseAll(reason: reason)
         #expect(pool.snapshot.entries == 0 && pool.bytesInUse == 0 && pool.snapshot.evictions[reason] == 1)
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(2)).disposition == .missAbsent)
@@ -167,18 +173,18 @@ struct MemoryOnlyCheckpointTierTests {
         defer { fixture.remove() }
         let probe = Self.pool()
         let measure = Self.tier(fixture, pool: probe)
-        #expect(try await Self.donate(measure, fixture, receipt: Self.marked(1)) == [256])
+        #expect(try await Self.donate(measure, fixture, pool: probe, receipt: Self.marked(1)))
         let entryBytes = probe.bytesInUse
         measure.close()
 
         let pool = Self.pool(budget: entryBytes * 2)
         let tier = Self.tier(fixture, pool: pool)
         defer { tier.close() }
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(2), scope: "a") == [256])
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(3), scope: "b") == [256])
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(2), scope: "a"))
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(3), scope: "b"))
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(4), scope: "a").staged)  // "a" is now newest
         tier.completeStaging(requestID: Self.marked(4))
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(5), scope: "c") == [256])
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(5), scope: "c"))
         #expect(pool.snapshot.entries == 2 && pool.snapshot.evictions[.lru] == 1)
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(6), scope: "b").disposition == .missAbsent)
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(7), scope: "a").staged)
@@ -188,10 +194,11 @@ struct MemoryOnlyCheckpointTierTests {
     func budgetRefusal() async throws {
         let fixture = try SSDHybridCheckpointTestFixture()
         defer { fixture.remove() }
-        for budget: UInt64 in [0, 16 << 10] {
+        // A whole page (16 KiB on Apple silicon) is more than either budget.
+        for budget: UInt64 in [0, 4 << 10] {
             let pool = Self.pool(budget: budget)
             let tier = Self.tier(fixture, pool: pool)
-            #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)).isEmpty)
+            #expect(!(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1))))
             #expect(pool.snapshot.stores[.refusedBudget] == 1 && pool.bytesInUse == 0)
             tier.close()
         }
@@ -204,7 +211,7 @@ struct MemoryOnlyCheckpointTierTests {
         let pool = Self.pool()
         let tier = Self.tier(fixture, pool: pool, wire: { _, _ in -1 })
         defer { tier.close() }
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)).isEmpty)
+        #expect(!(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1))))
         #expect(pool.snapshot.stores[.refusedLock] == 1 && pool.snapshot.entries == 0 && pool.bytesInUse == 0)
         #expect(LockedHostRegion(bytes: 1 << 20, wire: { _, _ in -1 }) == nil)
     }
@@ -219,7 +226,7 @@ struct MemoryOnlyCheckpointTierTests {
         let pool = Self.pool(ttl: 100, ttlMode: ttlMode, clock: clock)
         let tier = Self.tier(fixture, pool: pool)
         defer { tier.close() }
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
         clock.advance(99)
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(2)).staged)
         tier.completeStaging(requestID: Self.marked(2))
@@ -255,7 +262,7 @@ struct MemoryOnlyCheckpointTierTests {
         let pool = Self.pool()
         let tier = Self.tier(fixture, pool: pool)
         let before = fixture.budget.processLedger.snapshot().chargedBytes
-        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
         #expect(fixture.budget.processLedger.snapshot().chargedBytes == before + pool.bytesInUse)
         await tier.closeAndWait()
         #expect(fixture.budget.processLedger.snapshot().chargedBytes == before)

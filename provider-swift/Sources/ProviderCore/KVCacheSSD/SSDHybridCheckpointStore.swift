@@ -141,7 +141,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
                 requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
                 maximumSequenceLength: maximumSequenceLength)
         }
-        guard !MemoryOnlyReceipt.refusesEngineCall(requestID), let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
+        guard let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
                                      maximumSequenceLength: maximumSequenceLength, native: false),
             case .autoregressive(let value) = staged else { return nil }
         return value
@@ -150,7 +150,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     public func takeNativeStaged(
         requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int
     ) -> CBv2NativeBlockCheckpoint? {
-        guard !MemoryOnlyReceipt.refusesEngineCall(requestID), let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
+        guard let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
                                      maximumSequenceLength: maximumSequenceLength, native: true),
             case .nativeBlock(let value) = staged else { return nil }
         return value
@@ -159,6 +159,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     private func takeStage(
         requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int, native: Bool
     ) -> SSDCheckpointStage? {
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID) else { return nil }
         let staged = lock.withLock {
             stageReservations.removeValue(forKey: requestID)
             return stages.removeValue(forKey: requestID)

@@ -1000,16 +1000,17 @@ public final class SSDPrefixCache:
         // warmth survives a restart (the startup scan seeds lastAccess from
         // mtime). Reused blocks = every tag NOT in newBlockIndices. A fixed
         // TTL keeps each block's write time.
-        let refreshes = config.ttlMode.refreshesOnHit
-        if refreshes { index.touch(tags16: tags16, now: now) }
-        let newSet = Set(newBlockIndices)
-        let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
-        for (i, tag16) in tags16.enumerated() where refreshes && !newSet.contains(i) {
-            guard index.contains(tag16: tag16) else { continue }
-            let url = SSDBlockStore.fileURL(
-                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
-            SSDBlockStore.setAttributesIfSafe(
-                [.modificationDate: touchDate], at: url, under: config.root)
+        if config.ttlMode.refreshesOnHit {
+            index.touch(tags16: tags16, now: now)
+            let newSet = Set(newBlockIndices)
+            let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
+            for (i, tag16) in tags16.enumerated() where !newSet.contains(i) {
+                guard index.contains(tag16: tag16) else { continue }
+                let url = SSDBlockStore.fileURL(
+                    root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+                SSDBlockStore.setAttributesIfSafe(
+                    [.modificationDate: touchDate], at: url, under: config.root)
+            }
         }
         var blocks: [SSDBlockWrite] = []
         var totalBytes = 0
@@ -1589,16 +1590,19 @@ public final class SSDPrefixCache:
         // survives a restart (the scan seeds lastAccess from mtime). The
         // window sidecars ride the same bump — letting them expire under a
         // still-warm block run would silently re-arm the 25,600-token replay
-        // and pay their write wear again on the next donation.
-        let now = config.nowSeconds()
-        let refreshed = config.ttlMode.refreshesOnHit ? Array(tags16.prefix(usableBlocks)) + windowTags : []
-        index.touch(tags16: refreshed, now: now)
-        let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
-        for tag16 in refreshed {
-            let url = SSDBlockStore.fileURL(
-                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
-            SSDBlockStore.setAttributesIfSafe(
-                [.modificationDate: touchDate], at: url, under: config.root)
+        // and pay their write wear again on the next donation. A fixed TTL
+        // keeps each file's write time.
+        if config.ttlMode.refreshesOnHit {
+            let now = config.nowSeconds()
+            index.touch(tags16: tags16.prefix(usableBlocks), now: now)
+            index.touch(tags16: windowTags, now: now)
+            let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
+            for tag16 in tags16.prefix(usableBlocks) + windowTags {
+                let url = SSDBlockStore.fileURL(
+                    root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+                SSDBlockStore.setAttributesIfSafe(
+                    [.modificationDate: touchDate], at: url, under: config.root)
+            }
         }
         return finish(.staged(
             matchedTokens: matched,

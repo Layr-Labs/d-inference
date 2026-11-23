@@ -97,18 +97,13 @@ extension SSDHybridCheckpointStore {
         // The preparation helper has dropped temporary encoded/hash buffers.
         // Only an accepted job's envelope may now retain provider-owned Data.
         switch preparation {
-        case .withheld:
-            source.close()
-            hostReservation?.closeAfterDroppingBuffers()
-            if let hostReservation { statsBox.update { $0.writeHostBytesInUse -= Int(hostReservation.bytes) } }
-            completion([])
-        case .refused(let outcome):
+        case .refused, .withheld:
             source.close()
             if let hostReservation {
                 hostReservation.closeAfterDroppingBuffers()
                 statsBox.update { $0.writeHostBytesInUse -= Int(hostReservation.bytes) }
             }
-            settlement.settle(outcome)
+            if case .refused(let outcome) = preparation { settlement.settle(outcome) }
             completion([])
         case .ready(let job):
             if !pipeline.submit(job) {

@@ -124,8 +124,13 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
 
     func donate(_ store: SSDHybridCheckpointStore, receipt: UInt64 = 10, position: Int = 256,
                 chunkSize: Int = 256) async throws -> [Int] {
-        let source = try source(position: position, chunkSize: chunkSize)
-        return await withCheckedContinuation { continuation in
+        try await donate(store, source(position: position, chunkSize: chunkSize), receipt: receipt)
+    }
+
+    /// Donates `source` for the fixture's prompt and returns the settled positions.
+    func donate(_ store: SSDHybridCheckpointStore, _ source: CBv2CompleteCheckpointExport,
+                receipt: UInt64 = 10) async -> [Int] {
+        await withCheckedContinuation { continuation in
             store.donate(source, requestID: .init(receipt), tokens: tokens, cacheSalt: "tenant-a") { continuation.resume(returning: $0) }
         }
     }

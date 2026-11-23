@@ -44,13 +44,8 @@ struct SealedPrefixCacheMetadata: Sendable, Equatable {
             enum CodingKeys: String, CodingKey { case cachePolicy = "cache_policy" }
 
             init(from decoder: any Decoder) throws {
-                let container = try decoder.container(keyedBy: CodingKeys.self)
-                guard container.contains(.cachePolicy) else {
-                    policy = .default
-                    return
-                }
                 policy = RequestCachePolicy(
-                    presentValue: try? container.decode(String.self, forKey: .cachePolicy))
+                    decoding: try decoder.container(keyedBy: CodingKeys.self), forKey: .cachePolicy)
             }
         }
 

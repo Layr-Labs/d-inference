@@ -382,6 +382,9 @@ public enum LaunchAgent: Sendable {
     /// and `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS`: the idle-gated cache sweep and
     /// retained, host-zeroed paged KV segments are on by default; each
     /// rollback must reach the provider job too.
+    /// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM`: the opt-in (`1`) that runs Qwen
+    /// 3.5-family media preparation on its own GPU stream; off by default, and
+    /// the opt-in must reach the job to take effect.
     /// `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY`: native MiMo standing
     /// residency is on by default; exact `0` / `false` / `no` / `off` is the
     /// rollback, which must reach the launchd provider job to take effect.
@@ -554,6 +557,7 @@ public enum LaunchAgent: Sendable {
         GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,
         EngineV2Factory.segmentRetentionEnvironmentKey,
         EngineV2Factory.segmentHostZerosEnvironmentKey,
+        EngineV2VisionPrefill.mediaPrepStreamEnvironmentKey,
         SystemMemory.availabilityEnvironmentKey,
         MiMoV26WiredResidency.environmentFlag,
         GLM5NextWiredResidency.environmentFlag,

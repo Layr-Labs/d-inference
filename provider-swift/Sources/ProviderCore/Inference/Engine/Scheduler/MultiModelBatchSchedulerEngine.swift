@@ -113,8 +113,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// (`cache_repeated_prefix_tokens`). Nil for local HTTP, tests and older
     /// coordinators: the store then writes every captured checkpoint.
     private let donationDemand: SSDCheckpointDonationDemand?
-    /// The sealed cache policy; `memoryOnly` keeps the request off the SSD
-    /// tier (`EngineV2Bridge.submitTokenized`). Local requests are `default`.
+    /// The sealed cache policy, or the local API's (`localServing`).
+    /// `memoryOnly` runs the request with its prefix cache off
+    /// (`EngineV2Bridge.submitTokenized`) and skips the prompt-token piece cache.
     private let cachePolicy: RequestCachePolicy
     /// Per-request usage-detail signal: the bridge
     /// records the engine's terminal matched/saved token detail here so the

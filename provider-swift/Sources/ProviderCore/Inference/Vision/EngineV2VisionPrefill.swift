@@ -79,6 +79,14 @@
 // 4xx via `multimodal_rejected:` (see
 // `EngineV2Translation.admissionErrorMessage`) and doubles as the loud
 // signal that the claim and the implementation disagreed.
+//
+// STREAM NOTE: the engine's steps run on the process default GPU stream. With
+// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM` on (off by default), a Qwen 3.5-family
+// wrapper runs the processor and the tower on a GPU stream of their own
+// (`onMediaPrepStream`), so
+// its tower's command buffers are no longer ordered behind the running rows'
+// steps, nor theirs behind the tower's. The kernels and inputs are the same,
+// so the embeddings are expected to be too.
 
 import Foundation
 import MLX
@@ -310,13 +318,89 @@ public enum EngineV2VisionPrefill {
                 deepstackEmbeddings: deepstackProvider
             ) { arrays }
         }
+
+        /// Every MLX array the submission hands to the engine.
+        var mlxArrays: [MLXArray] {
+            embeddings + deepstackEmbeddings.flatMap { $0 }
+                + [positionState?.promptPositionIds].compactMap { $0 }
+        }
+    }
+
+    /// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM`: a Qwen 3.5-family wrapper prepares
+    /// media on its own GPU stream when set to `1`, `true`, `on` or `yes` (off
+    /// by default: preparation shares the process default stream).
+    static let mediaPrepStreamEnvironmentKey = "DARKBLOOM_TTFT_MEDIA_PREP_STREAM"
+
+    static func mediaPrepStreamEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        ["1", "true", "on", "yes"].contains(
+            environment[mediaPrepStreamEnvironmentKey]?
+                .trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    /// The wrappers whose media preparation runs on its own GPU stream:
+    /// `Qwen35` and its subclasses (Qwen 3.5, 3.6 and 3.8, dense and MoE).
+    /// Their processor and Qwen3-VL tower select kernels by device, shape,
+    /// dtype and settings, not by stream, so the embeddings are expected to be
+    /// identical (the tests measure it). Fused kernels
+    /// elsewhere in the SDK run only on the process default stream
+    /// (`MLXProcessStreams`), so other families keep it, including
+    /// `PrismHadamardQwen35`, `Qwen4Exp` and `Qwen3VL`, which share the tower
+    /// code but are not proven here.
+    static func preparesOnOwnStream(_ model: Any) -> Bool {
+        model is MLXVLM.Qwen35
+    }
+
+    /// Run `body` on a new GPU stream when `own` is true.
+    ///
+    /// The engine's steps run on the process default GPU stream, whose
+    /// command buffers execute in submission order. On that stream, every
+    /// command buffer of the vision tower queued behind the running rows'
+    /// steps, and each step behind the tower's buffers submitted before it.
+    /// On its own stream, the tower's command queue is not ordered behind the
+    /// engine's; the two still share the GPU, memory and `evalLock`.
+    ///
+    /// Before the pooled stream is released:
+    /// - every array the submission carries is evaluated;
+    /// - the stream is synchronized on every exit, which takes (and clears) an
+    ///   error a failed command buffer stored on it. On success that error
+    ///   fails this request through the caller's `MLX.withError`. When `body`
+    ///   threw, its error is the one reported and the drain only returns the
+    ///   stream clean for the next preparation;
+    /// - module construction on first use (a deferred vision tower's load)
+    ///   draws its placeholder weights from a task-local random state, so no
+    ///   lazy split of the process-global key stays bound to this stream.
+    ///   The checkpoint replaces those placeholders, so outputs are unchanged.
+    static func onMediaPrepStream(
+        _ own: Bool, _ body: () async throws -> PreparedSubmission
+    ) async throws -> PreparedSubmission {
+        guard own else { return try await body() }
+        return try await MLX.Stream.withNewDefaultStream(device: .gpu) {
+            try await MLX.withRandomState(MLXRandom.RandomState(seed: 0)) {
+                do {
+                    let submission = try await body()
+                    eval(submission.mlxArrays)
+                    MLX.Stream.gpu.synchronize()
+                    return submission
+                } catch {
+                    MLX.Stream.gpu.synchronize()
+                    throw error
+                }
+            }
+        }
     }
 
     /// Build the v2 media submission for `request` over the slot's loaded
-    /// VLM container. Runs media decode, processor prepare, the vision
-    /// tower + projector, and span carving under the container's serial
-    /// isolation (the same serialization the legacy `container.prepare`/
-    /// `generate` path uses, so wrapper module access never races).
+    /// VLM container. Decodes the request's media (`MediaIngest.buildUserInput`)
+    /// first, then runs processor prepare, the vision tower + projector, and
+    /// span carving under the container's serial isolation (the same
+    /// serialization the legacy `container.prepare`/`generate` path uses, so
+    /// wrapper module access never races).
+    /// A Qwen 3.5-family wrapper runs the scoped part on its own GPU stream
+    /// (`onMediaPrepStream`) when `ownMediaPrepStream` (default:
+    /// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM` in `environment`, off unless set) is
+    /// true.
     ///
     /// Throws `EngineV2VisionPrefillError` (and any `MediaError`/processor
     /// error the legacy path would also throw) — callers refuse loudly on
@@ -326,7 +410,9 @@ public enum EngineV2VisionPrefill {
     static func prepare(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
-        templateControls: ChatTemplateControls = .init()
+        templateControls: ChatTemplateControls = .init(),
+        ownMediaPrepStream: Bool? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) async throws -> PreparedSubmission {
         try MediaIngest.rejectUnsupportedAudio(request)
         if await container.perform({ $0.model is GLM5NextModel }) {
@@ -359,6 +445,8 @@ public enum EngineV2VisionPrefill {
             userInput.processing.video = video
         }
         let towerLimits = VisionTowerBudget.liveLimits
+        let mediaPrepStream =
+            ownMediaPrepStream ?? Self.mediaPrepStreamEnabled(environment: environment)
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
             // anywhere under this closure — most consequentially an allocation
@@ -379,11 +467,15 @@ public enum EngineV2VisionPrefill {
             // allocation and let a later Swift throw hide the real cause.
             do {
                 return try await MLX.withError { (mlxErrors: MLX.ErrorBox) in
-                    let submission = try await Self.buildSubmission(
-                        ctx: ctx, userInput: userInput, towerLimits: towerLimits,
-                        mlxErrors: mlxErrors, placementCheck: everyRole)
-                    try Self.throwIfMLXFaulted(mlxErrors)
-                    return submission
+                    try await Self.onMediaPrepStream(
+                        mediaPrepStream && Self.preparesOnOwnStream(ctx.model)
+                    ) {
+                        let submission = try await Self.buildSubmission(
+                            ctx: ctx, userInput: userInput, towerLimits: towerLimits,
+                            mlxErrors: mlxErrors, placementCheck: everyRole)
+                        try Self.throwIfMLXFaulted(mlxErrors)
+                        return submission
+                    }
                 }
             } catch let mlxError as MLX.MLXError {
                 throw Self.visionPrefillError(for: mlxError)

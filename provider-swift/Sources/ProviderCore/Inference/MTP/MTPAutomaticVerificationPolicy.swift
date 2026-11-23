@@ -47,14 +47,27 @@ public enum MTPAutomaticVerificationPolicy {
     /// decode rows and the envelope that admits its widest verification.
     /// On M5 Ultra, M3 Ultra and M5 Max only a lone row drafts two (`[1, 3]`);
     /// envelope 3 gives two rows depth 0, ordinary chained decode (two rows
-    /// drafting two did not beat plain decode on these chips).
+    /// drafting two did not beat plain decode on these chips). With
+    /// `m5UltraLoneRow` off, M5 Ultra keeps its earlier table: one or two rows
+    /// draft two (`[2, 3]`, envelope 6).
     /// Every other chip returns nil and keeps the lone-row policy.
-    static func gemmaTwoDrafts(chipName: String) -> (byDecodeRows: [Int], tokens: Int)? {
+    static func gemmaTwoDrafts(
+        chipName: String, m5UltraLoneRow: Bool = gemmaM5UltraLoneRowEnabled
+    ) -> (byDecodeRows: [Int], tokens: Int)? {
         switch parseChipIdentity(chipName) {
+        case (.m5, .ultra) where !m5UltraLoneRow: return ([2, 2, 0], 6)
         case (.m5, .ultra), (.m3, .ultra), (.m5, .max): return ([2, 0], 3)
         default: return nil
         }
     }
+
+    /// `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW`: on (unset, empty, `1`, `true`,
+    /// `yes`, `on`; trimmed, any case) M5 Ultra drafts two tokens only for a
+    /// lone row; any other value (e.g. `0`) restores its earlier table, one or
+    /// two rows drafting two. Read once per process; the LaunchAgent forwards it.
+    public static let gemmaM5UltraLoneRowEnvironmentKey = "DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW"
+    static let gemmaM5UltraLoneRowEnabled = gemmaLoneRowEnabled(
+        ProcessInfo.processInfo.environment[gemmaM5UltraLoneRowEnvironmentKey])
 
     static func resolvedChipName(_ chipName: String?) -> String {
         chipName ?? (try? sysctlString("machdep.cpu.brand_string")) ?? "Unknown"
@@ -63,12 +76,14 @@ public enum MTPAutomaticVerificationPolicy {
     /// The per-row depth table for `modelID` on this chip, or nil.
     static func fixedDraftTokensByDecodeRows(
         modelID: String?, chipName: String? = nil, hasBenchmarkVerificationOverride: Bool = false,
-        twoDrafts: Bool? = nil
+        twoDrafts: Bool? = nil, m5UltraLoneRow: Bool? = nil
     ) -> [Int]? {
         guard modelID == MTPAcceptancePolicy.gemmaQATModelID, !hasBenchmarkVerificationOverride,
             twoDrafts ?? gemmaTwoDraftsEnabled
         else { return nil }
-        return gemmaTwoDrafts(chipName: resolvedChipName(chipName))?.byDecodeRows
+        return gemmaTwoDrafts(
+            chipName: resolvedChipName(chipName), m5UltraLoneRow: m5UltraLoneRow ?? gemmaM5UltraLoneRowEnabled
+        )?.byDecodeRows
     }
 
     /// `DARKBLOOM_GEMMA_MTP_LONE_ROW`: on (unset, empty, `1`, `true`, `yes`,
@@ -96,13 +111,15 @@ public enum MTPAutomaticVerificationPolicy {
         chipName: String? = nil,
         modelID: String? = nil,
         gemmaLoneRow: Bool? = nil,
-        gemmaTwoDrafts: Bool? = nil
+        gemmaTwoDrafts: Bool? = nil,
+        gemmaM5UltraLoneRow: Bool? = nil
     ) -> Int {
         let chip = Self.resolvedChipName(chipName)
         var certifiedMaximum = maxRectangularTokens(chipName: chip)
         if modelID == MTPAcceptancePolicy.gemmaQATModelID {
             if gemmaTwoDrafts ?? gemmaTwoDraftsEnabled,
-                let twoDrafts = Self.gemmaTwoDrafts(chipName: chip)
+                let twoDrafts = Self.gemmaTwoDrafts(
+                    chipName: chip, m5UltraLoneRow: gemmaM5UltraLoneRow ?? gemmaM5UltraLoneRowEnabled)
             {
                 certifiedMaximum = min(certifiedMaximum, twoDrafts.tokens)
             } else if gemmaLoneRow ?? gemmaLoneRowEnabled {

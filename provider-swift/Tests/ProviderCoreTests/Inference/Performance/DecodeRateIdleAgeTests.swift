@@ -10,7 +10,7 @@ struct DecodeRateIdleAgeTests {
     private func decode(_ tps: Double, at: ContinuousClock.Instant, batchRows: Int) -> EngineRateObservation {
         EngineRateObservation(phase: "decode", tps: tps, prompt: 1_024, context: 1_024, cache: "cold",
             overlap: .init(contended: batchRows > 1, peakRequests: batchRows), at: at,
-            postureEpoch: nil, aggregate: true, decodeShape: .init(batchRows: batchRows))
+            postureEpoch: nil, aggregate: true, decodeShape: .init(batchRows: Double(batchRows)))
     }
 
     @Test("unset is 30 minutes, a positive whole number of seconds sets it, an off word disables it")

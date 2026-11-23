@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-23
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom

@@ -124,53 +124,64 @@ struct SSDHybridCheckpointEnvelope {
     static func decodeManifest(
         _ bytes: Data, promptTokens: [Int], lookupKeys: SSDLookupKeys
     ) throws -> CBv2CompleteCheckpointManifest {
-        guard !bytes.isEmpty, bytes.count <= CBv2CompleteCheckpointManifest.maximumEncodedBytes,
-            case .object(var members) = try JSONDecoder().decode(ManifestJSON.self, from: bytes),
-            !members.contains(where: { tokenMembers.contains($0.0) }),
-            let digestIndex = members.firstIndex(where: { $0.0 == digestMember }),
-            case .string(let storedDigest) = members[digestIndex].1,
-            case .string(let layout)? = members.first(where: { $0.0 == "backendLayout" })?.1,
-            case .int(let position)? = members.first(where: { $0.0 == "position" })?.1,
-            position > 1, position <= promptTokens.count
+        let stored = try StoredManifest(bytes)
+        guard stored.position > 1, stored.position <= promptTokens.count
         else { throw CBv2CompleteCheckpointError.invalidManifest }
-        let prefix = promptTokens.prefix(Int(position))
+        let prefix = promptTokens.prefix(stored.position)
         let expected = Data(lookupKeys.checkpointPrefixDigest(tokens: prefix).hexString.utf8)
         // Another prompt that reached this file by a lookup-tag collision.
-        guard expected.count == storedDigest.utf8.count,
-            zip(expected, storedDigest.utf8).reduce(UInt8(0), { $0 | ($1.0 ^ $1.1) }) == 0
+        guard expected.count == stored.digest.utf8.count,
+            zip(expected, stored.digest.utf8).reduce(UInt8(0), { $0 | ($1.0 ^ $1.1) }) == 0
         else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
-        members.remove(at: digestIndex)
-        return try rebuilt(members, layout: layout, prefix: Array(prefix))
-    }
-
-    private static func rebuilt(
-        _ members: [(String, ManifestJSON)], layout: String, prefix: [Int]
-    ) throws -> CBv2CompleteCheckpointManifest {
-        var members = members
-        if layout == CBv2CompleteCheckpointManifest.diffusionBlockLayout {
-            members.append(("packedPrefixTokens", try PackedTokens.json(prefix)))
-        } else {
-            members.append(("prefixTokens", .array(prefix.map { .int(Int64($0)) })))
-        }
-        let manifest = try JSONDecoder().decode(
-            CBv2CompleteCheckpointManifest.self, from: try encoded(ManifestJSON.object(members)))
-        _ = try manifest.validateStructure()
-        return manifest
+        return try stored.manifest(prefix: Array(prefix))
     }
 
     #if DEBUG
     /// Tests that inspect a stored file without its prompt: every field but
     /// the prefix, which reads as zeros. Nothing is verified.
     static func inspectStoredManifestForTesting(_ bytes: Data) throws -> CBv2CompleteCheckpointManifest {
-        guard case .object(var members) = try JSONDecoder().decode(ManifestJSON.self, from: bytes),
-            let digestIndex = members.firstIndex(where: { $0.0 == digestMember }),
-            case .string(let layout)? = members.first(where: { $0.0 == "backendLayout" })?.1,
-            case .int(let position)? = members.first(where: { $0.0 == "position" })?.1
-        else { throw CBv2CompleteCheckpointError.invalidManifest }
-        members.remove(at: digestIndex)
-        return try rebuilt(members, layout: layout, prefix: Array(repeating: 0, count: Int(position)))
+        let stored = try StoredManifest(bytes)
+        return try stored.manifest(prefix: Array(repeating: 0, count: stored.position))
     }
     #endif
+
+    /// Chunk 0's members without the digest, and the fields a rebuild reads.
+    private struct StoredManifest {
+        let members: [(String, ManifestJSON)]
+        let digest: String
+        let layout: String
+        let position: Int
+
+        init(_ bytes: Data) throws {
+            guard !bytes.isEmpty, bytes.count <= CBv2CompleteCheckpointManifest.maximumEncodedBytes,
+                case .object(var members) = try JSONDecoder().decode(ManifestJSON.self, from: bytes),
+                !members.contains(where: { tokenMembers.contains($0.0) }),
+                let digestIndex = members.firstIndex(where: { $0.0 == digestMember }),
+                case .string(let digest) = members[digestIndex].1,
+                case .string(let layout)? = members.first(where: { $0.0 == "backendLayout" })?.1,
+                case .int(let position)? = members.first(where: { $0.0 == "position" })?.1
+            else { throw CBv2CompleteCheckpointError.invalidManifest }
+            members.remove(at: digestIndex)
+            self.members = members
+            self.digest = digest
+            self.layout = layout
+            self.position = Int(position)
+        }
+
+        /// The manifest with `prefix` in the layout's token member.
+        func manifest(prefix: [Int]) throws -> CBv2CompleteCheckpointManifest {
+            var members = self.members
+            if layout == CBv2CompleteCheckpointManifest.diffusionBlockLayout {
+                members.append(("packedPrefixTokens", try PackedTokens.json(prefix)))
+            } else {
+                members.append(("prefixTokens", .array(prefix.map { .int(Int64($0)) })))
+            }
+            let manifest = try JSONDecoder().decode(
+                CBv2CompleteCheckpointManifest.self, from: try encoded(ManifestJSON.object(members)))
+            _ = try manifest.validateStructure()
+            return manifest
+        }
+    }
 
     // MARK: - Token tensors
 
@@ -248,8 +259,9 @@ struct SSDHybridCheckpointEnvelope {
     }
 
     /// The diffusion layout's canonical little-endian bit packing of the
-    /// prefix (`CBv2NativeBlockPackedTokens`, which the manifest decoder
-    /// checks): the narrowest width that holds the largest token.
+    /// prefix: the narrowest width that holds the largest token. A copy of
+    /// MLXLMCommon's internal `CBv2NativeBlockPackedTokens` encoder, whose
+    /// decoder refuses any other packing.
     private enum PackedTokens {
         static func json(_ tokens: [Int]) throws -> ManifestJSON {
             guard let largest = tokens.max(), tokens.allSatisfy({ $0 >= 0 && $0 <= Int(Int32.max) })

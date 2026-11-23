@@ -836,7 +836,8 @@ extension PrefixDiskTierTests {
             try #require(try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date)
         }
         let written = try modified()
-        Thread.sleep(forTimeInterval: 1.1)
+        let later = written.timeIntervalSince1970 + 600
+        tier.now = { later }
         #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 39, check: {}) != nil)
         #expect(tier.drain(timeoutSeconds: 20))
         #expect(fixed ? (try modified()) == written : (try modified()) > written)

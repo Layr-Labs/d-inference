@@ -4726,11 +4726,6 @@ struct SSDWindowSidecarTests {
 
 // The counters are process-wide: every test that reads them runs in one serialized suite.
 extension MemoryOnlySSDTierTests {
-    private func donateFixture(_ cache: SSDPrefixCache, tokens: [Int]) {
-        cache.donate(tokens: tokens, snapshots: fixtureSnapshots(tokenCount: tokens.count),
-                     layerKinds: fixtureLayerKinds, cacheSalt: nil)
-    }
-
     @Test("a memory-only receipt never adopts, stages or donates on the attention tier")
     func memoryOnlyReceiptIsRefused() async throws {
         let dir = try tempDir("memory-only")
@@ -4740,7 +4735,8 @@ extension MemoryOnlySSDTierTests {
         defer { cache.close() }
         let tokens = Array(0 ..< 64)
         // A peer's blocks on disk and staged in RAM, under the same (unscoped) salt.
-        donateFixture(cache, tokens: tokens)
+        cache.donate(tokens: tokens, snapshots: fixtureSnapshots(tokenCount: tokens.count),
+                     layerKinds: fixtureLayerKinds, cacheSalt: nil)
         #expect(await waitForIndexCount(cache, atLeast: 8))
         await cache.waitForWritesForTesting()
         #expect((await cache.stage(requestID: CBv2RequestID(5), promptTokens: tokens + [1], cacheScope: "")).staged)

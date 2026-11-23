@@ -6,12 +6,13 @@ import Testing
 @testable import ProviderCore
 
 /// Every test that reads `RequestCachePolicyCounters` (process-wide) runs in
-/// this one serialized suite, so no other test moves the counts it checks.
-/// `SSDPrefixCacheTests.swift` adds the attention tier's case.
+/// this one serialized suite, so no other test moves the memory-only counts it
+/// checks. Coordinator requests of suites running alongside it still count as
+/// `default`. `SSDPrefixCacheTests.swift` adds the attention tier's case.
 @Suite("memory_only requests and the SSD tier", .serialized)
 struct MemoryOnlySSDTierTests {
     /// Every file under `root` with its size and modification time.
-    static func files(under root: URL) throws -> [String: String] {
+    private static func files(under root: URL) throws -> [String: String] {
         let enumerator = try #require(FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]))
         var result: [String: String] = [:]
@@ -35,13 +36,8 @@ struct MemoryOnlySSDTierTests {
         let counts = RequestCachePolicyCounters.shared.snapshot
 
         let marked = CBv2RequestID(11 | MemoryOnlyReceipt.bit)
-        let source = try fixture.source(position: 512)
         let tokens = fixture.tokens
-        let positions: [Int] = await withCheckedContinuation { continuation in
-            store.donate(source, requestID: marked, tokens: tokens, cacheSalt: "tenant-a") {
-                continuation.resume(returning: $0)
-            }
-        }
+        let positions = try await fixture.donate(store, fixture.source(position: 512), receipt: marked.raw)
         var request = fixture.request()
         request.prefixCacheReceiptID = marked
         let staged = await store.stage(requestID: marked, request: request,
@@ -159,7 +155,9 @@ struct MemoryOnlySSDTierTests {
         #expect(unmarked.contains { if case .inferenceComplete = $0 { true } else { false } })
         #expect(store.stats().filesWritten > 0)
         #expect(try Self.files(under: fixture.root) != afterMarked)
-        #expect(RequestCachePolicyCounters.shared.snapshot.defaultRequests - counted.defaultRequests == 1)
+        let afterUnmarked = RequestCachePolicyCounters.shared.snapshot
+        #expect(afterUnmarked.defaultRequests > counted.defaultRequests)
+        #expect(afterUnmarked.memoryOnlyRequests == counted.memoryOnlyRequests)
 
         await bridge.shutdown()
         _ = await runtime.unregister(modelId: "fixture-model")

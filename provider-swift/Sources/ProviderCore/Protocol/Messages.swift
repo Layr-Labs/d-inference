@@ -2167,9 +2167,7 @@ extension CoordinatorMessage: Codable {
                 // The policy belongs in the sealed body only. A plaintext key,
                 // which no signature covers, may only narrow the request: any
                 // value but "default", a malformed one included, is memory_only.
-                frameCachePolicy: container.contains(.cachePolicy)
-                    ? RequestCachePolicy(presentValue: try? container.decode(String.self, forKey: .cachePolicy))
-                    : .default
+                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy)
             ))
 
         case .cancel:

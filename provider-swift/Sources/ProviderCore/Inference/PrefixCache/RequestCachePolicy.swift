@@ -17,6 +17,14 @@ public enum RequestCachePolicy: String, Sendable, Equatable, CaseIterable {
         self = presentValue == Self.default.rawValue ? .default : .memoryOnly
     }
 
+    /// The policy `key` selects in `container`: an absent key is `default`;
+    /// a present one selects as `init(presentValue:)`, a non-string as nil.
+    init<Key: CodingKey>(decoding container: KeyedDecodingContainer<Key>, forKey key: Key) {
+        self = container.contains(key)
+            ? RequestCachePolicy(presentValue: try? container.decode(String.self, forKey: key))
+            : .default
+    }
+
     /// The stricter of two policies; a second source can only narrow.
     func narrowed(by other: RequestCachePolicy) -> RequestCachePolicy {
         self == .memoryOnly || other == .memoryOnly ? .memoryOnly : .default
@@ -24,12 +32,12 @@ public enum RequestCachePolicy: String, Sendable, Equatable, CaseIterable {
 
     var permitsSSDTier: Bool { self == .default }
 
+    static let localServingEnvironmentKey = "DARKBLOOM_LOCAL_CACHE_POLICY"
+
     /// The policy of every request on this Mac's local API, from
     /// `DARKBLOOM_LOCAL_CACHE_POLICY`: unset or empty is `default`, and any
     /// value but `default` is `memoryOnly`. Coordinator requests carry their
     /// own sealed policy and never read it.
-    static let localServingEnvironmentKey = "DARKBLOOM_LOCAL_CACHE_POLICY"
-
     static func localServing(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> RequestCachePolicy {

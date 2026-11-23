@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-23
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer

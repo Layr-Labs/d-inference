@@ -42,16 +42,6 @@ struct CheckpointTokenFreeStorageTests {
         return .init(manifest: manifest, arrays: arrays)
     }
 
-    private func donate(_ store: SSDHybridCheckpointStore, _ source: CBv2CompleteCheckpointExport,
-                        _ fixture: SSDHybridCheckpointTestFixture) async -> [Int] {
-        let tokens = fixture.tokens
-        return await withCheckedContinuation { continuation in
-            store.donate(source, requestID: .init(21), tokens: tokens, cacheSalt: "tenant-a") {
-                continuation.resume(returning: $0)
-            }
-        }
-    }
-
     /// Every chunk's plaintext, authenticated, in file order.
     private func plaintext(_ file: URL, key: SymmetricKey) throws -> [Data] {
         var chunks: [Data] = []
@@ -88,7 +78,7 @@ struct CheckpointTokenFreeStorageTests {
         let store = try fixture.makeStore()
         defer { store.close() }
         let written = try source(fixture)
-        #expect(await donate(store, written, fixture) == [Self.position])
+        #expect(await fixture.donate(store, written, receipt: 21) == [Self.position])
         let file = fixture.file(store, position: Self.position)
         let chunks = try plaintext(file, key: fixture.key)
         let raw = try Data(contentsOf: file)
@@ -118,7 +108,7 @@ struct CheckpointTokenFreeStorageTests {
         let store = try fixture.makeStore()
         defer { store.close() }
         let original = try source(fixture)
-        #expect(await donate(store, original, fixture) == [Self.position])
+        #expect(await fixture.donate(store, original, receipt: 21) == [Self.position])
         let tag = store.lookupKeys.checkpointTag(
             chainHash: store.hashes(tokens: fixture.tokens, scope: "tenant-a")[Self.position / 256 - 1],
             cacheSalt: "tenant-a")
@@ -156,7 +146,7 @@ struct CheckpointTokenFreeStorageTests {
         let store = try fixture.makeStore()
         defer { store.close() }
         let wrong = (1..<Self.position).map { Int32(1_000 + $0) }
-        #expect(await donate(store, try source(fixture, assistantTokens: wrong), fixture).isEmpty)
+        #expect(try await fixture.donate(store, source(fixture, assistantTokens: wrong), receipt: 21).isEmpty)
         #expect(!FileManager.default.fileExists(atPath: fixture.file(store, position: Self.position).path))
     }
 

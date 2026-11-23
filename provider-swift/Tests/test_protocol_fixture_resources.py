@@ -10,7 +10,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 TESTS = Path(__file__).resolve().parent / "ProviderCoreTests"
 FIXTURES = TESTS / "Fixtures/Protocol"
-# Digests captured from the original shared fixtures before platform removal.
+# Digests of the shared fixtures, captured from the originals before platform
+# removal; the profiler fixture's follows its coordinator copy, byte for byte.
 SHA256 = {
     "calibrated_capacity_wire_fixture": "c73d1be2972540dbe48e8cc5b3871a15f44dcbafb4f8c51f6ee27e88b01c2e41",
     "calibrated_deadline_decisions": "079a387c50070d2742e95dee1c6a8115ba49d10934eacc219574adb8c4ac6650",

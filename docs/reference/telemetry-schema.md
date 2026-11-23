@@ -25,7 +25,7 @@ profile's optional tool-call counts, `tool_calls` and
 `tool_calls_breaking_declaration` ([profile counts](protocol-messages.md)):
 counts only, absent when a response returned no call, and ignored by a
 coordinator that does not read them. The same holds for the `engine` object's
-`mtp_ineligible` ([profile counts](protocol-messages.md)): one `true` key per
+`mtp_ineligible` ([profile field](protocol-messages.md)): one `true` key per
 whole-request MTP gate the request failed, `{}` when none failed, absent when
 nothing was evaluated.
 

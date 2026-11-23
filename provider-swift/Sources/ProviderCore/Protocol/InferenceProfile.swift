@@ -181,7 +181,7 @@ public struct EngineProfile: Codable, Sendable, Equatable {
 /// evaluated once at its first token (`CBv2MTPIneligibility`). A key is
 /// present, `true`, only when its gate failed; `{}` = evaluated, none failed.
 /// Absent when nothing was evaluated: no drafter, no first token, a cluster
-/// or native-block engine, or an older SDK.
+/// or native-block engine, or a provider built on an older SDK.
 public struct EngineMTPIneligibility: Codable, Sendable, Equatable {
     public var media: Bool?
     public var reasoningBudget: Bool?

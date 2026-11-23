@@ -1660,7 +1660,6 @@ private func fullCapacityTelemetry() -> CapacityTelemetry {
         inflightTasks: 1_000_000_000)
 }
 
-/// Exact key set of `object`, recursing into nested objects as "a.b" paths.
 /// The fixed `engine.mtp_ineligible` keys (shared with the coordinator).
 private let mtpIneligibleKeys: Set<String> = [
     "media", "reasoning_budget", "grammar", "sampling", "logprobs", "logit_bias",
@@ -1682,6 +1681,7 @@ private func allMTPGatesFailed() -> EngineMTPIneligibility {
     return gates
 }
 
+/// Exact key set of `object`, recursing into nested objects as "a.b" paths.
 private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<String> {
     var keys: Set<String> = []
     for (key, value) in object {

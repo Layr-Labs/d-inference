@@ -21,4 +21,12 @@ public enum DistributedServingEligibility {
     public static func memberCapabilities(chipFamily: ChipFamily) -> Set<ProviderRuntimeCapability> {
         ProviderRuntimeCapabilityDetector.detect(chipFamily: chipFamily, naxAvailable: { false }, liveMetallibHash: { nil })
     }
+
+    /// What a member registers and attests: its hardware capabilities and
+    /// `cache_policy_v1`, since a pair runs a `memory_only` request with its
+    /// ranks' prefix cache off. The coordinator sends such a request to a
+    /// pair only when every member reports it.
+    public static func memberRegistrationCapabilities(chipFamily: ChipFamily) -> Set<ProviderRuntimeCapability> {
+        memberCapabilities(chipFamily: chipFamily).union([.cachePolicy])
+    }
 }

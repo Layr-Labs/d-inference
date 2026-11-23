@@ -16,9 +16,11 @@ final class LockedHostRegion {
 final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     static let shared = MemoryOnlyCheckpointPool()
 
-    enum EvictionReason: String, CaseIterable, Sendable { case lru, ttl, pressure, load, shortfall, unload, shutdown }
+    enum EvictionReason: String, CaseIterable, Sendable {
+        case lru, ttl, pressure, load, shortfall, sleep, unload, shutdown
+    }
     enum StoreOutcome: String, CaseIterable, Sendable {
-        case stored, refusedBudget, refusedHeadroom, refusedLock, refusedPolicy
+        case stored, duplicate, refusedBudget, refusedBusy, refusedHeadroom, refusedLock, refusedPolicy
     }
     enum LookupOutcome: String, CaseIterable, Sendable { case hit, miss, skipped }
 
@@ -83,7 +85,9 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
         requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int
     ) -> CBv2StagedCompleteCheckpoint? { nil }
 
+    var isAvailable: Bool { false }
     func completeStaging(requestID: CBv2RequestID) {}
+    func abandonStaging(requestID: CBv2RequestID) async {}
     func close() {}
     func closeAndWait() async {}
 }
@@ -94,6 +98,26 @@ enum MemoryOnlyPrefixCachePolicy {
     static func isEnabled(environment: [String: String] = [:]) -> Bool { false }
     static func capBytes(environment: [String: String] = [:]) -> UInt64 { 0 }
     static func budgetBytes(fleetKVHeadroomBytes: UInt64, environment: [String: String] = [:]) -> UInt64 { 0 }
+    static func attachesTier(excludedModel: Bool, environment: [String: String] = [:]) -> Bool { false }
+}
+
+extension PrefixCacheSubmissionPolicy {
+    init(cachePolicy: RequestCachePolicy, memoryOnlyTierAvailable: Bool) { self.init(cachePolicy: cachePolicy) }
+    var usesMemoryOnlyTier: Bool { false }
+}
+
+extension GlobalKVCacheBudget {
+    /// The pool argument of the change, ignored here.
+    init(
+        capFraction: Double?, activationReserveBytes: UInt64?,
+        memorySnapshot: @escaping @Sendable () -> MemorySnapshot, memoryOnlyPool: MemoryOnlyCheckpointPool
+    ) {
+        self.init(capFraction: capFraction, activationReserveBytes: activationReserveBytes, memorySnapshot: memorySnapshot)
+    }
+}
+
+extension StandaloneServer {
+    var memoryPressureMonitor: MemoryPressureMonitor? { nil }
 }
 
 extension SSDPrefixCacheStageResult {

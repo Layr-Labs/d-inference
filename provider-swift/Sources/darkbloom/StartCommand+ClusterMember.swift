@@ -41,7 +41,7 @@ extension Start {
         let hashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         // Hardware-only capabilities are honest here. Native/kernel capability
         // proof belongs to the selected installed adapter, not a solo GPU probe.
-        let capabilities = DistributedServingEligibility.memberCapabilities(chipFamily: hardware.chipFamily)
+        let capabilities = DistributedServingEligibility.memberRegistrationCapabilities(chipFamily: hardware.chipFamily)
         let coordinator = coordinatorURL ?? config.coordinator.url
         let endpoint = Self.clusterMemberLocalEndpoint(requested: localEndpoint, hostsPairSlot: prepared.hostsPairSlot,
                                                        bind: bind, port: port, local: config.local, settingsFile: path,

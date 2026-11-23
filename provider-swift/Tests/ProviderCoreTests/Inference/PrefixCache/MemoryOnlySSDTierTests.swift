@@ -6,9 +6,11 @@ import Testing
 @testable import ProviderCore
 
 /// Every test that reads `RequestCachePolicyCounters` (process-wide) runs in
-/// this one serialized suite, so no other test moves the memory-only counts it
-/// checks. Coordinator requests of suites running alongside it still count as
-/// `default`. `SSDPrefixCacheTests.swift` adds the attention tier's case.
+/// this one serialized suite, so no other test moves the SSD counts it checks.
+/// Coordinator requests of suites running alongside it still count, the
+/// managed Super slot's `memory_only` ones included, so request counts are
+/// checked as lower bounds. `SSDPrefixCacheTests.swift` adds the attention
+/// tier's case.
 @Suite("memory_only requests and the SSD tier", .serialized)
 struct MemoryOnlySSDTierTests {
     /// Every file under `root` with its size and modification time.
@@ -145,7 +147,7 @@ struct MemoryOnlySSDTierTests {
         #expect(afterMarked == before, "no new or modified file, the epoch record included")
         #expect(!marked.contains { if case .prefixCacheLookupV2 = $0 { true } else { false } },
                 "no SSD-tier evidence, which would take a sequence from the epoch record")
-        #expect(counted.memoryOnlyRequests - counts.memoryOnlyRequests == 1)
+        #expect(counted.memoryOnlyRequests > counts.memoryOnlyRequests)
         #expect(counted.ssdTierTouches == counts.ssdTierTouches)
         #expect(store.stats().filesWritten == 0 && store.stats().filesRead == 0)
 
@@ -157,7 +159,6 @@ struct MemoryOnlySSDTierTests {
         #expect(try Self.files(under: fixture.root) != afterMarked)
         let afterUnmarked = RequestCachePolicyCounters.shared.snapshot
         #expect(afterUnmarked.defaultRequests > counted.defaultRequests)
-        #expect(afterUnmarked.memoryOnlyRequests == counted.memoryOnlyRequests)
 
         await bridge.shutdown()
         _ = await runtime.unregister(modelId: "fixture-model")

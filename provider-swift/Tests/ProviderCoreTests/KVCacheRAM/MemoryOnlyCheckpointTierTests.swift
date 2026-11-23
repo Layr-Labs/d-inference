@@ -16,6 +16,13 @@ struct MemoryOnlyCheckpointTierTests {
         func advance(_ seconds: Int64) { lock.withLock { value += seconds } }
     }
 
+    final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var isSet: Bool { lock.withLock { value } }
+        func set() { lock.withLock { value = true } }
+    }
+
     static func marked(_ raw: UInt64) -> CBv2RequestID { CBv2RequestID(MemoryOnlyReceipt.bit | raw) }
 
     static func pool(budget: UInt64 = 1 << 30, ttl: Int64 = 1_800, ttlMode: SSDPrefixCachePolicy.TTLMode = .sliding,
@@ -125,6 +132,8 @@ struct MemoryOnlyCheckpointTierTests {
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(3), scope: "tenant-a").staged)
     }
 
+    /// A guard rather than a proof: the tier has no file API, so this fails
+    /// only if one is added.
     @Test("the tier writes no file")
     func noFileIsWritten() async throws {
         let fixture = try SSDHybridCheckpointTestFixture()
@@ -152,8 +161,8 @@ struct MemoryOnlyCheckpointTierTests {
         #expect(await Self.stage(tier, fixture, receipt: Self.marked(3)).disposition == .skippedPolicy)
     }
 
-    @Test("pressure, a load and shutdown release every entry", arguments: [
-        MemoryOnlyCheckpointPool.EvictionReason.pressure, .load, .shutdown, .shortfall,
+    @Test("pressure, a load, sleep, a shortfall and shutdown release every entry", arguments: [
+        MemoryOnlyCheckpointPool.EvictionReason.pressure, .load, .sleep, .shutdown, .shortfall,
     ])
     func releaseAll(reason: MemoryOnlyCheckpointPool.EvictionReason) async throws {
         let fixture = try SSDHybridCheckpointTestFixture()
@@ -224,14 +233,120 @@ struct MemoryOnlyCheckpointTierTests {
         try donate(1) { _ in }
         #expect(await copying.wait())
         for n in 2...5 { try donate(UInt64(n)) { _ in } }  // fills the 4-slot queue
-        let refused = pool.snapshot.stores[.refusedPolicy] ?? 0
         let settled = CancelledPrefixBarrier()
         try donate(6) { positions in
             #expect(positions.isEmpty)
             settled.signal()
         }
         #expect(await settled.wait(), "the refused donation's completion runs")
-        #expect(pool.snapshot.stores[.refusedPolicy] == refused + 1)
+        #expect(pool.snapshot.stores[.refusedBusy] == 1)
+    }
+
+    @Test("a release while an entry is copied in keeps nothing")
+    func releaseDuringCopy() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let copying = CancelledPrefixBarrier()
+        let gate = DispatchSemaphore(value: 0)
+        let tier = Self.tier(fixture, pool: pool, wire: { copying.signal(); gate.wait(); return mlock($0, $1) })
+        defer { tier.close() }
+        let settled = CancelledPrefixBarrier()
+        tier.donate(try fixture.source(position: 256, scope: "tenant-a"), requestID: Self.marked(1),
+                    tokens: fixture.tokens, cacheSalt: "tenant-a") { _ in settled.signal() }
+        #expect(await copying.wait())
+        pool.releaseAll(reason: .pressure)
+        gate.signal()
+        #expect(await settled.wait())
+        #expect(pool.snapshot.entries == 0 && pool.bytesInUse == 0 && pool.snapshot.stores[.stored] == nil)
+        #expect(pool.snapshot.evictions[.pressure] == 1)
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(2)).disposition == .missAbsent)
+    }
+
+    @Test("closing waits for a restore still filling an import, which then stops")
+    func closeWaitsForRestore() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool)
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
+        let restoring = CancelledPrefixBarrier()
+        let gate = DispatchSemaphore(value: 0)
+        let request = fixture.request(scope: "tenant-a")
+        let stage = Task {
+            await tier.stage(
+                requestID: Self.marked(2), request: request,
+                reserveReadScratch: { restoring.signal(); gate.wait(); return try fixture.reserveReadScratch() },
+                makeImportPlan: { try fixture.codec.plan(manifest: $0, request: request) })
+        }
+        #expect(await restoring.wait())
+        let closed = Flag()
+        let closing = Task {
+            await tier.closeAndWait()
+            closed.set()
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!closed.isSet, "the restore is still running")
+        gate.signal()
+        await closing.value
+        #expect(!(await stage.value).staged)
+        #expect(pool.snapshot.entries == 0 && pool.bytesInUse == 0)
+    }
+
+    @Test("an abandoned stage refunds its charge, and a cold retry of the request restores again")
+    func abandonThenRetry() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool)
+        defer { tier.close() }
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
+        let charged = fixture.budget.processLedger.snapshot().chargedBytes
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(2)).staged)
+        await tier.abandonStaging(requestID: Self.marked(2))
+        #expect(fixture.budget.processLedger.snapshot().chargedBytes == charged)
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(2)).staged)
+        let staged = try #require(tier.takeStaged(
+            requestID: Self.marked(2), tokens: fixture.tokens, cacheSalt: "tenant-a",
+            maximumSequenceLength: fixture.request().maxTokens + fixture.tokens.count))
+        staged.close()
+        #expect(pool.snapshot.lookups[.hit] == 2)
+    }
+
+    @Test("a re-donation of a held prefix copies nothing; a fixed TTL still counts from the first store", arguments: [
+        SSDPrefixCachePolicy.TTLMode.sliding, .fixed,
+    ])
+    func duplicateDonation(ttlMode: SSDPrefixCachePolicy.TTLMode) async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let clock = Clock()
+        let pool = Self.pool(ttl: 100, ttlMode: ttlMode, clock: clock)
+        let tier = Self.tier(fixture, pool: pool)
+        defer { tier.close() }
+        #expect(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(1)))
+        let held = pool.bytesInUse
+        clock.advance(60)
+        #expect(!(try await Self.donate(tier, fixture, pool: pool, receipt: Self.marked(2))))
+        #expect(pool.snapshot.stores[.duplicate] == 1 && pool.snapshot.stores[.stored] == 1)
+        #expect(pool.snapshot.entries == 1 && pool.bytesInUse == held)
+        clock.advance(41)
+        let result = await Self.stage(tier, fixture, receipt: Self.marked(3))
+        tier.completeStaging(requestID: Self.marked(3))
+        // Sliding: the re-donation was a use. Fixed: 101 s after the store.
+        #expect(result.staged == (ttlMode == .sliding))
+    }
+
+    @Test("the tier is offered to marked requests only with a budget, and not once closed")
+    func availability() throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool(budget: 0)
+        let tier = Self.tier(fixture, pool: pool)
+        #expect(!tier.isAvailable)
+        pool.setBudget(1 << 30)
+        #expect(tier.isAvailable)
+        tier.close()
+        #expect(!tier.isAvailable)
     }
 
     @Test("pages that can't be wired are never kept unwired")

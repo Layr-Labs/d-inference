@@ -48,16 +48,19 @@ public enum RequestCachePolicy: String, Sendable, Equatable, CaseIterable {
     }
 }
 
-/// A `memoryOnly` request's prefix-cache receipt IDs are minted with the top
-/// bit set, so each SSD-tier entry point refuses the request from the ID
-/// alone, including calls the engine makes after the request's terminal.
-/// Ordinary receipts count up from 1 and never reach the bit.
+/// The receipt IDs of a `memoryOnly` request that runs with a prefix cache
+/// on: `bit` set and the seeded engine-ID tag (`EngineV2Bridge.seededIdTagBit`)
+/// clear, a range no ordinary receipt (counting up from 1) and no engine ID
+/// reaches. Each SSD-tier entry point refuses such a request from the ID
+/// alone, calls the engine makes after the request's terminal included.
+/// While a `memoryOnly` request runs with its cache off
+/// (`PrefixCacheSubmissionPolicy`), none is minted and the counts stay 0.
 enum MemoryOnlyReceipt {
-    static let bit: UInt64 = 1 << 63
+    static let bit: UInt64 = 1 << 62
 
     static func contains(_ id: CBv2RequestID?) -> Bool {
         guard let id else { return false }
-        return id.raw & bit != 0
+        return id.raw & (bit | EngineV2Bridge.seededIdTagBit) == bit
     }
 
     /// True, counted as a refusal, for an engine call into an SSD store

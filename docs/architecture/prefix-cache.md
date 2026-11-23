@@ -433,6 +433,92 @@ hits report the memory tier locally but do not yet publish coordinator holder
 anchors. Resident and durable SSD routing evidence remain separate; see
 [cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).
 
+### RAM-only tier for `memory_only` requests
+
+A request whose sealed cache metadata carries `cache_policy: memory_only`
+never touches the SSD tier. Its prefix-cache receipt is minted in the reserved
+range (`MemoryOnlyReceipt`), so each SSD entry point recognises it from the ID
+alone. On a single-Mac complete-checkpoint slot those entry points hand it to
+the slot's RAM-only tier instead of refusing it
+(`provider-swift/Sources/ProviderCore/KVCacheRAM/MemoryOnlyCheckpointTier.swift`).
+
+```mermaid
+flowchart LR
+    R[request] --> P{memory_only receipt?}
+    P -- no --> S[SSD store: stage / takeStaged / donate, unchanged]
+    P -- yes --> T[MemoryOnlyCheckpointTier]
+    T --> L[stage: same chain tags + manifest checks, engine import from wired RAM]
+    T --> D[donate: export segments copied into one mlock'ed region]
+    D --> M[MemoryOnlyCheckpointPool: budget, LRU, TTL, release points]
+```
+
+- **Same semantics as the SSD tier, no file.** A donation copies the engine's
+  export (`readSegment`) and its encoded manifest into one region. A restore
+  replays those bytes through the engine's own import (`planCompleteCheckpointImport`,
+  `appendSegment`, `finish`), as a file restore does.
+  - Lookup uses the same scope-salted chain hash and HMAC tag derivation
+    (`SSDLookupKeys.checkpointTag`) under a per-process random key, the same
+    position floor and block rule, and the same identity, salt and exact-prefix
+    checks before the engine's own.
+  - The tier keeps full checkpoints (no deltas) for text requests only.
+  - Its lookups report tier `memory` with no chain anchors, and it sends no
+    holder evidence.
+- **Wired, never swapped.** Each entry is its own `mmap` region with
+  `MADV_ZERO_WIRED_PAGES`, `minherit(VM_INHERIT_NONE)` and `mlock`
+  (`LockedHostRegion.swift`). If wiring fails, nothing is stored. Release zeroes,
+  unlocks and unmaps the region. Data of a request in flight (its live KV, and
+  each ≤ 4 MiB segment the engine hands over while it is copied) is ordinary
+  process memory, as for every request.
+- **Budget.** `MemoryOnlyPrefixCachePolicy.budgetBytes` = `min(cap, fleet KV
+  headroom / 4)`, with the cap `DARKBLOOM_ZDR_PREFIX_CACHE_RAM_MAX_MB` (default
+  8 GiB), and off below 1 GiB. The fleet KV headroom is `UnifiedMemoryCap.kvBudgetBytes`
+  for the serving set, recomputed at each load and unload.
+  - Each entry is charged to the process ledger (`reserveHostBuffers`) and is
+    admitted only while the ledger keeps a whole budget of headroom beside it.
+  - The tier takes nothing from any slot's KV grant.
+- **Release.** Every entry is released on:
+  - an OS memory-pressure warning or critical (`ProviderLoop+MemoryProtection.swift`);
+  - a model load that needs room (`releaseReclaimableMemoryForLoad`, which also
+    counts the tier as reclaimable);
+  - any refused memory charge (`GlobalKVCacheBudget.recordReservationRefusal`,
+    the reclaimer's `releaseRetained`);
+  - shutdown (`unloadAllModelsForShutdown`).
+
+  A slot's entries are released when its store closes (model unload). Entries
+  expire with the SSD tier's TTL (`DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS`), sliding
+  on reuse unless `DARKBLOOM_SSD_KV_TTL_MODE=fixed`. They are refused at lookup
+  once expired and swept every 60 s. Least recently used entries make room for
+  new ones.
+- **Not attached** to GLM-5.3-Flash, DiffusionGemma, native MiMo, Nemotron Super,
+  pairs, or a slot built with `DARKBLOOM_PREFIX_CACHE_MEMORY=1`. That opt-in's
+  resident tiers have no TTL, so a `memory_only` request runs there with its
+  prefix cache off. `memory_only` requests also skip the prompt-token piece
+  cache. Settings:
+  [configuration reference](../reference/configuration.md#ram-only-prefix-tier-for-memory_only-requests).
+
+### Prompt-derived memory that is not a cache
+
+Two pools keep the bytes of finished requests until they are reused or
+returned, but no lookup reaches them, so no request can read them:
+
+- MLX's freed-buffer pool, up to `DARKBLOOM_MLX_CACHE_LIMIT_GB` (default 8 GiB),
+  is reused by later allocations, which overwrite it, and is returned to the OS on
+  pressure and idle sweeps (`MLXMemoryGuard.swift`, `KVPoolReclaimer.swift`).
+- Paged pools keep freed KV pages and up to `min(2 GiB, slot grant / 8)` of free KV
+  segments (`DARKBLOOM_TTFT_SEGMENT_RETENTION`). Segments are dropped on a
+  refused admission, on memory pressure, before a load gate and after 30 s of
+  engine idleness (`EngineV2Factory+SegmentedBackend.swift`).
+
+These caches, which a later request can read, expire 30 minutes after their
+last use:
+- the SSD tier;
+- the RAM-only tier above;
+- the prompt-token piece cache (`DARKBLOOM_TTFT_PROMPT_CACHE_TTL_SECONDS`).
+
+The exception is the engine-resident tiers of the operator opt-in
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1`. They have no TTL, and `memory_only` requests
+never use them.
+
 ### SSD provider gates
 
 Standalone loading retains the pre/post weight-load hash bracket for dense
@@ -987,6 +1073,11 @@ rules applied to these signals.
    `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPExecution.swift`
    (`mtpTakeHistoryState`); opt-in per head
    (`CBv2MTPPrefixCheckpointDrafter.checkpointsNonSpeculatingRows`).
+10. A `memory_only` request's checkpoints exist only in wired RAM, never in a
+    file. The RAM-only tier refuses every call made with an ordinary receipt
+    (`darkbloom_zdr_prefix_ram_unmarked_refusals_total` stays 0), and the SSD
+    store forwards a memory-only receipt to it before any SSD path —
+    `MemoryOnlyCheckpointTier.swift` (`donate`, `stage`), `LockedHostRegion.swift`.
 
 ## Failure modes
 
@@ -1000,6 +1091,7 @@ rules applied to these signals.
 | Recurrent repeat served cold | No actual checkpoint, incompatible geometry/identity, scope mismatch, SSD stage refusal/eviction, or opt-in memory bank eviction | `HybridPrefixCache.swift`, `EngineLoopV2+HybridPrefix.swift`, `PrefixCachePolicy+Hybrid.swift` |
 | A model with a history-keeping MTP head gets no coordinator holders although its slots are cache-ready | Its requests cannot speculate and its head does not record their prompt history: providers 0.10.5 through 0.10.11 on the Qwen 3.5/3.6 builds (whose default request there carried the card's presence penalty), or a head that has not opted in (NemotronH35, MiMo V2.6, GLM5-Next) ([invariant 9](#invariants)) | `EngineLoopV2+MTPPlanning.swift` (`mtpRecordsPromptHistory`), `MTPPrefixCheckpoint.swift` (`checkpointsNonSpeculatingRows`), `CompleteCheckpointCapture.swift` |
 | Local memory hit gives no coordinator routing preference | Paged resident publication is not implemented; recurrent slot missing verified identity; or holder evidence expired/invalidated | `ResidentPrefixCacheEvidence.swift`, [coordinator/registry/cache_routing_hints.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_routing_hints.go) |
+| A `memory_only` repeat served cold | No RAM-only tier on the slot (see its attach rules), budget 0 (headroom below 4 GiB or `DARKBLOOM_ZDR_PREFIX_CACHE_RAM=off`), an entry larger than the budget, too little ledger headroom, wiring refused, or a release (pressure, load, refused charge, unload, shutdown, TTL) since the donation; see `darkbloom_zdr_prefix_ram_*` on local `/metrics` | `MemoryOnlyCheckpointPool.swift`, `MemoryOnlyPrefixCachePolicy.swift` |
 | Load refused with `pagedUnavailable` | Explicit `paged` and preflight/capacity/pool construction failed | `EngineV2Factory+BackendPreparation.swift` |
 | Every slot contiguous despite `paged` config | `DARKBLOOM_CBV2_PAGED_KV` set to a negative value, or `supportsPagedKV == false` | `EngineV2KVBackendPolicy.swift`, `EngineV2Factory+BackendPreparation.swift` |
 
@@ -1022,6 +1114,7 @@ rules applied to these signals.
 | Complete SSD construction and identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+CompletePrefixCache.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift` |
 | Complete SSD stream/import/ownership | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Read.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift` |
 | SSD tier | `provider-swift/Sources/ProviderCore/KVCacheSSD/` (`SSDPrefixCache`, `SSDPrefixCacheFactory`, `SSDPrefixCachePolicy`, `SSDBlockStore`) |
+| RAM-only tier for `memory_only` requests | `provider-swift/Sources/ProviderCore/KVCacheRAM/` (`MemoryOnlyCheckpointTier`, `MemoryOnlyCheckpointPool`, `LockedHostRegion`, `MemoryOnlyPrefixCachePolicy`) |
 | Status and outcome vocabularies | `provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (`PrefixCacheStatusReason`, `PrefixCacheDonationOutcome`) |
 
 ## Related

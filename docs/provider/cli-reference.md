@@ -4386,6 +4386,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS` | MTP verification policy: `0` returns `gemma-4-26b-qat-4bit` on M5 Ultra, M3 Ultra and M5 Max from two drafts per round to the one-draft lone-row policy (other chips already use it) |
 | `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW` | MTP verification policy (while the two-draft policy is on): `0` lets `gemma-4-26b-qat-4bit` on M5 Ultra draft two tokens at one or two decode rows again (table `[2, 2, 0]`; default: a lone row only) |
 | `DARKBLOOM_GEMMA_MTP_LONE_ROW` | MTP verification policy (where the two-draft policy is off or the chip has none): `0` lets `gemma-4-26b-qat-4bit` speculate at two to four decode rows again on M3–M5 (two on M1/M2; default: a lone row only) |
+| `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT` | Checkpoint layout (`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `gemmaNativeRowsBeforeAssistantEnabled`): `0` keeps `gemma-4-26b-qat-4bit`'s two assistant-access layers native only while the assistant is attached (the earlier rule), with MTP left on (default: native also while it is configured but not attached yet) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |

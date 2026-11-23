@@ -14,6 +14,9 @@ struct DistributedInstalledValidation: Sendable {
     let model: DistributedInstalledModel
     let workerFeatures: DistributedInstalledWorkerFeatures
 
+    /// The largest worker executable read.
+    private static let workerMaximumBytes = 256 * 1024 * 1024
+
     static func validate(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
                          deadline: UInt64) throws -> Self {
         let saved = try ClusterConfigurationStore(paths: paths).load(reference: reference)
@@ -21,7 +24,7 @@ struct DistributedInstalledValidation: Sendable {
         let local = plan.localPeer
         var inputs = [DistributedInstalledFiles.Identity]()
         let executable = try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.workerExecutable),
-            expectedSHA256: plan.capability.runtimeBinarySHA256, maximumBytes: 256 * 1024 * 1024,
+            expectedSHA256: plan.capability.runtimeBinarySHA256, maximumBytes: workerMaximumBytes,
             executable: true, deadline: deadline)
         inputs.append(executable)
         // The pinned worker must carry the collective progress guard. A pin
@@ -30,6 +33,27 @@ struct DistributedInstalledValidation: Sendable {
         try features.requireProgressGuard()
         try features.requireMiMoImageCandidate(required:plan.capability.media != nil)
         try features.requireGLMImageCandidate(required: plan.capability.glmImages != nil)
+        let pinned = try verifyPinnedFiles(&plan, paths: paths, deadline: deadline)
+        inputs += pinned.inputs
+        // Recompute native profile/Plan/arithmetic metadata using the verified
+        // installed worker. The command does not construct a model or request.
+        try DistributedCapabilityProbe.verify(plan: plan, executable: executable, deadline: deadline)
+        for input in inputs { try input.requireUnchanged() }
+
+        let result = Self(plan: plan, verifiedInputs: inputs, workerExecutable: executable, manifest: pinned.manifest,
+            model: pinned.model, workerFeatures: features)
+        try result.requireUnchanged()
+        try DistributedInstalledFiles.check(deadline)
+        return result
+    }
+
+    /// The setup's pinned files other than the worker, verified in the order `validate` verifies them: the model
+    /// configuration and manifest, the tokenizer files, and the SSH trust or the link secret. `plan` takes the
+    /// verified artifact's size.
+    private static func verifyPinnedFiles(_ plan: inout DistributedInstalledPlan, paths: ClusterUserPaths, deadline: UInt64) throws
+        -> (inputs: [DistributedInstalledFiles.Identity], manifest: ModelManifest, model: DistributedInstalledModel) {
+        let local = plan.localPeer
+        var inputs = [DistributedInstalledFiles.Identity]()
         inputs.append(try DistributedInstalledFiles.verify(plan.configurationURL,
             expectedSHA256: plan.capability.configurationSHA256,
             maximumBytes: ClusterConfigurationFiles.maximumModelConfigurationBytes, deadline: deadline))
@@ -58,16 +82,47 @@ struct DistributedInstalledValidation: Sendable {
         if let link = plan.configuration.linkControl {
             try Self.linkSecretMetadata(link.secretFile, pairingDirectory: paths.pairingDirectory)
         }
-        // Recompute native profile/Plan/arithmetic metadata using the verified
-        // installed worker. The command does not construct a model or request.
-        try DistributedCapabilityProbe.verify(plan: plan, executable: executable, deadline: deadline)
-        for input in inputs { try input.requireUnchanged() }
+        return (inputs, manifest, model)
+    }
 
-        let result = Self(plan: plan, verifiedInputs: inputs, workerExecutable: executable, manifest: manifest, model: model,
-            workerFeatures: features)
-        try result.requireUnchanged()
-        try DistributedInstalledFiles.check(deadline)
-        return result
+    /// Whether the only thing that keeps this Mac's saved setup from verifying is its worker pin, and that pin is the
+    /// worker of the release this Mac updated from (`earlier`, the kept rollback copy's worker): the installed worker
+    /// differs from the pin, `earlier`'s bytes are the pinned ones, and every other pinned file verifies. A pair whose
+    /// Macs updated while it was stopped (the cluster service re-plans only a running pair) is in that state until its
+    /// next start, whose update check sets the pair up again with the installed worker (`ClusterService`).
+    static func pinsEarlierReleaseWorker(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
+                                         earlier: URL, deadline: UInt64) -> Bool {
+        pinsOnlyAnotherWorker(reference: reference, paths: paths, deadline: deadline) { _, pin in
+            (try? DistributedInstalledFiles.digest(earlier, maximumBytes: workerMaximumBytes, executable: true,
+                                                   deadline: deadline))?.sha256 == pin
+        }
+    }
+
+    /// The same state after more than one update while the pair was stopped, when the kept rollback copy is a later
+    /// release than the one the setup pins: the setup names this build's own worker (`thisBuildsWorker`, the one in
+    /// the running app, which the next start's re-plan pins), that worker differs from the pin and is signed like this
+    /// provider (`signedWorker`: the same certificate and the worker's identifier, so neither foreign nor changed),
+    /// and every other pinned file verifies.
+    static func pinsAnotherBuildsWorker(reference: ClusterConfigurationReference, paths: ClusterUserPaths, deadline: UInt64,
+                                        thisBuildsWorker: URL, signedWorker: (URL) -> Bool) -> Bool {
+        let own = thisBuildsWorker.resolvingSymlinksInPath().standardizedFileURL.path
+        return pinsOnlyAnotherWorker(reference: reference, paths: paths, deadline: deadline) { worker, _ in
+            worker.resolvingSymlinksInPath().standardizedFileURL.path == own && signedWorker(worker)
+        }
+    }
+
+    /// The installed worker the setup names differs from its pin, `accepts(installed worker, pin)`, and every other
+    /// pinned file verifies, in `validate`'s order.
+    private static func pinsOnlyAnotherWorker(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
+                                              deadline: UInt64, accepts: (URL, String) -> Bool) -> Bool {
+        guard let saved = try? ClusterConfigurationStore(paths: paths).load(reference: reference),
+              var plan = try? DistributedInstalledPlan(saved: saved, paths: paths) else { return false }
+        let pin = plan.capability.runtimeBinarySHA256, worker = URL(fileURLWithPath: plan.localPeer.workerExecutable)
+        guard let installed = try? DistributedInstalledFiles.digest(worker, maximumBytes: workerMaximumBytes, executable: true,
+                                                                    deadline: deadline),
+              installed.sha256 != pin, accepts(worker, pin),
+              (try? verifyPinnedFiles(&plan, paths: paths, deadline: deadline)) != nil else { return false }
+        return true
     }
 
     func requireUnchanged() throws {

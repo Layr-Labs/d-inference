@@ -1842,9 +1842,18 @@ cap is the largest value that check admits
 (`EngineV2Factory.glm5NextActivatableRows`, `glm5NextActivationAdmits`). With
 2048-token steps at 262,144 context the calibrated price is 55,057 bytes per
 context token plus 5.59, 7.40 and 11.02 GB of setup for one, two and four rows,
-so 56.8 GB (the admission of a 256 GiB host at the raised GPU limit) runs two or
+so 56.8 GB (the admission of a 256 GiB host at the raised GPU limit) runs
 three rows; four need about 72.4 GB, because pool
-tokens and the admissible ceiling derive from the same capacity. Publication
+tokens and the admissible ceiling derive from the same capacity. A grant held
+to the GPU limit (51.5 GB at the macOS default) would fit only two that way, so
+the check is also priced for the tokens the GLM gate admits within it:
+(admissible − setup) / (KV + step scratch per token)
+(`EngineV2Factory.glm5NextAdmittedBytesPerContextToken`, which `EngineV2` takes
+under the same name). The rows are capped at those the
+same set gets without the hold (`glm5NextServingRows`, the re-slice's
+`NewcomerReslice.rowsReferenceBytes`): three for GLM alone on a 256 GB Mac
+at either limit.
+`DARKBLOOM_GLM_GPU_LIMIT_KV=0` keeps the row-and-context check alone. Publication
 also charges one step's setup and the admission watermark
 (`GLM5NextCoordinatorServing.fullContextRefusal`).
 

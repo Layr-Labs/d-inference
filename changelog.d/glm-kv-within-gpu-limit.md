@@ -16,9 +16,8 @@
   priced every row at the 262,144-token context, so a 256 GB Mac at the
   default limit would have dropped from 3 rows to 2. It is now priced for the
   tokens the GLM gate can admit within the grant (KV and step scratch per
-  token), and the rows stay those the same set gets without the hold: 3 on a
-  256 GB Mac at either limit (mlx-swift-lm
-  `fix/glm-envelope-admitted-tokens`).
+  token, with a matching mlx-swift-lm change), and the rows stay those the
+  same set gets without the hold: 3 on a 256 GB Mac at either limit.
 - `darkbloom start` and `darkbloom doctor` say when the lower limit holds GLM's
   KV cache, and how to raise it: `darkbloom cluster gpu-limit`, then
   `darkbloom restart` (`--undo` takes it back).

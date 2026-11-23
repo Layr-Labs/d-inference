@@ -150,7 +150,8 @@ struct GLM5NextProtectedFactoryTests {
     /// The engine's step-envelope check gets the charge the GLM gate reserves
     /// per token (KV and step scratch), so it is priced for the tokens the gate
     /// admits; with `DARKBLOOM_GLM_GPU_LIMIT_KV=0` it gets none and keeps its
-    /// row-and-context bound.
+    /// row-and-context bound. The bridge charges at least that per request
+    /// token, so the gate never admits more tokens than the check is priced for.
     @Test(arguments: [true, false])
     func theEngineGetsTheAdmittedTokenCharge(enabled: Bool) async throws {
         try await withFixture { fixture in
@@ -173,7 +174,10 @@ struct GLM5NextProtectedFactoryTests {
             let engine = try #require(await bundle.bridge.ownedEngine as? EngineV2)
             let charge = engine.glm5NextAdmittedBytesPerContextToken
             if enabled {
-                #expect(try #require(charge) > 0, "KV and step scratch per token")
+                let stated = try #require(charge)
+                #expect(stated > EngineV2Factory.glm5NextKVBytesPerToken(engine.layerKinds), "KV and step scratch")
+                let bridgeRate = await bundle.bridge.kvBytesPerToken
+                #expect(stated <= bridgeRate, "the bridge's per-token charge")
             } else {
                 #expect(charge == nil)
             }

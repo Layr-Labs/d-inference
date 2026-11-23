@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-23
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -49,9 +49,10 @@ least 256 GB of unified memory. The provider reports runtime capability
 and memory in the reason (`GLM5NextHardwareRequirement`). On a 256 GiB host with
 the GPU limit raised to 240 GiB (below), the post-load admission is about 56.8 GB (about
 48.9 GB at the macOS default limit): one 262,144-token request fits, and
-shorter requests run concurrently by their actual reserved tokens, at most two
-or three at once because the engine's step-scratch activation check caps
-running rows (`EngineV2Factory.glm5NextActivatableRows`). The provider also
+shorter requests run concurrently by their actual reserved tokens, at most
+three at once on a 256 GB Mac at either limit: GLM runs the rows its set gets
+without the GPU-limit hold, and the engine's step-scratch check is priced for
+the tokens the GLM gate admits (`EngineV2Factory.glm5NextServingRows`). The provider also
 refuses GLM loads and prefetches when MTP is disabled. The
 [native implementation](../design/glm53-flash-native.md) does not reduce these
 memory safeguards.

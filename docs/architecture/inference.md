@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -5328,9 +5328,10 @@ requests 1 %), so `auto` requests, which return calls as generated, are left as 
   default GPU stream, whose command buffers execute in submission order. On that
   stream the tower's command buffers queued behind the running rows' steps, and
   each step behind the tower's buffers submitted before it, so a busy Mac's media
-  preparation took several times its idle time. A `Qwen35` wrapper (and its MoE
-  subclass) now runs the processor and the tower inside `Stream.withNewDefaultStream`
-  (`EngineV2VisionPrefill.onMediaPrepStream`). That removes the shared queue's
+  preparation took several times its idle time. With
+  `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=1` (opt-in, off by default), a `Qwen35`
+  wrapper (and its MoE subclass) runs the processor and the tower inside
+  `Stream.withNewDefaultStream` (`EngineV2VisionPrefill.onMediaPrepStream`). That removes the shared queue's
   ordering; the two queues still share the GPU, memory and MLX's `evalLock`.
   Before the scope ends, every array of the submission is evaluated and the
   stream is synchronized (on a thrown exit too), which takes any error a failed
@@ -5339,12 +5340,13 @@ requests 1 %), so `auto` requests, which return calls as generated, are left as 
   state, so no lazy split of the process-global key stays bound to the stream.
   The tower selects kernels by device, shape, dtype and settings, not by
   stream, so the embeddings are expected to be identical (measured in
-  `QwenMediaPrepStreamTests` and the release proof). Families whose fused
+  `QwenMediaPrepStreamTests`). It stays opt-in until first-use identity after a
+  cold start is proven on hardware. Families whose fused
   kernels require the default stream (`MLXProcessStreams`), and
   `PrismHadamardQwen35`, `Qwen4Exp` and `Qwen3VL`, keep the default stream. The
   Qwen 3.8 tensor-parallel owner already prepares its patches on a CPU stream
-  of its own (`QwenTensorParallelMedia`). `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0`
-  restores the shared stream.
+  of its own (`QwenTensorParallelMedia`). Unset, or any value other than `1`,
+  `true`, `on` or `yes`, keeps the shared stream.
 - **N² budget.** `N_max = floor(sqrt(maxBufferLength / (headFactor ×
   attentionElementBytes)))` with `attentionElementBytes = 2`,
   `fusedAttentionHeadDims = {64, 80, 128}` (`headFactor = 1` when fused-eligible,

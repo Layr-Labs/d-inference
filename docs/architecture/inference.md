@@ -7154,7 +7154,10 @@ staging stays in place. A marker that cannot be used (an earlier format,
 malformed, extra links or unsafe metadata) authorizes no removal and leaves a
 retry unresolved; the next unpair replaces it, in one rename, with its own
 intent for the current selection (a second `.cluster-*.tmp` link that an
-earlier version's interrupted publication left is removed first). While an
+earlier version's interrupted publication left is removed first). So does a
+marker the next unpair cannot read because of an I/O error: an earlier
+selection's pending cleanup is then dropped, and its files fall under the limit
+for previously selected disks. While an
 earlier unpair's cleanup waits for its original cache selection, a later
 unpair on that Mac does not remove the current selection's pair cache; those
 files follow ordinary TTL cleanup. A plan that lost its `in-use` file gets a

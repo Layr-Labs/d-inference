@@ -610,6 +610,7 @@ public enum LaunchAgent: Sendable {
         MTPAutomaticVerificationPolicy.gemmaLoneRowEnvironmentKey,
         MTPAutomaticVerificationPolicy.gemmaTwoDraftsEnvironmentKey,
         MTPAutomaticVerificationPolicy.gemmaM5UltraLoneRowEnvironmentKey,
+        EngineV2KVQuantizationPolicy.gemmaNativeRowsBeforeAssistantEnvironmentKey,
         "DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS",
         // SDK-read (`CBv2MTPConfig.envPenaltySpeculation`, once per process): rows
         // with a presence/frequency penalty speculate with exact acceptance;

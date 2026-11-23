@@ -328,6 +328,8 @@ extension ProviderLoop {
         }
         modelSlots.removeValue(forKey: modelID)
         modelsUnloading.remove(modelID)
+        let regrowth = UUID()
+        pendingSurvivorRegrowth[regrowth] = modelID
         if retired {
             clearCacheAfterConfirmedNativeOwnership()
             nemotronSuperMemoryRetirement = NativeMemoryRetirementWindow()
@@ -335,6 +337,7 @@ extension ProviderLoop {
         await refreshActivationReserve()
         await resliceGrowSurvivors()
         for waiter in unloadingWaiters.removeValue(forKey: modelID) ?? [] { waiter.resume() }
+        pendingSurvivorRegrowth.removeValue(forKey: regrowth)
         syncWarmModelState()
         if !isShuttingDown { persistLoadedModelSet() }
         await updateAggregateCapacity()

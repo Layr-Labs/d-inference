@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-22
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -947,9 +947,11 @@ paged allowlist start at the legacy ceiling 8
 `machdep.cpu.brand_string`, not full detection). The width changes no KV grant,
 load quotation or activation reserve (already sized for B=8); it only raises how
 many admitted requests a slot may run at once, still bounded by fixed-workspace
-memory concurrency and the coordinator's per-model quality cap. Under Low Power
-Mode or a non-nominal thermal state the bridge serves and reports the configured
-width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
+memory concurrency and the coordinator's per-model quality cap. The automatic
+width stays at 8 at nominal or fair thermal state with Low Power Mode off.
+Low Power Mode, a serious or critical thermal state, or an unknown state returns
+the bridge to the configured width (`EngineV2Bridge.widthPostureAllowsExpansion`).
+A reviewed profile's expanded width requires nominal thermal state. Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
 
 The [prompt geometry](inference.md#prompt-geometry) likewise changes no KV

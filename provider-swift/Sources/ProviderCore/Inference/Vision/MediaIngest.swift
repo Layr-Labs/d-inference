@@ -148,6 +148,45 @@ public enum MediaIngest {
         return false
     }
 
+    /// True when an image or video part sits in a system, assistant or tool
+    /// message. Such media is rendered where the model's chat template renders
+    /// it (`buildUserInput(keepNonUserMedia:)`); a request without it takes the
+    /// user-media path unchanged.
+    public static func hasNonUserMedia(_ request: OpenAIChatCompletionRequest) -> Bool {
+        request.messages.contains { message in
+            guard message.role != .user, case .parts(let parts) = message.content else { return false }
+            return parts.contains { part in
+                switch part {
+                case .imageURL, .videoURL: true
+                case .text, .inputAudio, .unsupported: false
+                }
+            }
+        }
+    }
+
+    /// `DARKBLOOM_MEDIA_ON_EVERY_ROLE`: media in a system, assistant or tool
+    /// message is kept and rendered where the model's chat template renders it,
+    /// by default; `0`, `off`, `false` or `no` restores keeping only user-message
+    /// media (the others refused, or dropped beside a user image). Read once per
+    /// process.
+    static let everyRoleEnvironmentKey = "DARKBLOOM_MEDIA_ON_EVERY_ROLE"
+    static let everyRoleEnabled = !ToolOutputLeniencySwitch.isOff(
+        ProcessInfo.processInfo.environment[everyRoleEnvironmentKey])
+
+    /// Whether `request`'s media outside user messages is kept and placed by
+    /// the chat template: the switch is on and such media exists. False for
+    /// every request whose media is only in user messages.
+    static func placesNonUserMedia(_ request: OpenAIChatCompletionRequest) -> Bool {
+        everyRoleEnabled && hasNonUserMedia(request)
+    }
+
+    /// The messages whose image and video parts the vision ingest keeps, in
+    /// request order: every message when `placesNonUserMedia(request)`, else
+    /// the user messages. Scans that must agree with the built input read these.
+    static func messagesKeepingMedia(of request: OpenAIChatCompletionRequest) -> [OpenAIChatMessage] {
+        placesNonUserMedia(request) ? request.messages : request.messages.filter { $0.role == .user }
+    }
+
     /// Classification only; the actual loaded native audio profile is still
     /// required. Generic text/vision/diffusion paths must not drop this part.
     public static func hasAudio(_ request: OpenAIChatCompletionRequest) -> Bool {
@@ -287,12 +326,15 @@ public enum MediaIngest {
     /// inline image/video content parts. Inline MP4s are retained in memory by
     /// their `UserInput.Video` values for the lifetime of the returned input.
     /// Without `maxImagesPerRequest`, the image cap is the request's model's
-    /// (`imageCap(forModel:)`).
+    /// (`imageCap(forModel:)`). Serving callers pass
+    /// `keepNonUserMedia: placesNonUserMedia(request)`, so the scans that read
+    /// `messagesKeepingMedia(of:)` agree with the input built here.
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls = .init(),
         tools: [ToolSpec]? = nil,
         preserveTemplateFields: Bool = false,
+        keepNonUserMedia: Bool = false,
         modelType: String? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
@@ -310,6 +352,12 @@ public enum MediaIngest {
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
         var chatMessages: [Chat.Message] = []
         let retainToolMedia = preserveTemplateFields && modelType == "diffusion_gemma"
+        // Media outside user messages: every message keeps its media and its
+        // template fields, and the chat template places it, as the reference
+        // server does. A template that raises on it, or leaves it no
+        // placeholder, refuses the request (`EngineV2VisionPrefill.prepare`).
+        // Without such media nothing below changes.
+        let everyRole = keepNonUserMedia && hasNonUserMedia(request)
         var totalPixels = 0
         var totalVideoPixels = 0
         var imageCount = 0
@@ -328,25 +376,32 @@ public enum MediaIngest {
             case .user:
                 chatMessages.append(.user(text, images: images, videos: videos))
             case .system:
-                chatMessages.append(.system(text))
+                chatMessages.append(everyRole
+                    ? .init(role: .system, content: text, images: images, videos: videos) : .system(text))
             case .assistant:
-                chatMessages.append(.assistant(text))
+                chatMessages.append(everyRole
+                    ? .init(role: .assistant, content: text, images: images, videos: videos) : .assistant(text))
             case .tool:
+                let keep = retainToolMedia || everyRole
                 chatMessages.append(.init(role: .tool, content: text,
-                    images: retainToolMedia ? images : [], videos: retainToolMedia ? videos : []))
+                    images: keep ? images : [], videos: keep ? videos : []))
             }
             if preserveTemplateFields {
                 chatMessages[chatMessages.count - 1].templateFields = message.templateMessageDict()
             }
         }
-        if preserveTemplateFields {
-            // Preserve the validated native Qwen4 request's interleaved order.
+        if preserveTemplateFields || everyRole {
+            // Preserve the interleaved order of the validated native Qwen4
+            // request, or of media outside user messages.
             // Only symbolic placeholders enter the template; decoded media
             // remains owned by UserInput, never rendered as URLs/base64 text.
             let generator = Qwen3VLMessageGenerator()
             let messages = try zip(request.messages, chatMessages).map { original, decoded in
-                var message = generator.generate(messages: [decoded])[0]
-                if original.role == .user || (retainToolMedia && original.role == .tool),
+                // The every-role path takes each message's own template fields,
+                // as the reference server passes them (no reasoning split).
+                var message = preserveTemplateFields
+                    ? generator.generate(messages: [decoded])[0] : original.templateMessageDict()
+                if original.role == .user || (retainToolMedia && original.role == .tool) || everyRole,
                     case .parts(let parts) = original.content {
                     message["content"] = try parts.compactMap { part -> [String: String]? in
                         switch part {

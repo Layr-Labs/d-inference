@@ -15,16 +15,17 @@ struct ClusterOnboardingLeadershipWaitTests {
         var clock = Date(timeIntervalSince1970: 1_000)
     }
 
-    private func wait(_ run: Run, seconds: Double = 40, leads: Bool = true,
-                      confirmedAfter: Int?) -> ClusterOnboardingFailure? {
-        let deadline = run.clock.addingTimeInterval(seconds)
-        return OnboardingLive.awaitLeadership(deadline: deadline,
+    private func wait(_ run: Run, seconds: Double = 40, latest: Double? = nil, leads: Bool = true,
+                      confirmedAfter: Int?, window: @escaping (Date) -> Double? = { _ in nil }) -> ClusterOnboardingFailure? {
+        let deadline = run.clock.addingTimeInterval(seconds), last = run.clock.addingTimeInterval(latest ?? seconds)
+        return OnboardingLive.awaitLeadership(deadline: deadline, latest: last,
             waiting: { run.lines.append($0); run.events.append("said") },
             leadsHere: { leads },
             confirmed: {
                 defer { run.polls += 1 }
                 return confirmedAfter.map { run.polls >= $0 } ?? false
             },
+            window: { window(run.clock) },
             other: "the other Mac",
             failure: { .init("not confirmed") },
             pause: { run.events.append("pause"); run.clock.addTimeInterval(0.25) },
@@ -56,5 +57,50 @@ struct ClusterOnboardingLeadershipWaitTests {
         #expect(failure == .init("not confirmed"))
         #expect(run.lines == [OnboardingLive.leadershipWaitLine(other: "the other Mac", seconds: 3)], "rounded up")
         #expect(run.events.filter { $0 == "said" }.count == 1 && run.events.filter { $0 == "pause" }.count == 9)
+    }
+
+    // The window the service publishes (`ClusterUnconfirmedLeadership.windowWaitKey`): a claim that confirms a little
+    // after the fixed wait is waited for, never past `latest`.
+
+    @Test func theWaitCoversTheWindowTheServicePublishes() {
+        let run = Run()
+        let start = run.clock
+        // A 30 s window counting down; at 20 s it starts again (the service woke from a stall), so it ends at 50 s.
+        let failure = wait(run, seconds: 40, latest: 80, confirmedAfter: nil, window: { clock in
+            let t = clock.timeIntervalSince(start)
+            return t < 20 ? 30 - t : max(0, 50 - t)
+        })
+        #expect(failure == .init("not confirmed"))
+        #expect(run.lines == [OnboardingLive.leadershipWaitLine(other: "the other Mac", seconds: 40)], "said once, at the start")
+        #expect(run.clock.timeIntervalSince(start) >= 52 && run.clock.timeIntervalSince(start) < 52.5,
+                "refused 2 s after the restarted window, not at 40 s: \(run.clock.timeIntervalSince(start))")
+    }
+
+    @Test func onlyARecentlyWrittenStatusCounts() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        #expect(ClusterService.writtenRecently(now.addingTimeInterval(-9), now: now, within: 10))
+        #expect(!ClusterService.writtenRecently(now.addingTimeInterval(-11), now: now, within: 10), "a stalled service's status")
+        #expect(!ClusterService.writtenRecently(nil, now: now, within: 10))
+        #expect(!ClusterService.writtenRecently(now.addingTimeInterval(5), now: now, within: 10), "a clock that stepped back")
+    }
+
+    @Test func aWindowThatNeverEndsIsWaitedForAtMostUntilTheLatest() {
+        let run = Run()
+        let start = run.clock
+        // A service that stalled keeps publishing the same window.
+        #expect(wait(run, seconds: 40, latest: 80, confirmedAfter: nil, window: { _ in 30 }) == .init("not confirmed"))
+        #expect(run.clock.timeIntervalSince(start) >= 80 && run.clock.timeIntervalSince(start) < 80.5, "capped at the latest")
+    }
+
+    @Test func withTheWindowWaitOffTheFixedWaitHolds() {
+        let run = Run()
+        let start = run.clock
+        // `awaitConfirmedLeadership` passes `latest` = `deadline` when the switch is off.
+        #expect(wait(run, seconds: 40, latest: 40, confirmedAfter: nil, window: { _ in 30 }) == .init("not confirmed"))
+        #expect(run.clock.timeIntervalSince(start) >= 40 && run.clock.timeIntervalSince(start) < 40.5)
+        #expect(ClusterUnconfirmedLeadership.waitsWindow([:]) && !ClusterUnconfirmedLeadership.waitsWindow(
+            [ClusterUnconfirmedLeadership.windowWaitKey: " Off "]))
+        #expect(ClusterUnconfirmedLeadership.stopsAlone([:]) && !ClusterUnconfirmedLeadership.stopsAlone(
+            [ClusterUnconfirmedLeadership.stopAloneKey: "0"]))
     }
 }

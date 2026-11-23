@@ -1820,18 +1820,22 @@ with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
 exits non-zero on a failure. When the classifier selects `cluster` (see below),
-CI (`.github/workflows/provider-tests.yml`) runs them in three places. The job
+CI (`.github/workflows/provider-tests.yml`) runs them in four places. The job
 `cluster-release-checks` (Cluster Release Build Checks; its runner is in
 [Job sizes](build.md#job-sizes)) runs
 `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh` and
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`, which compile a
-release build of the cluster runtime, and
+release build of the cluster runtime. Shard 6 of Cluster Runtime Tests runs
 `libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh`: the worker
 package's own request lifecycle tests (`WorkerTests` and `WorkerLaneTests`, the
 worker coordinator over its real pipes with a fake runtime, in a debug build
-with `DARKBLOOM_WORKER_TEST_JOBS` jobs, 4 by default and 12 in CI), among them
+with `DARKBLOOM_WORKER_TEST_JOBS` jobs, 4 by default and in CI), among them
 a running request that a rank's memory refused ending alone while the worker
-serves the next. No other job runs that package's tests. Shard 2 of
+serves the next. They need no test products, so the shard starts them in the
+background (`scripts/ci-background-step.py`) while it waits for the cluster
+build, builds them in `DARKBLOOM_WORKER_TEST_SCRATCH` outside the checkout,
+and waits for their result before its runtime tests start; the runtime tests
+run either way. No other job runs that package's tests. Shard 2 of
 `test-cluster-focused` (Cluster Focused Checks) runs
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
@@ -1888,21 +1892,19 @@ CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
 in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
-the selection runs no test or skips a test. The test steps of shards 2, 3, 6
-and 7 are planned to stay under about 330 s on a 4-vCPU Darkbloom runner, and
-those of shards 1, 4 and 5 under about 470 s. Seconds
-below are each process's wall time in dev run 44670152270 (2026-11-20),
-before this layout, except where a row names the 2026-11-21 Darkbloom runs
-44909381968, 44912466550 and 44914459288.
+the selection runs no test or skips a test. Every shard's test step is
+planned to stay under about 300 s on a 4-vCPU Darkbloom runner. Seconds below
+are each process's wall time in the Darkbloom runs 44924815069 and
+44927907327 (2026-11-21), in which shards 1, 4 and 5 ran 267 to 395 s and
+ended a run's cluster jobs, and the other shards 169 to 243 s.
 
-Runtime shard 1 runs one process at a time: `base` (198 s), then the share
-probe, then `qwen-tp-aqv-gpu` (151 s). The probe times each rank's share
-against a 1.5 s budget, so it runs right after `base` and never on a Mac right
-after the concurrent GPU groups. After the build database fix, shard 1 was
-the longest runtime shard (411 and 469 s in runs 44895671420 and 44898503457),
-so the three longest base suites that need no model's memory run in
-`base-shard-5` instead, after shard 5's first group, which ended about 100 s
-before its second.
+Runtime shard 1 runs one process at a time: `base` (108 to 145 s), then the
+share probe, then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`,
+92 to 109 s). The probe times each rank's share against a 1.5 s budget, so it
+runs right after `base` and never on a Mac right after the concurrent GPU
+groups. After the build database fix, shard 1 was the longest runtime shard
+(411 and 469 s in runs 44895671420 and 44898503457), so the three longest base
+suites that need no model's memory run in `base-shard-5` instead.
 
 Shards 2 to 7 each run two groups at the same time, each in plan order with
 its own `TMPDIR`. Their selections share one build with `--ignore-lock` and
@@ -1913,21 +1915,22 @@ they never open `.build/build.db`. The second group still starts
 `base-batch-session` failed its bitwise batch-against-solo check
 (`actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives`) beside
 a GPU group that ran 468 s instead of 260 to 308 s. Shards 2, 3, 6 and 7
-run a GPU group beside a CPU group of the batch-session suite
-(`QwenTensorParallelBatchSessionTests`). On five shards, shards 2 and 3 ran 439
-to 571 s on Darkbloom and ended last in two of those three runs; shards 6 and 7
-take `qwen-tp-mtp-gpu`, the prefix depth test of the batch GPU switch, the GLM
-paged-KV selection and three of the suite's tests in processes of their own. Shards 4 and 5 run model-free base
-suites, nearly all on the CPU, where one process keeps about one vCPU busy.
+run a GPU group beside a CPU group that starts with a selection of the
+batch-session suite (`QwenTensorParallelBatchSessionTests`); three of them
+then run a base selection that ran on shard 4 or 5, where shards 4 and 5 ran
+316 to 395 s. On five shards, shards 2 and 3 ran 439 to 571 s on Darkbloom.
+Shards 4 and 5 run model-free base suites, nearly all on the CPU, where one
+process keeps about one vCPU busy. Shard 6 also runs the worker package's
+request lifecycle tests while it waits for the cluster build (above).
 
 | Shard | Group 1 | Group 2 |
 |---|---|---|
-| 2 | `qwen-tp-batch-gpu` (364 to 400 s on 2026-11-21 with its prefix depth test, 113 to 126 s of it), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (368 to 393 s on 2026-11-21 with the two history tests, 187 to 200 s of it) |
-| 3 | `qwen-tp-batch-gpu-paged` (66 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-warm-prefix-tier`: the warm prefix tier test (`BATCH_SESSION_WARM_PREFIX_TIER_TESTS`, 217 to 261 s on 2026-11-21) |
-| 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 218 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 99 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 201 s), `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 82 s), then `base-shard-4` (three small suites, `SHARD_4_BASE_SUITES`, 33 s) |
-| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 164 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 139 s), then `base-shard-5` (the synthetic Qwen 3.5 stage KV and SSD prefix record suites, `SHARD_5_BASE_SUITES`, 72 to 89 s in runs 44895671420 and 44898503457) | `base-gemma` (the other Gemma suites, 130 s), `base-mimo-tp` (the four MiMo tensor-parallel suites, 106 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 96 s) |
-| 6 | `qwen-tp-mtp-gpu` (251 to 316 s on 2026-11-21) | `base-batch-session-ssd-prefix-tier`: the balanced SSD prefix tier test (`BATCH_SESSION_SSD_PREFIX_TIER_TESTS`, 136 to 161 s on 2026-11-21) |
-| 7 | `qwen-tp-batch-gpu-prefix-depth` (the batch GPU switch's `deepRestoresEqualColdPrefillOnBothRanks`, the one test of its suite that the switch enables), then `glm53-paged-kv` (37 to 62 s on 2026-11-21) | `base-batch-session-histories`: the suite's two history tests (`BATCH_SESSION_HISTORY_TESTS`) |
+| 2 | `qwen-tp-batch-gpu` (182 s), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (155 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 86 s) |
+| 3 | `qwen-tp-batch-gpu-paged` (75 to 89 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-paged-kv` (35 to 54 s), `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-warm-prefix-tier`: the warm prefix tier test (`BATCH_SESSION_WARM_PREFIX_TIER_TESTS`, 179 to 217 s) |
+| 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 195 to 247 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 183 to 231 s), then `base-shard-4` (three small suites, `SHARD_4_BASE_SUITES`, 32 to 46 s) |
+| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 146 s), then `base-shard-5` (the synthetic Qwen 3.5 stage KV and SSD prefix record suites, `SHARD_5_BASE_SUITES`, 65 to 67 s) | `base-gemma` (the other Gemma suites, 123 to 125 s), then `base-mimo-tp` (the four MiMo tensor-parallel suites, 101 to 104 s) |
+| 6 | `qwen-tp-mtp-gpu` (179 s) | `base-batch-session-ssd-prefix-tier`: the balanced SSD prefix tier test (`BATCH_SESSION_SSD_PREFIX_TIER_TESTS`, 112 s), then `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 75 to 87 s) |
+| 7 | `qwen-tp-batch-gpu-prefix-depth` (the batch GPU switch's `deepRestoresEqualColdPrefillOnBothRanks`, the one test of its suite that the switch enables, 80 s), then `qwen-tp-aqv-gpu` (128 to 161 s) | `base-batch-session-histories`: the suite's two history tests (`BATCH_SESSION_HISTORY_TESTS`, 148 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 89 s) |
 
 Each Gemma suite has exactly one base selection of whole Gemma suites; only
 `Gemma4TensorParallelTests` also has a selection of one of its functions.

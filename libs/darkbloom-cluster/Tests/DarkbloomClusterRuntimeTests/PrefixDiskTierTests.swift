@@ -874,6 +874,31 @@ extension PrefixDiskTierTests {
         tier.close()
     }
 
+    /// A use never revives an expired record: a touch leaves it expired, a
+    /// restore refuses it, and the same prompt's next persist writes it again.
+    @Test func anExpiredRecordIsWrittenAgainNotRevived() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(7_500..<7_540)
+        let tier = try openTier(configuration(root) { $0.expirySweepSeconds = 0 })
+        let captured = states(committed: 39, frontiers: [], seed: 7)
+        tier.persist(scope: "s", tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20))
+        let url = try onlyRecord(tier)
+        let first = try Data(contentsOf: url)
+        let expiry = Date().timeIntervalSince1970 + Double(tier.configuration.ttlSeconds) + 5
+        tier.now = { expiry }
+        tier.touch(scope: "s", tokens: tokens, frontier: 39)
+        #expect(tier.frontiers(scope: "s", tokens: tokens, maximumFrontier: 39).isEmpty)
+        #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 39, check: {}) == nil)
+        tier.persist(scope: "s", tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20))
+        #expect(tier.stats.expirations == 1 && tier.recordCount == 1)
+        #expect(tier.frontiers(scope: "s", tokens: tokens, maximumFrontier: 39) == [39])
+        #expect(try Data(contentsOf: url) != first, "a new record under the same name")
+        tier.close()
+    }
+
     /// Another plan's record, kept at load because it was live, goes when it
     /// expires too, while the rank that kept it serves its own plan.
     @Test func anIdleRankDeletesAnotherPlansRecordPastItsTTL() throws {

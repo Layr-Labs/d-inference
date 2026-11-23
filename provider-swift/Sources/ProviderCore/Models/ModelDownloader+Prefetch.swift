@@ -105,15 +105,17 @@ extension ModelDownloader {
 
         // Sequential downloads (one at a time) so prefetch yields to inference
         // and never saturates bandwidth the way the foreground 4-way concurrent
-        // download does: one file's ranges (`segmentsPerFile`, 4 by default) are
-        // as many connections as the foreground's files without ranges.
+        // download does: one file's ranges (`segmentsPerFile`, 4 by default),
+        // of the background network service type (`backgroundRanges`).
         // Each file: skip-if-valid, else fetch + verify.
+        var worker = self
+        worker.backgroundRanges = true
         for job in jobs {
             try Task.checkCancellation()
             if Self.fileMatches(job.destination, size: job.file.sizeBytes, sha256: job.file.sha256) {
                 continue
             }
-            try await downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact)
+            try await worker.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact)
             progress.add(job.file.sizeBytes)
             onByteProgress?(progress.done, total)
         }

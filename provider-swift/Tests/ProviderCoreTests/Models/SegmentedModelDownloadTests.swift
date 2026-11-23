@@ -13,13 +13,15 @@ private final class RangedCDNProtocol: URLProtocol, @unchecked Sendable {
         var headers: [String: String]
         var body: Data
         var end: End = .finish
+        /// Fail with a transport error before any response.
+        static let unreachable = Reply(status: 0, headers: [:], body: Data())
     }
     /// `(request, first requested byte or nil, the host's body)`; nil keeps the standard reply.
     typealias Override = @Sendable (URLRequest, Int?, Data) -> Reply?
 
     nonisolated(unsafe) private static var bodies: [String: Data] = [:]
     nonisolated(unsafe) private static var override: Override?
-    nonisolated(unsafe) private static var requests: [(key: String, range: String?)] = []
+    nonisolated(unsafe) private static var requests: [(key: String, request: URLRequest)] = []
     /// Seconds each reply is held before it is sent (0: sent at once), so requests overlap.
     nonisolated(unsafe) private static var hold: TimeInterval = 0
     nonisolated(unsafe) private static var inFlight: [String: Int] = [:]
@@ -55,7 +57,12 @@ private final class RangedCDNProtocol: URLProtocol, @unchecked Sendable {
 
     /// The `Range` header of each request for `key` (a host, or a file name), in order.
     static func ranges(host key: String = "r2.test") -> [String?] {
-        lock.withLock { requests }.filter { $0.key == key }.map(\.range)
+        captured(host: key).map { $0.value(forHTTPHeaderField: "Range") }
+    }
+
+    /// Every request for `key`, in order.
+    static func captured(host key: String = "r2.test") -> [URLRequest] {
+        lock.withLock { requests }.filter { $0.key == key }.map(\.request)
     }
 
     static func bounds(_ header: String?) -> (first: Int, last: Int?)? {
@@ -86,7 +93,7 @@ private final class RangedCDNProtocol: URLProtocol, @unchecked Sendable {
         let header = request.value(forHTTPHeaderField: "Range")
         let (body, override) = Self.lock.withLock { () -> (Data?, Override?) in
             let key = Self.bodies[url.host!] == nil ? url.lastPathComponent : url.host!
-            Self.requests.append((key, header))
+            Self.requests.append((key, request))
             return (Self.bodies[key], Self.override)
         }
         guard let body else {
@@ -114,6 +121,10 @@ private final class RangedCDNProtocol: URLProtocol, @unchecked Sendable {
     }
 
     private func send(_ reply: Reply) {
+        guard reply.status > 0 else {
+            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            return
+        }
         let response = HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1",
                                        headerFields: reply.headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -144,6 +155,13 @@ private final class Counter: @unchecked Sendable {
     private var counts: [Int: Int] = [:]
     /// How many times `key` was seen before this call.
     func next(_ key: Int) -> Int { lock.withLock { defer { counts[key, default: 0] += 1 }; return counts[key, default: 0] } }
+}
+
+private final class Flags: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Bool] = []
+    func record(_ value: Bool) { lock.withLock { values.append(value) } }
+    var all: [Bool] { lock.withLock { values } }
 }
 
 private final class ProgressLog: @unchecked Sendable {
@@ -236,16 +254,18 @@ struct SegmentedModelDownloadTests {
         #expect(RangedCDNProtocol.ranges() == [nil])
     }
 
-    @Test("a source that ignores ranges or reports another size gets the single-stream GET",
-          arguments: ["ignores", "other total"])
+    @Test("a probe answered without ranges or for another size gets the single-stream GET",
+          arguments: ["ignores", "other total", "416", "400"])
     func probeRefused(reason: String) async throws {
         let size = Self.size
         RangedCDNProtocol.reset(bodies: ["r2.test": bytes]) { request, first, body in
             guard first == 0, request.value(forHTTPHeaderField: "Range") == "bytes=0-0" else { return nil }
-            if reason == "ignores" {
-                return .init(status: 200, headers: ["Content-Length": "\(body.count)"], body: body)
+            switch reason {
+            case "ignores": return .init(status: 200, headers: ["Content-Length": "\(body.count)"], body: body)
+            case "416": return .init(status: 416, headers: ["Content-Range": "bytes */\(body.count)"], body: Data())
+            case "400": return .init(status: 400, headers: [:], body: Data())
+            default: return .init(status: 206, headers: ["Content-Range": "bytes 0-0/\(size + 1)"], body: body.prefix(1))
             }
-            return .init(status: 206, headers: ["Content-Range": "bytes 0-0/\(size + 1)"], body: body.prefix(1))
         }
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -286,6 +306,109 @@ struct SegmentedModelDownloadTests {
         #expect(singleStream.count == 1)
         #expect(requested.last.map { $0 == nil || RangedCDNProtocol.bounds($0)?.last == nil } == true)
         #expect(!FileManager.default.fileExists(atPath: record(job.destination).path))
+    }
+
+    @Test("a 206 whose body is longer than its range writes nothing past it and the file continues over one connection",
+          arguments: ["Content-Length", "no length"])
+    func overlongRangeFallsBack(declared: String) async throws {
+        let rangeBytes = Self.rangeBytes
+        RangedCDNProtocol.reset(bodies: ["r2.test": bytes]) { request, first, body in
+            guard first == rangeBytes, RangedCDNProtocol.bounds(request.value(forHTTPHeaderField: "Range"))?.last != nil
+            else { return nil }
+            let overlong = Data(body[rangeBytes..<(2 * rangeBytes)]) + Data(repeating: 0xEE, count: 100)
+            var headers = ["Content-Range": "bytes \(rangeBytes)-\(2 * rangeBytes - 1)/\(body.count)"]
+            if declared == "Content-Length" { headers["Content-Length"] = "\(overlong.count)" }
+            return .init(status: 206, headers: headers, body: overlong)
+        }
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let job = job(dir)
+        try await downloader().downloadManifestFileWithResume(job)
+        #expect(try Data(contentsOf: job.destination) == bytes)
+        let requested = RangedCDNProtocol.ranges()
+        #expect(requested.filter { $0 == range(1) }.count == 1)
+        #expect(requested.last.map { $0 == nil || RangedCDNProtocol.bounds($0)?.last == nil } == true)
+        #expect(!FileManager.default.fileExists(atPath: record(job.destination).path))
+    }
+
+    @Test("a probe that keeps failing fails R2 after its attempts, with no range or single-stream request")
+    func probeFailureOnR2() async throws {
+        RangedCDNProtocol.reset(bodies: ["r2.test": bytes]) { request, _, _ in
+            request.value(forHTTPHeaderField: "Range") == "bytes=0-0" ? .init(status: 503, headers: [:], body: Data()) : nil
+        }
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let job = job(dir)
+        await #expect(throws: ModelCatalogError.self) { try await downloader().downloadManifestFileWithResume(job) }
+        #expect(RangedCDNProtocol.ranges() == [String?](repeating: "bytes=0-0", count: ModelDownloader.defaultAttempts))
+    }
+
+    @Test("a Hugging Face probe that cannot connect sends the file to R2, as a failed transfer did")
+    func probeFailureOnHuggingFace() async throws {
+        RangedCDNProtocol.reset(bodies: ["huggingface.co": bytes, "r2.test": bytes]) { request, _, _ in
+            request.url?.host == "huggingface.co" ? .unreachable : nil
+        }
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let job = job(dir)
+        let artifact = HuggingFaceArtifact(repoID: "EigenLabs/test", revision: String(repeating: "a", count: 40))
+        try await downloader().downloadManifestFileWithResume(job, huggingFaceArtifact: artifact)
+        #expect(try Data(contentsOf: job.destination) == bytes)
+        #expect(RangedCDNProtocol.ranges(host: "huggingface.co") == ["bytes=0-0"])
+        #expect(RangedCDNProtocol.ranges(host: "r2.test").count == 1 + 4)
+    }
+
+    @Test("a volume without sparse files keeps the single GET, without a probe")
+    func noSparseFiles() async throws {
+        RangedCDNProtocol.reset(bodies: ["r2.test": bytes])
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var downloader = downloader()
+        downloader.sparseFilesSupported = { _ in false }
+        let job = job(dir)
+        try await downloader.downloadManifestFileWithResume(job)
+        #expect(try Data(contentsOf: job.destination) == bytes)
+        #expect(RangedCDNProtocol.ranges() == [nil])
+        #expect(ModelDownloadSegments.volumeSupportsSparseFiles(dir))
+    }
+
+    @Test("range requests ask for identity coding and idle 120 s at most (Hugging Face keeps 30 s)")
+    func rangeRequestShape() async throws {
+        let rangeBytes = Self.rangeBytes
+        RangedCDNProtocol.reset(bodies: ["huggingface.co": bytes, "r2.test": bytes]) { request, first, _ in
+            request.url?.host == "huggingface.co" && first == 3 * rangeBytes
+                ? .init(status: 503, headers: [:], body: Data()) : nil
+        }
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let job = job(dir)
+        let artifact = HuggingFaceArtifact(repoID: "EigenLabs/test", revision: String(repeating: "a", count: 40))
+        try await downloader().downloadManifestFileWithResume(job, huggingFaceArtifact: artifact)
+        let r2 = RangedCDNProtocol.captured(host: "r2.test")
+        let hf = RangedCDNProtocol.captured(host: "huggingface.co")
+        #expect(r2.count == 1 + 4)
+        #expect(r2.allSatisfy { $0.timeoutInterval == ModelDownloadSegments.rangeRequestTimeout })
+        #expect(hf.allSatisfy { $0.timeoutInterval == 30 })
+        #expect((r2 + hf).allSatisfy { $0.value(forHTTPHeaderField: "Accept-Encoding") == "identity" })
+        #expect((r2 + hf).allSatisfy { $0.networkServiceType == .default })
+    }
+
+    @Test("prefetch's ranges take the background network service type; the foreground's do not")
+    func backgroundPrefetchRanges() async throws {
+        RangedCDNProtocol.reset(bodies: ["r2.test": bytes])
+        let id = "test-org/ranged-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: id)) }
+        let file = ManifestFile(path: "model.safetensors", sizeBytes: Int64(Self.size), sha256: digest(bytes), role: "weight")
+        let aggregate = digest(Data(SHA256.hash(data: bytes)))
+        let manifest = ModelManifest(schemaVersion: 1, modelID: id, version: "v1", r2Prefix: "v2/background/v1",
+            aggregateSHA256: aggregate, totalSizeBytes: Int64(Self.size), fileCount: 1, files: [file], createdAt: Date())
+        let model = CatalogModel(id: id, s3Name: "v2/background/v1", displayName: id, sizeGb: 0,
+                                 r2Prefix: "v2/background/v1", aggregateSHA256: aggregate)
+        let snapshot = try await downloader().prefetch(model: model, manifest: manifest)
+        #expect(try Data(contentsOf: snapshot.appendingPathComponent("model.safetensors")) == bytes)
+        let requests = RangedCDNProtocol.captured()
+        #expect(requests.count == 1 + 4)
+        #expect(requests.allSatisfy { $0.networkServiceType == .background })
     }
 
     @Test("a ranged file that fails its SHA-256 once is fetched again over one connection")
@@ -519,18 +642,16 @@ struct SegmentedModelDownloadTests {
         RangedCDNProtocol.reset(bodies: ["r2.test": bytes])
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let partial = dir.appendingPathComponent("probe.part")
-        let layout = try SegmentedPartFile.prepare(partial: partial, size: 4096, count: 2)
-        let writer = try SegmentedPartWriter(partial: partial, layout: layout, uncached: uncached, onChunk: nil)
-        #expect(writer.cachingDisabled == uncached)
-        try writer.close()
-
+        let writers = Flags()
         var downloader = downloader()
         downloader.uncachedWrites = uncached
+        downloader.segmentedWriterOpened = { writers.record($0.cachingDisabled) }
         let job = job(dir)
         try await downloader.downloadManifestFileWithResume(job)
         #expect(try Data(contentsOf: job.destination) == bytes)
         #expect(RangedCDNProtocol.ranges().count == 5)
+        // The writer the download opened, not one the test builds.
+        #expect(writers.all == [uncached])
     }
 
     // MARK: - Accounting and limits
@@ -642,13 +763,14 @@ struct SegmentedModelDownloadTests {
 
     // MARK: - Switch
 
-    @Test("DARKBLOOM_DOWNLOAD_SEGMENTS parses to 1…8 ranges, 4 by default")
+    @Test("DARKBLOOM_DOWNLOAD_SEGMENTS parses to 1…8 ranges, 4 by default, with the other switches' off words")
     func switchValues() {
         let key = ModelDownloadSegments.environmentKey
         #expect(key == "DARKBLOOM_DOWNLOAD_SEGMENTS")
         let cases: [(String?, Int)] = [
             (nil, 4), ("", 4), ("4", 4), (" 8 ", 8), ("2", 2), ("1", 1), ("0", 1), ("off", 1), ("FALSE", 1),
-            ("no", 1), ("9", 8), ("64", 8), ("-2", 4), ("four", 4), ("2.5", 4),
+            ("no", 1), ("none", 1), ("Disabled", 1), ("1\n", 1), (" off\n", 1), ("8\n", 8), ("9", 8), ("64", 8),
+            ("-2", 4), ("four", 4), ("2.5", 4),
         ]
         for (value, expected) in cases {
             #expect(ModelDownloadSegments.count(environment: value.map { [key: $0] } ?? [:]) == expected,

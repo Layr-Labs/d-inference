@@ -4,10 +4,11 @@ import Foundation
 /// the shared `.part` (`ModelDownloader+Segments.swift`).
 ///
 /// Only a 206 whose `Content-Range` is exactly the requested first byte, last
-/// byte and manifest size is written; any other answer fails the attempt
-/// before a byte lands, so no byte is placed where the server did not say it
-/// belongs. Each chunk is handed to `write` synchronously, so the socket is
-/// throttled to disk speed, as in `StreamingFileDownloadDelegate`. A transport
+/// byte and manifest size (and whose `Content-Length`, when sent, is the
+/// range's) is written; any other answer fails the attempt before a byte
+/// lands, so no byte is placed where the server did not say it belongs. Each
+/// chunk is handed to `write` synchronously, so the socket is throttled to
+/// disk speed, as in `StreamingFileDownloadDelegate`. A transport
 /// drop or a cancellation keeps every byte already written: `write` counted
 /// them, and the writer's next checkpoint or `close()` saves them in the record.
 final class RangeSegmentDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
@@ -68,12 +69,15 @@ final class RangeSegmentDownloadDelegate: NSObject, URLSessionDataDelegate, @unc
         let expected = (first: range.lowerBound, last: range.upperBound - 1, total: totalBytes)
         let answer = "\(label): bytes \(expected.first)-\(expected.last) answered HTTP \(status) "
             + (contentRange.map { "with Content-Range \($0)" } ?? "without Content-Range")
+        let length = http?.expectedContentLength ?? -1
         guard status == 206, let parsed = contentRange.flatMap(Self.parseContentRange),
-              parsed.first == expected.first, parsed.last == expected.last, parsed.total == expected.total else {
-            // A 200, a 416 or a 206 for other bytes says the source does not serve this file's
-            // ranges, whatever its probe said; any other status may pass and is retried.
-            failure = [200, 206, 416].contains(status) ? RangesRefused(description: answer)
-                                                       : ModelCatalogError.downloadFailed(answer)
+              parsed.first == expected.first, parsed.last == expected.last, parsed.total == expected.total,
+              length < 0 || length == Int64(range.count) else {
+            // A 200, a 416 or a 206 for other bytes (or another length) says the source does not
+            // serve this file's ranges, whatever its probe said; any other status may pass and is retried.
+            failure = [200, 206, 416].contains(status)
+                ? RangesRefused(description: answer + (length >= 0 ? ", \(length) bytes" : ""))
+                : ModelCatalogError.downloadFailed(answer)
             completionHandler(.cancel)
             return
         }

@@ -342,6 +342,8 @@ struct QwenTensorParallelBatchSessionTests {
     /// keys, values and recurrent rows equal byte for byte on both ranks, a
     /// departed row's slot restarts cold, and one decode's collectives do not
     /// grow with its width. Odd rows carry request-owned media positions.
+    /// Each prompt's keys and values are compared right after its prefill too,
+    /// so a difference names the phase, row and attention row it starts in.
     private func verifyBatchedRows(configuration fixture: Data, tensors: [(String, MLXArray)], hiddenSize: Int,
                                    recurrentLayers: Int, collectivesPerDecode: Int) throws {
         try Device.withDefaultDevice(device) {
@@ -365,6 +367,15 @@ struct QwenTensorParallelBatchSessionTests {
                 }
                 let reference = try pair(referenceWire), candidate = try pair(candidateWire)
                 defer { for owner in reference + candidate { for session in owner.sessions { try? session.retire() } } }
+                func expectSameHistory(_ label: String, rank: Int, row: Int) {
+                    let a = reference[rank].sessions[row], b = candidate[rank].sessions[row]
+                    for (index, (left, right)) in zip(a.state.rows, b.state.rows).enumerated() {
+                        let x = left!.snapshot(), y = right!.snapshot()
+                        #expect(x.offset == y.offset, "\(label) kv=\(index) offset")
+                        #expect(bytes(x.keys) == bytes(y.keys), "\(label) kv=\(index) keys")
+                        #expect(bytes(x.values) == bytes(y.values), "\(label) kv=\(index) values")
+                    }
+                }
                 for row in 0..<width {
                     let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
                         promptTokenIDs: (0..<(3 + row * 2)).map { ($0 * 17 + row * 7 + 2) % 256 },
@@ -382,6 +393,7 @@ struct QwenTensorParallelBatchSessionTests {
                             }
                         }
                     }
+                    for rank in 0..<2 { expectSameHistory("width=\(width) rank=\(rank) prefill row=\(row)", rank: rank, row: row) }
                 }
                 for step in 0..<6 {
                     if step == 3 {
@@ -403,6 +415,9 @@ struct QwenTensorParallelBatchSessionTests {
                         while reference[0].sessions[row].schedule.committedPromptTokens < request.promptCount {
                             try parallel(reference) { $0.output = try $0.sessions[row].prefill(check: {}) }
                             try parallel(candidate) { $0.output = try $0.sessions[row].prefill(check: {}) }
+                        }
+                        for rank in 0..<2 {
+                            expectSameHistory("width=\(width) rank=\(rank) step=\(step) prefill row=\(row)", rank: rank, row: row)
                         }
                     }
                     let tokens = (0..<width).map { ($0 * 23 + step * 13 + 9) % 256 }
@@ -431,10 +446,7 @@ struct QwenTensorParallelBatchSessionTests {
                             #expect(expected[rank][row] == bytes(candidate[rank].output![slot..<slot + 1]),
                                 "width=\(width) rank=\(rank) step=\(step) row=\(row) logits")
                             #expect(a.committedTokens == b.committedTokens)
-                            for (left, right) in zip(a.state.rows, b.state.rows) {
-                                let x = left!.snapshot(), y = right!.snapshot()
-                                #expect(x.offset == y.offset && bytes(x.keys) == bytes(y.keys) && bytes(x.values) == bytes(y.values))
-                            }
+                            expectSameHistory("width=\(width) rank=\(rank) step=\(step) row=\(row)", rank: rank, row: row)
                             let left = a.state.recurrent.confirmedStateSnapshot() ?? [:], right = b.state.recurrent.confirmedStateSnapshot() ?? [:]
                             #expect(left.keys.sorted() == right.keys.sorted())
                             #expect(left.count == recurrentLayers)

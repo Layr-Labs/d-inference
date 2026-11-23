@@ -39,7 +39,12 @@ public enum GLM5NextGPULimitKVBudget {
     /// LaunchAgent forwards it.
     public static let environmentName = "DARKBLOOM_GLM_GPU_LIMIT_KV"
 
-    public static func enabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    /// Read by `enabled()` in place of the process environment, so a test can
+    /// turn the switch off for the fleet budgets it drives.
+    @TaskLocal static var environmentForTesting: [String: String]?
+
+    public static func enabled(environment: [String: String]? = nil) -> Bool {
+        let environment = environment ?? environmentForTesting ?? ProcessInfo.processInfo.environment
         guard let raw = environment[environmentName] else { return true }
         return !["0", "false", "no", "off"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }

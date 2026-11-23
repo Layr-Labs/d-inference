@@ -146,6 +146,8 @@ extension ProviderLoop {
         /// held to (`GLM5NextGPULimitKVBudget`); with `physicalMemoryBytes`
         /// pinned and this nil, no limit applies.
         let gpuLimit: GLM5NextGPULimitKVBudget.GPULimit?
+        /// Observes each newcomer's GLM rows reference (`NewcomerReslice.rowsReferenceBytes`; nil for other families).
+        let onGLMRowsReference: (@Sendable (String, Int?) -> Void)?
 
         init(
             environment: [String: String] = [:],
@@ -159,6 +161,7 @@ extension ProviderLoop {
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
             gpuLimit: GLM5NextGPULimitKVBudget.GPULimit? = nil,
+            onGLMRowsReference: (@Sendable (String, Int?) -> Void)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.environment = environment
@@ -172,6 +175,7 @@ extension ProviderLoop {
             self.kvBackendKindByModel = kvBackendKindByModel
             self.assistantLoader = assistantLoader
             self.gpuLimit = gpuLimit
+            self.onGLMRowsReference = onGLMRowsReference
             self.makeEngine = makeEngine
         }
     }
@@ -516,6 +520,7 @@ extension ProviderLoop {
                     extraWeightBytes: sizing.weightsBytes, extraModelType: modelType, heldToGPULimit: false),
                 minimumGrantBytes: minimumGrants)[modelId]
         }
+        engineV2SlotHooks?.onGLMRowsReference?(modelId, reslice.rowsReferenceBytes)
         await shrinkSurvivors(reslice)
 
         // Phase 2 — build the newcomer with its grant. Restore-on-throw,

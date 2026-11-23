@@ -267,6 +267,8 @@ public actor StandaloneServer {
         /// Overrides the live GPU limit a GLM residency set's KV budget is held to; with
         /// `physicalMemoryBytes` pinned and this nil, no limit applies.
         let gpuLimit: GLM5NextGPULimitKVBudget.GPULimit?
+        /// Observes each newcomer's GLM rows reference (nil for other families).
+        let onGLMRowsReference: (@Sendable (String, Int?) -> Void)?
         let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
 
         init(
@@ -283,6 +285,7 @@ public actor StandaloneServer {
             afterEvictionActivityProbe: (@Sendable (String) async -> Void)? = nil,
             productionServes: (@Sendable () -> String?)? = nil,
             gpuLimit: GLM5NextGPULimitKVBudget.GPULimit? = nil,
+            onGLMRowsReference: (@Sendable (String, Int?) -> Void)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
@@ -298,6 +301,7 @@ public actor StandaloneServer {
             self.afterEvictionActivityProbe = afterEvictionActivityProbe
             self.productionServes = productionServes
             self.gpuLimit = gpuLimit
+            self.onGLMRowsReference = onGLMRowsReference
             self.makeEngine = makeEngine
         }
     }
@@ -1336,6 +1340,7 @@ public actor StandaloneServer {
             try requireNativeMiMoNewWorkAllowed()
             v2TestHooks?.onModelArtifactSHA256?(modelArtifactSHA256)
             v2TestHooks?.onCacheEligibleWeightHash?(cacheEligibleWeightHash)
+            v2TestHooks?.onGLMRowsReference?(modelId, rowsReference)
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelId,
                 modelType: modelType,

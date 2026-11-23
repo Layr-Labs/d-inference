@@ -7142,8 +7142,13 @@ answers it, so it offers **Start over** (or **Pair again** when its
 own key changed too).
 
 Before a member removes a pair cache it saves the selected root, volume UUID
-and, when available, root inode in its private pending-reclaim record. A retry
-does not act on a newly selected directory or a replacement volume. A missing
+and, when available, root inode in its private pending-reclaim record. One
+rename publishes a synced, single-link marker. A retry rechecks the marker
+and syncs its directory before removing files. If unpair began with the pinned
+volume detached, the first root confirmed at that path on the original volume
+is bound by inode before cleanup. This identifies the first root observed on
+return, not a directory that could not be observed while detached. A retry
+does not act on a subsequently substituted directory or volume. A missing
 pinned volume, an unverifiable lease, or an old marker without a volume identity
 leaves cleanup unresolved; shared staging stays in place. An idle plan moves to
 an inode-qualified `.retiring-…` name before its lock file goes. A later reclaim

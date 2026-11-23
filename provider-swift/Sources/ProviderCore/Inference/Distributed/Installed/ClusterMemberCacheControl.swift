@@ -44,6 +44,13 @@ public enum ClusterMemberCacheControl {
         public var rootRemoved: Bool
         public var settingsForgotten: Bool
         public var problems: [String]
+
+        var statusLine: String {
+            let count = "removed \(removedPlans) plan\(removedPlans == 1 ? "" : "s")"
+            if !problems.isEmpty { return "The other Mac did not finish reclaiming its pair cache: \(count)." }
+            if keptLive > 0 { return "Pair cache cleanup on the other Mac: \(count), \(keptLive) still in use." }
+            return "The other Mac reclaimed its pair cache: \(count)."
+        }
     }
 
     public struct Refusal: Error, CustomStringConvertible, Equatable {
@@ -94,7 +101,7 @@ public enum ClusterMemberCacheControl {
 
         public var reclaimPending: Bool { FileManager.default.fileExists(atPath: pendingFile.path) }
 
-        private struct Intent: Codable { let root: String; let volume: String; let inode: UInt64? }
+        private struct Intent: Codable { let root: String; let volume: String; var inode: UInt64? }
 
         /// Persist the original selection before the first destructive operation.
         /// A legacy boolean marker has no volume identity and cannot authorize a retry.
@@ -108,26 +115,50 @@ public enum ClusterMemberCacheControl {
                 return try ClusterConfigurationFiles.withLock(parent, name: "reclaim-session.lock", privateMode: true) {
                     let name = ClusterMemberCacheControl.reclaimPendingFileName
                     let previous = try ClusterConfigurationFiles.readAt(parent, name: name, maximum: 8192, privateMode: true)
-                    let path = root.standardizedFileURL.path
-                    let intent: Intent
+                    guard let path = ClusterPrefixPlanReclaim.canonicalRoot(root.path) else {
+                        return unresolved("invalid cache selection")
+                    }
+                    var intent: Intent
+                    let seen = ClusterPrefixPlanReclaim.identityForRoot(root)
                     if let previous {
                         guard let saved = try? JSONDecoder().decode(Intent.self, from: previous),
-                              saved.root == path, UUID(uuidString: saved.volume) != nil,
+                              ClusterPrefixPlanReclaim.canonicalRoot(saved.root) == path, UUID(uuidString: saved.volume) != nil,
                               pin == nil || pin?.lowercased() == saved.volume else {
                             return unresolved("original cache selection cannot be confirmed")
                         }
                         intent = saved
                     } else {
                         guard starting else { return nil }
-                        let seen = ClusterPrefixPlanReclaim.identityForRoot(root)
                         guard let volume = pin?.lowercased() ?? seen?.volume,
                               UUID(uuidString: volume) != nil else { return unresolved("cannot identify original cache volume") }
                         if let seen, seen.volume == volume && seen.inode == nil { return .init() }
-                        intent = .init(root: path, volume: volume, inode: seen?.volume == volume ? seen?.inode : nil)
-                        let bytes = try JSONEncoder().encode(intent)
-                        try ClusterConfigurationFiles.publish(bytes, parent: parent, name: name, maximum: 8192)
+                        intent = .init(root: path, volume: volume, inode: nil)
                     }
-                    var report = ClusterPrefixSSDReclaim.reclaim(root: root, volumeUUID: intent.volume, expectedInode: intent.inode)
+                    var recordBytes = previous
+                    let bind = intent.inode == nil && seen?.volume == intent.volume && seen?.inode != nil
+                    if bind { intent.inode = seen?.inode }
+                    if previous == nil || bind {
+                        let bytes = try JSONEncoder().encode(intent)
+                        try ClusterConfigurationFiles.renamePrivateRecord(bytes, replacing: previous, parent: parent,
+                                                                         name: name, maximum: 8192)
+                        recordBytes = bytes
+                    }
+                    // A prior process may have stopped immediately after rename.
+                    // Confirm the durable, single-link record before any deletion.
+                    guard fsync(parent.descriptor) == 0,
+                          try ClusterConfigurationFiles.readAt(parent, name: name, maximum: 8192, privateMode: true) == recordBytes
+                    else { return unresolved("original cache selection was not recorded") }
+                    var report: ClusterPrefixSSDReclaim.Report
+                    if let inode = intent.inode {
+                        report = ClusterPrefixSSDReclaim.reclaim(root: root, volumeUUID: intent.volume, expectedInode: inode)
+                    } else {
+                        // On the confirmed volume an absent directory needs no
+                        // cleanup. Never pass an unknown inode to a destructive retry.
+                        guard let seen, seen.volume == intent.volume, seen.inode == nil else {
+                            return unresolved("waiting for original cache volume")
+                        }
+                        report = .init()
+                    }
                     if !report.needsRetry {
                         try parent.check()
                         if unlinkat(parent.descriptor, name, 0) != 0 || fsync(parent.descriptor) != 0 {

@@ -1307,8 +1307,7 @@ public final class ClusterService: @unchecked Sendable {
             let answer = try ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
                                                               body: body, seconds: seconds)
             let reply = try JSONDecoder().decode(ClusterMemberCacheControl.UnpairReply.self, from: answer.reply)
-            return "The other Mac reclaimed its pair cache: removed \(reply.removedPlans) plan\(reply.removedPlans == 1 ? "" : "s")"
-                + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
+            return reply.statusLine
         } catch {
             let reason = (error as? ClusterSetupFailure)?.text ?? String(describing: error)
             return memberNotReachedLine(reason: reason)

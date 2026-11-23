@@ -43,11 +43,18 @@ public enum ClusterPrefixPlanReclaim {
     }
 
     private static let dirFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
-    private static func components(_ url: URL) -> [String]? {
-        var path = url.path
+    /// Text-only spelling: the durable identity must not change when an
+    /// absent directory returns (`standardizedFileURL` can change its prefix).
+    public static func canonicalRoot(_ input: String) -> String? {
+        var path = input
         if path.hasPrefix("/var/") || path.hasPrefix("/tmp/") { path = "/private" + path }
         let parts = path.split(separator: "/").map(String.init)
-        return path.hasPrefix("/") && !parts.isEmpty && !parts.contains(".") && !parts.contains("..") ? parts : nil
+        guard path.hasPrefix("/"), !parts.isEmpty, !parts.contains("."), !parts.contains(".."),
+              !path.utf8.contains(0) else { return nil }
+        return "/" + parts.joined(separator: "/")
+    }
+    private static func components(_ url: URL) -> [String]? {
+        canonicalRoot(url.path)?.split(separator: "/").map(String.init)
     }
 
     public static func run(root: URL, keeping: String? = nil, includeStaging: Bool, expectedVolume: String? = nil,

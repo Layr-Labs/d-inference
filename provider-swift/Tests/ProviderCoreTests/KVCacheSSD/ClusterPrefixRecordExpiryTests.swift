@@ -1,6 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 
 import Darwin
+import DarkbloomClusterProtocol
 import Foundation
 import os
 import Testing
@@ -116,6 +117,7 @@ struct ClusterPrefixRecordExpiryTests {
         let store = ClusterMemberCacheControl.Store(directory: setup), pin = UUID().uuidString.lowercased()
         let first = ClusterMemberCacheControl.reclaimOnUnpair(root: root, volumeUUID: pin, store: store)
         #expect(!first.problems.isEmpty && store.reclaimPending)
+        #expect(first.statusLine.contains("did not finish"))
         #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, volumeUUID: pin, store: store)?.needsRetry == true)
         let file = try self.file(root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 0)
         _ = try self.file(root, "\(Self.plan)/in-use", age: 0)
@@ -124,6 +126,56 @@ struct ClusterPrefixRecordExpiryTests {
         try Data("1\n".utf8).write(to: store.pendingFile); chmod(store.pendingFile.path, 0o600)
         #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store)?.needsRetry == true)
         #expect(exists(file) && store.reclaimPending)
+    }
+
+    @Test("a retry after intent rename binds the first returned root before trying its held plan")
+    func interruptedPublicationBindsRootOnReturn() throws {
+        let directory = temporaryRoot(), root = directory.appendingPathComponent("cache", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let setup = directory.appendingPathComponent("setup", isDirectory: true)
+        try FileManager.default.createDirectory(at: setup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let volume = try CacheVolume.inspect(directory: directory.path).uuid
+        let marker = ClusterMemberCacheControl.reclaimPendingFileName
+        let intent = try JSONEncoder().encode(["root": root.standardizedFileURL.path, "volume": volume])
+        // Stop after the namespace operation, before the caller's sync/readback
+        // or any cache access. A fresh store must be able to read this marker.
+        do {
+            let parent = try ClusterConfigurationFiles.directory(setup, privateMode: true)
+            defer { Darwin.close(parent.descriptor) }
+            try ClusterConfigurationFiles.renamePrivateRecord(intent, replacing: nil, parent: parent, name: marker, maximum: 8192)
+            var entry = stat()
+            #expect(fstatat(parent.descriptor, marker, &entry, AT_SYMLINK_NOFOLLOW) == 0 && entry.st_nlink == 1)
+            #expect(throws: (any Error).self) {
+                try ClusterConfigurationFiles.renamePrivateRecord(Data("other".utf8), replacing: nil,
+                                                                   parent: parent, name: marker, maximum: 8192)
+            }
+        }
+        let store = ClusterMemberCacheControl.Store(directory: setup)
+        let a = try file(root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 0)
+        let lock = try file(root, "\(Self.plan)/in-use", age: 0)
+        let fd = Darwin.open(lock.path, O_RDONLY)
+        try #require(fd >= 0)
+        defer { Darwin.close(fd) }
+        try #require(flock(fd, LOCK_SH) == 0)
+        let seen = try #require(ClusterPrefixPlanReclaim.identityForRoot(root))
+        #expect(seen.volume == volume && seen.inode != nil)
+        let firstPass = try #require(ClusterMemberCacheControl.finishPendingReclaim(root: root, volumeUUID: volume, store: store))
+        #expect(firstPass.keptLive == 1, "\(firstPass.problems)")
+        let firstBound = try Data(contentsOf: store.pendingFile)
+        #expect(firstBound != intent && exists(a))
+        let moved = directory.appendingPathComponent("root-a")
+        try FileManager.default.moveItem(at: root, to: moved)
+        let b = try file(root, "\(Self.plan)/rank0/\(Self.record("b"))", age: 0)
+        _ = try file(root, "\(Self.plan)/in-use", age: 0)
+        let staging = try file(root, "staging/session/rank0/.record.tmp", age: 0)
+        #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, volumeUUID: volume, store: store)?.needsRetry == true)
+        #expect(exists(b) && exists(staging) && store.reclaimPending)
+        #expect(try Data(contentsOf: store.pendingFile) == firstBound)
+        try FileManager.default.moveItem(at: root, to: directory.appendingPathComponent("root-b"))
+        try FileManager.default.moveItem(at: moved, to: root)
+        _ = flock(fd, LOCK_UN)
+        #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, volumeUUID: volume, store: store)?.rootRemoved == true)
+        #expect(!store.reclaimPending)
     }
 
     @Test("maintenance uses the saved volume and a rank's last applied duration")

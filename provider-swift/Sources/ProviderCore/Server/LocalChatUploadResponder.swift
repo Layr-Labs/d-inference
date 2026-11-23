@@ -594,10 +594,10 @@ where Inner.Context == BasicRequestContext {
     /// token (`LocalPrefillProgress.startComments`). Without it the bytes are the upstream helper's; with it the
     /// frames are still written as they come, and the comments go between them from their own timer.
     ///
-    /// The frame task and the timer stop when the body's write ends, however it ends: the body ends its own stream
-    /// on the way out. A write that throws (a cancelled task the writer checks, or a closed channel) leaves the loop
-    /// without another `next()`, so the stream's cancellation handler never runs; before, the frame task and the
-    /// timer then ran until the `Response` was freed.
+    /// The frame task and the timer stop when the body's write ends, however it ends: the body finishes its own
+    /// stream on the way out. A write that throws (a cancelled task the writer checks, or a closed channel) leaves
+    /// the loop without another `next()`, so the stream's own cancellation handler would not run while the
+    /// `Response` is still held.
     static func sseResponse(_ frames: AsyncThrowingStream<String, Error>,
                             prefillProgress: LocalPrefillProgress?) -> Response {
         let (body, continuation) = AsyncThrowingStream<ByteBuffer, Error>.makeStream()

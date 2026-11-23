@@ -210,7 +210,8 @@ struct LocalPrefillProgressTests {
         #expect(timerStarted.isSet, "the timer started after the first frame, during its write")
         #expect(throws: CancellationError.self, "the write threw on the cancellation") { try written.get() }
         #expect(capture.values.isEmpty)
-        #expect(await clock.eventually { $0.sleeping == 0 && $0.cancelled == 1 }, "the cancellation stopped the timer")
+        #expect(capture.finishCount == 0, "no finish follows the failed write")
+        #expect(clock.sleeping == 0 && clock.cancelled == 1, "the write's end stopped the timer at once")
         #expect(try await httpDeliveryEventually { framesEnded.isSet }, "the frame task was cancelled")
         #expect(progress.comment == nil)
         withExtendedLifetime(response) {}

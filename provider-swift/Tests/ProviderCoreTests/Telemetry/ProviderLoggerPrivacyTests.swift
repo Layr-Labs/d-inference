@@ -122,3 +122,19 @@ private final class ProviderLogRecorder: @unchecked Sendable {
         #expect(!message.text.contains("{"))
     }
 }
+
+/// A single Mac's update steps are public fixed lines at the level unified logging keeps on disk; the progress lines
+/// beside them are private info lines, which unified logging keeps only in memory.
+@Test func autoUpdateStepsArePublicNoticeLinesOfTheirOwn() {
+    let recorder = ProviderLogRecorder()
+    let logger = ProviderLogger(subsystem: "test", category: "loop", sink: { level, visibility, message in
+        recorder.append(level: level, visibility: visibility, message: message)
+    })
+    for step in AutoUpdateController.Step.allCases { logger.notice(ProviderLoop.autoUpdateNotice(step)) }
+    let entries = recorder.snapshot()
+    #expect(entries.count == AutoUpdateController.Step.allCases.count)
+    #expect(entries.allSatisfy { $0.level == .notice && $0.visibility == .public })
+    #expect(Set(entries.map(\.message)).count == entries.count, "each step has its own line")
+    #expect(entries.allSatisfy { $0.message.hasPrefix("Auto-update") })
+    #expect(ProviderLoop.autoUpdateNotice(.restarting).text == "Auto-update: new release installed; restarting into it")
+}

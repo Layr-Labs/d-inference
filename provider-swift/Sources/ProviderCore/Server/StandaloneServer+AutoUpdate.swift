@@ -46,7 +46,8 @@ extension StandaloneServer {
             prepareInstalledRestart: { await self.prepareUpdateRestart(updater) },
             restart: { try restart() },
             restartDidFail: { try? updater.cancelPendingCandidateAttempt(operation: "local-background-restart-failure") },
-            log: { standaloneLogger.info("\($0, privacy: .public)") })
+            log: { standaloneLogger.info("\($0, privacy: .public)") },
+            step: { standaloneLogger.notice("\(ProviderLoop.autoUpdateNotice($0).text, privacy: .public)") })
         return await AutoUpdateController(deps: deps, drainTimeout: ProviderLoop.updateDrainTimeout).run()
     }
 

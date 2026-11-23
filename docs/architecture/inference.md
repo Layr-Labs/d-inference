@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2005,6 +2005,16 @@ reports the retained-fault state, retained owner-object count and charged bytes
 (`GLM5NextLoadFaultState`). `GLM5NextNativeOperationOwner.beginClosing`
 refuses a second close attempt, so a retained close is never re-driven.
 
+For a local GLM request, the current grant determines whether the engine
+may start. If another model holds part of the grant, a second calculation
+uses the same budget with the other slots' weights excluded. It decides
+only whether to wait, not whether to allocate. The owner retries through
+ordinary admission. Peer removal and redistribution are separate steps, so
+the peer remains visible to this decision until survivor grants are updated.
+`DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` installs no second calculation
+(`EngineV2Bridge.installGLMSoloGrant`), so every refusal reads as in 0.10.17,
+and selects 0.10.17's busy words (`LocalMemoryRefusal.busy`).
+
 Before weight allocation, `GLM5NextTokenizerPreflight.validate` renders through
 the selected local tokenizer using the provider's actual GLM defaults,
 reasoning controls and tool/history normalization. The generic template check
@@ -2140,6 +2150,37 @@ template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift
 unpatched. It is the official template with numeric attribute access written as
 `[0]` subscripts; the official hash remains the golden rendering authority and
 fails the load-time render check. See the [build boundary](../developer/build.md).
+
+History tool calls and tool schemas in shapes vLLM's GLM-5.3 serving and the
+OpenAI API accept are served (`DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY`, on by
+default). The native GLM codec reads a call's `arguments` first. It is built for
+the model's own calls, whose text it keeps exactly, and bounds them at 1 MiB.
+What it refuses is read again, within the request's own size bound, as one
+RFC 8259 JSON object (`GLM5NextHistoryArguments`):
+- a repeated key keeps its last value;
+- a number that no JSON value holds exactly is read as `JSONValue` reads it.
+  An integer outside the signed 64-bit range becomes its nearest double, where vLLM keeps it
+  exact;
+- GLM tool-call markers in argument keys and strings render as the text they are.
+
+Every argument is rendered as this provider renders arguments: keys sorted
+(vLLM keeps their order) and numbers as `JSONValue` holds them (`1.0` renders as
+`1`). A tool schema number is read as the typed schema reads it.
+
+Still refused, as there:
+- arguments that are not one JSON object: malformed JSON, a trailing comma, two
+  objects, raw control characters, `null` or an array;
+- broken call and result pairing.
+
+Also still refused, although Python reads them:
+- `NaN`, `Infinity` and numbers beyond a double, which no JSON value holds;
+- lone surrogates, which no JSON value holds;
+- two keys that differ only in Unicode normalization, which one rendered object
+  cannot hold apart;
+- nesting past 64 levels, the provider's bound.
+
+Requests accepted before render byte-identically. `0`, `off`, `false` or `no`
+restores refusing inexact numbers, repeated keys and markers.
 
 ## Mechanism
 
@@ -3355,10 +3396,16 @@ output-indexed RNG stream. Presence and frequency penalties speculate since
 counts plus the drafts before it, in `LogitsPipelineV2.process`'s order and
 dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`).
 The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): the slot factory
-sets it for the catalog Qwen 3.5/3.6 builds only (`SDKFeatureDefaults.penaltyRowBuilds`);
-`DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty rows target-only everywhere. Repetition penalty,
-bias, logprobs, stop strings and token constraints retain their ordinary-decode
-exclusions. Explicit offline serial
+sets it for the catalog Qwen 3.5/3.6 builds and `gemma-4-26b-qat-4bit`
+(`SDKFeatureDefaults.penaltyRowBuilds`); `DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty
+rows target-only everywhere. Rows with `stop` strings speculate on the builds in
+`SDKFeatureDefaults.stopStringRowBuilds` (`gemma-4-26b-qat-4bit`;
+`CBv2MTPConfig.stopStringSpeculation`): the round's finalize confirms each committed
+token through the row's detokenizer and ends the row at the first match, rolling back
+the rest: given the committed tokens, stop matching, scope, truncation and the finish
+reason follow ordinary decode; `DARKBLOOM_MTP_STOP_STRING_ROWS=0` keeps
+them target-only. Repetition penalty, bias, logprobs and token constraints retain their
+ordinary-decode exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
@@ -4972,6 +5019,30 @@ checks; Super's output keeps refusing. Telemetry
 a call. `DARKBLOOM_STRICT_CALLS_AS_GENERATED=0` (or `off`, `false`, `no`)
 restores the refusal; it is read once per process and reaches the launchd job.
 
+### Media in system, assistant and tool messages
+
+An image or video may sit in any message role. The single-Mac media path
+(`EngineV2VisionPrefill.prepare`: Gemma 4, Qwen 3.5–3.8) keeps every message's
+media, in message order, with its template fields (`tool_calls`,
+`tool_call_id`), and lets the model's chat template place it, as vLLM does (it
+collects media from every role). GLM-5.3-Flash, on one Mac and on a
+tensor-parallel pair, places media parts in every role the same way. Before
+any tower work the provider checks that every image has its placeholder; video
+frames are paired when their spans are carved. A request whose media is only
+in user messages is built exactly as before (`MediaIngest.buildUserInput`,
+`keepNonUserMedia`). Where the template refuses such media or leaves it
+without a placeholder (Qwen 3.5–3.8 raise on a system-message image; Gemma 4
+renders only the text of its first system message and of tool results), the
+request fails with HTTP 400 `invalid_request`, refusal reason
+`media_role_not_rendered`, on every such provider, matching vLLM's 400 for an
+item without a placeholder; other processor and tower faults keep their
+retriable refusal. Qwen pairs and the GLM still-image pair profile still
+refuse media outside user messages, Diffusion Gemma still refuses system and
+assistant media, and Nemotron Super already rendered every role with its
+pinned template. Before this, such media was dropped: alone it was refused as
+`invalid_media`, and beside a user image the model answered without seeing it.
+`DARKBLOOM_MEDIA_ON_EVERY_ROLE=0` restores keeping only user-message media.
+
 ### Chat-template render check
 
 The Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2 templates (`qwen3_5`,
@@ -5461,8 +5532,13 @@ separately requests balanced checkpoint storage (native for `nemotron_h`). Nativ
 is unchanged; storage compression never forces paging. Eligible native paged
 and contiguous checkpoints encode older attention rows and restore into native
 state, preserving exact recent and recurrent/auxiliary state. Older reconstructed
-rows remain lossy. Effective native fallback and the unchanged opt-in live
-packed path are described in the
+rows remain lossy. On the paged backend Gemma 4's two assistant-access rows stay
+native whenever an assistant is configured for the slot, attached or not
+(`EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected`;
+`DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` restores the attached-only
+rule with MTP left on). That rule,
+effective native fallback and the unchanged opt-in live packed path are
+described in the
 [precision architecture](kv-cache-quantization.md); controls are in the
 [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
 Admission prices actual live/native destination owners rather than a disk
@@ -6041,7 +6117,25 @@ load gate (`QwenDenseStageLoadAdmissionSummary.logLine`): its decisions and
 refusals, the rule that settled it, the numbers of the decision it rests on
 (required, admissible, free, file-backed and counted bytes, the kernel's
 file-cache minimum) and what was compressed and swapped out since its first
-sample.
+sample. These lines also carry the worker's start-up phases so far as
+`phase_*_ms` fields after their own; a reader ignores keys it does not know.
+
+Each worker start also writes one `darkbloom-owner-phases-v1` line when its
+readiness is published (`WorkerOwnerPhases`). It names the rank, the epoch and
+generation, the model, the mode and the stage cut, and gives each phase in
+milliseconds on the uptime clock, from the end of its start-up hardening:
+configuration, lease, credential
+read, orphan-wired check, JACCL bootstrap attach, the runtime load and the
+readiness publication. Inside the load it gives what every adapter passes
+through (`ClusterLoadPhaseClock`): the JACCL group, the data-plane keying, the
+link probe, the checkpoint verification (every file of the artifact hashed),
+the tensor reads, the copies into MLX storage, the Qwen stage's evaluation and
+GPU waits, and the rest of the load. On a pair member,
+`darkbloom-pair-owner-timeline-v1` gives the provider's side of the same start:
+the previous session's cancel and owner stop, the prepare, the commit, the
+owner's launch and the first readiness it saw; a
+`darkbloom-pair-session-heartbeat-v1` line follows each heartbeat a change of
+the session's report sends. The lines are records only and carry no key.
 
 Explicit placement requests may exceed a layout's default prompt or output
 reference while remaining inside the registered family profile. Both the native
@@ -7079,6 +7173,36 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSec
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift`,
 `provider-swift/Sources/ProviderCore/Update/ClusterLinkKeyRollback.swift` and
 `provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift`.
+
+## The doctor after this Mac updated with its pair stopped
+
+The cluster service sets a pair up again after an update only while the pair
+runs (`ClusterService.checkForUpdate`). A pair that was stopped while its Macs
+updated keeps a saved setup that pins the previous release's worker until its
+next start, so `DistributedInstalledValidation.validate` fails its worker check.
+`cluster doctor` reports that as a `warning`, not a failure, only when all of
+these hold (`DistributedInstalledValidation.pinsEarlierReleaseWorker`):
+
+- the installed worker differs from the pin;
+- the pin is the worker in the kept rollback copy, the release this Mac updated
+  from (`SelfUpdater.keptRollbackWorker`, read without the update lease);
+- every other pinned file verifies, in `validate`'s order (`verifyPinnedFiles`).
+
+A pair left stopped across more than one update pins an older worker than the
+kept copy. It is a `warning` too when, instead of the kept copy's match, the
+setup names this build's own worker (the one in the running app,
+`ClusterBundledHelpers.defaultWorker`) and that worker is signed like this
+provider: the same certificate and the worker's identifier, every architecture
+strictly (`DistributedInstalledValidation.pinsAnotherBuildsWorker`,
+`DistributedInstalledHelperSignature.signsWorker`). So it is neither foreign nor
+changed, and the next start's re-plan, which pins the worker the setup names,
+pins this release's. A setup naming another worker (a second app, `--worker`),
+or a build without this project's certificate, reports the failure.
+
+Anything else that differs stays a failure. `darkbloom doctor` shows the warning
+as WARN, and `cluster doctor` exits 0
+(`ClusterInstalledMetadataChecks.localInstalledMetadata`,
+`ClusterDiagnosticsReport.Outcome.warning`).
 
 ## A paired cable port's own address
 
@@ -11272,6 +11396,34 @@ Saved policy, admitted capacity and actual maximum speculative width must agree 
 These mechanisms and tiny paired-shard fixtures do not establish full-artifact numerical parity, RDMA behavior, sampled-output equivalence or throughput. Installed automatic selection, media coexistence, cancellation and full-artifact acceptance require their own recorded checks.
 
 Code: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift` (`readAutomatic`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPDecoder.swift` (`stepBatch`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelNativeBatchExecutor.swift` (`QwenTensorParallelNativeBatchExecutor`), and `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantReady.swift` (`ClusterQwenTensorAssistantReady`).
+
+### Acting as the leader before the claim is confirmed
+
+Before the leading Mac acts as the leader (it reads both Macs to list the
+models, adopts a setup, starts or stops the pair), `OnboardingLive.routed` waits
+until its cluster service confirmed its claim: the other Mac accepted it, or the
+claim's window (the lease's time-to-live, awake) passed with no answer
+(`OnboardingLive.awaitConfirmedLeadership`, `ClusterControlNode.leadershipConfirmed`).
+The wait is `leaseTTLSeconds + 10` (40 s), then a refusal. While the guided setup
+reads both Macs, the wait is said once, when it begins
+(`OnboardingLive.leadershipWaitLine`): "Waiting for this Mac's cluster service to
+confirm it leads the pair: it hasn't heard from the other Mac yet (at most 40 s)".
+A Mac whose claim is superseded steps down meanwhile, and the command is forwarded.
+
+The service publishes how long confirmation takes with no member answering
+(`ClusterServiceStatus.Control.confirmsInSeconds`, `ClusterControlNode.secondsUntilConfirmed`)
+and whether the other Mac answers (`otherAnswering`), read only from a status
+written within a third of the lease (`ClusterService.publishedLive(writtenWithin:)`:
+every tick rewrites it, so an older one is from a stalled service or a full disk).
+The window is at most the lease's 30 s, so it matters when it starts again during
+the wait (the service woke from a stall, or a member answered and went silent):
+the wait then moves its end to 2 s past it, at most to twice the fixed wait (80 s).
+A refusal while the service says the other Mac doesn't answer is marked
+(`ClusterOnboardingFailure.unconfirmedLeaderAlone`), and `cluster stop --service`
+then stops this Mac's service alone, as `--local-only` does (`Cluster.Stop.finishStop`).
+`DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` and
+`DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` restore the fixed wait and the refusal
+(`ClusterUnconfirmedLeadership`).
 
 ### Planned cluster stop ordering
 

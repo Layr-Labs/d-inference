@@ -75,7 +75,8 @@ enum GenerationLoopGuardPolicy {
         // free: a loop there is still stopped, and one inside a call ends it
         // as at `max_tokens`.
         guard tokenConstraint == nil || tokenConstraint is QwenStrictToolConstraint
-                || tokenConstraint is GPTOSSAutoToolConstraint, !prepared.requiresToolCall,
+                || tokenConstraint is GPTOSSAutoToolConstraint || tokenConstraint is GemmaOrphanCallGuardConstraint,
+              !prepared.requiresToolCall,
               prepared.responseFormat == nil, prepared.glmResponseFormat == nil,
               request.responseFormat?.requiresJSONOutput != true else { return nil }
         var markers = genericToolCallMarkers
@@ -93,9 +94,12 @@ enum GenerationLoopGuardPolicy {
         // exit: the continuation is submitted without the grammar, so its call
         // could miss the schema the request asked for. The GPT-OSS `auto`
         // grammar keeps both: its continuation is submitted under the same
-        // grammar (`GPTOSSAutoToolConstraint.withMaxTokens`).
+        // grammar (`GPTOSSAutoToolConstraint.withMaxTokens`), and the Gemma
+        // orphan-call guard from the row's state
+        // (`GemmaOrphanCallGuardConstraint.continuing`).
         return GenerationLoopGuard(
             modelType: modelType, toolCallMarkers: markers, thresholds: thresholds,
-            exitThinking: tokenConstraint == nil || tokenConstraint is GPTOSSAutoToolConstraint ? exitThinking : nil)
+            exitThinking: tokenConstraint == nil || tokenConstraint is GPTOSSAutoToolConstraint
+                || tokenConstraint is GemmaOrphanCallGuardConstraint ? exitThinking : nil)
     }
 }

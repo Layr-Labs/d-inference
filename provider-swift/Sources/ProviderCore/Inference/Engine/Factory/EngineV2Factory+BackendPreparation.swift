@@ -613,10 +613,10 @@ extension EngineV2Factory {
     /// (`GLM5NextPagedModelBinding.validateStepEnvelope`), using its split
     /// bound: step setup plus the per-context-token price of min(pool tokens,
     /// rows × context) within the admissible capacity, and, `boundedByAdmission`,
-    /// of the tokens the gate admits there. The native check also accepts a
-    /// smaller exact all-rows price it does not expose, and its admissible
-    /// bytes also leave out any external reserve, so this cap never exceeds
-    /// what activation accepts. Below one row the engine reports its own refusal.
+    /// of the tokens the gate admits there. With that bound the price never
+    /// exceeds the admissible bytes on either side, so only the shared scratch
+    /// ceiling decides; the native check also accepts a smaller exact all-rows
+    /// price it does not expose. Below one row the engine reports its own refusal.
     static func glm5NextActivatableRows(
         maximumRows: Int, scratch: (Int) throws -> GLM5NextStepScratch?, tokenBytes: Int, context: Int,
         capacityBytes: Int, maximumScratchBytes: Int, boundedByAdmission: Bool

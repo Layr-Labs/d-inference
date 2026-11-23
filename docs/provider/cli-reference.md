@@ -1323,7 +1323,8 @@ darkbloom cluster gpu-limit [--undo]
 | `--undo` | flag | `false` | Remove the job that keeps the limit raised and return `iogpu.wired_limit_mb` to the macOS default |
 
 Lets this Mac's GPU keep its memory less 16 GiB resident, so GLM-5.3-Flash runs
-on two 128 GB Macs with room for long requests (Apple silicon Macs with 128 GB
+on two 128 GB Macs with room for long requests, and a 256 GB Mac serving it alone
+keeps its full KV grant: the values `darkbloom doctor` recommends there (Apple silicon Macs with 128 GB
 or more only; exit 2 elsewhere, with the reason, and where the Mac does not
 report the limits). It prints the current and the new limit, asks once (`y`), and
 then macOS asks an administrator to approve. Where the limits are already met,

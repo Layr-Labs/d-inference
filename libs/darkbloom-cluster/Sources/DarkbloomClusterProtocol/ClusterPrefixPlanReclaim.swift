@@ -96,7 +96,12 @@ public enum ClusterPrefixPlanReclaim {
         }
         // A live rank holds this directory shared. Its own plan can still be
         // inspected, but no staging/root removal without the exclusive lease.
-        let exclusive = includeStaging && flock(fd, LOCK_EX | LOCK_NB) == 0
+        var exclusive = includeStaging && flock(fd, LOCK_EX | LOCK_NB) == 0
+        // Switch-off takes the root only when a plan has lost its lock file.
+        func holdsRootExclusively() -> Bool {
+            if !exclusive && !includeStaging { exclusive = flock(fd, LOCK_EX | LOCK_NB) == 0 }
+            return exclusive
+        }
         let device = s.st_dev
         let listed = ClusterPrefixRecordDirectory.forEachName(in: fd) { name in
             let prefix = ".retiring-"
@@ -121,7 +126,11 @@ public enum ClusterPrefixPlanReclaim {
                     return
                 }
             }
-            switch ClusterPrefixRecordDirectory.lease(plan) {
+            var leased = ClusterPrefixRecordDirectory.lease(plan)
+            if case .unknown = leased, ClusterPrefixRecordDirectory.leaseMissing(plan), holdsRootExclusively() {
+                leased = ClusterPrefixRecordDirectory.repairLease(plan)
+            }
+            switch leased {
             case .held: report.keptLive += 1
             case .unknown: report.problems.append("\(name): cannot verify lease")
             case .acquired(let lease):

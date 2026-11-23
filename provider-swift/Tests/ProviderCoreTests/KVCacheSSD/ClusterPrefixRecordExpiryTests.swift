@@ -81,6 +81,14 @@ struct ClusterPrefixRecordExpiryTests {
         #expect(!exists(record))
     }
 
+    /// A rank holds the cache root shared for its whole life, from before it
+    /// creates a plan or its lock file.
+    private func holdRootShared(_ root: URL) throws -> Int32 {
+        let fd = Darwin.open(root.path, O_RDONLY | O_DIRECTORY)
+        try #require(fd >= 0 && flock(fd, LOCK_SH) == 0)
+        return fd
+    }
+
     @Test("unpair keeps staging and retries when a plan lease cannot be verified")
     func unverifiedPlanPreservesStagingAndRetry() throws {
         let directory = temporaryRoot(), root = directory.appendingPathComponent("cache", isDirectory: true)
@@ -90,8 +98,11 @@ struct ClusterPrefixRecordExpiryTests {
         let store = ClusterMemberCacheControl.Store(directory: setup)
         let record = try file(root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 0)
         let staged = try file(root, "staging/session/rank0/.record.tmp", age: 0)
+        // While a rank shares the root, a plan without its lock file is not repaired.
+        let rank = try holdRootShared(root)
         let reply = ClusterMemberCacheControl.reclaimOnUnpair(root: root, store: store)
         #expect(!reply.problems.isEmpty && store.reclaimPending && exists(staged) && exists(record))
+        #expect(!exists(root.appendingPathComponent("\(Self.plan)/in-use")))
         let other = directory.appendingPathComponent("another-cache"), b = try file(other, "\(Self.plan)/rank0/\(Self.record("b"))", age: 0)
         _ = try file(other, "\(Self.plan)/in-use", age: 0)
         let bStage = try file(other, "staging/session/rank0/.record.tmp", age: 0)
@@ -103,9 +114,59 @@ struct ClusterPrefixRecordExpiryTests {
         #expect(store.reclaimPending && exists(staged) && exists(record))
         try FileManager.default.removeItem(at: lease)
         try Data().write(to: lease)
+        #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store)?.needsRetry == true)
+        #expect(exists(staged) && !exists(record))
+        Darwin.close(rank)
         let done = try #require(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store))
         #expect(done.rootRemoved && !done.needsRetry && !store.reclaimPending && !exists(staged))
         #expect(exists(b) && exists(bStage))
+    }
+
+    @Test("a plan that lost its lock file is repaired and cleaned once no rank shares the root",
+          arguments: [false, true])
+    func planWithoutLockIsRepairedWhenRootIsIdle(rankRunning: Bool) throws {
+        let directory = temporaryRoot(), root = directory.appendingPathComponent("cache", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let setup = directory.appendingPathComponent("setup", isDirectory: true)
+        try FileManager.default.createDirectory(at: setup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let store = ClusterMemberCacheControl.Store(directory: setup)
+        // An earlier build's interrupted whole-plan removal: records, no `in-use`.
+        let record = try file(root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 2_400)
+        let stamp = root.appendingPathComponent("\(Self.plan)/rank0/\(ClusterPrefixRecordDirectory.ttlFile)")
+        try Data("600\n".utf8).write(to: stamp)
+        let staged = try file(root, "staging/session/rank0/.record.tmp", age: 0)
+        let rank = rankRunning ? try holdRootShared(root) : -1
+        defer { if rank >= 0 { Darwin.close(rank) } }
+        let fd = Darwin.open(root.path, O_RDONLY | O_DIRECTORY)
+        try #require(fd >= 0)
+        let removed = ClusterPrefixRecordExpiry.sweep(openRoot: fd, localTTL: 1_200, now: Date().timeIntervalSince1970)
+        Darwin.close(fd)
+        #expect(removed == (rankRunning ? 0 : 1) && exists(record) == rankRunning)
+        _ = try file(root, "\(Self.plan)/rank1/\(Self.record("b"))", age: 0)
+        if !rankRunning { try FileManager.default.removeItem(at: root.appendingPathComponent("\(Self.plan)/in-use")) }
+        let reply = ClusterMemberCacheControl.reclaimOnUnpair(root: root, store: store)
+        if rankRunning {
+            #expect(!reply.problems.isEmpty && store.reclaimPending && exists(staged) && exists(record))
+        } else {
+            #expect(reply.problems.isEmpty && reply.removedPlans == 1 && reply.rootRemoved, "\(reply.problems)")
+            #expect(!store.reclaimPending && !exists(staged) && !exists(root))
+        }
+    }
+
+    @Test("a stamp an interrupted write left empty or malformed applies this Mac's TTL",
+          arguments: ["", "abc\n", "0\n"])
+    func malformedStampUsesLocalTTL(stamp: String) throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = try file(root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 1_900)
+        let fresh = try file(root, "\(Self.plan)/rank0/\(Self.record("b"))", age: 600)
+        _ = try file(root, "\(Self.plan)/in-use", age: 0)
+        try Data(stamp.utf8).write(to: root.appendingPathComponent("\(Self.plan)/rank0/\(ClusterPrefixRecordDirectory.ttlFile)"))
+        let fd = Darwin.open(root.path, O_RDONLY | O_DIRECTORY)
+        try #require(fd >= 0)
+        defer { Darwin.close(fd) }
+        #expect(ClusterPrefixRecordExpiry.sweep(openRoot: fd, localTTL: 1_200, now: Date().timeIntervalSince1970) == 1)
+        #expect(!exists(record) && exists(fresh))
     }
 
     @Test("a detached pinned volume and a legacy marker never authorize cleanup elsewhere")
@@ -126,6 +187,43 @@ struct ClusterPrefixRecordExpiryTests {
         try Data("1\n".utf8).write(to: store.pendingFile); chmod(store.pendingFile.path, 0o600)
         #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store)?.needsRetry == true)
         #expect(exists(file) && store.reclaimPending)
+    }
+
+    @Test("a new unpair replaces an earlier-format, malformed or multi-link marker without acting on it",
+          arguments: ["earlier format", "malformed", "two links", "interrupted publication"])
+    func newUnpairReplacesUnusableMarker(kind: String) throws {
+        let directory = temporaryRoot(), root = directory.appendingPathComponent("cache", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let setup = directory.appendingPathComponent("setup", isDirectory: true)
+        try FileManager.default.createDirectory(at: setup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let store = ClusterMemberCacheControl.Store(directory: setup)
+        let other = directory.appendingPathComponent("other-link"), otherBytes = Data("{}".utf8)
+        let temporaryLink = setup.appendingPathComponent(".cluster-\(UUID().uuidString.lowercased()).tmp")
+        switch kind {
+        case "earlier format": try Data("1\n".utf8).write(to: store.pendingFile)
+        case "malformed": try Data(#"{"root":"/"#.utf8).write(to: store.pendingFile)
+        case "two links":
+            try otherBytes.write(to: other)
+            try #require(link(other.path, store.pendingFile.path) == 0)
+        default:
+            // An earlier build's publish stopped between link and unlink.
+            try Data("1\n".utf8).write(to: store.pendingFile)
+            try #require(link(store.pendingFile.path, temporaryLink.path) == 0)
+        }
+        chmod(store.pendingFile.path, 0o600)
+        let record = try file(root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 0)
+        _ = try file(root, "\(Self.plan)/in-use", age: 0)
+        // A retry never takes the unusable marker as an intent.
+        #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store)?.needsRetry == true)
+        #expect(exists(record) && store.reclaimPending)
+        if kind == "interrupted publication" {
+            // The retry drops only the stray same-inode link; the marker's bytes stay.
+            #expect(!exists(temporaryLink) && (try Data(contentsOf: store.pendingFile)) == Data("1\n".utf8))
+        }
+        let reply = ClusterMemberCacheControl.reclaimOnUnpair(root: root, store: store)
+        #expect(reply.problems.isEmpty && reply.rootRemoved && reply.removedPlans == 1, "\(reply.problems)")
+        #expect(!exists(record) && !store.reclaimPending && !exists(temporaryLink))
+        if kind == "two links" { #expect(try Data(contentsOf: other) == otherBytes) }
     }
 
     @Test("a retry after intent rename binds the first returned root before trying its held plan")

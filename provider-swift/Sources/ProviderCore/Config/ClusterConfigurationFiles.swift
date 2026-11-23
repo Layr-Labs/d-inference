@@ -206,9 +206,11 @@ enum ClusterConfigurationFiles {
 
     /// Publish a single-link record under the caller's stable writer lock.
     /// The filename transition is one rename, including on first publication.
+    /// `replacingUnusable` atomically replaces an entry the caller could not use
+    /// (another format, extra links, unsafe metadata) without reading it.
     /// The caller syncs `parent` before taking any action authorized by the record.
-    static func renamePrivateRecord(_ data: Data, replacing previous: Data?, parent: Directory,
-                                    name: String, maximum: Int) throws {
+    static func renamePrivateRecord(_ data: Data, replacing previous: Data?, replacingUnusable: Bool = false,
+                                    parent: Directory, name: String, maximum: Int) throws {
         try requireName(name)
         guard !data.isEmpty, data.count <= maximum else { throw ClusterConfigurationError.invalid("Invalid record size") }
         let temporary = ".cluster-intent-\(UUID().uuidString.lowercased()).tmp"
@@ -217,8 +219,9 @@ enum ClusterConfigurationFiles {
         defer { Darwin.close(fd); _ = unlinkat(parent.descriptor, temporary, 0) }
         try write(data, descriptor: fd)
         try parent.check()
-        guard try readAt(parent, name: name, maximum: maximum, privateMode: true) == previous,
-              renameatx_np(parent.descriptor, temporary, parent.descriptor, name, previous == nil ? UInt32(RENAME_EXCL) : 0) == 0
+        let exclusive = previous == nil && !replacingUnusable
+        guard try replacingUnusable || readAt(parent, name: name, maximum: maximum, privateMode: true) == previous,
+              renameatx_np(parent.descriptor, temporary, parent.descriptor, name, exclusive ? UInt32(RENAME_EXCL) : 0) == 0
         else { throw ClusterConfigurationError.invalid("Private record changed or could not be published") }
     }
 

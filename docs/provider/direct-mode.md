@@ -543,7 +543,8 @@ including yours that reach the pair through Darkbloom (`my-macs` or
 restores it for local requests).
 
 Each streamed request has one timer, from its first frame to its first token,
-and nothing runs per token. A request that isn't streamed gets nothing until its
+and nothing runs per token. A client that leaves, or a connection that closes
+while a frame is written, ends the timer at once. A request that isn't streamed gets nothing until its
 answer, as HTTP has no interim bytes: give such a client a timeout of minutes
 for a long prompt (the OpenAI SDKs wait 10 minutes by default), or stream.
 Before the engine admits a request (on a pair, accepts it), nothing is sent

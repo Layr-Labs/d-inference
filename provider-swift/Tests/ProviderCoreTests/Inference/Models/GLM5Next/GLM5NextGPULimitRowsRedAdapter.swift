@@ -48,3 +48,8 @@ extension GLM5NextGPULimitKVBudget {
             residentWeightBytes: residentWeightBytes, activationReserveBytes: activationReserveBytes, limit: limit())
     }
 }
+
+extension EngineV2 {
+    /// Before the change the engine took no admitted-token charge.
+    var glm5NextAdmittedBytesPerContextToken: Int? { nil }
+}

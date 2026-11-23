@@ -218,10 +218,10 @@ private struct SuperHTTPEngine: MLXServerEngine {
             case .image(let images):
                 // The same plan as text: its tools, tool choice and response
                 // format reach the media prompt, and `output` validates the answer.
-                let template = self.template, cacheScope = self.cacheScope
+                let template = self.template, cacheScope = self.cacheScope, cachePolicy = self.cachePolicy
                 execute = { onEvent in
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,
-                                                cacheScope: cacheScope, logprobs: logprobs,
+                                                cacheScope: cacheScope, cachePolicy: cachePolicy, logprobs: logprobs,
                                                 stackedUntil: stackedUntil,
                                                 admitPrompt: { try owner.admitFirstContent(progress, kind: $0, promptTokens: $1) },
                                                 laneWaited: { owner.noteMediaLaneWait(progress) },

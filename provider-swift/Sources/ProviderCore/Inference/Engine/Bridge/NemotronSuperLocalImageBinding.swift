@@ -212,8 +212,8 @@ actor NemotronSuperLocalImageBinding {
             try await Self.prepareAndExecute(owner: owner, prepare: { construction in
                 try owner.prepareLocalImage(input, maximumFeatureBytes: quote.featureBytes,
                                             construction: construction)
-            }, request: request, requestID: id, cacheScope: cacheScope, logprobs: nil, progress: progress,
-               preparationBinding: preparationBinding, loopGuard: nil, onEvent: onEvent)
+            }, request: request, requestID: id, cacheScope: cacheScope, cachePolicy: .default, logprobs: nil,
+               progress: progress, preparationBinding: preparationBinding, loopGuard: nil, onEvent: onEvent)
         }
         try await settle(task, requestID: id, reservations: [mediaReservationID],
                          progress: progress, sharesRows: sharesRows)
@@ -238,8 +238,8 @@ actor NemotronSuperLocalImageBinding {
     /// grammar from the exact prompt submitted, visual tokens included
     /// (`NemotronSuperToolGrammar`; nil, or a nil result: none).
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
-                    cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
-                    stackedUntil: ContinuousClock.Instant? = nil,
+                    cacheScope: String? = nil, cachePolicy: RequestCachePolicy = .default,
+                    logprobs: EngineV2LogprobsChannel? = nil, stackedUntil: ContinuousClock.Instant? = nil,
                     loopGuardSetting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
                     admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)? = nil,
                     laneWaited: (@Sendable () -> Void)? = nil,
@@ -267,7 +267,7 @@ actor NemotronSuperLocalImageBinding {
                 try await VideoReaderFailureReport.reporting(to: { TelemetryClient.shared.emit($0) }) {
                     try await Self.executeEncodedVideo(video, plan: plan, body: body, templateBytes: templateBytes,
                         request: parsed.request, owner: owner, gate: gate, mediaID: mediaID, requestID: id,
-                        cacheScope: cacheScope, logprobs: logprobs, progress: progress,
+                        cacheScope: cacheScope, cachePolicy: cachePolicy, logprobs: logprobs, progress: progress,
                         preparationBinding: preparationBinding, loopGuard: loopGuard, admitPrompt: admitPrompt,
                         laneWaited: laneWaited, toolConstraint: toolConstraint, onEvent: onEvent)
                 }
@@ -298,7 +298,8 @@ actor NemotronSuperLocalImageBinding {
                 }
                 return try owner.prepareLocalImage(input, maximumFeatureBytes: imagePlan.featureBytes,
                                                    construction: construction)
-            }, request: parsed.request, requestID: id, cacheScope: cacheScope, logprobs: logprobs,
+            }, request: parsed.request, requestID: id, cacheScope: cacheScope, cachePolicy: cachePolicy,
+               logprobs: logprobs,
                progress: progress, preparationBinding: preparationBinding, loopGuard: loopGuard,
                laneWaited: laneWaited,
                afterLaneWait: { try admitPrompt?(.image, imagePromptTokens) },
@@ -342,7 +343,8 @@ actor NemotronSuperLocalImageBinding {
     private static func executeEncodedVideo(_ uri: String, plan requestPlan: NemotronSuperRequestPlan,
         body: Data, templateBytes: Data,
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
-        mediaID: String, requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
+        mediaID: String, requestID: String, cacheScope: String?, cachePolicy: RequestCachePolicy,
+        logprobs: EngineV2LogprobsChannel?,
         progress: MediaProgress, preparationBinding: NemotronSuperLocalImageBinding?,
         loopGuard: GenerationLoopGuard?,
         admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)?,
@@ -366,7 +368,8 @@ actor NemotronSuperLocalImageBinding {
                 try owner.prepareLocalVideo(frames, prompt: prompt, maximumFeatureBytes: plan.featureBytes,
                                             construction: construction)
             }
-        }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, progress: progress,
+        }, request: request, requestID: requestID, cacheScope: cacheScope, cachePolicy: cachePolicy,
+           logprobs: logprobs, progress: progress,
            preparationBinding: preparationBinding, loopGuard: loopGuard, laneWaited: laneWaited,
            afterLaneWait: { try admitPrompt?(.video, promptTokens) },
            toolConstraint: toolConstraint, onEvent: onEvent)
@@ -512,7 +515,7 @@ actor NemotronSuperLocalImageBinding {
     /// `afterLaneWait` rechecks the first-content budget it spent.
     private static func prepareAndExecute(owner: NemotronSuperLocalBridgeBuilder.Owner,
         prepare: (NativeConstructionScope) async throws -> EngineV2VisionPrefill.PreparedSubmission,
-        request: ChatCompletionRequest, requestID: String, cacheScope: String?,
+        request: ChatCompletionRequest, requestID: String, cacheScope: String?, cachePolicy: RequestCachePolicy,
         logprobs: EngineV2LogprobsChannel?, progress: MediaProgress,
         preparationBinding: NemotronSuperLocalImageBinding? = nil, loopGuard: GenerationLoopGuard?,
         laneWaited: (@Sendable () -> Void)? = nil,
@@ -562,7 +565,7 @@ actor NemotronSuperLocalImageBinding {
             // Another row's retained fault quarantined the installation.
             guard !owner.hasRetainedImageFault else { throw Failure.retainedFault }
             try await execute(bridge: owner.bridge, prepared: prepared,
-                cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
+                cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil, cachePolicy: cachePolicy,
                 request: request, requestID: requestID, logprobs: logprobs, progress: progress,
                 loopGuard: loopGuard, tokenConstraint: toolConstraint?(prepared.promptTokens), onEvent: onEvent)
         } catch {
@@ -847,9 +850,11 @@ actor NemotronSuperLocalImageBinding {
     /// bound to an identity of its evaluated features and spans, hashed while
     /// the media charge still covers the copy, and may restore only
     /// checkpoints of that identity in that scope; without one it stays cold
-    /// and never publishes.
+    /// and never publishes. A `memoryOnly` request runs with its prefix cache
+    /// off whatever its scope (`PrefixCacheSubmissionPolicy`).
     static func execute(bridge: EngineV2Bridge,
         prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
+        cachePolicy: RequestCachePolicy = .default,
         request: ChatCompletionRequest, requestID: String, logprobs: EngineV2LogprobsChannel?,
         progress: MediaProgress, loopGuard: GenerationLoopGuard?, tokenConstraint: (any CBv2TokenConstraint)? = nil,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void
@@ -862,7 +867,7 @@ actor NemotronSuperLocalImageBinding {
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(promptTokens: prepared.promptTokens,
                 request: request, requestId: requestID, cacheScope: cacheScope ?? "",
-                cacheEnabled: identity != nil, usageSignal: usage,
+                cacheEnabled: identity != nil, cachePolicy: cachePolicy, usageSignal: usage,
                 multimodal: prepared.multimodalInput(), hybridPrefixIdentity: identity,
                 mediaKind: prepared.mediaKind, tokenConstraint: tokenConstraint, loopGuard: loopGuard)
             for await event in stream {

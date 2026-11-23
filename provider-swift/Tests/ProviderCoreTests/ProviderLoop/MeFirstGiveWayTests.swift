@@ -121,6 +121,8 @@ struct MeFirstGiveWayTests {
         let owner = try await h.owner()
         #expect(await eventually { h.gaveWay("queued") }, "the queued request gives way")
         #expect(h.outbound.contentFrames(for: "queued", decryptingWith: h.sender) == 0, "and sent no output")
+        #expect(await eventually { h.engine.cancelledIndices == [2] },
+            "its row is cancelled once its stream's termination reaches the engine")
         try await Task.sleep(for: .milliseconds(100))
         #expect(h.engine.cancelledIndices == [2], "the owner's later asks re-route nothing more")
         #expect(h.engine.waiting == [3], "the owner's request waits for the work the engine admitted")
@@ -161,7 +163,8 @@ struct MeFirstGiveWayTests {
 
         h.engine.preempt(1)
         #expect(await eventually { h.gaveWay("prefilling") }, "back in the queue, it gives way")
-        #expect(h.engine.cancelledIndices == [1])
+        #expect(await eventually { h.engine.cancelledIndices == [1] },
+            "its row is cancelled once its stream's termination reaches the engine")
         h.engine.token(0)
         h.engine.finish(0)
         #expect(await eventually { h.engine.running == [2] }, "the owner's request runs once the streaming one ends")
@@ -170,6 +173,7 @@ struct MeFirstGiveWayTests {
         for try await _ in owner {}
         #expect(await eventually { h.outbound.completed(for: "streaming") })
         #expect(h.outbound.failure(for: "streaming") == nil)
+        #expect(h.engine.cancelledIndices == [1], "no other row was cancelled")
         await h.remove()
     }
 

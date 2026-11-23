@@ -8,9 +8,185 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.17 — candidate (unpublished)
+## v0.10.18 — candidate (unpublished)
 
-Prepared on 2026-11-21; tagging and publication are separate steps.
+Prepared on 2026-11-23; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Bug fixes, performance and security posture improvements.
+- **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.17 updates itself. `darkbloom update --rollback` puts back 0.10.17.
+- **Turning a change off:** `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` (GLM-5.3-Flash refuses the tool-history and schema shapes it refused in 0.10.17); `DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` (a local GLM request that fits only once another loaded model gives back memory is refused at once, with 0.10.17's busy words); `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0` (images and video outside user messages are handled as in 0.10.17); `DARKBLOOM_MTP_STOP_STRING_ROWS=0` (Gemma 4 26B requests with stop strings decode without speculation, as in 0.10.17); `DARKBLOOM_MTP_PENALTY_ROWS=0` (Gemma 4 26B requests with a presence or frequency penalty decode without speculation, as in 0.10.17); `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` (Gemma 4 26B on M5 Ultra drafts two tokens with one or two requests decoding, as in 0.10.17); `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` (Gemma 4 26B prefix-cache checkpoints use 0.10.17's layout before the draft model attaches); `DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` (cluster commands wait a fixed 40 s for this Mac's leadership, as in 0.10.17); `DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` (`cluster stop --service` on a leading Mac whose partner doesn't answer refuses, as in 0.10.17); `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` (Qwen 3.5, 3.6 and 3.8 image and video preparation shares the running requests' GPU stream, as in 0.10.17).
+
+### `darkbloom logs` keeps a single Mac's update steps
+
+- A single Mac's background update now writes one fixed public line for each step (available and staging, staged and draining, restarting, deferred, and each failure) at the level macOS unified logging keeps on disk, so `darkbloom logs --last 24h` still shows an update hours later.
+- Before this, the update's progress lines were private info lines, which unified logging keeps only in memory, so the log showed no update at all. Those lines stay as they were. A check that finds the Mac up to date adds no line.
+
+### Provider CI: shorter last cluster jobs
+
+- Cluster Runtime Tests shard 6 runs the worker package's request lifecycle tests (`WorkerTests`, `WorkerLaneTests`) while it waits for the cluster build: it starts them in the background, in a debug build of their own outside the checkout, and waits for their result before its runtime tests, which run either way. Cluster Release Build Checks ran them after its release build, which made it the last job of run 44927907327 (14.5 min).
+- Cluster Runtime Tests shards 1, 4 and 5 ran 267 to 395 s, the other shards 169 to 243 s. `qwen-tp-aqv-gpu` moves from shard 1 to shard 7's GPU group (the GLM paged-KV selection moves from there to shard 3's), `base-gemma-runtime` from shard 4 to shard 1 after the share probe, `base-gemma-prefix` from shard 4 to shard 6, `base-qwen-tp-cpu` from shard 5 to shard 2 and the batch-session partition test from shard 5 to shard 7. Every runtime shard now plans under about 300 s.
+- Every planned test still runs exactly once, on the same lanes and job count.
+
+### Provider CI: the shard audit counts from xUnit and stdout, not the console
+
+- `scripts/provider-test-shards.py counts`, which records each provider shard selection's and each Prompt Parity run's executed tests for the shard audit, no longer reads the merged `swift test` console. A SwiftPM warning on stderr can land inside the `Test run with N tests` line, as it did for the nested-suite gate in run 44909219943, and the audit would then have failed a passing selection as "did not finish".
+- Swift Testing's count now comes from the run's xUnit report (`<name>-swift-testing.xml`, every test case, skipped ones included, as the console summary counted them), and XCTest's from SwiftPM's stdout alone. `scripts/run-provider-tests.sh` keeps SwiftPM's stderr out of the selection's log; it still reaches the job log and `slot-*.out`. Prompt Parity keeps its run's report and stdout through `NESTED_SUITE_REPORT=<prefix>` (`scripts/run-nested-suite.sh`).
+- The audit is unchanged: each selection must still execute exactly its plan, and a missing or unreadable report now fails the selection with an error annotation. Replayed on run 44914459288's artifacts, the new counts equal the console counts for all 13 selections.
+
+### Provider CI: the build-database test always has exactly one holder
+
+- `scripts/test-provider-test-shards.py`'s check that processes starting together without `--disable-build-manifest-caching` find the build database locked could fail at random: its stand-in for SwiftPM took the lock with SQLite's `BEGIN EXCLUSIVE` and no wait, which refuses every process when they start at the same moment (one peer's shared read blocks the others), so all three exited 1 instead of exactly two.
+- The stand-in now takes the lock with an exclusive create of `.build/build.db.holder`, so exactly one process holds it until all have tried. Test-only; the runner and SwiftPM's flags are unchanged.
+
+### Provider CI: wider provider and cluster runtime test fan-out
+
+- Provider Unit Tests runs in 5 shards instead of 4 (15 selections). The new shard reads lane `test-provider-5` (4x24). The shard holding `BootSecurityServeLoopTests` (170 s, never split) plans 170 s and every other shard 139 s, against 177 s each on 4 shards.
+- Cluster Runtime Tests runs in 7 shards instead of 5. Shards 6 and 7 share lane `test-cluster-2` (4x24, now a count of 4) with shards 2 and 3. `qwen-tp-mtp-gpu`, the batch GPU switch's prefix depth test, the GLM paged-KV selection, the SSD prefix tier test and two batch-session history tests move to the new shards. Each runs in a process of its own, the two history tests together. On 5 shards, shards 2 and 3 ran 439 to 571 s on Darkbloom.
+- Provider Gates fetches the MiMo audio codec before the provider products download, while the build runs. After the products, that fetch took 21 to 137 s.
+- Every planned test still runs exactly once. A full run asks for 21 macOS jobs instead of 18.
+
+### The logs now show where a re-formed pair spends its time before its first call
+
+- Each cluster worker writes one `darkbloom-owner-phases-v1` line once it is ready: how long each step of its start took after its start-up hardening (configuration, lease, credentials, orphan-memory check, JACCL bootstrap, model load, readiness), and inside the load the JACCL group, the data-plane keying with the other Mac, the link probe, the model file check, the weight reads, the copies into GPU memory and the GPU waits. It names the session's epoch and generation, the rank, the model, the mode and the stage cut.
+- The worker's `darkbloom-load-memory-v1` lines carry the same durations as new `phase_*_ms` fields after their own. A load that fails shows how far it got.
+- Each pair member logs one `darkbloom-pair-owner-timeline-v1` line per session: from the cancel of the previous session and the stop of its owner to the new prepare, the prepare, the commit, the owner's launch and the worker's first readiness. A `darkbloom-pair-session-heartbeat-v1` line follows each heartbeat a change of the session's report sends.
+- All durations come from the uptime clock. The lines change no behaviour and carry no key, credential or request.
+
+### `cluster stop --service`: a leading Mac the other Mac doesn't answer stops its own service
+
+- On a leading Mac whose cluster service restarted, a command that acts as the leader first waits for the service to confirm that this Mac leads. The wait was a fixed 40 s. It now also covers the confirmation window the service publishes, up to 80 s.
+- When that wait still ends unconfirmed and the service says the other Mac doesn't answer, `darkbloom cluster stop --service` stops this Mac's cluster service alone, as `--local-only` does, says that the pair wasn't stopped from here, and exits 0. Before this it refused and left this Mac's service running (seen on a DevNet pair whose leading Mac's service had restarted while its disk was full, the other Mac's service off). While the other Mac answers, the stop still refuses, as before.
+- `DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` keeps the fixed wait, and `DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` restores the refusal.
+
+### Doctor: a pair set up before this Mac updated is a warning
+
+- A pair that was stopped while its Macs updated keeps a saved setup that names the previous release's cluster worker until its next start sets it up again. `darkbloom doctor` reported that as `FAIL cluster localInstalledMetadata: Installed input identity or SHA-256 differs`.
+- It is now a WARN that names the release, when the pinned worker is the one in the kept rollback copy and every other pinned file verifies. Anything else that differs stays a failure. `darkbloom cluster doctor` reports it as `warning` and exits 0.
+- A pair left stopped across more than one update pins an older worker than the kept copy. It is a WARN too when the setup names this Darkbloom's own worker, signed with the same certificate, and every other pinned file verifies; the line then names no release. A worker that isn't signed so (foreign or changed), a setup naming another worker, or a build without the Developer ID, stay a failure.
+
+### Gemma 4 26B: the same checkpoint encoding before the assistant attaches
+
+- A Gemma 4 26B QAT provider that starts without its MTP assistant (the
+  assistant or the catalog metadata isn't ready yet, or memory admission
+  skipped it) now keeps the assistant's two access layers native in its
+  prefix-cache checkpoints, as a provider with the assistant attached does, so
+  a checkpoint hit restores those two layers exactly in either case.
+- `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` keeps the previous target-only
+  layout.
+
+### Gemma 4 26B: on M5 Ultra, two draft tokens only while one request decodes
+
+- On M5 Ultra, Gemma 4 26B QAT now drafts two tokens per speculative round only
+  while one request decodes, as on M5 Max and M3 Ultra. With two or more
+  requests decoding it runs ordinary decode without speculation.
+- `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` (or `off`, `false`, `no`) restores
+  the earlier M5 Ultra behaviour, two draft tokens with one or two requests
+  decoding; the LaunchAgent forwards it. `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0` still
+  restores the one-draft policy on every chip.
+
+### Gemma 4 26B: speculative decoding for requests with stop strings or penalties
+
+- Gemma 4 26B QAT requests that send `stop` strings, a presence penalty or a
+  frequency penalty now use the model's speculative decoding head under the
+  same policy as other requests. Drafts for penalty rows are kept only where
+  they match the target's own sample with the penalty applied (exact
+  acceptance), and a row with `stop` strings ends at the first match exactly as
+  without speculation.
+- `DARKBLOOM_MTP_STOP_STRING_ROWS=0` and `DARKBLOOM_MTP_PENALTY_ROWS=0` (or
+  `off`, `false`, `no`) keep such rows target-only; the LaunchAgent forwards
+  both.
+
+### Gemma 4 26B: a switch for the checkpoint layout before the assistant attaches
+
+- `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` (or `off`, `false`, `no`)
+  restores the earlier prefix-cache checkpoint layout of Gemma 4 26B QAT: the
+  assistant's two access layers stay native only while the MTP assistant is
+  attached. MTP stays on; the LaunchAgent forwards it.
+
+### GLM-5.3-Flash: history tool calls and tool schemas that vLLM and the OpenAI API accept are served
+
+- GLM-5.3-Flash refused a conversation with `invalid request` when an earlier
+  tool call's arguments repeated a key, held a number no JSON value holds
+  exactly (an integer outside the signed 64-bit range, a decimal with more than 17 significant
+  digits), or contained GLM tool-call markers as text. It refused a tool schema
+  with such a number too, for example a 64-bit unsigned bound or a float64
+  maximum. vLLM's GLM-5.3 serving and the OpenAI API accept all of these. Long
+  tool-using conversations collected them, and every later turn of the
+  conversation was then refused.
+- These are now served:
+  - a repeated key keeps its last value;
+  - such a number is read as a JSON value holds it, so an integer outside the signed 64-bit
+    range becomes its nearest double;
+  - the markers are text.
+- Arguments that are not one JSON object, and broken call and result pairing,
+  are still refused.
+- Requests that were already accepted render byte-identically.
+- `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` restores refusing them.
+
+### GLM requests can wait for memory another model holds
+
+When another model shares the Mac, a local GLM request that would fit with
+GLM alone waits for its share of memory to grow. The provider checks the
+actual grant again before starting it. If the wait expires, it returns
+HTTP 503 with `Retry-After: 10`. A request that cannot fit even with GLM
+alone still gets the immediate memory refusal.
+
+The busy 503 now reads "This Mac is at capacity. Retry when more memory is
+available.", since another loaded model may hold the memory.
+`DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` restores 0.10.17's behaviour and busy
+words; the LaunchAgent forwards it.
+
+### Local streamed response stops at once when its write ends
+
+- When the write of a streamed local response ends early (a cancelled task or
+  a closed connection while a frame is written), the prefill progress timer and
+  the task that reads the engine's frames now stop at once. Before, they ran
+  until the server freed the response.
+
+### Images in system, assistant and tool messages
+
+- On one Mac (Gemma 4, Qwen 3.5–3.8, GLM-5.3-Flash) and on GLM tensor-parallel pairs, an image or video in a system, assistant or tool message is now kept and placed where the model's chat template places it, as vLLM does. Before, a request whose only image sat in one of those messages was refused with 400 "Invalid media input.", and beside a user image the other images were dropped, so the model answered without seeing them.
+- Where the template itself refuses the image or has no place for it (Qwen 3.5–3.8 refuse a system-message image; Gemma 4 renders only the text of its first system message and of tool results), the request fails with a clear 400, refusal reason `media_role_not_rendered`, the same request vLLM refuses.
+- Requests whose images are only in user messages are built exactly as before. `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0` restores the old behaviour. Qwen pairs and the GLM still-image pair profile still refuse media outside user messages, Diffusion Gemma still refuses system and assistant media, and Nemotron Super already rendered every role.
+
+### A pair member reports itself as soon as the coordinator accepts it
+
+- A cluster pair member now sends its first heartbeat on each connection as
+  soon as the coordinator accepts its registration, instead of one heartbeat
+  interval later. The coordinator routes requests to a pair only after each
+  member's heartbeat reports its session, so a pair that reconnects (for
+  example after a coordinator edge restart) can take requests again about one
+  interval sooner. Later heartbeats keep the normal interval.
+- A pair member whose heartbeat fails to encode now sends nothing instead of
+  the minimal fallback heartbeat, which had no capacity sequence and no
+  session report and so withdrew the member's session at the coordinator.
+  Its next heartbeat reports the full state. Every heartbeat now leaves in
+  capacity-sequence order.
+
+### Guided cluster setup: the wait for this Mac's leadership is said
+
+- Before the leading Mac reads both Macs, starts or stops the pair, it waits up to 40 s for its cluster service to confirm that it leads (the claim's 30 s window and 10 s more). Right after both services restarted, the guided setup's "Reading both Macs over the cable" stood still that long with no reason.
+- While it reads both Macs, the screen now says the wait when it begins (once per wait): "Waiting for this Mac's cluster service to confirm it leads the pair: it hasn't heard from the other Mac yet (at most 40 s)". A confirmed claim waits for nothing and says nothing. The wait itself is unchanged.
+
+### Qwen 3.5-family image preparation no longer queues on the running requests' GPU stream
+
+- An image or video request on Qwen 3.5, 3.6 or 3.8 runs its processor and
+  vision tower on a GPU stream of its own. Before, it shared the stream the
+  running requests' decode steps use, whose command buffers run in submission
+  order, so its tower queued behind their steps and their steps behind the
+  tower.
+- The kernels and inputs are unchanged, so the embeddings and outputs are
+  identical: over 84 fresh starts on M5 Ultra and M5 Max, for the same pixel
+  input the tower-output hashes were identical with the option on and off,
+  first use included. Other model families keep the shared stream.
+- `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` (or `false`, `no`, `off`) restores the
+  shared stream; it is forwarded to the launchd provider job.
+
+## v0.10.17
+
+Published 2026-11-21 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.17)).
 
 ### Upgrade and rollout notes
 

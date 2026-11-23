@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-23
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -48,6 +48,18 @@ them (`json.Unmarshal` keeps no unknown field); reading them per model needs a
 platform change. A streamed call refused after it started carries no count: its
 `inference_error` names the check (`tool_check` `malformed`, `diverged` or
 `unterminated`).
+
+A profile's `engine` object can carry `mtp_ineligible` (Swift
+`EngineMTPIneligibility`): the whole-request gates that kept the request from
+drafting with MTP, evaluated once at its first token on a slot with a drafter
+(the SDK's `CBv2MTPIneligibility`). Its keys are `media`, `reasoning_budget`,
+`grammar`, `sampling`, `logprobs`, `logit_bias`, `repetition_penalty`,
+`penalties`, `stop_strings` and `multimodal_history`. A key is present, `true`,
+only when its gate failed, and a request records every gate it fails. `{}`
+means evaluated with no gate failed. The object is absent when nothing was
+evaluated: no drafter, no first token, a cluster or native-block engine, or an
+older SDK. It holds booleans only, nothing from the request. A coordinator that
+does not read it ignores it.
 
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 

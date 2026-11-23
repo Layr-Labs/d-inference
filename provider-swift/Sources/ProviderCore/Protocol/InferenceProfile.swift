@@ -138,6 +138,7 @@ public struct EngineProfile: Codable, Sendable, Equatable {
     public var prefixLookupNs: Int64?
     public var prefixAdoptionNs: Int64?
     public var finishReason: EngineFinishReason?
+    public var mtpIneligible: EngineMTPIneligibility?
 
     enum CodingKeys: String, CodingKey {
         case admittedNs = "admitted_ns"
@@ -170,6 +171,40 @@ public struct EngineProfile: Codable, Sendable, Equatable {
         case prefixLookupNs = "prefix_lookup_ns"
         case prefixAdoptionNs = "prefix_adoption_ns"
         case finishReason = "finish_reason"
+        case mtpIneligible = "mtp_ineligible"
+    }
+
+    public init() {}
+}
+
+/// The whole-request gates that kept the request from drafting with MTP,
+/// evaluated once at its first token (`CBv2MTPIneligibility`). A key is
+/// present, `true`, only when its gate failed; `{}` = evaluated, none failed.
+/// Absent when nothing was evaluated: no drafter, no first token, a cluster
+/// or native-block engine, or an older SDK.
+public struct EngineMTPIneligibility: Codable, Sendable, Equatable {
+    public var media: Bool?
+    public var reasoningBudget: Bool?
+    public var grammar: Bool?
+    public var sampling: Bool?
+    public var logprobs: Bool?
+    public var logitBias: Bool?
+    public var repetitionPenalty: Bool?
+    public var penalties: Bool?
+    public var stopStrings: Bool?
+    public var multimodalHistory: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case media
+        case reasoningBudget = "reasoning_budget"
+        case grammar
+        case sampling
+        case logprobs
+        case logitBias = "logit_bias"
+        case repetitionPenalty = "repetition_penalty"
+        case penalties
+        case stopStrings = "stop_strings"
+        case multimodalHistory = "multimodal_history"
     }
 
     public init() {}

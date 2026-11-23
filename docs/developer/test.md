@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-23
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -2483,6 +2483,15 @@ python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.
 make docs-impact-check BASE=origin/master
 make docs-check
 ```
+
+`provider-swift/Tests/test_protocol_fixture_resources.py` pins the SHA-256 of
+every fixture under `provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/`,
+so a shared fixture changes only with its digest. The profiler fixture
+(`profiler_wire_fixture.json`) stays byte-identical to the coordinator's copy.
+Its full `inference_complete` frame carries every `profile.engine` key,
+including the ten `mtp_ineligible` keys;
+`ProtocolTests.profilerSharedFixtureRoundTripsAndKeySetsMatch` decodes every
+frame, encodes it again and compares the key sets.
 
 Release tests cover provider-only version/tag/binary parity even when backend
 source is absent, signed tags and trusted `master` before secrets, exact artifact

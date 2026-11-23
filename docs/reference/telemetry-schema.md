@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-23
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -24,7 +24,10 @@ folded by the coordinator before storage; it adds no event fields. So do the
 profile's optional tool-call counts, `tool_calls` and
 `tool_calls_breaking_declaration` ([profile counts](protocol-messages.md)):
 counts only, absent when a response returned no call, and ignored by a
-coordinator that does not read them.
+coordinator that does not read them. The same holds for the `engine` object's
+`mtp_ineligible` ([profile counts](protocol-messages.md)): one `true` key per
+whole-request MTP gate the request failed, `{}` when none failed, absent when
+nothing was evaluated.
 
 Durable cache statistics use optional typed heartbeat objects, not event
 `fields`: [`slots[].prefix_cache`](protocol-messages.md#slotsprefix_cache) and

@@ -562,4 +562,49 @@ struct EngineProfileMappingTests {
         #expect(json.contains("\"engine\""))
         #expect(json.contains("\"first_token_ns\":42"))
     }
+
+    /// `mtp_ineligible` stays absent until the engine evaluated the MTP gates;
+    /// evaluated with none failed it is `{}`.
+    @Test func mtpIneligibleIsAbsentUntilEvaluated() throws {
+        var t = CBv2RequestTiming()
+        let unevaluated = EngineProfile(timing: t, finishReason: .stop)
+        #expect(unevaluated.mtpIneligible == nil)
+        let unevaluatedJSON = String(decoding: try JSONEncoder().encode(unevaluated), as: UTF8.self)
+        #expect(!unevaluatedJSON.contains("mtp_ineligible"))
+        t.mtpIneligibility = []
+        let none = EngineProfile(timing: t, finishReason: .stop)
+        #expect(none.mtpIneligible == EngineMTPIneligibility())
+        let noneJSON = String(decoding: try JSONEncoder().encode(none), as: UTF8.self)
+        #expect(noneJSON.contains("\"mtp_ineligible\":{}"))
+    }
+
+    /// Each failed gate becomes exactly its own key, `true`, and a logprobs
+    /// row reaches the profile wire object as `{"logprobs":true}`.
+    @Test func eachFailedMTPGateMapsToItsOwnKey() throws {
+        let keys: [(CBv2MTPIneligibility, String)] = [
+            (.media, "media"), (.reasoningBudget, "reasoning_budget"), (.grammar, "grammar"),
+            (.sampling, "sampling"), (.logprobs, "logprobs"), (.logitBias, "logit_bias"),
+            (.repetitionPenalty, "repetition_penalty"), (.penalties, "penalties"),
+            (.stopStrings, "stop_strings"), (.multimodalHistory, "multimodal_history"),
+        ]
+        func wireKeys(_ gates: CBv2MTPIneligibility) throws -> [String: Bool] {
+            var t = CBv2RequestTiming()
+            t.mtpIneligibility = gates
+            let data = try JSONEncoder().encode(EngineProfile(timing: t, finishReason: .stop))
+            let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return try #require(object?["mtp_ineligible"] as? [String: Bool])
+        }
+        for (gate, key) in keys {
+            #expect(try wireKeys(gate) == [key: true], "\(key)")
+        }
+        #expect(
+            try wireKeys(CBv2MTPIneligibility(keys.map(\.0)))
+                == Dictionary(uniqueKeysWithValues: keys.map { ($0.1, true) }))
+        var t = CBv2RequestTiming()
+        t.mtpIneligibility = [.logprobs]
+        let b = RequestProfileBuilder()
+        b.update { f, _ in f.engine = EngineProfile(timing: t, finishReason: .stop) }
+        let json = String(decoding: try JSONEncoder().encode(b.wireObject()), as: UTF8.self)
+        #expect(json.contains("\"mtp_ineligible\":{\"logprobs\":true}"))
+    }
 }

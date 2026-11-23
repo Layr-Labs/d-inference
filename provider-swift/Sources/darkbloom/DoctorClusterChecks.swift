@@ -39,6 +39,7 @@ func clusterDoctorChecks(_ checks: [(name: String, outcome: ClusterDiagnosticsRe
     checks.compactMap { check in
         switch check.outcome {
         case .passed: return DoctorCheck(name: "cluster \(check.name)", status: .pass, detail: check.detail)
+        case .warning: return DoctorCheck(name: "cluster \(check.name)", status: .warn, detail: check.detail)
         case .failed: return DoctorCheck(name: "cluster \(check.name)", status: .fail,
                                          detail: check.detail + " (details: `\(ClusterPairSummary.cli) cluster doctor`)")
         case .notRun, .notObserved: return nil

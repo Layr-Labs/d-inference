@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3357,13 +3357,15 @@ M3/M4/M5 and `4` on M1/M2/unknown, lowered by
 `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` (and for Gemma QAT, below)
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
 On measured chips the catalog `gemma-4-26b-qat-4bit` drafts two tokens a round
-at fixed depth (`MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName:)`): on
-M5 Ultra one or two decode rows draft (per-row table
-`fixedDraftTokensByDecodeRows = [2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at
-most); on M3 Ultra and M5 Max only a lone row drafts (`[2, 0]`, envelope 3). More rows get
-depth 0 and run ordinary chained decode; the deadline projection still charges a
-three-row step at the envelope's depth 1 (conservative). Width-3 verification
-below 64 expert assignments (`[1, 3]`, `[2, 3]`), outside the batch-decode and
+at fixed depth (`MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName:m5UltraLoneRow:)`): on
+M5 Ultra, M3 Ultra and M5 Max only a lone row drafts (per-row table
+`fixedDraftTokensByDecodeRows = [2, 0]`, envelope 3, one `[1, 3]` rectangle).
+Two or more rows get depth 0 and run ordinary chained decode.
+`DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` restores M5 Ultra's earlier table: one
+or two rows draft (`[2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at most), and the
+deadline projection again charges three rows depth 1, more than they run. Width-3
+verification below 64 expert assignments (`[1, 3]`, and `[2, 3]` under that
+switch), outside the batch-decode and
 prompt projection scopes, takes Gemma's compiled feed-forward trace, with the
 eager graph's bytes (`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0` runs it eager).
 Every other chip, or `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0`, keeps the lone-row policy that

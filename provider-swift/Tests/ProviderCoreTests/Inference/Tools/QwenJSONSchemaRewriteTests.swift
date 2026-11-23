@@ -64,6 +64,20 @@ struct QwenJSONSchemaRewriteTests {
         #expect(try make(F.schemaFormat(Self.pydantic), widens: false) == nil)
     }
 
+    @Test func propertyNameOptInDoesNotChangePairAdmission() throws {
+        let items = #"{"type":"object","properties":{"first name":{"type":"integer"}}}"#
+        let request = try F.request(format: F.schemaFormat(#"{"type":"array","items":\#(items)}"#))
+        func admitted(pair: Bool, names: ToolConstraintSchemaCompiler.PropertyNames) -> Bool {
+            JSONAnswerPolicy.constraint(request: request, tokenizer: Self.handle, modelID: request.model,
+                modelType: "qwen3_5", defaultMaxTokens: 100, stopTokenIDs: F.stops, promptTokens: Self.prompt,
+                servesDistributedPair: pair, families: .all, widensSchemas: true, propertyNames: names) != nil
+        }
+        #expect(admitted(pair: false, names: .json))
+        #expect(!admitted(pair: false, names: .identifiers))
+        #expect(!admitted(pair: true, names: .json))
+        #expect(!admitted(pair: true, names: .identifiers))
+    }
+
     @Test func valueAssertionsLeaveTheStructureEnforcedAndTheValuesFree() throws {
         let constraint = try #require(try make(F.schemaFormat(Self.assertions)))
         #expect(constraint.format.schema != nil)

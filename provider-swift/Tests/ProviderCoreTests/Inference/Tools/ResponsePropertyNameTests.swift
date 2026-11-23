@@ -1,4 +1,7 @@
+import CryptoKit
+import Foundation
 import MLXLMCommon
+import MLXLMServer
 import Testing
 @testable import ProviderCore
 
@@ -22,14 +25,14 @@ struct ResponsePropertyNameTests {
             ("q\"\\", #"q\"\\"#), ("a\nb", #"a\u000ab"#),
             (String(repeating: "é", count: 128), String(repeating: "é", count: 128))
         ] {
-            let compiled = try ToolConstraintSchemaCompiler.compileResponseSchema(schema(name))
+            let compiled = try ToolConstraintSchemaCompiler.compileResponseSchema(schema(name), propertyNames: .json)
             let grammar = try FlintJSONGrammar(schema: compiled, forbidding: [], family: "test")
             let member = "\"\(spelling)\":1"
             #expect(accepts("{\(member)}", grammar))
             #expect(!accepts("{\(member),\(member)}", grammar))
             #expect(!accepts("{}", grammar))
         }
-        let compiled = try ToolConstraintSchemaCompiler.compileResponseSchema(schema("a/b"))
+        let compiled = try ToolConstraintSchemaCompiler.compileResponseSchema(schema("a/b"), propertyNames: .json)
         let grammar = try FlintJSONGrammar(schema: compiled, forbidding: [], family: "test")
         #expect(!accepts(#"{"a\/b":1}"#, grammar))
         #expect(!accepts(#"{"a/b":1,"\u0061/b":1}"#, grammar))
@@ -38,44 +41,87 @@ struct ResponsePropertyNameTests {
     @Test func limitsAndIdentifierRollback() throws {
         typealias Compiler = ToolConstraintSchemaCompiler
         let off = Compiler.PropertyNames(environmentValue: " OFF ")
-        #expect(off == .identifiers)
+        for value: String? in [nil, "", "unknown", "0", "off", "false", "no"] {
+            #expect(Compiler.PropertyNames(environmentValue: value) == .identifiers)
+        }
+        for value in ["1", " On ", "true", "yes"] {
+            #expect(Compiler.PropertyNames(environmentValue: value) == .json)
+        }
         for key in ["", String(repeating: "é", count: 128) + "a"] {
-            #expect(throws: ToolConstraintSchemaError.self) { try Compiler.compileResponseSchema(schema(key)) }
+            #expect(throws: ToolConstraintSchemaError.self) { try Compiler.compileResponseSchema(schema(key), propertyNames: .json) }
         }
         #expect(throws: ToolConstraintSchemaError.self) {
             try Compiler.compileResponseSchema(schema("first name"), propertyNames: off)
         }
-        let compiled = try Compiler.compileResponseSchema(schema("before<think>after"))
+        let compiled = try Compiler.compileResponseSchema(schema("before<think>after"), propertyNames: .json)
         #expect(throws: ToolConstraintSchemaError.self) {
             try FlintJSONGrammar(schema: compiled, forbidding: [Array("<think>".utf8)], family: "test")
         }
     }
 
     @Test func canonicalEquivalenceDoesNotRenameAProperty() throws {
-        let compiled = try ToolConstraintSchemaCompiler.compileResponseSchema(schema("é"))
-        #expect(ToolConstraintValidation.satisfies(.object(["é": .int(1)]), schema: compiled))
-        #expect(!ToolConstraintValidation.satisfies(.object(["e\u{301}": .int(1)]), schema: compiled))
+        let compiled = try ToolConstraintSchemaCompiler.compileResponseSchema(schema("é"), propertyNames: .json)
+        #expect(ToolConstraintValidation.satisfies(.object(["é": .int(1)]), schema: compiled, propertyNames: .json))
+        #expect(!ToolConstraintValidation.satisfies(.object(["e\u{301}": .int(1)]), schema: compiled, propertyNames: .json))
     }
 
-    @Test func identifierKeysHaveIdenticalAllowedBytesAtEveryPrefix() throws {
-        typealias Compiler = ToolConstraintSchemaCompiler
-        let key = String(repeating: "A_x-9", count: 12) + "abcd"
-        let old = try FlintJSONGrammar(schema: Compiler.compileResponseSchema(schema(key), propertyNames: .identifiers),
-                                       forbidding: [], family: "test")
-        let new = try FlintJSONGrammar(schema: Compiler.compileResponseSchema(schema(key), propertyNames: .json),
-                                       forbidding: [], family: "test")
-        var before = FlintJSONState(grammar: old), after = FlintJSONState(grammar: new)
-        for (offset, byte) in "{\"\(key)\":1}".utf8.enumerated() {
-            let a = (UInt8.min...UInt8.max).filter { var s = before; return s.consume($0, grammar: old) }
-            let b = (UInt8.min...UInt8.max).filter { var s = after; return s.consume($0, grammar: new) }
-            #expect(a == b)
-            // The identifier-only automaton admitted just the next literal
-            // byte from the opening quote up to and including the closing one.
-            if (2...(key.utf8.count + 2)).contains(offset) { #expect(b == [byte]) }
-            let acceptedBefore = before.consume(byte, grammar: old)
-            let acceptedAfter = after.consume(byte, grammar: new)
-            #expect(acceptedBefore && acceptedAfter)
+    @Test func exactCheckedAnswerAndUnchangedForcedToolPath() throws {
+        let key = "field with space"
+        let format = OpenAIResponseFormat.jsonSchema(.init(name: "example", strict: true, schema: schema(key)))
+        let answer = try #require(QwenJSONSchemaRewrite.answerFormat(format, profile: .qwen35, widens: true, propertyNames: .json))
+        #expect(answer.widening == nil && answer.format.checksOutput)
+        try answer.format.validate(content: #"{"field with space":1}"#, finishReason: "stop")
+        #expect(throws: (any Error).self) {
+            try answer.format.validate(content: #"{"field_with_space":1}"#, finishReason: "stop")
         }
-        #expect(before.isComplete(old) && after.isComplete(new))
+        let tool = OpenAITool(type: "function", function: .init(name: "lookup", parameters: schema(key)))
+        #expect(throws: ToolConstraintSchemaError.self) {
+            try ToolConstraintSchemaCompiler.compile(tools: [tool], mode: .required)
+        }
+    }
+
+    @Test func nestedDiagnosticOmitsExpandedKeyText() throws {
+        let raw: MLXLMCommon.JSONValue = .object(["type": .string("object"), "properties": .object([
+            "synthetic\nfield": .object(["type": .string("object"), "required": .bool(false)])
+        ])])
+        do {
+            _ = try ToolConstraintSchemaCompiler.compileResponseSchema(raw, propertyNames: .json)
+            Issue.record("accepted a malformed required list")
+        } catch let ToolConstraintSchemaError.invalid(detail) {
+            #expect(detail == "json_schema.schema.properties[].required must be an array")
+        }
+    }
+
+    @Test func identifierMasksMatchThePreChangeGrammar() throws {
+        // Golden from dc25f81861: 256 next-byte decisions at each of 299 prefixes.
+        let k = String(repeating: "x", count: 64)
+        let value = ToolValueSchema.integer(values: nil, nullable: false)
+        let keys = ["n", "n1", "n_2", k]
+        let child = ToolValueSchema.object(properties: [.init(name: "n", schema: value, required: true),
+                                                         .init(name: "n1", schema: value, required: false)],
+                                            allowsAdditional: false, nullable: false)
+        let object = ToolValueSchema.object(properties: keys.map { .init(name: $0, schema: $0 == "n" ? child : value, required: $0 != "n1") },
+                                            allowsAdditional: false, nullable: false)
+        let g = try FlintJSONGrammar(schema: object, forbidding: [], family: "test")
+        var prefixes = 0, masks = Data()
+        for order in [keys, Array(keys.reversed()), [keys[2],keys[0],keys[3]]] {
+            let answer = "{" + order.map { key in
+                let v = key == "n" ? (order.first == "n" ? #"{"n":1,"n1":2}"# : #"{"n":1}"#) : "42"
+                return "\"\(key)\":\(v)"
+            }.joined(separator: ",") + "}"
+            var state = FlintJSONState(grammar: g)
+            for b in answer.utf8 {
+                for candidate in UInt8.min...UInt8.max {
+                    var trial = state
+                    masks.append(trial.consume(candidate, grammar: g) ? 1 : 0)
+                }
+                precondition(state.consume(b, grammar: g))
+                prefixes += 1
+            }
+            precondition(state.isComplete(g))
+        }
+        #expect(prefixes == 299)
+        let digest = SHA256.hash(data: masks).map { String(format: "%02x", $0) }.joined()
+        #expect(digest == "d70c86e564089e3aadc800e650d83ab9b657f6d6add3cc33b9024b65f5614a98")
     }
 }

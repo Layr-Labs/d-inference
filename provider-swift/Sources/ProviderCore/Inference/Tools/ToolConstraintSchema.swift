@@ -94,7 +94,7 @@ enum ToolConstraintSchemaCompiler {
 
         init(environmentValue: String?) {
             let value = environmentValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-            self = ["0", "off", "false", "no"].contains(value) ? .identifiers : .json
+            self = ["1", "on", "true", "yes"].contains(value) ? .json : .identifiers
         }
 
         var maxBytes: Int { self == .json ? 256 : 64 }
@@ -482,7 +482,7 @@ enum ToolConstraintSchemaCompiler {
             }
             var names = Set<String>()
             for value in values {
-                guard case .string(let name) = value, name.utf8.count <= propertyNames.maxBytes,
+                guard case .string(let name) = value, propertyNames != .json || name.utf8.count <= propertyNames.maxBytes,
                       let index = rawProperties.index(forKey: name),
                       propertyNames != .json || rawProperties[index].key.utf8.elementsEqual(name.utf8) else {
                     throw ToolConstraintSchemaError.invalid(

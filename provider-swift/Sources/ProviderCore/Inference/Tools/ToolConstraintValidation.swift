@@ -314,8 +314,9 @@ enum ToolConstraintValidation {
     }
 
     /// Response-format post-validation over the same compiled subset.
-    static func satisfies(_ value: MLXLMCommon.JSONValue, schema: ToolValueSchema) -> Bool {
-        validate(value, against: schema, exactKeys: ToolConstraintSchemaCompiler.PropertyNames.response == .json)
+    static func satisfies(_ value: MLXLMCommon.JSONValue, schema: ToolValueSchema,
+                          propertyNames: ToolConstraintSchemaCompiler.PropertyNames = .response) -> Bool {
+        validate(value, against: schema, exactKeys: propertyNames == .json)
     }
 
     /// Response-format post-validation against a caller's JSON Schema that the

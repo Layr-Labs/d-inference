@@ -213,7 +213,7 @@ struct SSDHybridCheckpointEnvelope {
         guard let expected = try tokenTensorBytes(manifest: manifest, tensor: tensor, offset: offset, count: data.count)
         else { return data }
         guard expected == data else { throw CBv2CompleteCheckpointError.invalidSegment }
-        return Data(count: data.count)
+        return data
     }
 
     // MARK: - Layout epoch

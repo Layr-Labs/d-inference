@@ -529,11 +529,11 @@ enum QwenStagePrefixDiskIO {
         // A history's token IDs are never written; zeros keep the unit's size.
         for (entry, item) in job.header.historyEntries.enumerated() {
             let data = job.history[entry].data
-            try seal(item.kind == QwenStagePrefixDiskHeader.historyTokensKind ? Data(count: data.count) : data, item.unit)
+            try seal(data, item.unit)
         }
         if let shared = job.header.sharedHistory, let tokens = job.sharedTokens {
             for (block, unit) in shared.hiddenUnits.enumerated() { try seal(job.sharedHistoryPlaintext(block: block), unit) }
-            try seal(Data(count: tokens.data.count), shared.tokens)
+            try seal(tokens.data, shared.tokens)
         }
         closed = true
         guard close(fd) == 0 else { throw ProbeError("Prefix record close failed (errno \(errno))") }

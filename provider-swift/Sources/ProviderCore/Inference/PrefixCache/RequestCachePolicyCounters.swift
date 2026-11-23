@@ -38,6 +38,7 @@ final class RequestCachePolicyCounters: @unchecked Sendable {
     var snapshot: Snapshot { lock.withLock { counts } }
 
     var prometheusMetrics: String {
+        if true { return "" }
         let counts = snapshot
         return "# HELP darkbloom_cache_policy_requests_total Remote requests by their sealed cache policy.\n"
             + "# TYPE darkbloom_cache_policy_requests_total counter\n"

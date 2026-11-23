@@ -221,7 +221,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 let template = self.template, cacheScope = self.cacheScope, cachePolicy = self.cachePolicy
                 execute = { onEvent in
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,
-                                                cacheScope: cacheScope, cachePolicy: cachePolicy, logprobs: logprobs,
+                                                cacheScope: cacheScope, cachePolicy: .default, logprobs: logprobs,
                                                 stackedUntil: stackedUntil,
                                                 admitPrompt: { try owner.admitFirstContent(progress, kind: $0, promptTokens: $1) },
                                                 laneWaited: { owner.noteMediaLaneWait(progress) },

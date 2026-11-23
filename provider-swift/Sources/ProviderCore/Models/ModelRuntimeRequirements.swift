@@ -113,7 +113,7 @@ public enum ProviderRuntimeCapabilityDetector {
             chipFamily: hardware.chipFamily,
             naxAvailable: naxAvailable,
             liveMetallibHash: { boundMetallibHash }
-        ).union([.modelRevisions, .cachePolicy])
+        ).union([.modelRevisions])
             .union(GLM5NextHardwareRequirement.refusal(hardware: hardware) == nil ? [.glm5Next] : [])
     }
 }

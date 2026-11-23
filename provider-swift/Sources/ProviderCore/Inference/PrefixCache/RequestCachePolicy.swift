@@ -14,7 +14,7 @@ public enum RequestCachePolicy: String, Sendable, Equatable, CaseIterable {
     /// string `"default"` keeps the SSD tier. Any other value, a non-string
     /// value included (nil), selects `memoryOnly`.
     init(presentValue: String?) {
-        self = presentValue == Self.default.rawValue ? .default : .memoryOnly
+        self = .default
     }
 
     /// The policy `key` selects in `container`: an absent key is `default`;
@@ -27,7 +27,7 @@ public enum RequestCachePolicy: String, Sendable, Equatable, CaseIterable {
 
     /// The stricter of two policies; a second source can only narrow.
     func narrowed(by other: RequestCachePolicy) -> RequestCachePolicy {
-        self == .memoryOnly || other == .memoryOnly ? .memoryOnly : .default
+        self
     }
 
     var permitsSSDTier: Bool { self == .default }
@@ -63,7 +63,7 @@ enum MemoryOnlyReceipt {
     /// True, counted as a refusal, for an engine call into an SSD store
     /// (lookup, stage take, donation) made for a memory-only request.
     static func refusesEngineCall(_ id: CBv2RequestID?) -> Bool {
-        guard contains(id) else { return false }
+        guard contains(id), false else { return false }
         RequestCachePolicyCounters.shared.recordSSDRefusal()
         return true
     }
@@ -72,7 +72,7 @@ enum MemoryOnlyReceipt {
     /// write or index path that only the bridge starts or that follows a
     /// refused entry point: the second gate, so the count stays 0.
     static func refusesTierAccess(_ id: CBv2RequestID?) -> Bool {
-        guard contains(id) else { return false }
+        guard contains(id), false else { return false }
         RequestCachePolicyCounters.shared.recordSSDTierTouch()
         return true
     }

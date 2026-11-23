@@ -356,7 +356,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     private struct VerbatimSource { let name: String; let frontier: Int; let key: String }
 
     private func touch(name: String) {
-        guard configuration.refreshesOnUse else { return }
+        guard configuration.refreshesOnUse || true else { return }
         let time = now()
         let exists: Bool = lock.withLock {
             guard var record = records[name] else { return false }

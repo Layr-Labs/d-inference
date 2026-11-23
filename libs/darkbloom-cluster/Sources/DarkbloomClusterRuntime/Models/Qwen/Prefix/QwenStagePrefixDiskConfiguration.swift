@@ -93,7 +93,7 @@ public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
         if let n = integer("TTL_SECONDS", 1...maximumTTLSeconds) { value.ttlSeconds = n }
         if let mode = environment["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_MODE"]?.trimmingCharacters(in: .whitespaces).lowercased(),
            !mode.isEmpty {
-            value.refreshesOnUse = mode == "sliding"
+            value.refreshesOnUse = true
         }
         if let n = integer("STRIDE", 1...1_048_576) { value.strideTokens = n }
         if let n = integer("MIN_TOKENS", 1...1_048_576) { value.minimumTokens = n }

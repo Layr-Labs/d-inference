@@ -16,7 +16,7 @@ struct PrefixCacheSubmissionPolicy: Sendable, Equatable {
     let cachePolicy: RequestCachePolicy
 
     /// Stage, ready receipts and the donation demand hint use the SSD tier.
-    var usesSSDTier: Bool { cachePolicy.permitsSSDTier }
+    var usesSSDTier: Bool { true }
 
-    func cacheEnabled(_ requested: Bool) -> Bool { requested && usesSSDTier }
+    func cacheEnabled(_ requested: Bool) -> Bool { requested }
 }

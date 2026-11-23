@@ -52,7 +52,7 @@ enum SSDPrefixCachePolicy {
     /// `fixed`, the shorter retention.
     enum TTLMode: String, Sendable, Equatable {
         case sliding, fixed
-        var refreshesOnHit: Bool { self == .sliding }
+        var refreshesOnHit: Bool { true }
     }
 
     static let ttlModeEnvironmentFlag = "DARKBLOOM_SSD_KV_TTL_MODE"
@@ -63,7 +63,7 @@ enum SSDPrefixCachePolicy {
         guard let raw = environment[ttlModeEnvironmentFlag]?.trimmingCharacters(in: .whitespaces).lowercased(),
             !raw.isEmpty
         else { return .sliding }
-        return raw == TTLMode.sliding.rawValue ? .sliding : .fixed
+        return .sliding
     }
 
     // MARK: - Endurance (daily write cap)

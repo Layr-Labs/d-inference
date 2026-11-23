@@ -1715,8 +1715,8 @@ every row's FP32 steps in the same order as the even per-core split, so the
 bits are unchanged. The policy is part of the encrypted checkpoint storage identity
 (`storage.executionPolicy`, `CompleteCheckpointStorageIdentity`). The native
 engine prices one worst-case step at setup and stays inactive when it exceeds
-the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
-with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
+the post-load envelope (about 56.8 GB of admission on a 256 GiB host at the
+raised GPU limit, about 48.9 GB at the macOS default; shared with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
 selection row per query, retained until the step fence (about 46 MB per query
 across 11 DSA layers). Each paged read launch binds up to 17 of the 64 MiB
 segments that hold the row's pages (`PagedSegmentDispatchPlan.maximumBindings`):
@@ -1842,8 +1842,18 @@ cap is the largest value that check admits
 (`EngineV2Factory.glm5NextActivatableRows`, `glm5NextActivationAdmits`). With
 2048-token steps at 262,144 context the calibrated price is 55,057 bytes per
 context token plus 5.59, 7.40 and 11.02 GB of setup for one, two and four rows,
-so a 56.8 GB grant runs two or three rows; four need about 72.4 GB, because pool
-tokens and the admissible ceiling derive from the same capacity. Publication
+so 56.8 GB (the admission of a 256 GiB host at the raised GPU limit) runs
+three rows; four need about 72.4 GB, because pool
+tokens and the admissible ceiling derive from the same capacity. A grant held
+to the GPU limit (51.5 GB at the macOS default) would fit only two that way, so
+the check is also priced for the tokens the GLM gate admits within it:
+(admissible − setup) / (KV + step scratch per token)
+(`EngineV2Factory.glm5NextAdmittedBytesPerContextToken`, which `EngineV2` takes
+under the same name). The rows are capped at those the
+same set gets without the hold (`glm5NextServingRows`, the re-slice's
+`NewcomerReslice.rowsReferenceBytes`): three for GLM alone on a 256 GB Mac
+at either limit.
+`DARKBLOOM_GLM_GPU_LIMIT_KV=0` keeps the row-and-context check alone. Publication
 also charges one step's setup and the admission watermark
 (`GLM5NextCoordinatorServing.fullContextRefusal`).
 
@@ -1999,7 +2009,11 @@ device activity. It never refunds the lease, clears the cache or regrows
 survivors for that load. Retained GLM faults quarantine GLM work and grant
 growth, but do not quarantine MiMo or other families. Their unpublished weight
 and KV bytes are charged into every fleet KV budget, so other families' new and
-regrown grants cannot reuse that memory. Allocator-cache trimming only frees
+regrown grants cannot reuse that memory. While GLM is resident, being loaded or
+retained, the fleet KV budget is also held to the GPU wired-memory limit, less
+the resident weights and activation reserve
+([hardware support](hardware-support.md), `GLM5NextGPULimitKVBudget`). The held grant keeps GLM's running rows: the engine's step-scratch check (`GLM5NextPagedModelBinding.validateStepEnvelope`) is priced for the tokens the GLM gate admits within the admissible bytes, (admissible − setup) / (KV + step scratch per token), as well as for every row at the context, and the rows are capped at those the row-and-context check gives the same set without the hold (`EngineV2Factory.glm5NextServingRows`). `DARKBLOOM_GLM_GPU_LIMIT_KV=0` turns both off.
+Allocator-cache trimming only frees
 unowned cached allocations and is not native-retirement proof. Local `/metrics`
 reports the retained-fault state, retained owner-object count and charged bytes
 (`GLM5NextLoadFaultState`). `GLM5NextNativeOperationOwner.beginClosing`

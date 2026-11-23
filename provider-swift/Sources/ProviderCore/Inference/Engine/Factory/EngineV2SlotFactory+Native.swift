@@ -173,7 +173,8 @@ extension EngineV2SlotFactory {
     static func makeProductionBundle(
         modelId: String, modelType: String?, isVLM: Bool, modelDirectory: URL?,
         container: ProviderModelContainer, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
-        kvBytesCapacity: Int, maxConcurrentRequests: Int, automaticallySelectConcurrency: Bool = false,
+        kvBytesCapacity: Int, glm5NextRowsReferenceBytes: Int? = nil, maxConcurrentRequests: Int,
+        automaticallySelectConcurrency: Bool = false,
         constructionPurpose: EngineV2Factory.ConstructionPurpose = .serving,
         kvBudget: GlobalKVCacheBudget?,
         activationReserveBytes: UInt64? = nil, kvBackendConfig: String = "auto",
@@ -232,6 +233,7 @@ extension EngineV2SlotFactory {
             return try await makeProductionBundle(
                 modelId: modelId, modelType: modelType, isVLM: isVLM, modelDirectory: modelDirectory,
                 container: target, tokenizer: tokenizer, sizing: sizing, kvBytesCapacity: kvBytesCapacity,
+                glm5NextRowsReferenceBytes: glm5NextRowsReferenceBytes,
                 maxConcurrentRequests: maxConcurrentRequests,
                 automaticallySelectConcurrency: automaticallySelectConcurrency,
                 constructionPurpose: constructionPurpose, kvBudget: kvBudget,

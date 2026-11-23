@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-23
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -394,12 +394,31 @@ GLM publication or clean retirement until restart. Pending operations are joined
 before settlement; no timeout or cancellation is restoration proof
 (`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
 
-GLM's KV grant fills the cap, so at full KV its GPU use is the whole cap, about
-247 GB on a 256 GB M5 Ultra. The macOS default GPU wired-memory limit there is
-smaller, and Metal command buffers past it fail with "Insufficient Memory".
-The provider neither lowers the cap nor changes admission for this; `doctor`,
-`start` and failure logs give the operator the
-[sysctl values](../provider/hardware-requirements.md) instead
+The cap alone would plan its whole size, about 247 GB on a 256 GB M5 Ultra,
+as GLM's GPU use at full KV. The macOS default GPU wired-memory limit there
+(`iogpu.wired_limit_mb=0`: Metal's recommended working set, 222.72 GiB) is
+smaller, and Metal command buffers past it fail with "Insufficient Memory". A
+residency set that includes GLM (a resident slot, the model being loaded, or a
+retained GLM owner) therefore plans its weights, activation reserve and KV
+within the live GPU limit as well as within the cap. At the macOS default the
+lone GLM grant is about 47.9 GiB instead of 55.6 GiB; at the production
+hosts' raised limit (240 GiB) the cap binds first and the grant is unchanged.
+MLX's buffer cache is not held back from the limit (holding back its 8 GiB would
+leave less than one full-context request), so the grant is a planning bound, not
+a guarantee about wired bytes. A running slot keeps the limit read at its last
+successful re-slice until the next successful re-slice or a restart; a failed
+load's rollback restores the earlier grants
+(`provider-swift/Sources/ProviderCore/Inference/Memory/GLM5NextGPULimitKVBudget.swift`,
+`GLM5NextGPULimitKVBudget`). The held grant keeps the slot's running rows:
+GLM's step-scratch check is priced for the tokens its gate can admit within
+the grant, not only for every row at the 262,144-token context, and the rows
+are capped at those the same set gets without the hold
+(`EngineV2Factory.glm5NextServingRows`), so a 256 GB Mac keeps 3 rows at
+either limit instead of dropping to 2 at the default.
+`DARKBLOOM_GLM_GPU_LIMIT_KV=0` restores the cap's grant and the row-and-context
+check. `doctor`, `start` and failure logs give the
+operator the [sysctl values](../provider/hardware-requirements.md) that
+restore the full grant, and `darkbloom cluster gpu-limit` applies them
 (`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
 `GLM5NextWiredLimit`).
 

@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-23
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -94,7 +94,9 @@ See [inference and logprob admission](../architecture/inference.md).
    drops the MLX buffer cache once, then evicts the least recently used idle
    slot (`StandaloneServer.ensureMemoryHeadroomForLoad`). Resident models share
    the KV budget as [KV slot grants](../architecture/hardware-support.md#kv-slot-grants)
-   describes; a load that would leave any model below its minimum grant fails
+   describes, held to the GPU wired-memory limit while GLM-5.3-Flash is resident, being loaded or retained
+   (`GLM5NextGPULimitKVBudget`; GLM keeps the rows the set has without the hold, `glm5NextServingRows`;
+   `DARKBLOOM_GLM_GPU_LIMIT_KV=0` turns both off); a load that would leave any model below its minimum grant fails
    with HTTP 503 (`StandaloneServer.resliceKeepsSlotsServiceable`). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
    model, which still loads on request. A local GLM qualification load reads its

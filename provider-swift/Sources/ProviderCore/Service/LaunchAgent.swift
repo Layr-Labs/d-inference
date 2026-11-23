@@ -539,6 +539,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GLM_SHARED_GRANT_WAIT`: a GLM request that fits GLM alone waits
     /// for its share beside other loaded models by default; `0`, `false`, `no` or
     /// `off` refuses it at once, as 0.10.17 did.
+    /// `DARKBLOOM_GLM_GPU_LIMIT_KV`: GLM's KV grant is held to the GPU limit by
+    /// default; `0`, `false`, `no` or `off` keeps 0.10.17's grant.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -645,6 +647,7 @@ public enum LaunchAgent: Sendable {
         OwnerMemoryWait.environmentName,
         OwnerMemoryWait.firstTokenWaitEnvironmentName,
         OwnerMemoryWait.sharedGrantWaitEnvironmentName,
+        GLM5NextGPULimitKVBudget.environmentName,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

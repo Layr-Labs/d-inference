@@ -502,9 +502,13 @@ private struct GLM5NextStandaloneHost {
         #expect(charged >= UInt64(host.fixture.manifest.totalSizeBytes))
         let reserve = await server.resolvedActivationReserveBytes
         #expect(reserve >= reserveBefore)
-        #expect(await server.fleetKVBudgetBytes(extraWeightBytes: 0) == UnifiedMemoryCap.kvBudgetBytes(
-            physicalBytes: ProcessInfo.processInfo.physicalMemory, residentWeightBytes: charged,
-            activationReserveBytes: reserve, configReserveBytes: 0))
+        // A retained GLM owner holds the set to the GPU limit, as its load was.
+        #expect(await server.fleetKVBudgetBytes(extraWeightBytes: 0) == GLM5NextGPULimitKVBudget.budgetBytes(
+            UnifiedMemoryCap.kvBudgetBytes(
+                physicalBytes: ProcessInfo.processInfo.physicalMemory, residentWeightBytes: charged,
+                activationReserveBytes: reserve, configReserveBytes: 0),
+            modelTypes: [], retainedGLMBytes: charged, residentWeightBytes: charged,
+            activationReserveBytes: reserve, limit: .live()))
         #expect(await server.fleetKVBudgetBytes(extraWeightBytes: 0) < budgetBefore)
 
         // The retained grant is frozen in both directions; new GLM work is refused.
@@ -522,7 +526,7 @@ private struct GLM5NextStandaloneHost {
         }
         try GLM5NextLoadFaultState.requireHealthy(modelType: "gemma4")
         await server.setV2TestHooksForTesting(.init(
-            physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
+            physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory, gpuLimit: .live(),
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
         // A lone GLM newcomer was granted the whole fleet KV budget, and the
         // retained charge keeps all of it: an unrelated family is refused

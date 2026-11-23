@@ -281,6 +281,8 @@ extension EngineV2Factory {
             // before its one-shot consumption check can obscure the mismatch.
             try preparedBackend.glm5NextNative?.validateBinding(completePrefixCache: completePrefixCache)
         }
+        // Read while the preparation still holds its backend: `consume` hands it over.
+        let glm5NextAdmittedCharge = try preparedBackend.glm5NextAdmittedBytesPerContextToken()
         let (backend, caches) = try preparedBackend.consume(
             model: model, maxConcurrentRequests: maxConcurrentRequests,
             completePrefixCache: completePrefixCache, kvBudget: kvBudget)
@@ -384,7 +386,8 @@ extension EngineV2Factory {
             mtpConfig: mtpConfig,
             processMemoryOwner: processOwner,
             nativeCompletionTracking: glmNative != nil,
-            nativeExecutionContract: glmNative?.resources.contract)
+            nativeExecutionContract: glmNative?.resources.contract,
+            glm5NextAdmittedBytesPerContextToken: glm5NextAdmittedCharge)
         let glmOwner: GLM5NextNativeOperationOwner?
         if let glmNative, let protected = model as? GLM5NextProtectedModel {
             glmOwner = GLM5NextNativeOperationOwner(model: protected, resources: glmNative, engine: engine)

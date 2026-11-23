@@ -264,6 +264,11 @@ public actor StandaloneServer {
         let afterEvictionActivityProbe: (@Sendable (String) async -> Void)?
         /// Stands in for `ClusterGPUHold.productionServesHere`, the load's production guard.
         let productionServes: (@Sendable () -> String?)?
+        /// Overrides the live GPU limit a GLM residency set's KV budget is held to; with
+        /// `physicalMemoryBytes` pinned and this nil, no limit applies.
+        let gpuLimit: GLM5NextGPULimitKVBudget.GPULimit?
+        /// Observes each newcomer's GLM rows reference (nil for other families).
+        let onGLMRowsReference: (@Sendable (String, Int?) -> Void)?
         let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
 
         init(
@@ -279,6 +284,8 @@ public actor StandaloneServer {
             clearMemoryCache: (@Sendable () -> Void)? = nil,
             afterEvictionActivityProbe: (@Sendable (String) async -> Void)? = nil,
             productionServes: (@Sendable () -> String?)? = nil,
+            gpuLimit: GLM5NextGPULimitKVBudget.GPULimit? = nil,
+            onGLMRowsReference: (@Sendable (String, Int?) -> Void)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
@@ -293,6 +300,8 @@ public actor StandaloneServer {
             self.clearMemoryCache = clearMemoryCache
             self.afterEvictionActivityProbe = afterEvictionActivityProbe
             self.productionServes = productionServes
+            self.gpuLimit = gpuLimit
+            self.onGLMRowsReference = onGLMRowsReference
             self.makeEngine = makeEngine
         }
     }
@@ -1039,10 +1048,12 @@ public actor StandaloneServer {
     /// operator reserve (standalone mode has none — the cap-implied reserve
     /// is what holds memory back, exactly as in `availableMemoryGb`).
     /// `activationReserveBytes` overrides the live serving-set reserve for a
-    /// PROSPECTIVE set (a `setModels` preflight); nil reads live.
+    /// PROSPECTIVE set (a `setModels` preflight); nil reads live. A set with
+    /// GLM-5.3-Flash (`extraModelType` names the newcomer's family) is also
+    /// held to the GPU limit (`GLM5NextGPULimitKVBudget`).
     func fleetKVBudgetBytes(
-        extraWeightBytes: Int, activationReserveBytes: UInt64? = nil,
-        excludingModelIDs: Set<String> = []
+        extraWeightBytes: Int, extraModelType: String? = nil, activationReserveBytes: UInt64? = nil,
+        excludingModelIDs: Set<String> = [], heldToGPULimit: Bool = true
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
         for (id, slot) in slots where !excludingModelIDs.contains(id) {
@@ -1052,13 +1063,21 @@ public actor StandaloneServer {
         }
         let physical = v2TestHooks?.physicalMemoryBytes
             ?? ProcessInfo.processInfo.physicalMemory
-        return UnifiedMemoryCap.kvBudgetBytes(
+        let retainedGLM = v2TestHooks?.retainedResidentBytes ?? GLM5NextLoadFaultState.retainedResidentBytes
+        let resident = GLM5NextLoadFaultState.saturatingSum([totalWeights, retainedGLM])
+        let reserve = activationReserveBytes ?? resolvedActivationReserveBytes
+        let budget = UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
-            residentWeightBytes: v2TestHooks?.retainedResidentBytes
-                .map { GLM5NextLoadFaultState.saturatingSum([totalWeights, $0]) }
-                ?? GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
-            activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
+            residentWeightBytes: resident,
+            activationReserveBytes: reserve,
             configReserveBytes: 0)
+        return GLM5NextGPULimitKVBudget.budgetBytes(
+            budget, modelTypes: slots.filter { !excludingModelIDs.contains($0.key) }.map(\.value.modelType)
+                + [extraModelType],
+            retainedGLMBytes: retainedGLM, residentWeightBytes: resident,
+            activationReserveBytes: reserve,
+            limit: v2TestHooks?.gpuLimit ?? (v2TestHooks?.physicalMemoryBytes == nil ? .live() : .unread),
+            enabled: heldToGPULimit && GLM5NextGPULimitKVBudget.enabled())
     }
 
     /// True iff every resident slot's re-sliced grant under `reserveBytes`
@@ -1240,7 +1259,7 @@ public actor StandaloneServer {
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
         let minimumGrants = Self.minimumGrantBytes(existing)
-        var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+        var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes, extraModelType: modelType)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: newcomer,
@@ -1261,7 +1280,7 @@ public actor StandaloneServer {
                 await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
             }
             if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
-            fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+            fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes, extraModelType: modelType)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
                 newcomer: newcomer,
@@ -1291,6 +1310,16 @@ public actor StandaloneServer {
                     + "(fleet KV budget \(fleetBudget) B across \(existing.count + 1) slots) — refused")
         }
 
+        // The newcomer's grant for the same set without the GPU-limit hold: the reference for its GLM rows
+        // (`EngineV2Factory.prepareProductionBackend`).
+        let rowsReference = GLM5NextPromptPolicy.applies(modelType: modelType)
+            ? EngineV2KVSizing.resliceGrants(
+                existing: existing.map(\.slot), newcomer: newcomer,
+                fleetKVBudgetBytes: fleetKVBudgetBytes(
+                    extraWeightBytes: sizing.weightsBytes, extraModelType: modelType, heldToGPULimit: false),
+                minimumGrantBytes: minimumGrants)[modelId]
+            : nil
+
         // Phase 1 — SHRINKS first, so Σ(ceilings) never exceeds the fleet
         // budget at any instant.
         for entry in existing {
@@ -1311,6 +1340,7 @@ public actor StandaloneServer {
             try requireNativeMiMoNewWorkAllowed()
             v2TestHooks?.onModelArtifactSHA256?(modelArtifactSHA256)
             v2TestHooks?.onCacheEligibleWeightHash?(cacheEligibleWeightHash)
+            v2TestHooks?.onGLMRowsReference?(modelId, rowsReference)
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelId,
                 modelType: modelType,
@@ -1320,6 +1350,7 @@ public actor StandaloneServer {
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
+                glm5NextRowsReferenceBytes: rowsReference,
                 maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelId),
                 automaticallySelectConcurrency: !config.engineV2MaxConcurrentIsExplicit
                     && config.engineV2MaxConcurrentByModel[modelId] == nil,

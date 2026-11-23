@@ -1323,7 +1323,8 @@ darkbloom cluster gpu-limit [--undo]
 | `--undo` | flag | `false` | Remove the job that keeps the limit raised and return `iogpu.wired_limit_mb` to the macOS default |
 
 Lets this Mac's GPU keep its memory less 16 GiB resident, so GLM-5.3-Flash runs
-on two 128 GB Macs with room for long requests (Apple silicon Macs with 128 GB
+on two 128 GB Macs with room for long requests, and a 256 GB Mac serving it alone
+keeps its full KV grant: the values `darkbloom doctor` recommends there (Apple silicon Macs with 128 GB
 or more only; exit 2 elsewhere, with the reason, and where the Mac does not
 report the limits). It prints the current and the new limit, asks once (`y`), and
 then macOS asks an administrator to approve. Where the limits are already met,
@@ -3362,7 +3363,9 @@ adds the `glm wired limit` detailed check. It compares `iogpu.wired_limit_mb`
 (Metal's recommended working set while it is `0`, the macOS default),
 `vm.global_user_wire_limit` and `vm.user_wire_limit` with the
 [production values](./hardware-requirements.md). Below them it is ⚠, never ✗:
-the detail gives the planned full-KV GPU memory and the
+the detail gives the planned full-KV GPU memory, what the low value does (a GPU
+limit below that plan makes the provider hold GLM's KV cache to the limit;
+otherwise Metal command buffers can fail with "Insufficient Memory") and the
 `sudo sysctl -w …` fix, and a `GLM-5.3-FLASH GPU WIRED-MEMORY LIMIT — ACTION
 RECOMMENDED` block after the detailed checks prints the current values, the
 fix, `darkbloom restart` and the copy-paste LaunchDaemon install (`sudo tee`
@@ -3382,7 +3385,9 @@ The same one-line fix also appears:
 
 The error text is only matched, never logged. Failures the native engine
 reports without the MLX error text cannot be matched; `doctor` and `start`
-still flag the limit. None of these change admission, KV grants or capacity.
+still flag the limit. None of these messages change admission or capacity; the
+KV grant itself is held to the live GPU limit
+([hardware support](../architecture/hardware-support.md)).
 Steps: [troubleshooting](./troubleshooting.md#glm-53-flash-gpu-wired-memory-limit).
 
 ## `darkbloom verify`
@@ -4366,6 +4371,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`samplesLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's full 2 FPS sample, so a clip past the decoded-frame cap is refused with 400 again |
 | `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.waitsForFirstToken`); on by default, `0`/`false`/`no`/`off` restores a pair's first-token allowance for its local API's requests |
 | `DARKBLOOM_GLM_SHARED_GRANT_WAIT` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.waitsForSharedGrant`); on by default, `0`/`false`/`no`/`off` refuses a local GLM request that exceeds its share beside other models at once and restores 0.10.17's busy words |
+| `DARKBLOOM_GLM_GPU_LIMIT_KV` | `provider-swift/Sources/ProviderCore/Inference/Memory/GLM5NextGPULimitKVBudget.swift` (`GLM5NextGPULimitKVBudget.enabled`); on by default, `0`/`false`/`no`/`off` restores 0.10.17's GLM KV grant and step-scratch check |
 | `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.limit`); a bound on how long your local request waits for memory, whole seconds (`0` refuses at once); unset, it waits as long as it takes. A request's own `X-Darkbloom-Max-Wait` header can shorten it |
 | `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `0`/`off`/`false`/`no` turns off the JSON answer grammar for GLM-5.3-Flash JSON answers (on by default) |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |

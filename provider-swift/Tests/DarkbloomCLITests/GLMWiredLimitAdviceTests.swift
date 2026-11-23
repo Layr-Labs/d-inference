@@ -44,19 +44,21 @@ struct GLMWiredLimitAdviceTests {
     @Test("256 GB M5 Ultra on the macOS default warns with the exact fix and the LaunchDaemon")
     func defaultLimitWarns() throws {
         let result = try #require(GLMWiredLimitAdvice.doctorCheck(
-            hardware: Self.m5Ultra, glmInUse: true, limits: Self.defaults, cliName: "darkbloom"))
+            hardware: Self.m5Ultra, glmInUse: true, limits: Self.defaults, cliName: "darkbloom", environment: [:]))
         #expect(result.check.name == "glm wired limit")
         #expect(result.check.status == .warn)
         #expect(result.check.detail == "GLM-5.3-Flash plans about 247 GB of GPU memory at full KV on "
             + "this 256 GB Mac, and the macOS wired-memory limits are below the recommendation, so "
-            + "Metal command buffers can fail with \"Insufficient Memory\". Fix: \(Self.command) "
-            + "(to keep it after reboot, see below)")
+            + "the provider holds GLM's KV cache to the lower GPU limit and serves fewer long requests at once. "
+            + "Fix: \(Self.command) (to keep it after reboot, see below)")
 
         let guide = try #require(result.actionGuide).components(separatedBy: "\n")
         #expect(guide.first == "Current: iogpu.wired_limit_mb=0 (macOS default: Metal working set "
             + "222.7 GiB), vm.global_user_wire_limit=241892558110, vm.user_wire_limit=241892558110")
         #expect(guide.contains("  \(Self.command)"))
         #expect(guide.contains("  darkbloom restart"))
+        #expect(guide.contains("Or both in one step: darkbloom cluster gpu-limit, then darkbloom restart "
+            + "(it asks once, then for an administrator; --undo takes it back)."))
         #expect(guide.contains(
             "sudo tee /Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist >/dev/null <<'EOF'"))
         #expect(guide.contains(#"<?xml version="1.0" encoding="UTF-8"?>"#))
@@ -64,6 +66,32 @@ struct GLMWiredLimitAdviceTests {
         #expect(guide.contains("EOF"))
         #expect(guide.last
             == "sudo launchctl bootstrap system /Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist")
+    }
+
+    /// `DARKBLOOM_GLM_GPU_LIMIT_KV=0`: nothing holds the KV cache, so the default limit reads as 0.10.17's risk.
+    @Test("with the GPU-limit grant off, the default limit warns of Insufficient Memory")
+    func switchOffWarnsAsBefore() throws {
+        let result = try #require(GLMWiredLimitAdvice.doctorCheck(
+            hardware: Self.m5Ultra, glmInUse: true, limits: Self.defaults, cliName: "darkbloom",
+            environment: [GLM5NextGPULimitKVBudget.environmentName: "0"]))
+        #expect(result.check.detail.contains("so Metal command buffers can fail with \"Insufficient Memory\"."))
+        #expect(!result.check.detail.contains("KV cache"))
+        let notice = GLMWiredLimitAdvice.startNotice(
+            hardware: Self.m5Ultra, servedModels: [Self.glm], limits: Self.defaults, cliName: "darkbloom",
+            environment: [GLM5NextGPULimitKVBudget.environmentName: "off"])
+        #expect(notice?.contains("Fix: \(Self.command), then `darkbloom restart`") == true)
+    }
+
+    @Test("a raised GPU limit with low user wire limits still warns, without a held KV cache")
+    func lowUserWireLimitsWarn() throws {
+        let limits = GLM5NextWiredLimit.Limits(
+            gpuWiredLimitMB: 245_760, globalUserWireLimitBytes: 241_892_558_110,
+            userWireLimitBytes: 241_892_558_110, metalWorkingSetBytes: 239_143_780_352)
+        let result = try #require(GLMWiredLimitAdvice.doctorCheck(
+            hardware: Self.m5Ultra, glmInUse: true, limits: limits, cliName: "darkbloom"))
+        #expect(result.check.status == .warn)
+        #expect(result.check.detail.contains("so Metal command buffers can fail with \"Insufficient Memory\"."))
+        #expect(!result.check.detail.contains("KV cache"))
     }
 
     @Test("the production limits pass and show the current values")
@@ -103,8 +131,9 @@ struct GLMWiredLimitAdviceTests {
     func startNotice() {
         let notice = GLMWiredLimitAdvice.startNotice(
             hardware: Self.m5Ultra, servedModels: [Self.qwen, Self.glm], limits: Self.defaults,
-            cliName: "darkbloom")
-        #expect(notice?.contains("Fix: \(Self.command), then `darkbloom restart`") == true)
+            cliName: "darkbloom", environment: [:])
+        #expect(notice?.contains("holds GLM's KV cache below what the Mac can give it") == true)
+        #expect(notice?.contains("`darkbloom cluster gpu-limit`, then `darkbloom restart`") == true)
         #expect(notice?.contains("`darkbloom doctor`") == true)
         #expect(GLMWiredLimitAdvice.startNotice(
             hardware: Self.m5Ultra, servedModels: [Self.qwen], limits: Self.defaults) == nil)

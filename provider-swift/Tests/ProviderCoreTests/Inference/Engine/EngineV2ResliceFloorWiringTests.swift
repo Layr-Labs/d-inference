@@ -54,6 +54,54 @@ private func makeFloorLoop(physicalBytes: UInt64) throws -> ProviderLoop {
             physicalBytes: physicalBytes, configReserveBytes: floorConfigReserveBytes))
 }
 
+/// Each newcomer's GLM rows reference, as the re-slice passed it to the engine build.
+private final class RowsReferenceRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var references: [String: Int?] = [:]
+    func record(_ modelID: String, _ reference: Int?) { lock.withLock { references[modelID] = .some(reference) } }
+    func built(_ modelID: String) -> Bool { lock.withLock { references[modelID] != nil } }
+    func reference(_ modelID: String) -> Int? { lock.withLock { references[modelID] ?? nil } }
+}
+
+private let rowsReferenceGLMSizing = SlotSizingSnapshot(weightsBytes: 20 << 30, fp16KVBytesPerToken: 1024,
+    maxContextLength: 4096, defaultMaxTokens: 8)
+private let rowsReferenceGemmaSizing = SlotSizingSnapshot(weightsBytes: 2 << 30, fp16KVBytesPerToken: 1024,
+    maxContextLength: 4096, defaultMaxTokens: 8)
+
+/// Loads GLM (beside Gemma when `besideGemma`) three times on a 64 GiB machine: with no GPU limit read, with a
+/// 40 GiB limit, and with that limit and `DARKBLOOM_GLM_GPU_LIMIT_KV=0`. `load` builds the set with the given
+/// limit and returns GLM's grant. The reference must be the grant the same set gets without the hold, in all
+/// three; the limit must lower the grant only while the switch is on.
+private func expectUnheldRowsReference(
+    besideGemma: Bool,
+    load: (GLM5NextGPULimitKVBudget.GPULimit?, RowsReferenceRecorder) async throws -> Int
+) async throws {
+    func run(_ limit: GLM5NextGPULimitKVBudget.GPULimit?, switchOff: Bool = false) async throws
+        -> (grant: Int, references: RowsReferenceRecorder) {
+        let references = RowsReferenceRecorder()
+        let environment = switchOff ? [GLM5NextGPULimitKVBudget.environmentName: "0"] : [:]
+        let grant = try await GLM5NextGPULimitKVBudget.$environmentForTesting.withValue(environment) {
+            try await load(limit, references)
+        }
+        return (grant, references)
+    }
+    let limit = GLM5NextGPULimitKVBudget.GPULimit(limitBytes: 40 << 30)
+    let unheld = try await run(nil)
+    let held = try await run(limit)
+    let off = try await run(limit, switchOff: true)
+    #expect(unheld.references.reference("glm") == unheld.grant)
+    #expect(held.grant < unheld.grant)
+    #expect(held.references.reference("glm") == unheld.grant)
+    #expect(off.grant == unheld.grant)
+    #expect(off.references.reference("glm") == unheld.grant)
+    if besideGemma {
+        for result in [unheld, held, off] {
+            #expect(result.references.built("gemma"))
+            #expect(result.references.reference("gemma") == nil, "another family gets no rows reference")
+        }
+    }
+}
+
 /// Fleet KV budget for `models` resident on the scenario machine.
 private func floorBudget(_ models: [ResliceFloorScenario.Model], physicalBytes: UInt64) -> UInt64 {
     UnifiedMemoryCap.kvBudgetBytes(physicalBytes: physicalBytes,
@@ -132,6 +180,110 @@ struct EngineV2ResliceFloorWiringTests {
         #expect(total <= budget)
         await bridge.shutdown()
         for resident in residents.values { await resident.shutdown() }
+    }
+
+    @Test("ProviderLoop holds a GLM set's grants to the GPU limit")
+    func providerLoopHoldsGLMGrantsToTheGPULimit() async throws {
+        let physical: UInt64 = 64 << 30
+        let loop = try makeFloorLoop(physicalBytes: physical)
+        await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: physical, retainedResidentBytes: 0,
+            gpuLimit: .init(limitBytes: 40 << 30),
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        let (glm, _) = makeInertStubBridge(modelId: "glm", kvBytesCapacity: 1 << 30)
+        await loop.installModelSlotForTesting(modelId: "glm", container: makeFloorContainer(),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), engineV2: glm,
+            sizing: SlotSizingSnapshot(weightsBytes: 20 << 30, fp16KVBytesPerToken: 1024,
+                maxContextLength: 4096, defaultMaxTokens: 8),
+            modelType: "glm5_next")
+        let bridge = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gemma", modelType: "gemma4", container: makeFloorContainer(),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            sizing: SlotSizingSnapshot(weightsBytes: 2 << 30, fp16KVBytesPerToken: 1024,
+                maxContextLength: 4096, defaultMaxTokens: 8))
+        // The cap alone would grant 57.6 − 22 − 5.5 = 30.1 GiB across the two.
+        let total = UInt64(await bridge.engineKVBytesCapacity()) + UInt64(await glm.engineKVBytesCapacity())
+        #expect(total > 0)
+        #expect(total <= (40 << 30) - (22 << 30) - UnifiedMemoryCap.defaultActivationReserveBytes)
+        await bridge.shutdown()
+        await glm.shutdown()
+    }
+
+    @Test("ProviderLoop's GLM estimate without the other models keeps the GPU limit")
+    func providerLoopSoloEstimateKeepsTheGPULimit() async throws {
+        let physical: UInt64 = 64 << 30
+        let loop = try makeFloorLoop(physicalBytes: physical)
+        await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: physical, retainedResidentBytes: 0,
+            gpuLimit: .init(limitBytes: 40 << 30),
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        var bridges: [EngineV2Bridge] = []
+        for (id, type, weights) in [("glm", "glm5_next", 20 << 30), ("gemma", "gemma4", 2 << 30)] {
+            let (bridge, _) = makeInertStubBridge(modelId: id, kvBytesCapacity: 1 << 30)
+            bridges.append(bridge)
+            await loop.installModelSlotForTesting(modelId: id, container: makeFloorContainer(),
+                tokenizer: TokenizerHandle(StubBridgeTokenizer()), engineV2: bridge,
+                sizing: SlotSizingSnapshot(weightsBytes: weights, fp16KVBytesPerToken: 1024,
+                    maxContextLength: 4096, defaultMaxTokens: 8),
+                modelType: type)
+        }
+        let reserve = await loop.resolvedActivationReserveBytes
+        // Without Gemma the cap would leave 57.6 − 20 GiB less the reserve; the GPU limit leaves 40 − 20 GiB less it.
+        #expect(await loop.glmSoloGrant(for: "glm") == (40 << 30) - (20 << 30) - reserve)
+        // Leaving out GLM itself leaves a set the limit doesn't hold.
+        #expect(await loop.fleetKVBudgetBytes(extraWeightBytes: 0, excludingModelIDs: ["glm"])
+            > (40 << 30) - (2 << 30) - reserve)
+        for bridge in bridges { await bridge.shutdown() }
+    }
+
+    @Test("ProviderLoop gives a GLM newcomer its grant without the GPU-limit hold as its rows reference",
+        arguments: [false, true])
+    func providerLoopPassesTheUnheldRowsReference(besideGemma: Bool) async throws {
+        try await expectUnheldRowsReference(besideGemma: besideGemma) { limit, references in
+            let physical: UInt64 = 64 << 30
+            let loop = try makeFloorLoop(physicalBytes: physical)
+            await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+            await loop.setEngineV2SlotHooksForTesting(.init(physicalMemoryBytes: physical, retainedResidentBytes: 0,
+                gpuLimit: limit, onGLMRowsReference: references.record,
+                makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+            var bridges: [EngineV2Bridge] = []
+            if besideGemma {
+                bridges.append(try await loop.loadV2SlotForTesting(modelId: "gemma", modelType: "gemma4",
+                    container: makeFloorContainer(), tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+                    sizing: rowsReferenceGemmaSizing))
+            }
+            let glm = try await loop.loadV2SlotForTesting(modelId: "glm", modelType: "glm5_next",
+                container: makeFloorContainer(), tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+                sizing: rowsReferenceGLMSizing)
+            bridges.append(glm)
+            let grant = await glm.engineKVBytesCapacity()
+            for bridge in bridges { await bridge.shutdown() }
+            return grant
+        }
+    }
+
+    @Test("StandaloneServer gives a GLM newcomer its grant without the GPU-limit hold as its rows reference",
+        arguments: [false, true])
+    func standalonePassesTheUnheldRowsReference(besideGemma: Bool) async throws {
+        try await expectUnheldRowsReference(besideGemma: besideGemma) { limit, references in
+            let server = StandaloneServer(models: [])
+            await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: 64 << 30, retainedResidentBytes: 0,
+                gpuLimit: limit, onGLMRowsReference: references.record,
+                makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+            var bridges: [EngineV2Bridge] = []
+            if besideGemma {
+                bridges.append(try await server.buildSlotForTesting(modelId: "gemma", modelType: "gemma4",
+                    container: makeFloorContainer(), tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+                    sizing: rowsReferenceGemmaSizing))
+            }
+            let glm = try await server.buildSlotForTesting(modelId: "glm", modelType: "glm5_next",
+                container: makeFloorContainer(), tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+                sizing: rowsReferenceGLMSizing)
+            bridges.append(glm)
+            let grant = await glm.engineKVBytesCapacity()
+            for bridge in bridges { await bridge.shutdown() }
+            return grant
+        }
     }
 
     @Test("StandaloneServer admits a seventh model when Σ floors fits the fleet budget")

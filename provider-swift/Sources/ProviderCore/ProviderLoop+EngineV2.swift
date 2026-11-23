@@ -684,12 +684,13 @@ extension ProviderLoop {
     /// floors keep a slot a load funded to its floor from being shrunk
     /// back below it.
     internal func resliceGrowSurvivorsLocked() async {
+        // Host memory: the RAM-only tier follows the serving set whatever native MiMo owns.
+        MemoryOnlyCheckpointPool.shared.updateBudget(fleetKVHeadroomBytes: fleetKVBudgetBytes(extraWeightBytes: 0))
         guard nativeMiMoAllowsReclamation() else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
         guard nativeMiMoAllowsReclamation() else { return }
-        let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
-        MemoryOnlyCheckpointPool.shared.updateBudget(fleetKVHeadroomBytes: fleetBudget)
         guard !survivors.isEmpty else { return }
+        let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,

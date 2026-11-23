@@ -204,6 +204,36 @@ struct MemoryOnlyCheckpointTierTests {
         }
     }
 
+    @Test("a donation the full queue can't take is settled at once")
+    func fullQueueSettlesDonation() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let copying = CancelledPrefixBarrier()
+        let gate = DispatchSemaphore(value: 0)
+        // The first donation holds the queue's consumer inside wiring.
+        let tier = Self.tier(fixture, pool: pool, wire: { copying.signal(); gate.wait(); return mlock($0, $1) })
+        defer {
+            for _ in 0..<5 { gate.signal() }
+            tier.close()
+        }
+        func donate(_ n: UInt64, _ completion: @escaping @Sendable ([Int]) -> Void) throws {
+            tier.donate(try fixture.source(position: 256, scope: "s\(n)"), requestID: Self.marked(n),
+                        tokens: fixture.tokens, cacheSalt: "s\(n)", completion: completion)
+        }
+        try donate(1) { _ in }
+        #expect(await copying.wait())
+        for n in 2...5 { try donate(UInt64(n)) { _ in } }  // fills the 4-slot queue
+        let refused = pool.snapshot.stores[.refusedPolicy] ?? 0
+        let settled = CancelledPrefixBarrier()
+        try donate(6) { positions in
+            #expect(positions.isEmpty)
+            settled.signal()
+        }
+        #expect(await settled.wait(), "the refused donation's completion runs")
+        #expect(pool.snapshot.stores[.refusedPolicy] == refused + 1)
+    }
+
     @Test("pages that can't be wired are never kept unwired")
     func lockFailureStoresNothing() async throws {
         let fixture = try SSDHybridCheckpointTestFixture()

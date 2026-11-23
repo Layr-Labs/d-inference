@@ -2683,8 +2683,8 @@ donation for that receipt to the tier
 ([RAM-only tier](prefix-cache.md#ram-only-tier-for-memory_only-requests)).
 Everywhere else (media, a pair, a slot without the tier or with a tier
 budget of 0) it runs with `prefixCacheEnabled` off: the engine then makes no
-prefix lookup, capture or
-donation, and a pair's ranks get `ClusterWorkerPrefixCache.disabled`. In both
+prefix lookup, capture or donation, and a pair's ranks get
+`ClusterWorkerPrefixCache.disabled`. In both
 cases the bridge stages nothing from the SSD tier and registers no SSD ready
 receipt or donation demand, the scheduler skips the prompt-token piece cache,
 and no SSD read, write or index path accepts the receipt. Its answer and usage
@@ -11097,9 +11097,9 @@ types them ([fields](../reference/configuration.md#cluster-runtime-facts),
    ([Qwen27 resident assistant](#qwen27-tensor-parallel-resident-assistant));
    without one the digest is the five-field formula as before.
 4. Every model carries a pair-serving grant when the build qualifies it. A
-   pair member reports only hardware capabilities
-   (`DistributedServingEligibility.memberCapabilities`: `apple_m5` on an M5,
-   never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
+   pair member reports its hardware capabilities and `cache_policy_v1`
+   (`DistributedServingEligibility.memberRegistrationCapabilities`: `apple_m5`
+   on an M5, never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
    pair without a grant to the model's single-Mac requirements
    ([`providerMeetsServingRequirementsLocked`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/registry/cluster_pair_serving_grant.go)),
    so no pair of GLM-5.3-Flash or Qwen3.8-27B forms without one. For a

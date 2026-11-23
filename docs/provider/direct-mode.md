@@ -526,8 +526,8 @@ tier's refusals of a `memory_only` request's engine calls
 read, write or index path, each refused there
 (`darkbloom_memory_only_ssd_tier_touches_total`, which stays 0)
 (`RequestCachePolicyCounters`). Both SSD counts stay 0 while `memory_only`
-requests run with their cache off; they count only for a memory-only request
-that runs with a cache on, as with a RAM-only tier. The RAM-only tier's
+requests run with their cache off, and on a slot with a RAM-only tier the SSD
+store hands their calls to that tier before any SSD path. The RAM-only tier's
 `darkbloom_zdr_prefix_ram_*` lines follow: lookups by outcome, hit tokens,
 stores by outcome, evictions by reason, bytes, entries and budget
 (`MemoryOnlyCheckpointPool+Metrics.swift`). A standalone server releases that

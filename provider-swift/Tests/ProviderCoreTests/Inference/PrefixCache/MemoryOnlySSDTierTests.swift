@@ -148,7 +148,7 @@ struct MemoryOnlySSDTierTests {
         #expect(!marked.contains { if case .prefixCacheLookupV2 = $0 { true } else { false } },
                 "no SSD-tier evidence, which would take a sequence from the epoch record")
         #expect(counted.memoryOnlyRequests > counts.memoryOnlyRequests)
-        #expect(counted.ssdTierTouches == counts.ssdTierTouches)
+        #expect(counted.ssdTierTouches == counts.ssdTierTouches && counted.ssdRefusals == counts.ssdRefusals)
         #expect(store.stats().filesWritten == 0 && store.stats().filesRead == 0)
 
         // The control: the same request, unmarked, writes its checkpoint.

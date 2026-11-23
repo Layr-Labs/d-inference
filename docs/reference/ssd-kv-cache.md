@@ -45,8 +45,8 @@ On a slot with a RAM-only tier it keeps its prefix cache, in wired RAM only
 its receipts are in a range every SSD store refuses or hands to that tier
 (`MemoryOnlyReceipt`,
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/RequestCachePolicy.swift`).
-Elsewhere it runs with its prefix cache off, so it makes no SSD call at all
-(`PrefixCacheSubmissionPolicy`).
+Elsewhere it runs with its prefix cache off, so it makes no SSD read, write or
+index call (`PrefixCacheSubmissionPolicy`).
 No file below holds a token ID or text. Another request may cause these:
 
 | File | Written when | Holds |
@@ -57,7 +57,7 @@ No file below holds a token ID or text. Another request may cause these:
 | `kv3/<model>/cache-epoch.json` | A model's first load; each SSD-tier `prefix_cache_lookup_v2` or `prefix_cache_ready_v2` the request sends | Epoch, binding (model ID, hashes, layout epoch, key fingerprint), the next evidence sequence number |
 | `kv3/.write-budget` | Each charged write | 25 hourly byte counts and a checksum |
 | An existing file's mtime | A hit, under the sliding TTL | — |
-| `cluster-prefix-v1/v1-<plan>/rank<r>/<tag>.dbpx`, on a pair | The request's prefix on that rank | Encrypted attention rows, recurrent state, MTP hidden rows (history tokens as zeros); the sealed header holds the scope, frontier counts and unkeyed SHA-256 record keys of scope and prompt. See [cluster records](#cluster-prompt-prefix-records) |
+| `cluster-prefix-v1/v1-<plan>/rank<r>/<tag>.dbpx`, on a pair | The request's prefix on that rank | Encrypted attention rows, recurrent state, MTP hidden rows (history tokens as zeros); the sealed header holds the scope, frontier counts and unkeyed SHA-256 record keys of scope and prompt. Deleted within 60 s of its TTL while the provider runs, else at its next start. See [cluster records](#cluster-prompt-prefix-records) |
 | `cluster-prefix-v1/…/rank<r>/key-check`, `write-window`, `staging/<epoch>/…` | A rank's first record; each record; during a write | A keyed tag of a constant; the window's start and byte count; a partial record |
 
 Outside the cache, any request, `memory_only` included, still causes these.
@@ -68,17 +68,19 @@ None holds prompt or output text, media, token IDs or a prompt digest:
 | `~/.darkbloom/usage-history.json` (owner-only, the last 4,096 records) | Each completed coordinator request (`ProviderUsageHistory`, from `ProviderLoop.handleInferenceRequest`) | Request ID, session start, completion time, model, input, output, cached and reasoning token counts |
 | `~/.darkbloom/daemon-state.json` | While requests run (`DaemonStateFile`) | Each running request's model, the first 8 hex digits of its request ID's SHA-256, elapsed time, output tokens and speed; served and cached token counters; the last request's time |
 | `~/.darkbloom/provider.log` | The background service's output (`LaunchAgent`) | Request IDs, prompt token counts and timings |
-| Unified log | During the request (`ProviderLogger`) | Fixed public lines, and a loop-guard stop's public line with the request ID, model and token counts (`EngineV2Bridge.stopRepeatingRow`); every free-form line is private, so macOS stores it redacted |
+| Unified log | During the request (`ProviderLogger`) | Public lines of a fixed vocabulary with model IDs, counts and timings, and a loop-guard stop's public line with the request ID, model and token counts (`EngineV2Bridge.stopRepeatingRow`); every free-form line is private, so macOS stores it redacted |
 | `~/.darkbloom/cluster/pair-telemetry.json`, `served-speed.json`, on a pair's leader | Each finished pair request (`ClusterPairTelemetry`) | The engine's generation ID, model, mode, prompt, cached and completion token counts, first-token time, speed, outcome, route and ranks |
 | `worker.log` in a pair's setup folder, on each Mac (owner-only, 4 MiB, then rotated) | Each pair request (`ClusterWorkerDiagnosticsLog`) | Worker request IDs and prompt, reused and stored token counts |
 | `~/.darkbloom/desktop/usage-history.json` | While the desktop app is open (`DesktopUsageArchive`) | The coordinator's settled records for this Mac: request and job IDs, completion time, token counts, earnings |
 
 MLX and Metal caches (the metallib, compiled kernels and pipelines) belong to
-the model and binary and hold no request data. macOS can write the pageable
-memory of a request in flight to its encrypted swap file and, on a Mac that
+the model and binary and hold no request data; nor does the state a request's
+model load leaves (the loaded-model list, weight hashes, the speculative
+drafter) or a memory-pressure crash marker. macOS can write the pageable memory
+of a request in flight to its encrypted swap file and, on a Mac that
 hibernates, to its sleep image; the RAM-only tier's entries are wired, so never
-swapped, and released before the Mac sleeps. Model-weight files and the
-provider's logs are described in their own references.
+swapped, and released before the Mac sleeps. Model-weight files are described
+in their own references.
 
 ## DBK3 file format
 
@@ -679,6 +681,7 @@ per family and bindings are in the
 | Restore | Decoded into page-aligned native buffers the arrays own: `[1, heads, frontier, width]` of the captured dtype, as a native record restores; older rows approximate | `QwenStagePrefixDiskRestoreWork.place` |
 | Restored rows written again | An encoded row whose native bytes equal the decode of the same row in the record holding the prompt's deepest kept prefix on this rank is stored as that record's bytes, not encoded again (the codec is not idempotent on its own output); that record is pinned until the new one is written, and if it cannot be read the new record is dropped (`reason=verbatim_source_unreadable`). The `persist` line logs `verbatim_rows` | `QwenStagePrefixDiskVerbatimSource`, `QwenStagePrefixDiskTier.persist` |
 | Switch | `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION` on the rank, from the owner ([configuration](configuration.md#cluster-ssd-prefix-record-precision)) | `QwenStagePrefixDiskEncoding.fromEnvironment` |
+| Expiry | A record expires `ttlSeconds` (at most 1,800) after its last use, or after its write under `DARKBLOOM_SSD_KV_TTL_MODE=fixed`. Past it, a record is neither offered, restored nor kept recent. A running rank deletes its expired records, and the other plans' it kept at load, every `expirySweepSeconds = 60`, besides at each write and at load. While the provider runs, every 60 s it also deletes the expired `.dbpx` files of plan folders no running rank holds (their `in-use` lock), so a pair that is not loaded keeps none, on a pair's Macs and on a single Mac alike. A record a restore is reading goes at the next pass | `QwenStagePrefixDiskTier` (`sweepExpired`, `expired`), `QwenStagePrefixDiskConfiguration.expirySweepSeconds`, `provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterPrefixRecordExpiry.swift` |
 | Record frontiers | The deepest captured frontier's attention rows once, and the recurrent state at it and at each captured frontier on the record grid: `strideTokens` (2,048) rounded up to the block and doubled until at most `maximumGridFrontiers = 8` remain | `QwenStagePrefixDiskTier.persist` |
 | Write-behind bound | At most `maximumQueuedJobs = 2` records queued and `QwenStagePrefixDiskPolicy.queuedBytesBound` host bytes (a sixty-fourth of memory, at least 256 MiB); a persist beyond either is dropped (`event=persist-dropped reason=queue_full` or `queue_bytes`) and serving never waits. A Qwen3.8 27B tensor-parallel rank's record holds 32,768 bytes a prompt token and 76,972,032 bytes a recurrent state, so a deepest frontier from about 114,688 tokens (256 GB), 49,664 (128 GB) or 20,992 (64 GB) on is not written | `QwenStagePrefixDiskConfiguration.maximumQueuedBytes`, `QwenStagePrefixDiskPolicy.queuedBytesBound` |
 | Qwen tensor-parallel scope | The plan scope binds the plan and shares, artifact, storage, both builds, the assistant policy and the prefix policy (`QwenTensorParallelBatchPrefixBudget.policy`); records of another policy live in another directory and are never offered | `QwenTensorParallelPrefixDisk.planScope` |

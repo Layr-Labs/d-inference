@@ -10,32 +10,56 @@ import Foundation
 /// A running rank deletes its own (`QwenStagePrefixDiskTier`,
 /// `expirySweepSeconds`). A record's mtime is its last use under the sliding
 /// TTL and its write under the fixed one. Only the tier's own names are
-/// touched: `v1-<24 hex>/rank<r>/<name>.dbpx`, regular files of this user.
+/// touched (`ClusterPrefixSSDInspection`): `v1-<24 hex>/rank<n>/<32 hex>.dbpx`,
+/// regular files of this user in real directories.
 final class ClusterPrefixRecordExpiry: @unchecked Sendable {
+    typealias Target = (root: URL, ttlSeconds: Int)
+
     static let shared = ClusterPrefixRecordExpiry()
 
     private let lock = NSLock()
     private var task: Task<Void, Never>?
 
-    /// The pair's root from the saved cache settings, swept until `stop`.
-    /// An isolated test root, or a cache selection that does not validate,
-    /// starts nothing, as for `kv3`.
+    /// Sweeps the pair's root (`target`) until `stop`. An isolated test root
+    /// starts nothing.
     static func start(environment: [String: String] = ProcessInfo.processInfo.environment, intervalSeconds: Int = 60) {
-        guard SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) == nil,
-              (try? CacheStorage.validateSelection()) != nil else { return }
-        let root = ClusterPrefixCacheSettings.product(cacheSettings: CacheStorage.settings, environment: environment,
-                                                      freeBytes: { _ in nil }).root
-        shared.start(root: root, ttlSeconds: Int(SSDPrefixCachePolicy.ttlSeconds(environment: environment)),
-                     intervalSeconds: intervalSeconds)
+        guard SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) == nil else { return }
+        shared.start(intervalSeconds: intervalSeconds) { target(environment: environment) }
     }
 
-    func start(root: URL, ttlSeconds: Int, intervalSeconds: Int,
-               now: @escaping @Sendable () -> TimeInterval = { Date().timeIntervalSince1970 }) {
+    static func stop() { shared.stop() }
+
+    /// The root and TTL the pair's ranks on this Mac get, resolved as their
+    /// owner does (`ClusterPrefixCacheSettings.installProduct`): the saved
+    /// provider configuration, a member's with its leader's synced choices,
+    /// read again at each pass. The TTL is never longer than this Mac's own.
+    /// nil while a pinned cache volume is missing or not the saved one.
+    static func target(
+        environment: [String: String],
+        providerConfiguration: URL? = try? ConfigManager.defaultConfigPath(),
+        leaderChoices: (ClusterPrefixCacheSettings) -> ClusterPrefixCacheSettings = {
+            ClusterPrefixCacheSettings.withLeaderChoices($0)
+        }
+    ) -> Target? {
+        let saved = providerConfiguration.flatMap {
+            try? ClusterPrefixCacheSettings.savedCacheSettings(providerConfiguration: $0)
+        } ?? CacheSettings()
+        if let directory = saved.directory {
+            guard let observed = try? CacheVolume.inspect(directory: directory),
+                  observed.uuid == saved.volumeUUID?.lowercased() else { return nil }
+        }
+        let settings = leaderChoices(.product(cacheSettings: saved, environment: environment, freeBytes: { _ in nil }))
+        let own = Int(SSDPrefixCachePolicy.ttlSeconds(environment: environment))
+        return (settings.root, min(own, settings.ttlSeconds ?? own))
+    }
+
+    func start(intervalSeconds: Int, now: @escaping @Sendable () -> TimeInterval = { Date().timeIntervalSince1970 },
+               target: @escaping @Sendable () -> Target?) {
         lock.withLock {
             guard task == nil else { return }
             task = Task.detached(priority: .utility) {
                 while !Task.isCancelled {
-                    Self.sweep(root: root, ttlSeconds: ttlSeconds, now: now())
+                    if let target = target() { Self.sweep(root: target.root, ttlSeconds: target.ttlSeconds, now: now()) }
                     try? await taskSleep(.seconds(max(1, intervalSeconds)))
                 }
             }
@@ -49,22 +73,28 @@ final class ClusterPrefixRecordExpiry: @unchecked Sendable {
     /// One pass; returns how many records it deleted.
     @discardableResult
     static func sweep(root: URL, ttlSeconds: Int, now: TimeInterval) -> Int {
+        guard isOwnDirectory(root) else { return 0 }
         var removed = 0
-        for plan in names(in: root) where isPlanDirectoryName(plan) {
-            removed += sweepPlan(root.appendingPathComponent(plan, isDirectory: true), ttlSeconds: ttlSeconds, now: now)
+        for plan in names(in: root) where ClusterPrefixSSDInspection.isPlanDirectoryName(plan) {
+            let directory = root.appendingPathComponent(plan, isDirectory: true)
+            guard isOwnDirectory(directory) else { continue }
+            removed += sweepPlan(directory, ttlSeconds: ttlSeconds, now: now)
         }
         return removed
     }
 
     private static func sweepPlan(_ plan: URL, ttlSeconds: Int, now: TimeInterval) -> Int {
-        // A running rank holds the lock shared for its life; this pass skips its plan.
+        // A running rank holds the lock shared for its life; this pass skips its
+        // plan, and one whose lock it cannot open for another reason.
         let inUse = Darwin.open(plan.appendingPathComponent("in-use").path, O_RDONLY | O_NOFOLLOW)
+        if inUse < 0, errno != ENOENT { return 0 }
         defer { if inUse >= 0 { Darwin.close(inUse) } }
         if inUse >= 0, flock(inUse, LOCK_EX | LOCK_NB) != 0 { return 0 }
         var removed = 0
-        for rank in names(in: plan) where rank.hasPrefix("rank") {
+        for rank in names(in: plan) where rank.hasPrefix("rank") && Int(rank.dropFirst(4)) != nil {
             let directory = plan.appendingPathComponent(rank, isDirectory: true)
-            for file in names(in: directory) where file.hasSuffix(".dbpx") && !file.hasPrefix(".") {
+            guard isOwnDirectory(directory) else { continue }
+            for file in names(in: directory) where ClusterPrefixSSDInspection.isRecordName(file) {
                 let path = directory.appendingPathComponent(file).path
                 var info = stat()
                 guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid() else { continue }
@@ -75,9 +105,9 @@ final class ClusterPrefixRecordExpiry: @unchecked Sendable {
         return removed
     }
 
-    /// `QwenStagePrefixDiskTier.isPlanDirectoryName`: `v1-` and 24 lowercase hex digits.
-    static func isPlanDirectoryName(_ name: String) -> Bool {
-        name.count == 27 && name.hasPrefix("v1-") && name.dropFirst(3).allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    private static func isOwnDirectory(_ url: URL) -> Bool {
+        var info = stat()
+        return lstat(url.path, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR && info.st_uid == getuid()
     }
 
     private static func names(in directory: URL) -> [String] {

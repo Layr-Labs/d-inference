@@ -69,7 +69,7 @@ extension ProviderLoop {
         defer { if usesHostServices { SSDPrefixCacheFactory.stopWholeRootMaintenance() } }
         // A pair's records expire on the same schedule, on a pair's Macs too.
         if serveUsesHostServices { ClusterPrefixRecordExpiry.start() }
-        defer { if serveUsesHostServices { ClusterPrefixRecordExpiry.shared.stop() } }
+        defer { if serveUsesHostServices { ClusterPrefixRecordExpiry.stop() } }
 
         // Keep the network stack alive during sleep (coordinator socket, APNs).
         networkAssertion.acquire()

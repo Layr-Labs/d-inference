@@ -236,38 +236,9 @@ public struct ClusterPrefixSSDInspection: Equatable, Sendable, Encodable {
 /// never one a live rank holds (its `in-use` lock), then the root itself
 /// when nothing is left. Best effort: failures are reported, never thrown.
 public enum ClusterPrefixSSDReclaim {
-    public struct Report: Equatable, Sendable {
-        public var removedPlans = 0
-        public var keptLive = 0
-        public var rootRemoved = false
-        public var problems: [String] = []
-    }
+    public typealias Report = ClusterPrefixPlanReclaim.Result
 
     public static func reclaim(root: URL) -> Report {
-        var report = Report()
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else { return report }
-        let names = (try? fileManager.contentsOfDirectory(atPath: root.path)) ?? []
-        for name in names where ClusterPrefixSSDInspection.isPlanDirectoryName(name) {
-            let plan = root.appendingPathComponent(name, isDirectory: true)
-            let lock = Darwin.open(plan.appendingPathComponent("in-use").path, O_RDONLY | O_NOFOLLOW)
-            guard lock >= 0 else { report.problems.append("\(name): cannot open plan lock"); continue }
-            defer { Darwin.close(lock) }
-            guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { report.keptLive += 1; continue }
-            do { try fileManager.removeItem(at: plan); report.removedPlans += 1 }
-            catch { report.problems.append("\(name): \(error.localizedDescription)") }
-        }
-        // No rank is live here: nothing is being staged, so the staging root goes too.
-        let staging = ClusterPrefixCacheSettings.stagingRoot(root: root)
-        if report.keptLive == 0, fileManager.fileExists(atPath: staging.path) {
-            do { try fileManager.removeItem(at: staging) }
-            catch { report.problems.append("staging: \(error.localizedDescription)") }
-        }
-        if report.keptLive == 0, ((try? fileManager.contentsOfDirectory(atPath: root.path)) ?? []).isEmpty,
-           (try? fileManager.removeItem(at: root)) != nil {
-            report.rootRemoved = true
-        }
-        return report
+        ClusterPrefixPlanReclaim.run(root: root, includeStaging: true)
     }
 }

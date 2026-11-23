@@ -118,7 +118,7 @@ public enum ClusterMemberCacheControl {
     public static func reclaimOnUnpair(root: URL, store: Store) -> UnpairReply {
         let forgotten = store.remove()
         let report = ClusterPrefixSSDReclaim.reclaim(root: root)
-        store.setReclaimPending(report.keptLive > 0)
+        store.setReclaimPending(report.needsRetry)
         return UnpairReply(removedPlans: report.removedPlans, keptLive: report.keptLive, rootRemoved: report.rootRemoved,
                            settingsForgotten: forgotten, problems: report.problems)
     }
@@ -128,7 +128,7 @@ public enum ClusterMemberCacheControl {
     public static func finishPendingReclaim(root: URL, store: Store) -> ClusterPrefixSSDReclaim.Report? {
         guard store.reclaimPending else { return nil }
         let report = ClusterPrefixSSDReclaim.reclaim(root: root)
-        if report.keptLive == 0 { store.setReclaimPending(false) }
+        if !report.needsRetry { store.setReclaimPending(false) }
         return report
     }
 

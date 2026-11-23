@@ -28,20 +28,25 @@ public enum ClusterPrefixRecordDirectory {
     }
 
     /// A failed open (including a missing `in-use`) or flock never grants permission to clean.
-    public static func idleLease(_ plan: Int32) -> Int32? {
+    enum Lease { case acquired(Int32), held, unknown }
+
+    static func lease(_ plan: Int32) -> Lease {
         let fd = openat(plan, "in-use", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
-        guard fd >= 0 else { return nil }
+        guard fd >= 0 else { return .unknown }
         var s = stat(), entry = stat()
-        guard fstat(fd, &s) == 0, s.st_mode & S_IFMT == S_IFREG, s.st_uid == getuid(),
-              flock(fd, LOCK_EX | LOCK_NB) == 0, fstatat(plan, "in-use", &entry, AT_SYMLINK_NOFOLLOW) == 0,
-              entry.st_ino == s.st_ino, entry.st_dev == s.st_dev else { close(fd); return nil }
-        return fd
+        guard fstat(fd, &s) == 0, s.st_mode & S_IFMT == S_IFREG, s.st_uid == getuid() else { close(fd); return .unknown }
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            let held = errno == EWOULDBLOCK; close(fd); return held ? .held : .unknown
+        }
+        guard fstatat(plan, "in-use", &entry, AT_SYMLINK_NOFOLLOW) == 0,
+              entry.st_ino == s.st_ino, entry.st_dev == s.st_dev else { close(fd); return .unknown }
+        return .acquired(fd)
     }
 
     public static func withIdlePlan<T>(root: Int32, name: String, device: dev_t, _ visit: (Int32) -> T) -> T? {
         guard isPlan(name), let plan = openChild(root, name, device: device) else { return nil }
         defer { close(plan) }
-        guard let lease = idleLease(plan) else { return nil }
+        guard case .acquired(let lease) = lease(plan) else { return nil }
         defer { close(lease) }
         return visit(plan)
     }

@@ -80,6 +80,27 @@ struct ClusterPrefixRecordExpiryTests {
         #expect(!exists(record))
     }
 
+    @Test("unpair keeps staging and retries when a plan lease cannot be verified")
+    func unverifiedPlanPreservesStagingAndRetry() throws {
+        let directory = temporaryRoot(), root = directory.appendingPathComponent("cache", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let setup = directory.appendingPathComponent("setup", isDirectory: true)
+        try FileManager.default.createDirectory(at: setup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let store = ClusterMemberCacheControl.Store(directory: setup)
+        let record = try file(root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 0)
+        let staged = try file(root, "staging/session/rank0/.record.tmp", age: 0)
+        let reply = ClusterMemberCacheControl.reclaimOnUnpair(root: root, store: store)
+        #expect(!reply.problems.isEmpty && store.reclaimPending && exists(staged) && exists(record))
+        let lease = root.appendingPathComponent("\(Self.plan)/in-use")
+        try FileManager.default.createSymbolicLink(at: lease, withDestinationURL: record)
+        #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store)?.needsRetry == true)
+        #expect(store.reclaimPending && exists(staged) && exists(record))
+        try FileManager.default.removeItem(at: lease)
+        try Data().write(to: lease)
+        let done = try #require(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store))
+        #expect(done.rootRemoved && !done.needsRetry && !store.reclaimPending && !exists(staged))
+    }
+
     @Test("maintenance uses the saved volume and a rank's last applied duration")
     func pinnedSelectionAndDuration() throws {
         let environment = ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "1200"]

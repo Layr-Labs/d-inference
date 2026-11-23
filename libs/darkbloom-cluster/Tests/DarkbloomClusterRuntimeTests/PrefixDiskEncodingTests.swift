@@ -512,6 +512,7 @@ struct PrefixDiskEncodingTests {
                 rank: 0, encoding: balancedQwen))
             #expect(other.planDirectory == tier.planDirectory && other.recordCount == 1)
             #expect(try other.restore(scope: "s", tokens: tokens, frontier: committed, check: {}) == nil)
+            #expect(other.drain(timeoutSeconds: 5))
             #expect(try FileManager.default.contentsOfDirectory(atPath: other.directory.path).filter { $0.hasSuffix(".dbpx") }.isEmpty
                 && other.stats.failedRestores == 1)
             other.close()

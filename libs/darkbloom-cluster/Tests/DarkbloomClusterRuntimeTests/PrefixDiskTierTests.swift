@@ -1023,4 +1023,30 @@ extension PrefixDiskTierTests {
         second.runExpiryPass()
         #expect(!FileManager.default.fileExists(atPath: url.path) && second.stats.expirations == 1)
     }
+
+    @Test(arguments: [true, false])
+    func combinedBudgetCountsHeldPlanButNotRemovedPlan(held: Bool) throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try openTier(configuration(root), plan: "a")
+        let old = Array(0..<40), capture = states(committed: 39, frontiers: [], seed: 4)
+        first.persist(scope: "s", tokens: old, states: capture, blockTokens: block)
+        #expect(first.drain(timeoutSeconds: 10))
+        let budget = first.stats.persistedBytes * 5 / 2
+        first.close()
+        let second = try openTier(configuration(root) { $0.byteBudget = budget }, plan: "b")
+        defer { second.close() }
+        let fd = Darwin.open(first.planDirectory.appendingPathComponent("in-use").path, O_RDONLY)
+        #expect(fd >= 0)
+        defer { Darwin.close(fd) }
+        if held { #expect(flock(fd, LOCK_SH | LOCK_NB) == 0) }
+        else { try FileManager.default.removeItem(at: first.planDirectory) }
+        for n in [100, 200] {
+            second.persist(scope: "s", tokens: Array(n ..< n + 40), states: capture, blockTokens: block)
+            #expect(second.drain(timeoutSeconds: 10))
+        }
+        #expect(second.recordCount == (held ? 1 : 2))
+        #expect(!second.frontiers(scope: "s", tokens: Array(200..<240), maximumFrontier: 39).isEmpty)
+        #expect(second.frontiers(scope: "s", tokens: Array(100..<140), maximumFrontier: 39).isEmpty == held)
+    }
 }

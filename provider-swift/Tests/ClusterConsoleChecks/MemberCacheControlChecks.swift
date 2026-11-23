@@ -231,6 +231,7 @@ extension ClusterConsoleCheck {
         // 4. A fresh pair cache, nothing live: one unpair removes it at once.
         try FileManager.default.createDirectory(at: plan.appendingPathComponent("rank1"), withIntermediateDirectories: true)
         try Data("pair record".utf8).write(to: plan.appendingPathComponent("rank1/" + String(repeating: "c", count: 32) + ".dbpx"))
+        try Data().write(to: plan.appendingPathComponent("in-use"))
         let clean = try JSONDecoder().decode(C.UnpairReply.self, from: try send(.init(op: .unpair, clusterID: memberCacheClusterID)))
         expect(clean.removedPlans == 1 && clean.keptLive == 0 && clean.rootRemoved && clean.problems.isEmpty, "unpair reclaims: \(clean)")
         expect(!FileManager.default.fileExists(atPath: root.path), "nothing of the pair's tier is left")

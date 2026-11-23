@@ -219,7 +219,10 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         let start = DispatchTime.now().uptimeNanoseconds
         try Self.makePrivateDirectory(root)
         rootFD = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
-        guard rootFD >= 0 else { throw ProbeError("Cannot open prefix root") }
+        var rootInfo = stat(), namedRoot = stat()
+        guard rootFD >= 0, flock(rootFD, LOCK_SH) == 0, fstat(rootFD, &rootInfo) == 0,
+              lstat(root.path, &namedRoot) == 0, rootInfo.st_ino == namedRoot.st_ino,
+              rootInfo.st_dev == namedRoot.st_dev else { throw ProbeError("Cannot hold prefix root") }
         let others = Self.keepLivePlans(rootFD: rootFD, root: root, keeping: planName, ttlSeconds: configuration.ttlSeconds,
                                         now: Date().timeIntervalSince1970)
         let sweptPlans = others.sweptPlans
@@ -439,25 +442,32 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             + (chosen.compactMap(\.speculativeHistory).map { $0.hidden.nbytes + $0.tokens.nbytes + $0.last.nbytes }.max() ?? 0)
         // Called under `lock`, both before preparing arrays and at admission.
         // No admission retires a file. Only the writer publishes its replacement.
-        func shouldPrepare(bytes: Int) -> Bool {
+        enum Admission { case write, touched, drop(String) }
+        func admission(bytes: Int) -> Admission {
             let time = now()
             var reason: String?
             if closing { reason = "closing" }
             else if let existing = records[name] {
                 if !existing.written { reason = "already_queued" }
-                else if !expired(existing, at: time) { touchLocked(name: name, at: time); return false }
+                else if !expired(existing, at: time) { touchLocked(name: name, at: time); return .touched }
                 else if pinned[name] != nil { reason = "expired_pinned" }
             }
             if reason == nil, queuedJobs >= configuration.maximumQueuedJobs { reason = "queue_full" }
             if reason == nil, bytes > configuration.maximumQueuedBytes - queuedBytes { reason = "queue_bytes" }
             if let reason {
                 statistics.droppedPersists += 1
-                log("darkbloom-prefix-ssd-v1 rank=\(rank) event=persist-dropped reason=\(reason) prompt=\(committed)")
-                return false
+                return .drop(reason)
             }
-            return true
+            return .write
         }
-        guard lock.withLock({ shouldPrepare(bytes: estimate) }) else { return }
+        func allow(_ decision: Admission) -> Bool {
+            if case .write = decision { return true }
+            if case .drop(let reason) = decision {
+                log("darkbloom-prefix-ssd-v1 rank=\(rank) event=persist-dropped reason=\(reason) prompt=\(committed)")
+            }
+            return false
+        }
+        guard allow(lock.withLock { admission(bytes: estimate) }) else { return }
         let job: QwenStagePrefixDiskJob
         do {
             job = try QwenStagePrefixDiskJob.prepare(scope: scope, recordKey: recordKey, fileName: name, rank: rank, deepest: deepest,
@@ -471,8 +481,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         // Rows restored from an earlier record of this prompt's prefix keep its
         // bytes; it stays (pinned) until this record is written.
         let candidate = verbatimSource(scope: scope, tokens: tokens, committed: committed)
-        lock.withLock {
-            guard shouldPrepare(bytes: job.hostBytes) else { return }
+        let finalAdmission: Admission = lock.withLock {
+            let decision = admission(bytes: job.hostBytes)
+            guard case .write = decision else { return decision }
             // Keep the old file until a successful atomic rename. On a write
             // refusal restore its expired index entry so maintenance can retry.
             let replaced = records[name]
@@ -493,7 +504,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
                 defer { group.leave() }
                 write(job, verbatim: source, replacing: replaced)
             }
+            return .write
         }
+        _ = allow(finalAdmission)
     }
 
     private func write(_ job: QwenStagePrefixDiskJob, verbatim source: VerbatimSource?, replacing replaced: Record?) {
@@ -617,11 +630,11 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         // Even when the model's deadline elapsed, keep the plan lease until
         // the last admitted operation has made its last filesystem call.
         let release: @Sendable () -> Void = { [self] in
-            lock.withLock {
-                guard inUse >= 0 else { return }
-                if let stagingDirectory { Self.removeStaging(stagingDirectory) }
-                Darwin.close(inUse); inUse = -1
-            }
+            let fd = lock.withLock { let held = inUse; inUse = -1; return held }
+            guard fd >= 0 else { return }
+            if let stagingDirectory { Self.removeStaging(stagingDirectory) }
+            Darwin.close(fd)
+            _ = flock(rootFD, LOCK_UN)
         }
         if group.wait(timeout: .now()) == .success { release() }
         else { group.notify(queue: queue, execute: release) }
@@ -663,16 +676,17 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             }
         }
         while true {
-            let victim: String? = lock.withLock {
+            let evicted: Bool = lock.withLock {
                 let written = records.values.filter { $0.written }
-                let bytes = written.reduce(0) { $0 + $1.bytes }
-                guard written.count > configuration.recordLimit || bytes > configuration.byteBudget else { return nil }
-                return written.filter { $0.name != protecting && pinned[$0.name] == nil }
-                    .min(by: { ($0.lastUse, $0.name) < ($1.lastUse, $1.name) })?.name
+                let bytes = written.reduce(otherPlanBytes) { $0 + $1.bytes }
+                guard written.count > configuration.recordLimit || bytes > configuration.byteBudget,
+                      let victim = written.filter({ $0.name != protecting && pinned[$0.name] == nil })
+                        .min(by: { ($0.lastUse, $0.name) < ($1.lastUse, $1.name) }) else { return false }
+                retireLocked(victim.name)
+                statistics.evictions += 1
+                return true
             }
-            guard let victim else { return }
-            remove(name: victim, reason: "evicted")
-            lock.withLock { statistics.evictions += 1 }
+            guard evicted else { return }
         }
     }
 
@@ -761,8 +775,15 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         guard ClusterPrefixRecordDirectory.rank(rank.lastPathComponent) != nil,
               ClusterPrefixRecordDirectory.isRecord(file.lastPathComponent), fstat(rootFD, &s) == 0 else { return .retry }
         let device = s.st_dev
+        func absent(_ parent: Int32, _ name: String) -> Bool {
+            var info = stat()
+            return fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT
+        }
+        if absent(rootFD, plan) { return .gone }
         return ClusterPrefixRecordDirectory.withIdlePlan(root: rootFD, name: plan, device: device) { planFD in
-            guard let fd = ClusterPrefixRecordDirectory.openChild(planFD, rank.lastPathComponent, device: device) else { return .retry }
+            guard let fd = ClusterPrefixRecordDirectory.openChild(planFD, rank.lastPathComponent, device: device) else {
+                return absent(planFD, rank.lastPathComponent) ? .gone : .retry
+            }
             defer { Darwin.close(fd) }
             let name = file.lastPathComponent
             guard fstatat(fd, name, &s, AT_SYMLINK_NOFOLLOW) == 0 else { return errno == ENOENT ? .gone : .retry }
@@ -777,14 +798,18 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         lock.withLock {
             // Never remove an admitted writer's reservation. Submit retirement
             // before releasing the name to the next writer; its rename comes later.
-            guard inUse >= 0, (!closing || reason == "evicted" || reason == "unreadable"),
+            guard inUse >= 0, (!closing || reason == "unreadable"),
                   records[name]?.written == true else { return }
-            dropFromIndex(name)
-            group.enter()
-            queue.async { [self] in
-                defer { group.leave() }
-                _ = unlinkat(rankFD, name, 0)
-            }
+            retireLocked(name)
+        }
+    }
+
+    private func retireLocked(_ name: String) {
+        dropFromIndex(name)
+        group.enter()
+        queue.async { [self] in
+            defer { group.leave() }
+            _ = unlinkat(rankFD, name, 0)
         }
     }
 
@@ -962,17 +987,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// this tier creates are touched. The switch turned off uses it.
     @discardableResult
     static func sweepPlans(root: URL, keeping: String?) -> Int {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
-        var removed = 0
-        for name in names where isPlanDirectoryName(name) && name != keeping {
-            let plan = root.appendingPathComponent(name, isDirectory: true)
-            let lock = Darwin.open(plan.appendingPathComponent("in-use").path, O_RDONLY | O_NOFOLLOW)
-            guard lock >= 0 else { continue }
-            defer { Darwin.close(lock) }
-            guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { continue }
-            if (try? FileManager.default.removeItem(at: plan)) != nil { removed += 1 }
-        }
-        return removed
+        ClusterPrefixPlanReclaim.run(root: root, keeping: keeping, includeStaging: false).removedPlans
     }
 
     /// Removes this rank's staging directory: only the temporary files the

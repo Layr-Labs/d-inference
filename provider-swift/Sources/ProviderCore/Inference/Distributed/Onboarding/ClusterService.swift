@@ -2358,7 +2358,7 @@ public final class ClusterService: @unchecked Sendable {
         }
         if running == nil, cacheStore.reclaimPending,
            let root = try? ClusterPrefixCacheSettings.resolved(providerConfiguration: settings.wizard.providerConfiguration).root,
-           let report = ClusterMemberCacheControl.finishPendingReclaim(root: root, store: cacheStore), report.keptLive == 0 {
+           let report = ClusterMemberCacheControl.finishPendingReclaim(root: root, store: cacheStore), !report.needsRetry {
             say("reclaimed the pair cache the leader's unpair left in use (\(report.removedPlans) plan\(report.removedPlans == 1 ? "" : "s"))")
         }
         // Single-Mac serving holds this Mac's one serving lock and never ends by itself: a part started beside it only

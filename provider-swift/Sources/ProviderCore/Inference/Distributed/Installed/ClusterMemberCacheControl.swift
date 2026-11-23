@@ -19,9 +19,9 @@ import Foundation
 /// - **Reclaim on unpair** (oMLX `8910605b`, a deleted deployment's records
 ///   reclaimed on every rank). When the leader leaves the pair it tells the
 ///   member first; the member removes the pair's plan directories under its
-///   cluster prefix root (`<cache base>/<namespace>/cluster-prefix-v1`; only the
-///   current pair's plans are there: every rank deletes other plans'
-///   directories at load) and forgets the leader's settings. The single-Mac
+///   cluster prefix root (`<cache base>/<namespace>/cluster-prefix-v1`; other
+///   plans' live records may be there too, within the ranks' one budget) and
+///   forgets the leader's settings. The single-Mac
 ///   `kv3` tier is a different directory and is never touched. A plan a
 ///   running rank still holds is kept and reclaimed once that rank ended.
 public enum ClusterMemberCacheControl {
@@ -103,8 +103,28 @@ public enum ClusterMemberCacheControl {
 
         private struct Intent: Codable { let root: String; let volume: String; var inode: UInt64? }
 
+        /// An earlier build's `publish` links a temporary file, then unlinks it.
+        /// Interrupted between the two, the marker has a second same-inode link
+        /// named `.cluster-*.tmp` here. Removing that name leaves the marker's
+        /// bytes as written. Callers hold `reclaim-session.lock`.
+        private static func dropPublicationLink(_ parent: ClusterConfigurationFiles.Directory, name: String) {
+            var marker = stat()
+            guard fstatat(parent.descriptor, name, &marker, AT_SYMLINK_NOFOLLOW) == 0,
+                  marker.st_mode & S_IFMT == S_IFREG, marker.st_nlink == 2, marker.st_uid == geteuid() else { return }
+            var temporary: String?
+            ClusterPrefixRecordDirectory.forEachName(in: parent.descriptor) { entry in
+                var s = stat()
+                guard temporary == nil, entry.hasPrefix(".cluster-"), entry.hasSuffix(".tmp"),
+                      fstatat(parent.descriptor, entry, &s, AT_SYMLINK_NOFOLLOW) == 0,
+                      s.st_dev == marker.st_dev, s.st_ino == marker.st_ino else { return }
+                temporary = entry
+            }
+            if let temporary, unlinkat(parent.descriptor, temporary, 0) == 0 { _ = fsync(parent.descriptor) }
+        }
+
         /// Persist the original selection before the first destructive operation.
-        /// A legacy boolean marker has no volume identity and cannot authorize a retry.
+        /// A marker in another format, malformed, with extra links or unsafe
+        /// metadata never authorizes a removal; a new unpair replaces it with its own intent.
         fileprivate func reclaim(root: URL, pin: String?, starting: Bool) -> ClusterPrefixSSDReclaim.Report? {
             func unresolved(_ reason: String) -> ClusterPrefixSSDReclaim.Report {
                 var r = ClusterPrefixSSDReclaim.Report(); r.problems = [reason]; return r
@@ -114,15 +134,23 @@ public enum ClusterMemberCacheControl {
                 defer { Darwin.close(parent.descriptor) }
                 return try ClusterConfigurationFiles.withLock(parent, name: "reclaim-session.lock", privateMode: true) {
                     let name = ClusterMemberCacheControl.reclaimPendingFileName
-                    let previous = try ClusterConfigurationFiles.readAt(parent, name: name, maximum: 8192, privateMode: true)
+                    Self.dropPublicationLink(parent, name: name)
+                    var previous: Data?, unusable = false
+                    do { previous = try ClusterConfigurationFiles.readAt(parent, name: name, maximum: 8192, privateMode: true) }
+                    catch { guard starting else { throw error }; unusable = true }
                     guard let path = ClusterPrefixPlanReclaim.canonicalRoot(root.path) else {
                         return unresolved("invalid cache selection")
                     }
                     var intent: Intent
                     let seen = ClusterPrefixPlanReclaim.identityForRoot(root)
-                    if let previous {
-                        guard let saved = try? JSONDecoder().decode(Intent.self, from: previous),
-                              ClusterPrefixPlanReclaim.canonicalRoot(saved.root) == path, UUID(uuidString: saved.volume) != nil,
+                    let saved = previous.flatMap { try? JSONDecoder().decode(Intent.self, from: $0) }
+                        .flatMap { ClusterPrefixPlanReclaim.canonicalRoot($0.root) != nil && UUID(uuidString: $0.volume) != nil ? $0 : nil }
+                    if previous != nil && saved == nil {
+                        guard starting else { return unresolved("original cache selection cannot be confirmed") }
+                        unusable = true
+                    }
+                    if let saved {
+                        guard ClusterPrefixPlanReclaim.canonicalRoot(saved.root) == path,
                               pin == nil || pin?.lowercased() == saved.volume else {
                             return unresolved("original cache selection cannot be confirmed")
                         }
@@ -131,16 +159,16 @@ public enum ClusterMemberCacheControl {
                         guard starting else { return nil }
                         guard let volume = pin?.lowercased() ?? seen?.volume,
                               UUID(uuidString: volume) != nil else { return unresolved("cannot identify original cache volume") }
-                        if let seen, seen.volume == volume && seen.inode == nil { return .init() }
+                        if !unusable, let seen, seen.volume == volume && seen.inode == nil { return .init() }
                         intent = .init(root: path, volume: volume, inode: nil)
                     }
-                    var recordBytes = previous
+                    var recordBytes = unusable ? nil : previous
                     let bind = intent.inode == nil && seen?.volume == intent.volume && seen?.inode != nil
                     if bind { intent.inode = seen?.inode }
-                    if previous == nil || bind {
+                    if recordBytes == nil || bind {
                         let bytes = try JSONEncoder().encode(intent)
-                        try ClusterConfigurationFiles.renamePrivateRecord(bytes, replacing: previous, parent: parent,
-                                                                         name: name, maximum: 8192)
+                        try ClusterConfigurationFiles.renamePrivateRecord(bytes, replacing: recordBytes, replacingUnusable: unusable,
+                                                                         parent: parent, name: name, maximum: 8192)
                         recordBytes = bytes
                     }
                     // A prior process may have stopped immediately after rename.

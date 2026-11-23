@@ -83,7 +83,8 @@ final class ClusterPrefixRecordExpiry: @unchecked Sendable {
         let device = info.st_dev
         ClusterPrefixRecordDirectory.forEachName(in: root) { name in
             guard !Task.isCancelled else { return }
-            _ = ClusterPrefixRecordDirectory.withIdlePlan(root: root, name: name, device: device) { plan in
+            _ = ClusterPrefixRecordDirectory.withIdlePlan(root: root, name: name, device: device,
+                                                          repairingMissingLease: true) { plan in
                 ClusterPrefixRecordDirectory.forEachName(in: plan) { rank in
                     guard !Task.isCancelled, ClusterPrefixRecordDirectory.rank(rank) != nil,
                           let fd = ClusterPrefixRecordDirectory.openChild(plan, rank, device: device) else { return }

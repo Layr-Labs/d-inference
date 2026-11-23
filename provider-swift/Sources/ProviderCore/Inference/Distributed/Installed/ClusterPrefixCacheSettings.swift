@@ -34,8 +34,8 @@ public struct ClusterPrefixCacheSettings: Equatable, Sendable {
     /// The sliding TTL in seconds (the product's 1,800 ceiling); nil keeps
     /// the rank's default (1,800).
     public var ttlSeconds: Int?
-    /// A use leaves a record's age alone, so it expires `ttlSeconds` after it
-    /// was written (`DARKBLOOM_SSD_KV_TTL_MODE=fixed`, this Mac's own switch).
+    /// A use leaves a record's age alone, so it is not reused `ttlSeconds` after
+    /// it was written (`DARKBLOOM_SSD_KV_TTL_MODE=fixed`, this Mac's own switch).
     public var fixedTTL: Bool
 
     public init(root: URL, volumeUUID: String? = nil, prefixCacheEnabled: Bool = true, byteBudget: Int? = nil, dailyWriteBytes: Int? = nil,

@@ -45,11 +45,11 @@ enum SSDPrefixCachePolicy {
         return n
     }
 
-    /// Whether a hit extends an entry's life. `sliding` (the default)
-    /// restarts its TTL at each hit; `fixed` never does, so an entry expires
-    /// `ttlSeconds` after it was written. `DARKBLOOM_SSD_KV_TTL_MODE` selects
-    /// it; unset or empty is `sliding`, and any value but `sliding` is
-    /// `fixed`, the shorter retention.
+    /// Whether a hit extends an entry's reuse. `sliding` (the default)
+    /// restarts its TTL at each hit; `fixed` never does, so an entry is not
+    /// reused `ttlSeconds` after it was written; maintenance removes its file
+    /// later. `DARKBLOOM_SSD_KV_TTL_MODE` selects it; unset or empty is
+    /// `sliding`, and any value but `sliding` is `fixed`, the shorter reuse.
     enum TTLMode: String, Sendable, Equatable {
         case sliding, fixed
         var refreshesOnHit: Bool { self == .sliding }

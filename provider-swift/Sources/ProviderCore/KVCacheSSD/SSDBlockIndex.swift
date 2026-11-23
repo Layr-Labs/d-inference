@@ -110,10 +110,17 @@ final class SSDBlockIndex: @unchecked Sendable {
     /// prefix-contiguous match rule — block j is only usable when every
     /// earlier block of the chain is present too).
     func longestRun(tags16: [Data]) -> Int {
+        longestFreshRun(tags16: tags16, now: 0, ttlSeconds: 0)
+    }
+
+    /// `longestRun`, counting only blocks within their TTL (`ttlSeconds` 0
+    /// never expires): a block past it is not reused before a sweep removes it.
+    func longestFreshRun(tags16: [Data], now: Int64, ttlSeconds: Int64) -> Int {
         lock.withLock {
             var k = 0
             for tag in tags16 {
-                guard entries[tag] != nil else { break }
+                guard let entry = entries[tag], Self.freshBytes(entry, now: now, ttlSeconds: ttlSeconds) != nil
+                else { break }
                 k += 1
             }
             return k
@@ -123,12 +130,18 @@ final class SSDBlockIndex: @unchecked Sendable {
     /// Byte sizes for a contiguous run (index order = block order).
     /// nil when any tag is missing (raced an eviction — caller re-probes).
     func fileBytes(tags16: ArraySlice<Data>) -> [Int]? {
+        freshFileBytes(tags16: tags16, now: 0, ttlSeconds: 0)
+    }
+
+    /// `fileBytes`, also nil when any block is past its TTL.
+    func freshFileBytes(tags16: ArraySlice<Data>, now: Int64, ttlSeconds: Int64) -> [Int]? {
         lock.withLock {
             var sizes: [Int] = []
             sizes.reserveCapacity(tags16.count)
             for tag in tags16 {
-                guard let entry = entries[tag] else { return nil }
-                sizes.append(entry.fileBytes)
+                guard let entry = entries[tag], let size = Self.freshBytes(entry, now: now, ttlSeconds: ttlSeconds)
+                else { return nil }
+                sizes.append(size)
             }
             return sizes
         }

@@ -82,7 +82,8 @@ public enum MTPAutomaticVerificationPolicy {
         guard modelID == MTPAcceptancePolicy.gemmaQATModelID, !hasBenchmarkVerificationOverride,
             twoDrafts ?? gemmaTwoDraftsEnabled
         else { return nil }
-        return gemmaTwoDrafts(chipName: resolvedChipName(chipName), m5UltraLoneRow: m5UltraLoneRow)?.byDecodeRows
+        return gemmaTwoDrafts(
+            chipName: resolvedChipName(chipName), m5UltraLoneRow: m5UltraLoneRow)?.byDecodeRows
     }
 
     /// `DARKBLOOM_GEMMA_MTP_LONE_ROW`: on (unset, empty, `1`, `true`, `yes`,
@@ -117,7 +118,8 @@ public enum MTPAutomaticVerificationPolicy {
         var certifiedMaximum = maxRectangularTokens(chipName: chip)
         if modelID == MTPAcceptancePolicy.gemmaQATModelID {
             if gemmaTwoDrafts ?? gemmaTwoDraftsEnabled,
-                let twoDrafts = Self.gemmaTwoDrafts(chipName: chip, m5UltraLoneRow: gemmaM5UltraLoneRow)
+                let twoDrafts = Self.gemmaTwoDrafts(
+                    chipName: chip, m5UltraLoneRow: gemmaM5UltraLoneRow)
             {
                 certifiedMaximum = min(certifiedMaximum, twoDrafts.tokens)
             } else if gemmaLoneRow ?? gemmaLoneRowEnabled {

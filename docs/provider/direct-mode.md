@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-23
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -510,10 +510,13 @@ already sent: `code` `request_exceeds_node_budget` and the busy memory 503's wor
 ### Cache policy of local requests
 
 `DARKBLOOM_LOCAL_CACHE_POLICY=memory_only` serves every request on this API
-with its prefix cache off, as a coordinator request whose sealed
+as a coordinator request whose sealed
 [`cache_policy`](../reference/protocol-messages.md#sealed-cache-policy) is
-`memory_only`: nothing it sends is read from, staged on or written to the SSD
-tier (`RequestCachePolicy.localServing`,
+`memory_only`. Nothing it sends is read from, staged on or written to the SSD
+tier. On a slot with the
+[RAM-only tier](../architecture/prefix-cache.md#ram-only-tier-for-memory_only-requests)
+its text prefixes are kept in page-locked RAM only; elsewhere its prefix cache
+is off (`RequestCachePolicy.localServing`,
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/RequestCachePolicy.swift`).
 Unset, empty or `default` keeps the cache; any other value is `memory_only`.
 Coordinator requests never read it. `/metrics` counts the coordinator's
@@ -522,7 +525,12 @@ tier's refusals of a `memory_only` request's engine calls
 (`darkbloom_memory_only_ssd_refusals_total`) and every time one reached an SSD
 read, write or index path, each refused there
 (`darkbloom_memory_only_ssd_tier_touches_total`, which stays 0)
-(`RequestCachePolicyCounters`).
+(`RequestCachePolicyCounters`). The RAM-only tier's
+`darkbloom_zdr_prefix_ram_*` lines follow: lookups by outcome, hit tokens,
+stores by outcome, evictions by reason, bytes, entries and budget
+(`MemoryOnlyCheckpointPool+Metrics.swift`). A standalone server releases that
+tier on an OS memory-pressure warning or critical, before a model load and when
+it stops.
 
 ### A long prompt's progress
 

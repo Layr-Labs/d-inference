@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-23
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -281,7 +281,13 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 ```
 
 `ramPrefix` is always 0 in production — there is no RAM prefix-cache carve
-([`prefix-cache.md`](prefix-cache.md)).
+([`prefix-cache.md`](prefix-cache.md)). The RAM-only tier of `memory_only`
+requests takes nothing from any grant. Each entry is charged to the process
+ledger instead (`reserveHostBuffers`), and is admitted only while a whole
+budget of headroom remains beside it. The tier is released on any refused
+charge (`GlobalKVCacheBudget.recordReservationRefusal`, the reclaimer), on
+memory pressure, and before a model load, which counts it as reclaimable
+([RAM-only tier](prefix-cache.md#ram-only-tier-for-memory_only-requests)).
 
 Fused causal prompt attention changes the prefill transient, not these
 constants. An eligible full-attention prompt chunk takes one `.causal` SDPA

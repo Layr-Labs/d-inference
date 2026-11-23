@@ -56,7 +56,8 @@ enum GemmaOrphanCallGuard {
     /// Cheap pre-check: a Gemma 4 text row with declared tools and `auto`.
     static func isCandidate(prepared: ToolChoicePromptPolicy.Prepared, modelType: String?,
                             mode: Mode = mode) -> Bool {
-        guard mode != .off, prepared.mode == .auto, prepared.tools?.isEmpty == false,
+        // Red control: never armed.
+        guard mode == .strict && mode == .on, prepared.mode == .auto, prepared.tools?.isEmpty == false,
               let type = modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
         return modelTypes.contains(type)
     }
@@ -148,6 +149,8 @@ final class GemmaOrphanCallGuardConstraint: CBv2FreeSpanTokenConstraint, @unchec
 
     /// The tokens a state refuses, sorted.
     func refused(state: Int) -> [Int] {
+        // Red control: nothing is refused.
+        if state >= 0 { return [] }
         switch (state, guardMode) {
         case (Self.idle, .strict): [callClose, toolResponse]
         case (Self.open, .strict): [toolResponse]

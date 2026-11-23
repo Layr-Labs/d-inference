@@ -2976,7 +2976,18 @@ Admission smooths each request's mean step duration together with its shape
 `MeasuredDecodeStep`) and passes the rate implied by that duration, so the
 priced step time and time per row stay within the measured range. Across
 batch widths this is an average of measured steps, not a bound; the routing
-heartbeat keeps the per-request decode EWMA. The projection also mirrors the
+heartbeat keeps the per-request decode EWMA. That EWMA restarts only when a
+new decode sample arrives, so an idle slot would keep advertising the rate it
+last measured while stacked: idle M5 Macs advertised about 16 tok/s for Gemma 4
+against a fleet median near 80 and were ranked last. Once nothing has run or
+waited on the slot since a decode sample older than 30 minutes, the heartbeat
+omits `observed_decode_tps`, and the coordinator prices the Mac from its
+profile or the fleet, as after a reload; the next sample is published as
+measured
+(`provider-swift/Sources/ProviderCore/Inference/Performance/DecodeRateIdleAge.swift`,
+`DecodeRateIdleAge`; `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` sets the age,
+`0` restores publishing the last rate however old). Deadline admission is
+unchanged: it charges the measured step shape. The projection also mirrors the
 live MTP plan's depth gates
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift`,
 `CBv2MTPRoundDriver.speculationDepthCeiling`): a step with more decode rows

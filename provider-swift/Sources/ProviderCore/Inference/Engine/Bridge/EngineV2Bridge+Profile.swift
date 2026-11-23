@@ -49,6 +49,24 @@ extension EngineProfile {
     }
 }
 
+extension EngineMTPIneligibility {
+    /// One key per failed gate; gates that passed stay absent.
+    init(_ gates: CBv2MTPIneligibility) {
+        self.init()
+        func failed(_ gate: CBv2MTPIneligibility) -> Bool? { gates.contains(gate) ? true : nil }
+        media = failed(.media)
+        reasoningBudget = failed(.reasoningBudget)
+        grammar = failed(.grammar)
+        sampling = failed(.sampling)
+        logprobs = failed(.logprobs)
+        logitBias = failed(.logitBias)
+        repetitionPenalty = failed(.repetitionPenalty)
+        penalties = failed(.penalties)
+        stopStrings = failed(.stopStrings)
+        multimodalHistory = failed(.multimodalHistory)
+    }
+}
+
 extension EngineFinishReason {
     /// Closed mapping from the engine's finish reason; every unknown or
     /// error-carrying case folds to a bounded value (never the error text).

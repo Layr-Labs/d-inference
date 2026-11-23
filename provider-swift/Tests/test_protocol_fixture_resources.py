@@ -10,7 +10,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 TESTS = Path(__file__).resolve().parent / "ProviderCoreTests"
 FIXTURES = TESTS / "Fixtures/Protocol"
-# Digests captured from the original shared fixtures before platform removal.
+# Digests of the shared fixtures, captured from the originals before platform
+# removal; the profiler fixture's follows its coordinator copy, byte for byte.
 SHA256 = {
     "calibrated_capacity_wire_fixture": "c73d1be2972540dbe48e8cc5b3871a15f44dcbafb4f8c51f6ee27e88b01c2e41",
     "calibrated_deadline_decisions": "079a387c50070d2742e95dee1c6a8115ba49d10934eacc219574adb8c4ac6650",
@@ -19,7 +20,7 @@ SHA256 = {
     "paged_footprint_wire": "3b3a1777e129972a504eb2267f865a410d64839bc014828eea00fd4b04742483",
     "performance_capacity_wire_fixture": "e55e3ec2791480985d3cf099e94d0439f594e426d41d22444daa9ceb4de4aa77",
     "process_memory_wire": "7eb6c13f7028535900e6b4ad7dae71268d9cc4dd65374508b5444ce4c58ff84e",
-    "profiler_wire_fixture": "244bae582cafbf15d284a33c81449184ca70dc8e13806f5665402043e355c893",
+    "profiler_wire_fixture": "35a002cffd46daa418c077a80940ec1c3cc2675916e52a958688c4070b402126",
 }
 LOADERS = {
     "Protocol/ServingPerformanceProfileWireTests.swift": [

@@ -94,7 +94,19 @@
         "detok_delay_first_ns": 180000,
         "prefix_lookup_ns": 95000,
         "prefix_adoption_ns": 0,
-        "finish_reason": "stop"
+        "finish_reason": "stop",
+        "mtp_ineligible": {
+          "media": true,
+          "reasoning_budget": true,
+          "grammar": true,
+          "sampling": true,
+          "logprobs": true,
+          "logit_bias": true,
+          "repetition_penalty": true,
+          "penalties": true,
+          "stop_strings": true,
+          "multimodal_history": true
+        }
       },
       "deadline_decision": {
         "verdict": "accepted",

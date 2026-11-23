@@ -25,10 +25,12 @@ struct DiffusionCheckpointEnvelopeTests {
 
     @Test func fullNativeTokenCountFitsWithoutRaisingCryptoBufferLimits() throws {
         let source = try manifest(position: 262144)
-        let envelope = try SSDHybridCheckpointEnvelope(manifest: source, maximumPlaintextBytes: 16 << 20)
+        let keys = SSDLookupKeys(kek: SymmetricKey(size: .bits256))
+        let envelope = try SSDHybridCheckpointEnvelope(manifest: source, lookupKeys: keys, maximumPlaintextBytes: 16 << 20)
         #expect(envelope.manifestBytes.count < CBv2CompleteCheckpointManifest.maximumEncodedBytes)
         #expect(envelope.segments.allSatisfy { $0.bytes <= CBv2CompleteCheckpointManifest.maximumSegmentBytes })
-        #expect(try SSDHybridCheckpointEnvelope.decodeManifest(envelope.manifestBytes) == source)
+        #expect(try SSDHybridCheckpointEnvelope.decodeManifest(
+            envelope.manifestBytes, promptTokens: source.prefixTokens, lookupKeys: keys) == source)
     }
 
     @Test func encryptedRoundTripHidesNativeStateAndRejectsWrongKeyIdentityAndLateTampering() throws {
@@ -39,14 +41,15 @@ struct DiffusionCheckpointEnvelopeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let file = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: String(repeating: "e", count: 32))
         let source = try manifest()
-        let envelope = try SSDHybridCheckpointEnvelope(manifest: source, maximumPlaintextBytes: 1 << 20)
+        let key = SymmetricKey(size: .bits256) // ephemeral fixture only; not an account/release key
+        let keys = SSDLookupKeys(kek: key)
+        let envelope = try SSDHybridCheckpointEnvelope(manifest: source, lookupKeys: keys, maximumPlaintextBytes: 1 << 20)
         let tag = Data(repeating: 0xee, count: 32)
         let metadata = envelope.metadata(tag: tag, identity: source.identity, createdAt: 1, backendLayout: source.backendLayout)
         let publicMetadata = try JSONEncoder().encode(metadata)
         for field in ["tenant-secret-fixture-scope", "windowCursor", "packedPrefixTokens", "bfloat16"] {
             #expect(publicMetadata.range(of: Data(field.utf8)) == nil)
         }
-        let key = SymmetricKey(size: .bits256) // ephemeral fixture only; not an account/release key
         let chunks = [envelope.manifestBytes] + envelope.segments.enumerated().map {
             Data(repeating: UInt8($0.offset + 1), count: $0.element.bytes)
         }
@@ -61,7 +64,10 @@ struct DiffusionCheckpointEnvelopeTests {
             maximumPlaintextBytes: 1 << 20, requireEOF: true,
             validateMetadata: { try #require(envelope.matches($0, tag: tag, identity: source.identity, backendLayout: source.backendLayout)) },
             consumeChunk: { index, data in
-                if index == 0 { try #require(SSDHybridCheckpointEnvelope.decodeManifest(data) == source) }
+                if index == 0 {
+                    try #require(SSDHybridCheckpointEnvelope.decodeManifest(
+                        data, promptTokens: source.prefixTokens, lookupKeys: keys) == source)
+                }
                 observed.append(data)
             })
         #expect(observed == chunks)

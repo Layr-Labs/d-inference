@@ -56,6 +56,7 @@ struct SSDLookupKeys: Sendable {
     /// bytes instead of the index.
     static let windowBaseDomainTag = Data("dbkv3-window-base-v1".utf8)
     static let checkpointParentDomainTag = Data("dbkv3-checkpoint-parent-v1".utf8)
+    static let checkpointPrefixDomainTag = Data("dbkv3-checkpoint-prefix-v1".utf8)
     /// Truncated-tag length used for filenames and the RAM index (128-bit;
     /// the full 256-bit tag rides inside the authenticated file metadata).
     static let truncatedTagLength = 16
@@ -132,6 +133,20 @@ extension SSDLookupKeys {
     /// Hex form written to (and compared against) DBK3 metadata.
     func windowBaseCommitmentHex(windowTag: Data, base: Int) -> String {
         Self.hex(windowBaseCommitment(windowTag: windowTag, base: base))
+    }
+
+    /// Keyed digest of a complete checkpoint's exact prefix, stored in place
+    /// of its token IDs: the token count as u64 LE, then each token as u32 LE.
+    /// A reader recomputes it from the request's own prompt; without K_lookup
+    /// it can be neither inverted nor tested against a guessed prompt.
+    func checkpointPrefixDigest(tokens: ArraySlice<Int>) -> Data {
+        var message = Data(capacity: Self.checkpointPrefixDomainTag.count + 8 + 4 * tokens.count)
+        message.append(Self.checkpointPrefixDomainTag)
+        withUnsafeBytes(of: UInt64(tokens.count).littleEndian) { message.append(contentsOf: $0) }
+        for token in tokens {
+            withUnsafeBytes(of: UInt32(truncatingIfNeeded: token).littleEndian) { message.append(contentsOf: $0) }
+        }
+        return Data(HMAC<SHA256>.authenticationCode(for: message, using: key))
     }
 
     /// Names one exact parent file (its tag and random IV); only K_lookup pairs it.

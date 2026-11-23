@@ -42,7 +42,8 @@ struct SSDParallelStageTests {
                        readLimit: Int = .max, stopAfter: Int = .max, cancelAfter: Int = .max) throws -> Streamed {
         let candidate = try candidate(f, store, position: position)
         let meter = Meter(limit: readLimit), read = Meter()
-        var files = try store.openChain(candidate, tracksIdentity: true, check: {}, beforeRead: meter.charge,
+        var files = try store.openChain(candidate, promptTokens: f.tokens, tracksIdentity: true, check: {},
+                                        beforeRead: meter.charge,
                                         countRead: read.add, blame: { _ in })
         var out = Streamed(tensors: files[0].link.manifest.tensors.map { _ in Data() })
         var checks = 0
@@ -196,7 +197,8 @@ struct SSDParallelStageTests {
         defer { store.close() }
         let candidate = try Self.candidate(f, store, position: 2304)
         func open() throws -> SSDHybridCheckpointStore.ChainFile {
-            try store.openChain(candidate, tracksIdentity: true, check: {}, beforeRead: { _ in }, countRead: { _ in },
+            try store.openChain(candidate, promptTokens: f.tokens, tracksIdentity: true, check: {},
+                                beforeRead: { _ in }, countRead: { _ in },
                                 blame: { _ in })[0]
         }
         let reference = try open()

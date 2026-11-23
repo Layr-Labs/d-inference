@@ -52,11 +52,12 @@ enum NativeCheckpointOracle {
             maximumPlaintextBytes: store.config.maxReadBytes, requireEOF: true,
             validateMetadata: { _ in }, consumeChunk: { index, data in
                 if index == 0 {
-                    let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(data)
+                    let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(
+                        data, promptTokens: fixture.tokens, lookupKeys: store.lookupKeys)
                     try #require(manifest.identity == fixture.identity && manifest.position == position)
                     try #require(manifest.prefixTokens == Array(fixture.tokens.prefix(position)))
                     try #require(manifest.tensors.allSatisfy { $0.dtype.mlxDType == .float32 })
-                    envelope = try SSDHybridCheckpointEnvelope(manifest: manifest,
+                    envelope = try SSDHybridCheckpointEnvelope(manifest: manifest, lookupKeys: store.lookupKeys,
                         maximumPlaintextBytes: store.config.maxReadBytes)
                     tensors = Array(repeating: Data(), count: manifest.tensors.count)
                 } else {

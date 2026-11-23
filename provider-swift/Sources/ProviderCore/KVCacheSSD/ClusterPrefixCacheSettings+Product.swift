@@ -22,7 +22,8 @@ extension ClusterPrefixCacheSettings {
                      prefixCacheEnabled: PrefixCachePolicy.isGloballyEnabled(environment: environment),
                      byteBudget: PrefixCachePolicy.ssdDiskBudgetBytes(environment: environment, freeBytes: free),
                      dailyWriteBytes: CacheStorage.dailyWriteBytes(settings: cacheSettings, environment: environment),
-                     ttlSeconds: Int(SSDPrefixCachePolicy.ttlSeconds(environment: environment)))
+                     ttlSeconds: Int(SSDPrefixCachePolicy.ttlSeconds(environment: environment)),
+                     fixedTTL: !SSDPrefixCachePolicy.ttlMode(environment: environment).refreshesOnHit)
     }
 
     /// The saved cache settings of the provider configuration at `url`

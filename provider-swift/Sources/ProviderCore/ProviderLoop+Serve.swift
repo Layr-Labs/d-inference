@@ -380,7 +380,7 @@ extension ProviderLoop {
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
                     let profile, let serviceReservationID, let promptWork,
-                    let gemmaPromptContract
+                    let gemmaPromptContract, let frameCachePolicy
                 ):
                     await admitInWorkFIFO(requestId: requestId, queuedBytes: ciphertext.count) { gate in
                         await self.handleInferenceRequest(
@@ -399,6 +399,7 @@ extension ProviderLoop {
                             serviceReservationID: serviceReservationID,
                             promptWork: promptWork,
                             gemmaPromptContract: gemmaPromptContract,
+                            frameCachePolicy: frameCachePolicy,
                             send: send,
                             workFIFOGate: gate
                         )
@@ -475,7 +476,7 @@ extension ProviderLoop {
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
                 case .inferenceRequest(
-                    let requestId, let ciphertext, _, _, _, _, _, _, _, _, _, let profile, let serviceReservationID, _, _
+                    let requestId, let ciphertext, _, _, _, _, _, _, _, _, _, let profile, let serviceReservationID, _, _, _
                 ):
                     // Here, not in the work reader: on arrival, in order with
                     // the trust statuses `ServingReadiness` compares it to.

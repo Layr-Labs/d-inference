@@ -119,7 +119,9 @@ public enum CoordinatorEvent: Sendable {
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
         /// See `InferenceRequest.gemmaPromptContract`; nil keeps version 1.
-        gemmaPromptContract: Int? = nil
+        gemmaPromptContract: Int? = nil,
+        /// See `InferenceRequest.frameCachePolicy`; it can only narrow.
+        frameCachePolicy: RequestCachePolicy = .default
     )
     /// `reason` is nil from a coordinator that sends none.
     case cancel(requestId: String, reason: CoordinatorCancelReason? = nil)

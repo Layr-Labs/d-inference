@@ -44,7 +44,7 @@ enum DistributedInstalledPrefixSSD {
     static let switchName = "DARKBLOOM_CLUSTER_PREFIX_SSD"
     static let directoryName = "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"
     static let stopMarginName = "DARKBLOOM_CLUSTER_PREFIX_SSD_STOP_MARGIN_MS"
-    static let passedThrough = ["MAX_GB", "MAX_RECORDS", "TTL_SECONDS", "STRIDE", "MIN_TOKENS",
+    static let passedThrough = ["MAX_GB", "MAX_RECORDS", "TTL_SECONDS", "TTL_MODE", "STRIDE", "MIN_TOKENS",
                                 "MAX_WRITE_GB_PER_DAY", "MIN_FREE_GB"].map { "DARKBLOOM_CLUSTER_PREFIX_SSD_" + $0 }
 
     /// Where this owner's key came from, with its 32 bytes. Descriptions

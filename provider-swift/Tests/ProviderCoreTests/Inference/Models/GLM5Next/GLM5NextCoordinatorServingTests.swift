@@ -68,7 +68,7 @@ struct GLM5NextHardwareGateTests {
     @Test func capabilityIsReportedOnlyOnQualifyingHardware() {
         let qualified = ProviderRuntimeCapabilityDetector.detectPrepared(
             hardware: hardware(.m5, .max, 256), boundMetallibHash: "abc", naxAvailable: { true })
-        #expect(qualified == [.appleM5, .mlxNAX, .modelRevisions, .glm5Next])
+        #expect(qualified == [.appleM5, .mlxNAX, .modelRevisions, .cachePolicy, .glm5Next])
         let small = ProviderRuntimeCapabilityDetector.detectPrepared(
             hardware: hardware(.m5, .max, 128), boundMetallibHash: "abc", naxAvailable: { true })
         #expect(!small.contains(.glm5Next))

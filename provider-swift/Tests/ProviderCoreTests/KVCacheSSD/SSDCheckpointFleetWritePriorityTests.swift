@@ -7,6 +7,7 @@ import Testing
 struct SSDCheckpointFleetWritePriorityTests {
     private func plaintextBytes(_ fixture: SSDHybridCheckpointTestFixture, position: Int) throws -> Int {
         try SSDHybridCheckpointEnvelope(manifest: fixture.manifest(position: position),
+                                       lookupKeys: SSDLookupKeys(kek: fixture.key),
                                        maximumPlaintextBytes: 16 << 20).plaintextBytes
     }
 

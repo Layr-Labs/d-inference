@@ -109,7 +109,8 @@ struct SSDHybridCheckpointDuplicateTests {
                 assistantCodecID: fault == .wrongAssistantCodec ? "another-assistant" : nil,
                 tensors: fault == .missingRecurrentState ? Array(original.tensors.dropLast()) : original.tensors,
                 backendLayout: original.backendLayout)
-            let envelope = try SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: 16 << 20)
+            let envelope = try SSDHybridCheckpointEnvelope(
+                manifest: manifest, lookupKeys: store.lookupKeys, maximumPlaintextBytes: 16 << 20)
             let chain = store.hashes(tokens: fixture.tokens, scope: "tenant-a")
             let tag = store.lookupKeys.checkpointTag(chainHash: chain[position / 256 - 1], cacheSalt: "tenant-a")
             let metadata = envelope.metadata(tag: tag, identity: fixture.identity,

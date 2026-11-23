@@ -42,7 +42,7 @@ extension SSDHybridCheckpointStore {
     /// pinned by the commitment, and an open handle survives removal. `blame`
     /// names the file in use.
     func openChain(
-        _ candidate: ReadCandidate, tracksIdentity: Bool, check: () throws -> Void,
+        _ candidate: ReadCandidate, promptTokens: [Int], tracksIdentity: Bool, check: () throws -> Void,
         beforeRead: @escaping (Int) throws -> Void, countRead: @escaping (Int) -> Void, blame: (Data) -> Void
     ) throws -> [ChainFile] {
         var files: [ChainFile] = []
@@ -65,9 +65,11 @@ extension SSDHybridCheckpointStore {
                 }
             guard let bytes = try cursor.next(), let tag = SSDPrefixCache.hexDecode(cursor.metadata.lookupTag)
             else { throw CBv2CompleteCheckpointError.invalidManifest }
-            let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(bytes)
+            let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(
+                bytes, promptTokens: promptTokens, lookupKeys: lookupKeys)
             let envelope = try SSDHybridCheckpointEnvelope(
-                manifest: manifest, maximumPlaintextBytes: config.maxReadBytes, parent: files.last?.link)
+                manifest: manifest, lookupKeys: lookupKeys, maximumPlaintextBytes: config.maxReadBytes,
+                parent: files.last?.link)
             guard envelope.manifestBytes == bytes, envelope.matches(
                 cursor.metadata, tag: tag, identity: identity, backendLayout: config.backendLayout)
             else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
@@ -86,6 +88,7 @@ extension SSDHybridCheckpointStore {
         append: (Int, Int, Data) throws -> Void
     ) throws -> SSDAuthenticatedFileIdentity? {
         let steps = SSDCheckpointDeltaLayout.steps(root: files[0].link.manifest, deltas: files.compactMap(\.envelope.delta))
+        let leaf = files[files.count - 1].link.manifest
         if parallel {
             let plans = Self.chunkPlans(steps: steps, chunkSizes: files.map { $0.cursor.metadata.chunkPlaintextSizes },
                                         firstIndices: files.map(\.consumerIndex))
@@ -102,7 +105,10 @@ extension SSDHybridCheckpointStore {
                 blame(files[step.file].link.tag16)
                 try files[step.file].consume(step.bytes, take: step.take, check: check) { data in
                     statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, data.count) }
-                    try append(tensor, offset, data)
+                    // Stored as zeros; the prefix the digest proved supplies them.
+                    let tokens = try SSDHybridCheckpointEnvelope.tokenTensorBytes(
+                        manifest: leaf, tensor: tensor, offset: offset, count: data.count)
+                    try append(tensor, offset, tokens ?? data)
                     offset += data.count
                 }
             }

@@ -31,18 +31,24 @@ final class CompleteCheckpointFixtureScan: @unchecked Sendable {
         lock.withLock { largestStoreReadBytes = max(largestStoreReadBytes, maxReadBytes) }
     }
 
-    /// Every file under `root`, with its manifest.
-    func files() throws -> [(url: URL, manifest: CBv2CompleteCheckpointManifest)] {
+    /// Every file under `root`, with its manifest. Without `tokens` the
+    /// prefix reads as zeros (`inspectStoredManifestForTesting`); with them,
+    /// only the files whose stored prefix digest matches `tokens` are kept.
+    func files(prefixOf tokens: [Int]? = nil) throws -> [(url: URL, manifest: CBv2CompleteCheckpointManifest)] {
         let readBytes = lock.withLock { largestStoreReadBytes }
         let enumerator = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
-        return try enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "dbk3" }.map { file in
+        return try enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "dbk3" }.compactMap { file in
             var manifestBytes: Data?
             try SSDBlockStore.readStreaming(from: file, kekKey: key,
                 maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
                 maximumPlaintextBytes: readBytes,
                 requireEOF: true, validateMetadata: { _ in },
                 consumeChunk: { index, data in if index == 0 { manifestBytes = data } })
-            return (file, try SSDHybridCheckpointEnvelope.decodeManifest(try #require(manifestBytes)))
+            let bytes = try #require(manifestBytes)
+            guard let tokens else { return (file, try SSDHybridCheckpointEnvelope.inspectStoredManifestForTesting(bytes)) }
+            guard let manifest = try? SSDHybridCheckpointEnvelope.decodeManifest(
+                bytes, promptTokens: tokens, lookupKeys: SSDLookupKeys(kek: key)) else { return nil }
+            return (file, manifest)
         }
     }
 }

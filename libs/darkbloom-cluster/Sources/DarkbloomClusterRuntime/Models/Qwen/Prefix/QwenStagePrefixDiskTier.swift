@@ -293,7 +293,8 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             if fault?.restoreFails == true {
                 throw QwenStagePrefixDiskInjectedFault()
             }
-            let state = try QwenStagePrefixDiskIO.restore(url: url, opened: opened, frontier: frontier, encoding: encoding,
+            let state = try QwenStagePrefixDiskIO.restore(url: url, opened: opened, frontier: frontier,
+                promptTokens: tokens, encoding: encoding,
                 stallMilliseconds: fault?.restoreStallMilliseconds, check: guarded)
             let bytes = state.attention.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
                 + state.recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes }
@@ -355,6 +356,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     private struct VerbatimSource { let name: String; let frontier: Int; let key: String }
 
     private func touch(name: String) {
+        guard configuration.refreshesOnUse else { return }
         let time = now()
         let exists: Bool = lock.withLock {
             guard var record = records[name] else { return false }

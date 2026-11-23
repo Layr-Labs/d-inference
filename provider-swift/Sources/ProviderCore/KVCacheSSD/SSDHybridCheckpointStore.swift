@@ -19,6 +19,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         let maxStageMillis: Int
         let minEffectiveTokens: Int
         let ttlSeconds: Int64
+        var ttlMode: SSDPrefixCachePolicy.TTLMode = .sliding
         let strictFsync: Bool
         let nowSeconds: @Sendable () -> Int64
         let diskBudgetBytes: @Sendable () -> Int
@@ -129,7 +130,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     public func takeStaged(
         requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int
     ) -> CBv2StagedCompleteCheckpoint? {
-        guard let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID), let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
                                      maximumSequenceLength: maximumSequenceLength, native: false),
             case .autoregressive(let value) = staged else { return nil }
         return value
@@ -138,7 +139,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     public func takeNativeStaged(
         requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int
     ) -> CBv2NativeBlockCheckpoint? {
-        guard let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID), let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
                                      maximumSequenceLength: maximumSequenceLength, native: true),
             case .nativeBlock(let value) = staged else { return nil }
         return value

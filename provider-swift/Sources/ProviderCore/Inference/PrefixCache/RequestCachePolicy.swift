@@ -1,0 +1,71 @@
+import Foundation
+import MLXLMCommon
+
+/// Where one remote request's prompt prefix may be kept, from the sealed
+/// `_darkbloom_cache.cache_policy` key. A `memoryOnly` request never reads,
+/// writes, stages, donates or restores anything on the SSD tier, and keeps
+/// nothing in a prefix tier that outlives it without a bound: it runs with its
+/// prefix cache off (`PrefixCacheSubmissionPolicy`).
+public enum RequestCachePolicy: String, Sendable, Equatable, CaseIterable {
+    case `default`
+    case memoryOnly = "memory_only"
+
+    /// The policy a present `cache_policy` value selects: only the exact
+    /// string `"default"` keeps the SSD tier. Any other value, a non-string
+    /// value included (nil), selects `memoryOnly`.
+    init(presentValue: String?) {
+        self = presentValue == Self.default.rawValue ? .default : .memoryOnly
+    }
+
+    /// The stricter of two policies; a second source can only narrow.
+    func narrowed(by other: RequestCachePolicy) -> RequestCachePolicy {
+        self == .memoryOnly || other == .memoryOnly ? .memoryOnly : .default
+    }
+
+    var permitsSSDTier: Bool { self == .default }
+
+    /// The policy of every request on this Mac's local API, from
+    /// `DARKBLOOM_LOCAL_CACHE_POLICY`: unset or empty is `default`, and any
+    /// value but `default` is `memoryOnly`. Coordinator requests carry their
+    /// own sealed policy and never read it.
+    static let localServingEnvironmentKey = "DARKBLOOM_LOCAL_CACHE_POLICY"
+
+    static func localServing(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> RequestCachePolicy {
+        guard let raw = environment[localServingEnvironmentKey]?.trimmingCharacters(in: .whitespaces),
+            !raw.isEmpty
+        else { return .default }
+        return RequestCachePolicy(presentValue: raw)
+    }
+}
+
+/// A `memoryOnly` request's prefix-cache receipt IDs are minted with the top
+/// bit set, so each SSD-tier entry point refuses the request from the ID
+/// alone, including calls the engine makes after the request's terminal.
+/// Ordinary receipts count up from 1 and never reach the bit.
+enum MemoryOnlyReceipt {
+    static let bit: UInt64 = 1 << 63
+
+    static func contains(_ id: CBv2RequestID?) -> Bool {
+        guard let id else { return false }
+        return id.raw & bit != 0
+    }
+
+    /// True, counted as a refusal, for an engine call into an SSD store
+    /// (lookup, stage take, donation) made for a memory-only request.
+    static func refusesEngineCall(_ id: CBv2RequestID?) -> Bool {
+        guard contains(id) else { return false }
+        RequestCachePolicyCounters.shared.recordSSDRefusal()
+        return true
+    }
+
+    /// True, counted as a touch, for a memory-only request at an SSD read,
+    /// write or index path that only the bridge starts or that follows a
+    /// refused entry point: the second gate, so the count stays 0.
+    static func refusesTierAccess(_ id: CBv2RequestID?) -> Bool {
+        guard contains(id) else { return false }
+        RequestCachePolicyCounters.shared.recordSSDTierTouch()
+        return true
+    }
+}

@@ -129,7 +129,7 @@ extension ProviderLoop {
                     cacheScope: superCacheScope, acquire: { [weak self] in
                         guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(request.model) }
                         return try await self.acquireNemotronSuperForLocal(request.model)
-                    }, logprobs: logprobs)
+                    }, logprobs: logprobs, cachePolicy: .localServing())
             },
             modelLimits: { [weak self] modelId in
                 await self?.localModelLimits(modelId)

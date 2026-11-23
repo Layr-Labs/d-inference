@@ -110,7 +110,7 @@ struct ProviderRuntimeCapabilityTests {
             }
         )
         #expect(success.events == ["bind", "nax-diagnostic"])
-        #expect(capabilities == qwen38Caps.union([.modelRevisions]))
+        #expect(capabilities == qwen38Caps.union([.modelRevisions, .cachePolicy]))
 
         let failedBinding = RuntimeDetectionRecorder()
         let failedCapabilities = ProviderRuntimeCapabilityDetector.detectLive(
@@ -126,7 +126,7 @@ struct ProviderRuntimeCapabilityTests {
             }
         )
         #expect(failedBinding.events == ["bind"])
-        #expect(failedCapabilities == [.appleM5, .modelRevisions])
+        #expect(failedCapabilities == [.appleM5, .modelRevisions, .cachePolicy])
     }
 
     @Test("exact embedded rule survives an old catalog while lookalikes stay compatible")

@@ -84,7 +84,7 @@ struct NemotronSuperLocalBindingTests {
         let seen = SuperSeenConstraints()
         let binding = NemotronSuperLocalBinding(
             acquire: acquisition(accounting, bridge: bridge),
-            fixtureExecution: { _, _, _, _, _, _, _, _, _, tokenConstraint, _ in seen.record(tokenConstraint) })
+            fixtureExecution: { _, _, _, _, _, _, _, _, _, _, tokenConstraint, _ in seen.record(tokenConstraint) })
         for submitted in [constraint, nil] as [QwenStrictToolConstraint?] {
             try await binding.run(request: .init(model: NemotronSuperLocalBinding.modelID, messages: []),
                                   promptTokens: [1], tokenConstraint: submitted, onEvent: { _ in })
@@ -132,7 +132,7 @@ struct NemotronSuperLocalBindingTests {
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
         let binding = NemotronSuperLocalBinding(
             acquire: acquisition(accounting, bridge: bridge),
-            fixtureExecution: { _, _, _, _, _, _, _, _, _, _, _ in
+            fixtureExecution: { _, _, _, _, _, _, _, _, _, _, _, _ in
                 await accounting.holdUntilRetired()
                 try Task.checkCancellation()
             })
@@ -166,7 +166,7 @@ struct NemotronSuperLocalBindingTests {
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
         let binding = NemotronSuperLocalBinding(
             acquire: acquisition(accounting, bridge: bridge, nativeLease: lease),
-            fixtureExecution: { _, _, _, _, _, _, _, _, _, _, _ in
+            fixtureExecution: { _, _, _, _, _, _, _, _, _, _, _, _ in
                 #expect(!lease.snapshot().hasOutstandingHandoff)
                 await accounting.holdUntilRetired()
                 try Task.checkCancellation()

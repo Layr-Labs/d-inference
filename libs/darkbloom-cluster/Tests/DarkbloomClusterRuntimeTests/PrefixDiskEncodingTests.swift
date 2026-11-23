@@ -340,7 +340,8 @@ struct PrefixDiskEncodingTests {
             for other in [QwenStagePrefixDiskEncoding.native, .init(quantization: .k8v8, family: .qwenAttention),
                           .init(quantization: .balanced, family: .glm5NextDSA)] {
                 #expect(throws: ProbeError.self) {
-                    _ = try QwenStagePrefixDiskIO.restore(url: encodedURL, opened: opened, frontier: 300, encoding: other, check: {})
+                    _ = try QwenStagePrefixDiskIO.restore(url: encodedURL, opened: opened, frontier: 300,
+                        promptTokens: tokens, encoding: other, check: {})
                 }
             }
             // A balanced record moved into the native tier's directory is never offered and goes at load.

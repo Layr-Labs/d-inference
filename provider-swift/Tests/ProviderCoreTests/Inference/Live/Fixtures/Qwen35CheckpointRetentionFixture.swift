@@ -344,8 +344,8 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
     /// Retained boundaries of one scope that prefix `tokens`, ascending, with
     /// the packed tensor bytes of each file.
     func positions(scope: String, prefixOf tokens: [Int]) throws -> (positions: [Int], bytes: [Int]) {
-        let manifests = try persistedManifests()
-            .filter { $0.cacheSalt == scope && tokens.starts(with: $0.prefixTokens) }
+        let manifests = try scan.files(prefixOf: tokens).map(\.manifest)
+            .filter { $0.cacheSalt == scope }
             .sorted { $0.position < $1.position }
         return (manifests.map(\.position), manifests.map { $0.tensors.reduce(0) { $0 + $1.byteCount } })
     }

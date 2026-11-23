@@ -68,7 +68,7 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
                    diskBudgetBytes: @escaping @Sendable () -> Int = { 1 << 30 },
                    donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
                    keyFingerprint: String = "fixture-key", incrementalCheckpoints: Bool = false,
-                   parallelStage: Bool = true,
+                   parallelStage: Bool = true, ttlMode: SSDPrefixCachePolicy.TTLMode = .sliding,
                    writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) throws -> SSDHybridCheckpointStore {
         let epochStore: SSDCacheEpochStore? = epoch ? try .init(root: modelRoot, binding: .init(
             modelId: "fixture-model", modelAggregateHash: identity.modelAggregateHash,
@@ -79,7 +79,7 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
         let store = SSDHybridCheckpointStore(config: .init(modelId: "fixture-model", identity: identity,
             backendLayout: backendLayout,
             root: modelRoot, dedicatedRoot: root, epochStore: epochStore, maxReadBytes: readCap,
-            maxStageMillis: 1000, minEffectiveTokens: 256, ttlSeconds: 3600, strictFsync: false,
+            maxStageMillis: 1000, minEffectiveTokens: 256, ttlSeconds: 3600, ttlMode: ttlMode, strictFsync: false,
             nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: diskBudgetBytes, maintainWholeRoot: {},
             incrementalCheckpoints: incrementalCheckpoints, parallelStage: parallelStage),
             kekKey: key, kvBudget: useGlobalBudget ? budget : nil, diskBudget: diskBudget,

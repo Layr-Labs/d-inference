@@ -284,6 +284,7 @@ enum SSDPrefixCacheFactory {
             root: dir,
             dedicatedRoot: wholeRoot,
             ttlSeconds: SSDPrefixCachePolicy.ttlSeconds(environment: environment),
+            ttlMode: SSDPrefixCachePolicy.ttlMode(environment: environment),
             minEffectiveTokens: PrefixCachePolicy.minEffectiveTokens(
                 capability: prefixReuseCapability,
                 adoptionBoundTokens: adoptionBoundTokens,

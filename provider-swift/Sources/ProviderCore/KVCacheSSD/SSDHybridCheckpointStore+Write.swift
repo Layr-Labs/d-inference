@@ -54,6 +54,13 @@ extension SSDHybridCheckpointStore {
         _ source: CBv2CompleteCheckpointExport, requestID: CBv2RequestID?,
         tokens: [Int], cacheSalt: String?, completion: @escaping @Sendable ([Int]) -> Void
     ) {
+        // A memory-only request's capture is released unwritten; it is not a
+        // donation opportunity, so it settles no outcome.
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID) else {
+            source.close()
+            completion([])
+            return
+        }
         let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
         guard !isClosed else {
             source.close()
@@ -86,6 +93,11 @@ extension SSDHybridCheckpointStore {
         // The preparation helper has dropped temporary encoded/hash buffers.
         // Only an accepted job's envelope may now retain provider-owned Data.
         switch preparation {
+        case .withheld:
+            source.close()
+            hostReservation?.closeAfterDroppingBuffers()
+            if let hostReservation { statsBox.update { $0.writeHostBytesInUse -= Int(hostReservation.bytes) } }
+            completion([])
         case .refused(let outcome):
             source.close()
             if let hostReservation {
@@ -104,6 +116,8 @@ extension SSDHybridCheckpointStore {
     private enum WritePreparation {
         case ready(WriteJob)
         case refused(PrefixCacheDonationOutcome)
+        /// A memory-only request past the entry gate; nothing is written.
+        case withheld
     }
 
     private func prepareWriteJob(
@@ -112,6 +126,7 @@ extension SSDHybridCheckpointStore {
         settlement: PrefixCacheDonationSettlement,
         completion: @escaping @Sendable ([Int]) -> Void
     ) -> WritePreparation {
+        guard !MemoryOnlyReceipt.refusesTierAccess(requestID) else { return .withheld }
         guard !isClosed else { return .refused(.cacheClosed) }
         guard hasSafeRoot else { return .refused(.unsafeCacheRoot) }
         let manifest = source.manifest
@@ -130,7 +145,8 @@ extension SSDHybridCheckpointStore {
         let envelope: SSDHybridCheckpointEnvelope
         do {
             envelope = try deltaEnvelope(requestID: requestID, manifest: manifest)
-                ?? SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: config.maxReadBytes)
+                ?? SSDHybridCheckpointEnvelope(
+                    manifest: manifest, lookupKeys: lookupKeys, maximumPlaintextBytes: config.maxReadBytes)
         } catch SSDHybridCheckpointEnvelope.EncodingError.sizeExceeded {
             return .refused(.stageSizeExceeded)
         } catch {
@@ -198,7 +214,8 @@ extension SSDHybridCheckpointStore {
         for parent in restored.files {
             guard let chain = index.chain(tag16: parent.tag16), chain.tags.count < SSDCheckpointDeltaLayout.maximumChainFiles,
                 let envelope = try? SSDHybridCheckpointEnvelope(
-                    manifest: manifest, maximumPlaintextBytes: config.maxReadBytes, parent: parent),
+                    manifest: manifest, lookupKeys: lookupKeys, maximumPlaintextBytes: config.maxReadBytes,
+                    parent: parent),
                 chain.bytes + envelope.plaintextBytes <= config.maxReadBytes else { continue }
             return envelope
         }
@@ -284,9 +301,11 @@ extension SSDHybridCheckpointStore {
                         if index == 0 { return envelope.manifestBytes }
                         let segment = envelope.segments[index - 1]
                         self.statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, segment.bytes) }
-                        return try job.source.readSegment(
-                            tensorIndex: segment.tensor, byteOffset: envelope.completeOffset(of: segment),
-                            maximumBytes: segment.bytes)
+                        let offset = envelope.completeOffset(of: segment)
+                        return try SSDHybridCheckpointEnvelope.storedSegment(
+                            try job.source.readSegment(
+                                tensorIndex: segment.tensor, byteOffset: offset, maximumBytes: segment.bytes),
+                            manifest: job.source.manifest, tensor: segment.tensor, offset: offset)
                     })
                 lock.withLock { beforeWriteIndexForTesting }?(url, false)
                 guard !isClosed else { result.outcome = .cacheClosed; return }
@@ -308,8 +327,12 @@ extension SSDHybridCheckpointStore {
                     return true
                 }
                 guard indexed else { result.outcome = .cacheEntryEvicted; return }
-                // Keep parents as recent as their children.
-                index.touch(tags16: index.chain(tag16: short)?.tags ?? [], now: config.nowSeconds())
+                // Keep parents as recent as their children; a fixed TTL keeps
+                // each file's write time, and a child outliving its parent
+                // is never a candidate.
+                if config.ttlMode.refreshesOnHit {
+                    index.touch(tags16: index.chain(tag16: short)?.tags ?? [], now: config.nowSeconds())
+                }
                 statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
                 if envelope.parent != nil { statsBox.update { $0.deltaFilesWritten += 1 } }
             }

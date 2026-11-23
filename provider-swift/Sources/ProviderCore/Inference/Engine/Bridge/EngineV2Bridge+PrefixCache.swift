@@ -4,13 +4,16 @@ import MLXLMCommon
 
 extension EngineV2Bridge {
 
+    /// `durable` false (a `memory_only` request) leaves out the SSD tier's
+    /// sequencer: each of its messages takes a sequence number that the
+    /// epoch record on disk persists.
     nonisolated func prefixCacheEvidenceCallbacks(
         requestID: String, nonce: String, send: SendHandle,
-        readyBoundaryMode: String? = nil
+        readyBoundaryMode: String? = nil, durable: Bool = true
     ) -> PrefixCacheV2EvidenceCallbacks? {
-        let ssd = prefixCacheEvidenceSequencer?.callbacks(
+        let ssd = durable ? prefixCacheEvidenceSequencer?.callbacks(
             requestID: requestID, nonce: nonce, send: send,
-            readyBoundaryMode: readyBoundaryMode)
+            readyBoundaryMode: readyBoundaryMode) : nil
         let memory = residentPrefixCacheEvidenceSequencer?.callbacks(
             requestID: requestID, nonce: nonce, send: send,
             forwardTerminal: ssd == nil)

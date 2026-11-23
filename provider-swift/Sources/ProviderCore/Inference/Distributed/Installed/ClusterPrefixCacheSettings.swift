@@ -31,11 +31,14 @@ public struct ClusterPrefixCacheSettings: Equatable, Sendable {
     /// The sliding TTL in seconds (the product's 1,800 ceiling); nil keeps
     /// the rank's default (1,800).
     public var ttlSeconds: Int?
+    /// A use leaves a record's age alone, so it expires `ttlSeconds` after it
+    /// was written (`DARKBLOOM_SSD_KV_TTL_MODE=fixed`, this Mac's own switch).
+    public var fixedTTL: Bool
 
     public init(root: URL, prefixCacheEnabled: Bool = true, byteBudget: Int? = nil, dailyWriteBytes: Int? = nil,
-                ttlSeconds: Int? = nil) {
+                ttlSeconds: Int? = nil, fixedTTL: Bool = false) {
         self.root = root; self.prefixCacheEnabled = prefixCacheEnabled; self.byteBudget = byteBudget
-        self.dailyWriteBytes = dailyWriteBytes; self.ttlSeconds = ttlSeconds
+        self.dailyWriteBytes = dailyWriteBytes; self.ttlSeconds = ttlSeconds; self.fixedTTL = fixedTTL
     }
 
     /// `<encryptedCacheNamespace>/cluster-prefix-v1`. Each install has its own namespace, as for `kv3`
@@ -84,6 +87,7 @@ public struct ClusterPrefixCacheSettings: Equatable, Sendable {
         if let ttlSeconds, ttlSeconds > 0 {
             result["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"] = String(min(1_800, ttlSeconds))
         }
+        if fixedTTL { result["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_MODE"] = "fixed" }
         return result
     }
 }

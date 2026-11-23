@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-23
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -536,12 +536,17 @@ build job (`scripts/ci-test-products.py wait`): it reads the run's latest
 execution of each job (`GET .../actions/runs/{run}/jobs?filter=latest`, every
 15 s, one request of the repository's token budget each, with the job's
 `actions: read`), downloads once the build job succeeded, and fails at once,
-with the build job's conclusion, when it did not. A re-run of failed test jobs
-reads the products of the earlier attempt's build; a re-run of all jobs waits
-for its own build. A token that cannot read the jobs fails at once; any other
-failed request is retried until 50 minutes, a rate-limited one after the wait
-GitHub asks for. A failed build therefore fails its test jobs, and with them
-the `Provider Tests` gate.
+with the build job's conclusion, when it did not. Once the build job's upload
+step (`Upload provider test products` or `Upload cluster test products`) has
+started, it polls every 3 s. In the 74 successful pull request provider builds
+of 2026-11-23 the build ended 39 s after its upload step started (p50; 108 s
+p90), and at 15 s the last provider test job saw that end 11.8 s late (p50, 2
+to 18 s); modeled, that is about 6 s later than at 3 s, for about 10 more
+requests per test job. A re-run of failed test jobs reads the products of the
+earlier attempt's build; a re-run of all jobs waits for its own build. A token
+that cannot read the jobs fails at once; any other failed request is retried
+until 50 minutes, a rate-limited one after the wait GitHub asks for. A failed
+build therefore fails its test jobs, and with them the `Provider Tests` gate.
 
 Before, each test job needed its build job, so GitHub queued it only once the
 build was done, and on a Darkbloom Sandbox it then waited for a Mac of its own:

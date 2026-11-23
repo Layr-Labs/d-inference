@@ -75,11 +75,19 @@ STAMP = "CI_TEST_PRODUCTS_STARTED"
 # The build job of each lane, by its name in provider-tests.yml. The API names
 # a called workflow's job after its caller's job too ("Tests / Build ...").
 BUILD_JOBS = {"provider": "Build provider test products", "cluster": "Build cluster test products"}
+# The step of each build job that packs and uploads the lane's products.
+UPLOAD_STEPS = {"provider": "Upload provider test products", "cluster": "Upload cluster test products"}
 # A cold provider build took up to 9 minutes on Darkbloom. The wait counts
 # against the test job's own 60-minute timeout (provider-tests.yml), so the
 # limit ends it with a message first. Each poll is one request of the
 # repository's token budget.
 WAIT_POLL_SECONDS = 15
+# Once the build job's upload step has started, the build ends 39 s later
+# (p50; 108 s p90) in the 74 successful pull request provider builds of
+# 2026-11-23, so the wait polls this often from then on. At 15 s the last
+# provider test job saw the build's end 11.8 s late (p50, 2 to 18 s); at 3 s
+# that is about 6 s sooner, for about 10 more requests per test job.
+UPLOAD_POLL_SECONDS = 3
 WAIT_LIMIT_SECONDS = 50 * 60
 # How long GitHub asks a rate-limited client to wait when its answer names no time.
 RATE_LIMIT_PAUSE_SECONDS = 60
@@ -251,6 +259,15 @@ def build_job(jobs, lane):
     return matches[0] if matches else None
 
 
+def upload_started(job, lane):
+    """Whether the build job's upload step has started (the jobs API lists each job's steps).
+
+    A skipped upload step counts too: the build job then ends within seconds.
+    """
+    return any(step.get("name") == UPLOAD_STEPS[lane] and step.get("status") in ("in_progress", "completed")
+               for step in job.get("steps") or ())
+
+
 def retry_pause(failure, poll):
     """Seconds to wait before retrying a failed request; raise when no retry can pass.
 
@@ -288,12 +305,13 @@ def names_rate_limit(failure):
 
 
 def wait(lane, poll=WAIT_POLL_SECONDS, limit=WAIT_LIMIT_SECONDS, missing=WAIT_MISSING_SECONDS,
-         clock=time.monotonic, sleep=time.sleep):
+         clock=time.monotonic, sleep=time.sleep, upload_poll=UPLOAD_POLL_SECONDS):
     """Return once the lane's build job ended successfully; raise when it ended otherwise.
 
-    A failed request is retried until the limit (the products may still
-    come), a rate-limited one after the pause GitHub asks for, unless the
-    token is refused.
+    It polls every `poll` seconds, and every `upload_poll` seconds once the
+    build job's upload step has started. A failed request is retried until
+    the limit (the products may still come), a rate-limited one after the
+    pause GitHub asks for, unless the token is refused.
     """
     started = clock()
     last = None
@@ -312,6 +330,8 @@ def wait(lane, poll=WAIT_POLL_SECONDS, limit=WAIT_LIMIT_SECONDS, missing=WAIT_MI
             print(f"{job.get('name')} succeeded; waited {waited:.0f} s for the {lane} products")
             return
         state = f"request failed: {error}" if error else (job.get("status") if job else "not listed")
+        if job and upload_started(job, lane):
+            state, pause = f"{state}, {UPLOAD_STEPS[lane]} started", upload_poll
         if state != last:
             print(f"{BUILD_JOBS[lane]} at {waited:.0f} s: {state}", flush=True)
             last = state

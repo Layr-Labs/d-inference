@@ -698,14 +698,21 @@ struct GLM5NextPromptPolicyTests {
                 .init(role: .tool, content: .text("result"), toolCallID: resultID),
             ])
         }
-        for candidate in [request(id: "é", resultID: "e\u{301}"), request(id: "a", resultID: "b"),
-            request(id: "a", resultID: "a", arguments: "[null]"), request(id: "a", resultID: "a", arguments: "{bad}"),
-            request(id: "a", resultID: "a", arguments: "{\"n\":18446744073709551615}"),
-            request(id: "a", resultID: "a", arguments: "{\"n\":1,\"n\":2}")] {
+        func refuses(_ candidate: OpenAIChatCompletionRequest) {
             #expect(throws: (any Error).self) {
                 try GLM5NextPromptPolicy.normalizedTextInput(request: candidate,
                     prepared: ToolChoicePromptPolicy.prepare(candidate, modelType: "glm5_next"), controls: .init())
             }
+        }
+        for candidate in [request(id: "é", resultID: "e\u{301}"), request(id: "a", resultID: "b"),
+            request(id: "a", resultID: "a", arguments: "[null]"), request(id: "a", resultID: "a", arguments: "{bad}")] {
+            refuses(candidate)
+        }
+        // Read as the reference server reads them by default
+        // (`historyArgumentsTheReferenceServersAcceptAreServed`).
+        GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) {
+            refuses(request(id: "a", resultID: "a", arguments: "{\"n\":18446744073709551615}"))
+            refuses(request(id: "a", resultID: "a", arguments: "{\"n\":1,\"n\":2}"))
         }
     }
 
@@ -1096,17 +1103,29 @@ struct GLM5NextPromptPolicyTests {
         }
     }
 
-    @Test func exactLargeSchemaNumbersArePreservedOrRejectedBeforeRounding() throws {
-        let exact = Data(#"{"model":"m","messages":[],"tools":[{"function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"integer","enum":[9223372036854775807]}}}}}]}"#.utf8)
-        let input = try normalized(exact)
-        let rendered = try Template("{{ tools | tojson(ensure_ascii=False) }}").render([
-            "tools": try Jinja.Value(any: input.tools)
-        ])
-        #expect(rendered.contains("9223372036854775807"))
-        let inexact = Data(#"{"model":"m","messages":[],"tools":[{"function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"integer","enum":[18446744073709551615]}}}}}]}"#.utf8)
-        #expect(throws: (any Error).self) { try normalized(inexact) }
-        let inexactControls = ProviderLoop.extractChatTemplateControls(from: inexact)
-        #expect(inexactControls.rawGLM5Controls.refusalReason == .invalidToolSchema)
+    /// An exact number is kept. One no JSON value holds exactly, which vLLM and
+    /// the OpenAI API accept, is read by default as the typed schema holds it
+    /// (its nearest double); with the switch off it is refused before the typed
+    /// schema can round it.
+    @Test func exactLargeSchemaNumbersArePreservedAndInexactOnesRounded() throws {
+        func tools(_ number: String) -> Data {
+            Data(#"{"model":"m","messages":[],"tools":[{"function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"integer","enum":[\#(number)]}}}}}]}"#.utf8)
+        }
+        func renderedTools(_ number: String) throws -> String {
+            try Template("{{ tools | tojson(ensure_ascii=False) }}").render([
+                "tools": try Jinja.Value(any: normalized(tools(number)).tools)
+            ])
+        }
+        #expect(try renderedTools("9223372036854775807").contains("9223372036854775807"))
+        let inexact = tools("18446744073709551615")
+        #expect(ProviderLoop.extractChatTemplateControls(from: inexact).rawGLM5Controls.refusalReason == nil)
+        #expect(try renderedTools("18446744073709551615") == renderedTools("1.8446744073709552e+19"))
+        try GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) { () throws in
+            #expect(throws: (any Error).self) { try normalized(inexact) }
+            let inexactControls = ProviderLoop.extractChatTemplateControls(from: inexact)
+            #expect(inexactControls.rawGLM5Controls.refusalReason == .invalidToolSchema)
+            #expect(try renderedTools("9223372036854775807").contains("9223372036854775807"))
+        }
     }
 
     /// Every request shape GLM refuses while its prompt is prepared names the
@@ -1127,11 +1146,8 @@ struct GLM5NextPromptPolicyTests {
             ([user, #"{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}"#, result],
              "", .invalidToolHistory),
             ([user, arguments(#""{bad}""#), result], "", .invalidToolArguments),
-            ([user, arguments(#""{\"n\":1,\"n\":2}""#), result], "", .invalidToolArguments),
             ([user, arguments(#""{\"a\":1}</arg_value><arg_key>x</arg_key><arg_value>garbage""#), result], "",
              .invalidToolArguments),
-            ([user, arguments(#""{\"a\":\"</arg_value>\"}""#), result], "", .nativeDelimiterInHistory),
-            ([user, arguments(#""{\"<a>\":1}""#), result], "", .nativeDelimiterInHistory),
             ([#"{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}"#],
              "", .nonTextContent),
             ([user], #""response_format":{"type":"json_schema"}"#, .unsupportedResponseFormat),
@@ -1143,15 +1159,26 @@ struct GLM5NextPromptPolicyTests {
             ([user], #""tool_choice":"required","tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"anyOf":[{"type":"string"},{"type":"null"}]}}}}}]"#,
              .unsupportedForcedToolChoice),
         ]
-        for (messages, fields, reason) in cases {
-            let extra = fields.isEmpty ? "" : "," + fields
-            let body = Data(#"{"model":"m","messages":[\#(messages.joined(separator: ","))]\#(extra)}"#.utf8)
-            do {
-                _ = try normalized(body)
-                Issue.record("served: \(reason)")
-            } catch {
-                #expect(InferenceRefusalReason(promptRefusal: error) == reason, "\(reason): \(error)")
+        func expectRefusals(_ cases: [(messages: [String], fields: String, reason: InferenceRefusalReason)]) {
+            for (messages, fields, reason) in cases {
+                let extra = fields.isEmpty ? "" : "," + fields
+                let body = Data(#"{"model":"m","messages":[\#(messages.joined(separator: ","))]\#(extra)}"#.utf8)
+                do {
+                    _ = try normalized(body)
+                    Issue.record("served: \(reason)")
+                } catch {
+                    #expect(InferenceRefusalReason(promptRefusal: error) == reason, "\(reason): \(error)")
+                }
             }
+        }
+        expectRefusals(cases)
+        // Served by default (`historyArgumentsTheReferenceServersAcceptAreServed`).
+        GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) {
+            expectRefusals([
+                ([user, arguments(#""{\"n\":1,\"n\":2}""#), result], "", .invalidToolArguments),
+                ([user, arguments(#""{\"a\":\"</arg_value>\"}""#), result], "", .nativeDelimiterInHistory),
+                ([user, arguments(#""{\"<a>\":1}""#), result], "", .nativeDelimiterInHistory),
+            ])
         }
     }
 
@@ -1187,6 +1214,162 @@ struct GLM5NextPromptPolicyTests {
         #expect(ProviderPromptContractPipeline.nativeControlsRefusal(kwargs, modelType: "llama") == nil)
         let served = ProviderLoop.extractChatTemplateControls(from: try body(["reasoning": ["exclude": true]]))
         #expect(ProviderPromptContractPipeline.nativeControlsRefusal(served, modelType: "glm5_next") == nil)
+    }
+
+    // MARK: History arguments and tool schemas the reference servers accept
+
+    /// One answered call of `f` whose `arguments` string is `arguments`, with `tools` declared.
+    private func historyBody(
+        arguments: String,
+        tools: String = #"[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]"#
+    ) throws -> Data {
+        let encoded = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
+        return Data(#"{"model":"m","messages":[{"role":"user","content":"q"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":\#(encoded)}}]},{"role":"tool","tool_call_id":"c1","content":"r"}],"tools":\#(tools)}"#.utf8)
+    }
+
+    /// A tool whose parameter `n` declares `number` as its maximum.
+    private static func schemaTools(_ number: String) -> String {
+        #"[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"number","maximum":\#(number)}}}}}]"#
+    }
+
+    private func renderedBothPaths(_ body: Data, with template: Template) throws -> [String] {
+        try remoteAndLocalInputs(body).map { try render($0, with: template) }
+    }
+
+    /// Arguments that vLLM's GLM-5.3 serving and the OpenAI API accept but the
+    /// exact reading refuses: each renders as the exactly held arguments it is
+    /// read as (a repeated key's last value, a number's nearest double), and
+    /// GLM tool-call markers in keys and strings render as the text they are.
+    @Test func historyArgumentsTheReferenceServersAcceptAreServed() throws {
+        let template = try shippedTemplate()
+        let equivalents: [(read: String, held: String)] = [
+            (#"{"a":1,"a":2}"#, #"{"a":2}"#),
+            (#"{"o":{"b":1,"b":"x"},"c":[{"d":1,"d":2}]}"#, #"{"o":{"b":"x"},"c":[{"d":2}]}"#),
+            (#"{"n":12345678901234567890}"#, #"{"n":1.2345678901234567e+19}"#),
+            (#"{"n":-9223372036854775809}"#, #"{"n":-9.223372036854776e+18}"#),
+            (#"{"x":0.10000000000000001}"#, #"{"x":0.1}"#),
+            (#"{"x":3.1415926535897931}"#, #"{"x":3.141592653589793}"#),
+            (#"{"x":1.7976931348623157e308,"x":2}"#, #"{"x":2}"#),
+        ]
+        for (read, held) in equivalents {
+            #expect(try renderedBothPaths(historyBody(arguments: read), with: template)
+                == renderedBothPaths(historyBody(arguments: held), with: template), "\(read)")
+        }
+        let markers = "x = '<tool_call>g<arg_key>p</arg_key><arg_value>q</arg_value></tool_call>'"
+        let texts: [(arguments: String, rendered: String)] = [
+            (#"{"s":"\#(markers)"}"#, "<tool_call>f<arg_key>s</arg_key><arg_value>\(markers)</arg_value></tool_call>"),
+            (#"{"<path>":"a"}"#, "<tool_call>f<arg_key><path></arg_key><arg_value>a</arg_value></tool_call>"),
+            (#"{"":1}"#, "<tool_call>f<arg_key></arg_key><arg_value>1</arg_value></tool_call>"),
+        ]
+        for (arguments, rendered) in texts {
+            for prompt in try renderedBothPaths(historyBody(arguments: arguments), with: template) {
+                #expect(prompt.contains(rendered), "\(arguments)")
+            }
+        }
+        // The switch off restores refusing each of them.
+        GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) {
+            for arguments in equivalents.map(\.read) + texts.map(\.arguments) {
+                #expect(throws: (any Error).self, "\(arguments)") { try normalized(historyBody(arguments: arguments)) }
+            }
+        }
+    }
+
+    /// What vLLM's GLM-5.3 serving refuses stays refused: arguments that are
+    /// not one RFC 8259 JSON object. So do a few shapes Python reads but no
+    /// JSON value or rendered object holds (`NaN` and `Infinity`, a number
+    /// beyond a double, a lone surrogate, two keys that differ only in Unicode
+    /// normalization), and nesting past the provider's 64-level bound.
+    @Test func historyArgumentsStillRefuseWhatTheReferenceServerRefuses() throws {
+        let refused = [
+            "{bad}", #"{"p":"a",}"#, #"{"p":[1,]}"#, #"{"p":"a"}{"p":"a"}"#, "{\"s\":\"a\tb\"}", "{\"s\":\"a\nb\"}",
+            "null", "[]", "1", #""s""#, #"{"x":NaN}"#, #"{"x":Infinity}"#, #"{"x":1e400}"#, #"{"x":01}"#,
+            #"{"x":.5}"#, #"{"x":1.}"#, #"{"x":1e}"#, #"{"x":-}"#, #"{"x":+1}"#, #"{"s":"\ud800"}"#, #"{"p":"a""#,
+            #"{"p" "a"}"#, #"{p:1}"#, #"{'p':1}"#, #"{"\u00e9":1,"e\u0301":2}"#, #"{"o":{"\u00e9":1,"e\u0301":2}}"#,
+        ]
+        for arguments in refused {
+            #expect(GLM5NextHistoryArguments.object(arguments) == nil, "\(arguments)")
+            do {
+                _ = try normalized(historyBody(arguments: arguments))
+                Issue.record("served: \(arguments)")
+            } catch {
+                #expect(InferenceRefusalReason(promptRefusal: error) == .invalidToolArguments, "\(arguments): \(error)")
+            }
+        }
+        // The request decoder bounds argument nesting before the prompt policy runs.
+        let deep = String(repeating: #"{"a":"#, count: 66) + "1" + String(repeating: "}", count: 66)
+        #expect(GLM5NextHistoryArguments.object(deep) == nil)
+        #expect(throws: (any Error).self) { try normalized(historyBody(arguments: deep)) }
+    }
+
+    /// Wherever the native codec reads arguments, the reference reading gives
+    /// the same values, so the switch changes nothing the codec accepts.
+    @Test func historyArgumentsReaderAgreesWithTheNativeCodec() {
+        let accepted = [
+            "{}", #" { "path" : "a" } "#, "{\"p\":\"a\"}\n", #"{"x":0.7}"#, #"{"x":1.0}"#, #"{"x":1e-7}"#,
+            #"{"x":1E5}"#, #"{"x":-0}"#, #"{"x":9223372036854775807}"#, #"{"x":-9223372036854775808}"#,
+            #"{"x":9007199254740993}"#, #"{"x":2.5e-10}"#, #"{"x":12345678901234567000}"#,
+            #"{"s":"caf\u00e9 \ud83d\ude00 \"q\" \\ \/ \b\f\n\r\t"}"#,
+            #"{"o":{"a":[1,2,{"b":null,"c":true,"d":false}]},"e":[],"f":{}}"#,
+            #"{"edits":[{"line":10,"score":0.85}]}"#, #"{"html":"<div class=\"x\">a</div>"}"#, #"{"s":"</think>"}"#,
+        ]
+        for raw in accepted {
+            let native = GLM5NextPromptPolicy.nativeHistoryArguments(raw)
+            #expect(native != nil, "\(raw)")
+            #expect(GLM5NextHistoryArguments.object(raw) == native, "\(raw)")
+        }
+    }
+
+    /// Tool schema numbers no JSON value holds exactly are read as the typed
+    /// schema reads them; the switch off refuses them.
+    @Test func inexactSchemaNumbersAreReadAsTheTypedSchemaReadsThem() throws {
+        let template = try shippedTemplate()
+        for (read, held) in [("18446744073709551615", "1.8446744073709552e+19"),
+                             ("0.12345678901234567890123", "0.12345678901234568"),
+                             ("1.7976931348623157e308", "1.7976931348623157e+308")] {
+            let body = try historyBody(arguments: "{}", tools: Self.schemaTools(read))
+            #expect(ProviderLoop.extractChatTemplateControls(from: body).rawGLM5Controls.refusalReason == nil, "\(read)")
+            #expect(try renderedBothPaths(body, with: template)
+                == renderedBothPaths(historyBody(arguments: "{}", tools: Self.schemaTools(held)), with: template), "\(read)")
+        }
+        try GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) {
+            for read in ["18446744073709551615", "0.12345678901234567890123", "1.7976931348623157e308"] {
+                let body = try historyBody(arguments: "{}", tools: Self.schemaTools(read))
+                #expect(ProviderLoop.extractChatTemplateControls(from: body).rawGLM5Controls.refusalReason
+                    == .invalidToolSchema, "\(read)")
+            }
+        }
+    }
+
+    /// Every request the exact reading accepts renders byte-identically with
+    /// the reference reading, which reads only what the exact reading refuses.
+    @Test func referenceReadingLeavesEveryAcceptedRequestIdentical() throws {
+        let template = try shippedTemplate()
+        var bodies = try goldens().cases.map { try JSONEncoder().encode($0.request) }
+        for arguments in ["", "{}", #"{"path":"a","offset":0,"limit":200}"#, #"{"x":0.1,"y":1e-7,"z":-0}"#,
+                          #"{"x":9223372036854775807,"y":12345678901234567000}"#, #"{"s":"</think> <|user|> [gMASK]"}"#,
+                          #"{"todos":[{"content":"a","status":"pending"}],"patch":"{\"a\":[1,{\"b\":\"c\"}]}"}"#] {
+            bodies.append(try historyBody(arguments: arguments))
+        }
+        for number in ["9223372036854775807", "4294967295", "0.1", "1e-9", "-0", "1.5", "9007199254740991"] {
+            bodies.append(try historyBody(arguments: #"{"n":1}"#, tools: Self.schemaTools(number)))
+        }
+        for body in bodies {
+            let reference = try renderedBothPaths(body, with: template).map { Data($0.utf8) }
+            let exact = try GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) {
+                try renderedBothPaths(body, with: template).map { Data($0.utf8) }
+            }
+            #expect(reference == exact)
+        }
+    }
+
+    /// The switch reaches the installed service and is on unless set off.
+    @Test func referenceToolHistorySwitchIsForwardedAndOnByDefault() {
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(GLM5NextPromptPolicy.referenceToolHistoryEnvironmentKey))
+        #expect(GLM5NextPromptPolicy.referenceToolHistoryEnabled
+            == !ToolOutputLeniencySwitch.isOff(
+                ProcessInfo.processInfo.environment[GLM5NextPromptPolicy.referenceToolHistoryEnvironmentKey]))
+        #expect(GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(true) { GLM5NextPromptPolicy.referenceToolHistory })
+        #expect(!GLM5NextPromptPolicy.$referenceToolHistoryForTesting.withValue(false) { GLM5NextPromptPolicy.referenceToolHistory })
     }
 }
 

@@ -1408,9 +1408,14 @@ public struct ClusterOnboardingFailure: Error, Sendable, Equatable {
     /// Set only by a pair stop that stopped this Mac's serving and then could not reach the other Mac: what the
     /// other Mac did ("The other Mac (…) did not answer (…)"). `cluster stop --service` then still stops this Mac.
     public var otherMacUnanswered: String?
-    public init(_ lines: [String], otherMacUnanswered: String? = nil) {
+    /// Set only by the wait before this Mac acts as the leader (`OnboardingLive.awaitConfirmedLeadership`) when its
+    /// claim wasn't confirmed in time and its cluster service says the other Mac doesn't answer over the link:
+    /// `cluster stop --service` may then stop this Mac's own service alone (`ClusterUnconfirmedLeadership`).
+    public var unconfirmedLeaderAlone = false
+    public init(_ lines: [String], otherMacUnanswered: String? = nil, unconfirmedLeaderAlone: Bool = false) {
         self.lines = lines
         self.otherMacUnanswered = otherMacUnanswered
+        self.unconfirmedLeaderAlone = unconfirmedLeaderAlone
     }
     public init(_ line: String) { self.lines = [line] }
 }

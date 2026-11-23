@@ -51,7 +51,8 @@ public enum MTPAutomaticVerificationPolicy {
     /// Every other chip returns nil and keeps the lone-row policy.
     static func gemmaTwoDrafts(chipName: String) -> (byDecodeRows: [Int], tokens: Int)? {
         switch parseChipIdentity(chipName) {
-        case (.m5, .ultra), (.m3, .ultra), (.m5, .max): return ([2, 0], 3)
+        case (.m5, .ultra): return ([2, 2, 0], 6)
+        case (.m3, .ultra), (.m5, .max): return ([2, 0], 3)
         default: return nil
         }
     }

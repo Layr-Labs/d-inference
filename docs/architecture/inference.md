@@ -5412,8 +5412,9 @@ requests 1 %), so `auto` requests, which return calls as generated, are left as 
   state, so no lazy split of the process-global key stays bound to the stream.
   The tower selects kernels by device, shape, dtype and settings, not by
   stream, so the embeddings are expected to be identical (measured in
-  `QwenMediaPrepStreamTests`, and by tower-output hashes at first use over
-  fresh cold starts on M5 Ultra and M5 Max). Families whose fused
+  `QwenMediaPrepStreamTests`; and over 84 fresh starts on M5 Ultra and M5
+  Max, for the same pixel input the tower-output hashes were identical with
+  the option on and off, first use included). Families whose fused
   kernels require the default stream (`MLXProcessStreams`), and
   `PrismHadamardQwen35`, `Qwen4Exp` and `Qwen3VL`, keep the default stream. The
   Qwen 3.8 tensor-parallel owner already prepares its patches on a CPU stream

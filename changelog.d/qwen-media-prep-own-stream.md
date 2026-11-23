@@ -6,7 +6,8 @@
   order, so its tower queued behind their steps and their steps behind the
   tower.
 - The kernels and inputs are unchanged, so the embeddings and outputs are
-  identical; tower-output hashes at first use matched over fresh cold starts
-  on M5 Ultra and M5 Max. Other model families keep the shared stream.
+  identical: over 84 fresh starts on M5 Ultra and M5 Max, for the same pixel
+  input the tower-output hashes were identical with the option on and off,
+  first use included. Other model families keep the shared stream.
 - `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` (or `false`, `no`, `off`) restores the
   shared stream; it is forwarded to the launchd provider job.

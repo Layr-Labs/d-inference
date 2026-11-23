@@ -1,10 +1,10 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Qwen 3.5-family media preparation runs on its own GPU stream
-// (`EngineV2VisionPrefill.onMediaPrepStream`). These tests drive the serving
-// entry point, `EngineV2VisionPrefill.prepare`, over a tiny synthetic Qwen3.5
-// wrapper whose processor records the stream it runs on, so the real tower,
-// span carving and M-RoPE positions run with no model weights.
+// Qwen 3.5-family media preparation can run on its own GPU stream
+// (`EngineV2VisionPrefill.onMediaPrepStream`; opt-in, off by default). These
+// tests drive the serving entry point, `EngineV2VisionPrefill.prepare`, over a
+// tiny synthetic Qwen3.5 wrapper whose processor records the stream it runs on,
+// so the real tower, span carving and M-RoPE positions run with no model weights.
 
 import Foundation
 import MLX
@@ -232,15 +232,15 @@ struct QwenMediaPrepStreamTests {
         #expect(prepared.mlxArrays.count == 2)
     }
 
-    @Test("with no override and the variable unset, preparation takes its own stream")
-    func defaultIsOwnStream() async throws {
+    @Test("with no override and the variable unset, preparation stays on the default stream")
+    func defaultIsSharedStream() async throws {
         try #require(
             ProcessInfo.processInfo.environment[EngineV2VisionPrefill.mediaPrepStreamEnvironmentKey] == nil,
             "the test process must not set the variable")
         let fixture = try MediaPrepStreamFixture()
         _ = try await fixture.prepare(ownStream: nil)
 
-        #expect(fixture.processor.onProcessDefaultStream == [false])
+        #expect(fixture.processor.onProcessDefaultStream == [true])
     }
 
     @Test("the pooled stream is checked out again and its submissions stay usable on the default stream")
@@ -384,13 +384,15 @@ struct QwenMediaPrepStreamTests {
         #expect(!EngineV2VisionPrefill.preparesOnOwnStream(NSObject()))
     }
 
-    @Test("DARKBLOOM_TTFT_MEDIA_PREP_STREAM is on by default and off for the off words")
+    @Test("DARKBLOOM_TTFT_MEDIA_PREP_STREAM is off by default and on only for the on words")
     func environmentSwitch() {
         let key = EngineV2VisionPrefill.mediaPrepStreamEnvironmentKey
         #expect(key == "DARKBLOOM_TTFT_MEDIA_PREP_STREAM")
-        #expect(EngineV2VisionPrefill.mediaPrepStreamEnabled(environment: [:]))
-        #expect(EngineV2VisionPrefill.mediaPrepStreamEnabled(environment: [key: "1"]))
-        for off in ["0", "false", "no", "off", " OFF "] {
+        #expect(!EngineV2VisionPrefill.mediaPrepStreamEnabled(environment: [:]))
+        for on in ["1", "true", "on", "yes", " ON "] {
+            #expect(EngineV2VisionPrefill.mediaPrepStreamEnabled(environment: [key: on]), "\(on)")
+        }
+        for off in ["0", "false", "no", "off", "", "2", "enabled"] {
             #expect(!EngineV2VisionPrefill.mediaPrepStreamEnabled(environment: [key: off]), "\(off)")
         }
     }
@@ -400,9 +402,9 @@ struct QwenMediaPrepStreamTests {
         let key = EngineV2VisionPrefill.mediaPrepStreamEnvironmentKey
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
         #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
-        let out = LaunchAgent.passthroughEnvironment(from: [key: "0", "UNRELATED_SECRET": "excluded"])
-        #expect(out == [key: "0"])
-        #expect(!EngineV2VisionPrefill.mediaPrepStreamEnabled(environment: out))
+        let out = LaunchAgent.passthroughEnvironment(from: [key: "1", "UNRELATED_SECRET": "excluded"])
+        #expect(out == [key: "1"])
+        #expect(EngineV2VisionPrefill.mediaPrepStreamEnabled(environment: out))
     }
 
     /// The mechanism, timed: work queued on the default GPU stream (as a busy

@@ -80,9 +80,10 @@
 // `EngineV2Translation.admissionErrorMessage`) and doubles as the loud
 // signal that the claim and the implementation disagreed.
 //
-// STREAM NOTE: the engine's steps run on the process default GPU stream. A
-// Qwen 3.5-family wrapper runs the processor and the tower on a GPU stream
-// of their own (`onMediaPrepStream`, `DARKBLOOM_TTFT_MEDIA_PREP_STREAM`), so
+// STREAM NOTE: the engine's steps run on the process default GPU stream. With
+// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM` on (off by default), a Qwen 3.5-family
+// wrapper runs the processor and the tower on a GPU stream of their own
+// (`onMediaPrepStream`), so
 // its tower's command buffers are no longer ordered behind the running rows'
 // steps, nor theirs behind the tower's. The kernels and inputs are the same,
 // so the embeddings are expected to be too.
@@ -318,14 +319,14 @@ public enum EngineV2VisionPrefill {
     }
 
     /// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM`: a Qwen 3.5-family wrapper prepares
-    /// media on its own GPU stream (on by default; `0`, `false`, `no` or `off`
-    /// restore the process default stream).
+    /// media on its own GPU stream when set to `1`, `true`, `on` or `yes` (off
+    /// by default: preparation shares the process default stream).
     static let mediaPrepStreamEnvironmentKey = "DARKBLOOM_TTFT_MEDIA_PREP_STREAM"
 
     static func mediaPrepStreamEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        !["0", "false", "no", "off"].contains(
+        ["1", "true", "on", "yes"].contains(
             environment[mediaPrepStreamEnvironmentKey]?
                 .trimmingCharacters(in: .whitespaces).lowercased())
     }
@@ -376,8 +377,8 @@ public enum EngineV2VisionPrefill {
     /// serialization the legacy `container.prepare`/`generate` path uses, so
     /// wrapper module access never races).
     /// A Qwen 3.5-family wrapper runs the scoped part on its own GPU stream
-    /// (`onMediaPrepStream`) unless `ownMediaPrepStream` (default:
-    /// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM`) is false.
+    /// (`onMediaPrepStream`) when `ownMediaPrepStream` (default:
+    /// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM`, off unless set) is true.
     ///
     /// Throws `EngineV2VisionPrefillError` (and any `MediaError`/processor
     /// error the legacy path would also throw) — callers refuse loudly on

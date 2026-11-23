@@ -218,7 +218,8 @@ struct ClusterPrefixRecordExpiryTests {
         #expect(exists(record) && store.reclaimPending)
         if kind == "interrupted publication" {
             // The retry drops only the stray same-inode link; the marker's bytes stay.
-            #expect(!exists(temporaryLink) && (try Data(contentsOf: store.pendingFile)) == Data("1\n".utf8))
+            let kept = try Data(contentsOf: store.pendingFile)
+            #expect(!exists(temporaryLink) && kept == Data("1\n".utf8))
         }
         let reply = ClusterMemberCacheControl.reclaimOnUnpair(root: root, store: store)
         #expect(reply.problems.isEmpty && reply.rootRemoved && reply.removedPlans == 1, "\(reply.problems)")

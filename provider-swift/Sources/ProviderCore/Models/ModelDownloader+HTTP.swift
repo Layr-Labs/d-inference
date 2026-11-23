@@ -6,6 +6,9 @@ import Darwin
 import CryptoKit
 
 extension ModelDownloader {
+    static let defaultAttempts = 3
+    static let defaultRequestTimeout: TimeInterval = 6 * 60 * 60
+
     internal func downloadFileForTesting(
         from urlString: String,
         to destination: URL,
@@ -32,8 +35,8 @@ extension ModelDownloader {
         required: Bool,
         expectedSHA256: String? = nil,
         maximumBytes: Int64? = nil,
-        attempts: Int = 3,
-        requestTimeout: TimeInterval = 6 * 60 * 60,
+        attempts: Int = ModelDownloader.defaultAttempts,
+        requestTimeout: TimeInterval = ModelDownloader.defaultRequestTimeout,
         onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws -> Bool {
         guard let url = URL(string: urlString) else {
@@ -180,7 +183,7 @@ extension ModelDownloader {
         }
     }
 
-    private static func downloadFailureMessage(label: String, error: Error?) -> String {
+    static func downloadFailureMessage(label: String, error: Error?) -> String {
         guard let error else { return "\(label): unknown error" }
         if case .downloadFailed(let detail) = error as? ModelCatalogError {
             return detail.hasPrefix("\(label):") ? detail : "\(label): \(detail)"

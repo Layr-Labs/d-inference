@@ -1246,6 +1246,7 @@
 "ProviderCoreTests.SealedPrefixCacheMetadataTests": 0.003,
 "ProviderCoreTests.SecureBootReadingTests": 3.792,
 "ProviderCoreTests.SecurityCommandRunnerTests": 0.221,
+"ProviderCoreTests.SegmentedModelDownloadTests": 1.277,
 "ProviderCoreTests.SegmentedProductionGrantTests": 0.021,
 "ProviderCoreTests.SelectedModelPlacementPolicyTests": 0.073,
 "ProviderCoreTests.SelectedModelRecoveryPolicyTests": 0.149,

@@ -364,6 +364,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_R2_CDN_URL`: the model CDN override. The daemon downloads and
     /// prefetches models, so the override must reach the launchd job. Like the
     /// guard's path, only a debug build reads it (`LocationOverride`).
+    /// `DARKBLOOM_DOWNLOAD_SEGMENTS`: byte ranges per large model file. The
+    /// daemon's prefetch, Autopilot and revision downloads read it, so its `1`
+    /// rollback must reach the job.
     /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
     /// one; exact `0` is the immediate rollback to unlimited interleave.
     /// `DARKBLOOM_CBV2_PREFILL_CHUNK` / `DARKBLOOM_CBV2_STEP_TOKENS`: `512` and
@@ -660,6 +663,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
         "DARKBLOOM_R2_CDN_URL",
+        ModelDownloadSegments.environmentKey,
         ClusterLocalPairUpdate.environmentKey,
         ClusterMemoryRefusalReplan.environmentKey,
         ClusterJournalAutoRecover.environmentKey,

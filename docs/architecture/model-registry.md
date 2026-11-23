@@ -1,6 +1,6 @@
 # Provider Model Registry Boundary
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-23
 
 Providers discover model identity through external registry manifests, then
 download and verify model bytes locally. The database and catalog API are owned
@@ -48,6 +48,54 @@ resumes the waiter once; cancellation closes the writer and leaves received
 bytes in the resumable `.part` file. `ModelDownloader.downloadFile` propagates
 `CancellationError` without retrying, allowing download tasks and their artifact
 writer lease to unwind.
+
+### Ranged downloads
+
+Per-connection throughput to the model CDN varies by network, from about 1 to
+20 MB/s, so one connection per multi-GB shard leaves a slow network idle. Each
+source of a manifest file (Hugging Face first where the build has an artifact,
+then R2) goes through `ModelDownloader.fetchManifestFile`
+(`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Segments.swift`):
+
+| Step | What happens | Code |
+|---|---|---|
+| Choose | Ranges only when `segmentsPerFile` (`DARKBLOOM_DOWNLOAD_SEGMENTS`, [configuration](../reference/configuration.md#operator-facing-daemon-paths-updates)) is above 1 and the file is at least `ModelDownloadSegments.minimumFileBytes` (`256 << 20`) | `fetchManifestFile` |
+| Probe | A GET of `bytes=0-0`, redirects followed; only a 206 whose `Content-Range` total is the manifest size continues. A 200 or another total takes the single-stream `downloadFile`, unchanged | `servesRanges` |
+| Plan | Equal byte ranges of a `.part` sized to the manifest size with `truncate` (sparse until written), recorded in `<file>.part.segments`. A single-stream `.part` prefix is credited to the ranges it covers | `SegmentedPartFile.prepare`, `SegmentedPartLayout.planned` |
+| Fetch | Every unfinished range at once, each over its own `URLSession` (the same configuration), so the ranges are separate connections rather than HTTP/2 streams of one. A 206 must name exactly the requested bytes and size before a byte is written at its offset | `fetchRange`, `RangeSegmentDownloadDelegate` |
+| Retry | An attempt that wrote bytes is retried at once from where it stopped; a range fails after `attempts` attempts in a row that wrote none (Hugging Face 1, R2 `ModelDownloader.defaultAttempts`), which fails the file | `fetchRange` |
+| Verify | The whole file's SHA-256, read uncached under `uncachedWrites`; a mismatch deletes the `.part` and its record and fails the file. The record is removed before the `.part` is promoted | `downloadInSegments` |
+
+A foreground download keeps fetching `concurrency` (4) files at once and
+divides the ranges so that they open at most
+`ModelDownloadSegments.maximumConnections` (16) connections together
+(`ModelDownloadSegments.perFile`). Background prefetch, Autopilot placements
+and automatic revisions still fetch one file at a time, so their ranges are
+as many connections as the foreground's files without ranges.
+
+Invariants:
+
+1. The record never counts a byte that is not on disk: `SegmentedPartWriter`
+   writes with `pwrite` at the range's next offset, syncs the `.part` with
+   `fsync`, then saves the record atomically, every
+   `SegmentedPartWriter.checkpointBytes` (`32 << 20`) and when the transfer
+   stops for any reason, a cancellation included.
+2. Bytes the record cannot account for are never kept: a record that does not
+   decode, describes another size, or counts bytes beyond the `.part`'s length
+   is unusable, and `prepare` deletes the `.part` with it
+   (`SegmentedPartLayout.isConsistent`).
+3. The single-stream path sees only prefixes: before it runs (one connection,
+   or a source without ranges), `SegmentedPartFile.collapseToPrefix` truncates
+   a ranged `.part` to its gap-free prefix and removes the record.
+4. Resume credit and free-disk checks count the record's bytes, never the
+   pre-sized length (`ModelDownloader.resumableBytes`, used by the foreground
+   progress, both capacity checks and `selectedDownloadPlan`).
+5. Progress (`onChunk`) is the sum of every range's bytes, reported under one
+   lock, so it only grows during a transfer.
+6. The Hugging Face to R2 fallback removes the `.part` and its record
+   (`SegmentedPartFile.remove`), so no Hugging Face byte reaches an R2 file.
+7. `uncachedWrites` opens the `.part` with `F_NOCACHE`, which applies to every
+   `pwrite` on that descriptor (`SegmentedPartWriter.cachingDisabled`).
 
 Media discovery uses `ModelMediaPolicy.advertisesMedia` in
 `provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`.

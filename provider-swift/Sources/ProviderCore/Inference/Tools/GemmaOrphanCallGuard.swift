@@ -101,8 +101,19 @@ enum GemmaOrphanCallGuard {
             && tokenizer.convertIdToToken(vocabularySize) == nil
     }
 
+    private static let declineLock = NSLock()
+    nonisolated(unsafe) private static var declineReasonsLogged = Set<String>()
+
+    /// Logs each reason once per process: with the switch on, many `auto` tool
+    /// rows carry a penalty or media, and a line per request would flood the log.
     private static func declined(_ reason: StaticString) -> GemmaOrphanCallGuardConstraint? {
-        logger.info("Gemma orphan call guard not applied: \(reason)")
+        let key = "\(reason)"
+        declineLock.lock()
+        let first = declineReasonsLogged.insert(key).inserted
+        declineLock.unlock()
+        if first {
+            logger.info("Gemma orphan call guard not applied: \(reason) (logged once per process)")
+        }
         return nil
     }
 }

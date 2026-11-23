@@ -14,8 +14,8 @@ enum MemoryOnlyPrefixCachePolicy {
     static let headroomDivisor: UInt64 = 4
     static let minimumBudgetBytes: UInt64 = 1 << 30
 
-    /// `auto` unless set to an off word. Any other value turns the tier off,
-    /// and the global prefix-cache switch wins.
+    /// On when unset, empty or `auto`; any other value turns the tier off, as
+    /// does the global prefix-cache switch.
     static func isEnabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard PrefixCachePolicy.isGloballyEnabled(environment: environment) else { return false }
         guard let raw = environment[modeEnvironmentKey]?.trimmingCharacters(in: .whitespaces).lowercased(),

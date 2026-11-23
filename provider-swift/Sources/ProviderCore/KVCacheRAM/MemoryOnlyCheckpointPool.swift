@@ -198,7 +198,7 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     func admit(bytes: Int, ledger: GlobalKVCacheBudget?) -> Admission? {
         guard bytes > 0, let rounded = LockedHostRegion.pageRounded(bytes) else { return nil }
         let size = UInt64(rounded)
-        let (evicted, room, epoch) = lock.withLock { () -> ([Entry], UInt64?, UInt64) in
+        let (evicted, requiredHeadroom, epoch) = lock.withLock { () -> ([Entry], UInt64?, UInt64) in
             guard budget > 0, size <= budget else {
                 counts.stores[.refusedBudget, default: 0] += 1
                 return ([], nil, releaseEpoch)
@@ -213,11 +213,11 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
             return (evicted, budget, releaseEpoch)
         }
         evicted.forEach { $0.release() }
-        guard let room else { return nil }
+        guard let requiredHeadroom else { return nil }
         var charge: ProcessHostBufferReservation?
         if let ledger {
             charge = ledger.reserveHostBuffers(bytes: size)
-            guard let charge, ledger.processLedger.snapshot().remainingBytes >= room else {
+            guard let charge, ledger.processLedger.snapshot().remainingBytes >= requiredHeadroom else {
                 charge?.closeAfterDroppingBuffers()
                 lock.withLock {
                     reservedBytes -= size
@@ -237,23 +237,21 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     }
 
     private func insert(_ entry: Entry, key: Key, admission: Admission) -> Bool {
-        var stored = true
-        let dropped = lock.withLock { () -> Entry? in
+        let (stored, dropped) = lock.withLock { () -> (Bool, Entry?) in
             precondition(entry.bytes == admission.bytes)
             guard admission.releaseEpoch == releaseEpoch else {
                 reservedBytes -= entry.bytes
                 counts.evictions[lastReleaseReason, default: 0] += 1
-                stored = false
-                return entry
+                return (false, entry)
             }
             clock &+= 1
             entry.useOrder = clock
-            let replaced = entries.updateValue(entry, forKey: key)
-            if let replaced { reservedBytes -= replaced.bytes }
+            let replaced = removeLocked(key)
+            entries[key] = entry
             counts.stores[.stored, default: 0] += 1
             refreshSizeLocked()
             if sweepTask == nil { sweepTask = makeSweepTask() }
-            return replaced
+            return (true, replaced)
         }
         dropped?.release()
         return stored
@@ -266,22 +264,22 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     func lookup(namespace: UUID, tags: [Data]) -> (tag: Data, entry: Entry)? {
         let now = nowSeconds()
         let (found, expired) = lock.withLock { () -> ((tag: Data, entry: Entry)?, [Entry]) in
+            var found: (tag: Data, entry: Entry)?
             var expired: [Entry] = []
             for tag in tags {
                 let key = Key(namespace: namespace, tag: tag)
                 guard let entry = entries[key] else { continue }
-                if isExpiredLocked(entry, now: now) {
-                    entries.removeValue(forKey: key)
-                    reservedBytes -= entry.bytes
-                    counts.evictions[.ttl, default: 0] += 1
-                    expired.append(entry)
-                    continue
+                if !isExpiredLocked(entry, now: now) {
+                    found = (tag: tag, entry: entry)
+                    break
                 }
-                return ((tag: tag, entry: entry), expired)
+                _ = removeLocked(key)
+                counts.evictions[.ttl, default: 0] += 1
+                expired.append(entry)
             }
-            return (nil, expired)
+            if !expired.isEmpty { refreshSizeLocked() }
+            return (found, expired)
         }
-        if !expired.isEmpty { lock.withLock { refreshSizeLocked() } }
         expired.forEach { $0.release() }
         return found
     }
@@ -301,8 +299,7 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     /// Drops one entry whose bytes no longer restore.
     func remove(namespace: UUID, tag: Data) {
         let removed = lock.withLock { () -> Entry? in
-            guard let entry = entries.removeValue(forKey: Key(namespace: namespace, tag: tag)) else { return nil }
-            reservedBytes -= entry.bytes
+            guard let entry = removeLocked(Key(namespace: namespace, tag: tag)) else { return nil }
             refreshSizeLocked()
             return entry
         }
@@ -312,7 +309,7 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     // MARK: - Release
 
     func releaseAll(namespace: UUID, reason: EvictionReason) {
-        release(reason: reason) { $0.namespace == namespace }
+        release(reason: reason) { key, _ in key.namespace == namespace }
     }
 
     func releaseAll(reason: EvictionReason) {
@@ -320,21 +317,17 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
             releaseEpoch &+= 1
             lastReleaseReason = reason
         }
-        release(reason: reason) { _ in true }
+        release(reason: reason) { _, _ in true }
     }
 
     func sweepExpired() {
         let now = nowSeconds()
-        release(reason: .ttl) { [self] key in
-            entries[key].map { isExpiredLocked($0, now: now) } ?? false
-        }
+        release(reason: .ttl) { [self] _, entry in isExpiredLocked(entry, now: now) }
     }
 
-    private func release(reason: EvictionReason, where matches: (Key) -> Bool) {
+    private func release(reason: EvictionReason, where matches: (Key, Entry) -> Bool) {
         let evicted = lock.withLock { () -> [Entry] in
-            let keys = entries.keys.filter(matches)
-            let evicted = keys.compactMap { entries.removeValue(forKey: $0) }
-            for entry in evicted { reservedBytes -= entry.bytes }
+            let evicted = entries.filter { matches($0.key, $0.value) }.keys.compactMap { removeLocked($0) }
             counts.evictions[reason, default: 0] += UInt64(evicted.count)
             refreshSizeLocked()
             return evicted
@@ -345,15 +338,22 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     private func evictLocked(downTo target: UInt64, reason: EvictionReason) -> [Entry] {
         var evicted: [Entry] = []
         while reservedBytes > target,
-            let oldest = entries.min(by: { $0.value.useOrder < $1.value.useOrder })
+            let oldest = entries.min(by: { $0.value.useOrder < $1.value.useOrder })?.key,
+            let entry = removeLocked(oldest)
         {
-            entries.removeValue(forKey: oldest.key)
-            reservedBytes -= oldest.value.bytes
             counts.evictions[reason, default: 0] += 1
-            evicted.append(oldest.value)
+            evicted.append(entry)
         }
         refreshSizeLocked()
         return evicted
+    }
+
+    /// Caller holds the lock. A committed entry's bytes leave the reservation
+    /// only here.
+    private func removeLocked(_ key: Key) -> Entry? {
+        guard let entry = entries.removeValue(forKey: key) else { return nil }
+        reservedBytes -= entry.bytes
+        return entry
     }
 
     private func isExpiredLocked(_ entry: Entry, now: Int64) -> Bool {

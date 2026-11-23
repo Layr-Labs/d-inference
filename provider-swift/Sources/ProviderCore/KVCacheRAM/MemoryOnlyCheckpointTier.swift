@@ -55,11 +55,7 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
         self.wire = wire
         donations = BoundedSingleConsumerPipeline(
             capacity: Self.donationQueueCapacity,
-            onDropped: { [pool] donation in
-                donation.source.close()
-                pool.recordStoreRefusal(.refusedPolicy)
-                donation.completion([])
-            },
+            onDropped: { [pool] in MemoryOnlyCheckpointTier.settleUnstored($0, pool: pool) },
             consume: { [weak self] donation in
                 guard let self else {
                     donation.source.close()
@@ -102,8 +98,15 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
         let donation = Donation(
             source: source, tag: lookupKeys.checkpointTag(chainHash: chainHash, cacheSalt: cacheSalt ?? ""),
             completion: completion)
-        // A refused submit already settled the donation through `onDropped`.
-        _ = donations.submit(donation)
+        // A full or shut-down queue hands the donation back unsettled.
+        if !donations.submit(donation) { Self.settleUnstored(donation, pool: pool) }
+    }
+
+    /// Settles a donation the queue did not store.
+    private static func settleUnstored(_ donation: Donation, pool: MemoryOnlyCheckpointPool) {
+        donation.source.close()
+        pool.recordStoreRefusal(.refusedPolicy)
+        donation.completion([])
     }
 
     /// Copies the export into one wired region: the encoded manifest first,
@@ -161,7 +164,7 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
         if isClosed { pool.releaseAll(namespace: namespace, reason: .unload) }
     }
 
-    static func layout(manifest: CBv2CompleteCheckpointManifest, manifestBytes: Int)
+    private static func layout(manifest: CBv2CompleteCheckpointManifest, manifestBytes: Int)
         -> (bytes: Int, segments: [MemoryOnlyCheckpointPool.Segment])?
     {
         func aligned(_ offset: Int) -> Int {
@@ -379,7 +382,7 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
         await activity.waitUntilDrained()
     }
 
-    func hashes(tokens: [Int], scope: String, maximumBlocks: Int? = nil) -> [Data] {
+    private func hashes(tokens: [Int], scope: String, maximumBlocks: Int? = nil) -> [Data] {
         let hasher = CBv2BlockHasher(
             blockSize: PrefixCachePolicy.blockSize, promptContractID: config.identity.promptContractID,
             scopeID: scope)

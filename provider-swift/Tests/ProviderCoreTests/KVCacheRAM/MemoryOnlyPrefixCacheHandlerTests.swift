@@ -12,22 +12,6 @@ import Testing
 /// and the SSD directory is left exactly as it was.
 @Suite("memory_only requests reuse a prefix from RAM only", .serialized)
 struct MemoryOnlyPrefixCacheHandlerTests {
-    private func makeLoop() throws -> ProviderLoop {
-        let config = ProviderLoopConfig(
-            coordinatorURL: "ws://127.0.0.1:0/unused",
-            hardware: HardwareInfo(
-                machineModel: "Mac16,5", chipName: "Apple M4 Max",
-                chipFamily: .m4, chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
-                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
-                gpuCores: 40, memoryBandwidthGbs: 546),
-            models: [],
-            config: ProviderConfig(
-                provider: ProviderSettings(name: "memory-only-handler-test", memoryReserveGB: 1),
-                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1),
-                coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)))
-        return try ProviderLoop(config: config, attestationSigner: nil)
-    }
-
     @Test("the second marked request reports cached tokens from RAM; the SSD directory is unchanged")
     func secondMarkedRequestRestoresFromRAM() async throws {
         let fixture = try SSDHybridCheckpointTestFixture(paged: true)
@@ -57,7 +41,7 @@ struct MemoryOnlyPrefixCacheHandlerTests {
             eosTokenIds: [], prefillDeadlineMode: .off,
             ssdHybridCheckpointStore: store, kvBackendKind: .paged)
         let runtime = EngineV2Runtime()
-        let loop = try makeLoop()
+        let loop = try MemoryOnlyCheckpointReleaseTests.makeLoop(name: "memory-only-handler-test")
         await runtime.register(modelId: "fixture-model", bridge: bridge)
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.installModelSlotForTesting(

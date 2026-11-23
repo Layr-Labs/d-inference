@@ -54,8 +54,8 @@ public enum PromptTokenCachePolicy {
     }
 
     /// How long a piece stays after its last use, like the prefix caches'
-    /// 30 minutes: whole seconds up to 1,800, or `0` for no expiry (the
-    /// earlier behaviour). Anything else keeps the default.
+    /// 30 minutes: whole seconds up to 1,800, or `0` for no expiry. Anything
+    /// else keeps the default.
     static func ttl(environment: [String: String] = ProcessInfo.processInfo.environment) -> Duration? {
         guard let raw = environment[ttlEnvironmentKey],
             let seconds = Int(raw.trimmingCharacters(in: .whitespaces)), (0...defaultTTLSeconds).contains(seconds)

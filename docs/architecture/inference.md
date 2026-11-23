@@ -2686,8 +2686,9 @@ Everywhere else (media, a pair, a slot without the tier) it runs with
 donation, and a pair's ranks get `ClusterWorkerPrefixCache.disabled`. In both
 cases the bridge stages nothing from the SSD tier and registers no SSD ready
 receipt or donation demand, the scheduler skips the prompt-token piece cache,
-and every SSD store refuses the receipt. Its answer and usage are otherwise
-those of an uncached request, or of a cache hit with tier `memory`. The local API serves its requests under
+and no SSD read, write or index path accepts the receipt. Its answer and usage
+are otherwise those of an uncached request, or of a cache hit with tier
+`memory`. The local API serves its requests under
 `DARKBLOOM_LOCAL_CACHE_POLICY` instead ([local
 API](../provider/direct-mode.md#cache-policy-of-local-requests)).
 

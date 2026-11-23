@@ -10,7 +10,7 @@ import Testing
 /// which holds even when another suite releases the shared pool meanwhile.
 @Suite("RAM-only tier releases", .serialized)
 struct MemoryOnlyCheckpointReleaseTests {
-    private func makeLoop() throws -> ProviderLoop {
+    static func makeLoop(name: String = "memory-only-release-test") throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/unused",
             hardware: HardwareInfo(
@@ -20,7 +20,7 @@ struct MemoryOnlyCheckpointReleaseTests {
                 gpuCores: 40, memoryBandwidthGbs: 546),
             models: [],
             config: ProviderConfig(
-                provider: ProviderSettings(name: "memory-only-release-test", memoryReserveGB: 1),
+                provider: ProviderSettings(name: name, memoryReserveGB: 1),
                 backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)))
         return try ProviderLoop(config: config, attestationSigner: nil)
@@ -46,7 +46,7 @@ struct MemoryOnlyCheckpointReleaseTests {
         MemoryPressureLevel.warning, .critical,
     ])
     func pressure(level: MemoryPressureLevel) async throws {
-        let loop = try makeLoop()
+        let loop = try Self.makeLoop()
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("memory-only-pressure-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
@@ -61,7 +61,7 @@ struct MemoryOnlyCheckpointReleaseTests {
 
     @Test("a model load that needs room releases the tier first, and counts it as reclaimable")
     func loadGate() async throws {
-        let loop = try makeLoop()
+        let loop = try Self.makeLoop()
         try await expectReleased {
             let reclaimable = await loop.reclaimableMemoryBytes(from: [:], countingRetainedKVSegments: false)
             #expect(reclaimable >= MemoryOnlyCheckpointPool.shared.bytesInUse)
@@ -71,7 +71,7 @@ struct MemoryOnlyCheckpointReleaseTests {
 
     @Test("shutdown releases the tier")
     func shutdown() async throws {
-        let loop = try makeLoop()
+        let loop = try Self.makeLoop()
         try await expectReleased { await loop.unloadAllModelsForShutdown() }
     }
 

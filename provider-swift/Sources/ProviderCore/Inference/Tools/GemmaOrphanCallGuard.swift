@@ -161,13 +161,7 @@ final class GemmaOrphanCallGuardConstraint: CBv2FreeSpanTokenConstraint, @unchec
     /// The tokens a state refuses, sorted.
     func refused(state: Int) -> [Int] {
         // Red control: nothing is refused.
-        if state >= 0 { return [] }
-        switch (state, guardMode) {
-        case (Self.idle, .strict): [callClose, toolResponse]
-        case (Self.open, .strict): [toolResponse]
-        case (Self.idle, _), (Self.closed, _): [callClose]
-        default: []
-        }
+        []
     }
 
     func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {

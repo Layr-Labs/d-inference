@@ -762,7 +762,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // bridge's `tokenBudgetExhausted` admission refusal (capacity,
             // not a construction fault), and every media fault
             // `EngineV2VisionPrefill.clientFault(for:)` answers with 400:
-            // `noProcessedMedia` (media on non-user roles only),
+            // `noProcessedMedia` (no media consumed), `mediaRoleNotRendered`
+            // (media the chat template does not place),
             // `unsupportedMedia` (the loaded family rejects this shape) and
             // the processor's refusal of the media itself (e.g. an image side
             // below Qwen's resize factor). Rerouting those would fail
@@ -1024,6 +1025,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // Construction failures are retryable; deterministic input faults,
                     // cancellation and deadlines above keep their original mappings.
                     let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
+                    // The refusal's cause, content-safe by construction
+                    // (`refusalDetail`): our own error cases or a type name.
+                    Self.mediaGateLogger.notice("media prefill construction refused", metadata: [
+                        "model_id": .string(modelId),
+                        "media_kind": .string(mediaKind.rawValue),
+                        "detail": .string(EngineV2VisionPrefill.refusalDetail(for: error))])
                     plumbing.emitTelemetry(
                         EngineV2VisionPrefill.refusalTelemetryEvent(
                             modelId: modelId, mediaKind: mediaKind, error: error))
@@ -1157,9 +1164,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
-        // `strict` calls on the Qwen 3.5 text route: their arguments follow the
-        // declared schemas in the sampler. A request the grammar declines, or
-        // a slot that cannot run it, is served as before.
+        // `strict` calls on the Qwen 3.5 text route, and every `auto` call on
+        // Nemotron 3.5 Lightning: their arguments follow the declared schemas
+        // in the sampler. A request the grammar declines, or a slot that
+        // cannot run it, is served as before.
         if tokenConstraint == nil, let bridge = engineV2Bridge,
            QwenStrictToolGrammar.isEnabled(modelId: request.model, modelType: modelType),
            QwenStrictToolGrammar.isCandidate(prepared: prepared, parser: toolHandler?.format) {
@@ -1171,6 +1179,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 modelType: modelType, defaultMaxTokens: bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
                 promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
             // The first such request per tokenizer builds its vocabulary.
+            profile?.markDuration(.toolConstraint, start: start)
+        }
+        // Qwen 3.5–3.8 forced calls (`required` or named): no end of turn while
+        // a call frame is open (`QwenCallEndGuard`); everything else free. A
+        // request the guard declines is served as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           QwenCallEndGuard.isCandidate(prepared: prepared, parser: toolHandler?.format, modelType: modelType) {
+            let start = SuspendingClock.now
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = QwenCallEndGuard.constraint(
+                prepared: prepared, request: request, parser: toolHandler?.format, tokenizer: tokenizer,
+                modelType: modelType, defaultMaxTokens: bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
             profile?.markDuration(.toolConstraint, start: start)
         }
         // GPT-OSS `auto` calls: a header that names a function is held to a
@@ -1185,6 +1207,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 prepared: prepared, modelType: modelType, tokenizer: tokenizer,
                 maxTokens: request.maxTokens ?? bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
                 promptTokens: promptTokens, runsTokenConstraints: !pair && !native, logitsWidth: bridge.logitsWidth)
+            profile?.markDuration(.toolConstraint, start: start)
+        }
+        // A tool-free GPT-OSS JSON answer: free analysis, then the final
+        // message held to the request's format. A request the grammar
+        // declines keeps prompt-only steering, as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           GPTOSSJSONAnswers.isCandidate(request: request, modelType: modelType) {
+            let start = SuspendingClock.now
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = GPTOSSJSONAnswers.constraint(
+                request: request, modelType: modelType, tokenizer: tokenizer,
+                maxTokens: request.maxTokens ?? bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
             profile?.markDuration(.toolConstraint, start: start)
         }
         let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()

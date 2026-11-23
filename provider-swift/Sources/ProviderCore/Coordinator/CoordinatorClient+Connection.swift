@@ -269,7 +269,8 @@ extension CoordinatorClient {
         // Time of the last inbound frame: updated on connectionQueue by the pong
         // handler and the receive callback, read by the ping task. An unfair
         // lock is cheaper than an actor hop for a single Instant.
-        let activity = LinkActivityTracker()
+        let start = ContinuousClock.now
+        let activity = LinkActivityTracker(start: start)
         let pongQueue = self.connectionQueue
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -318,8 +319,7 @@ extension CoordinatorClient {
 
                 while true {
                     if self.shutdownRequested { break }
-                    let json = await self.buildHeartbeatJSON()
-                    self.sendTextFrame(json, on: connection, identifier: "heartbeat")
+                    await self.sendBaselineHeartbeat(on: connection)
                     try await taskSleep( .seconds(interval))
                 }
             }
@@ -329,15 +329,16 @@ extension CoordinatorClient {
             // whose node was hard-reset, ends with no close frame and no TCP
             // reset; this task is what notices it.
             group.addTask {
-                var watch = CoordinatorLinkWatch(liveness: liveness, start: .now)
+                var watch = CoordinatorLinkWatch(liveness: liveness, start: start)
                 while true {
                     try await taskSleep(liveness.pingInterval)
 
-                    switch watch.check(now: .now, lastInbound: activity.lastInbound) {
+                    let lastInbound = activity.lastInbound
+                    switch watch.check(now: .now, lastInbound: lastInbound) {
                     case .alive:
                         break
                     case .dead:
-                        throw CoordinatorError.pongTimeout(after: liveness.deadAfter)
+                        throw CoordinatorError.pongTimeout(after: watch.silenceBound(lastInbound: lastInbound))
                     case .suspended:
                         // Sleep or a long suspension: the coordinator has
                         // probably dropped the session, so reconnect once now.

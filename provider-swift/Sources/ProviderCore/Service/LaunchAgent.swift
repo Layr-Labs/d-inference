@@ -393,6 +393,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS`: eligible complete
     /// checkpoints are written as deltas by default; the rollback to complete
     /// files must reach the job.
+    /// `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE`: checkpoint restores read
+    /// and authenticate chunks ahead of the copy by default; the rollback to
+    /// the sequential stage must reach the job.
     /// `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`: a donor's
     /// terminal follows its complete-checkpoint write by default; the opt-in
     /// to answer first must reach the job to apply to an installed provider.
@@ -441,6 +444,15 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS`: a streamed call whose frame
     /// fails after it started is refused by default; an off word restores
     /// closing it with the arguments it sent.
+    /// `DARKBLOOM_QWEN_CALL_END_GUARD`: Qwen 3.5–3.8 admit no end of turn while
+    /// a call frame is open, by default; an off word samples as before.
+    /// `DARKBLOOM_MEDIA_ON_EVERY_ROLE`: media in a system, assistant or tool
+    /// message is rendered where the chat template renders it, by default; an
+    /// off word keeps only user-message media again.
+    /// `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY`: GLM-5.3-Flash serves history
+    /// tool-call arguments and tool schemas in shapes vLLM and the OpenAI API
+    /// accept, by default; an off word restores refusing inexact numbers,
+    /// repeated keys and tool-call markers in arguments.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -448,6 +460,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_NEMOTRON_SUPER_FIRST_CONTENT_REFUSAL`: Super refuses at once a
     /// coordinator request its measured pace cannot answer before the forwarded
     /// first-content deadline, by default; an off word starts every request.
+    /// `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO`: a Super video request takes
+    /// one of the owner's two media rows by default; an off word keeps a video
+    /// exclusive with other media again.
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
@@ -501,6 +516,9 @@ public enum LaunchAgent: Sendable {
     /// outside the subset as written (nullable `anyOf`, a root `$schema`,
     /// value limits) to its structure by default; an off word keeps those
     /// arguments as generated.
+    /// `DARKBLOOM_HARMONY_JSON_ANSWERS`: GPT-OSS answers to a JSON
+    /// `response_format` hold the final message to the format in the sampler
+    /// by default; an off word restores prompt-only answers.
     /// `DARKBLOOM_GLM_MEDIA_GEOMETRY_RESERVATION`: GLM's media memory
     /// reservation is priced from each image's and video's geometry by
     /// default; `0`, `false`, `no` or `off` restores the processor's ceilings.
@@ -518,6 +536,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT`: the owner's local request on a pair
     /// waits for its first token with no first-token allowance by default;
     /// `0`, `false`, `no` or `off` restores the pair's allowance.
+    /// `DARKBLOOM_GLM_SHARED_GRANT_WAIT`: a GLM request that fits GLM alone waits
+    /// for its share beside other loaded models by default; `0`, `false`, `no` or
+    /// `off` refuses it at once, as 0.10.17 did.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -538,6 +559,7 @@ public enum LaunchAgent: Sendable {
         GLM5NextWiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         SSDPrefixCachePolicy.incrementalCheckpointsFlag,
+        SSDPrefixCachePolicy.parallelStageFlag,
         SSDPrefixCachePolicy.terminalBeforePublicationFlag,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
@@ -548,6 +570,8 @@ public enum LaunchAgent: Sendable {
         PromptTokenCachePolicy.verifyEnvironmentKey,
         QwenStrictToolGrammar.environmentKey,
         QwenStrictToolGrammar.allToolsEnvironmentKey,
+        QwenStrictToolGrammar.nemotronEnvironmentKey,
+        NemotronSuperToolGrammar.environmentKey,
         ChatTemplateLoopRewrites.environmentKey,
         ToolSchemaRefPolicy.environmentKey,
         // SDK-read (`StreamingGemma4ReasoningParser.reopenedThoughtsEnabled`, once per
@@ -558,14 +582,18 @@ public enum LaunchAgent: Sendable {
         TokenLimitCutPolicy.environmentKey,
         StrictToolCallPolicy.environmentKey,
         FailedStreamedCallPolicy.environmentKey,
+        QwenCallEndGuard.environmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         JSONAnswerPolicy.glmEnvironmentKey,
         GLM5NextSchemaMiss.environmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
         NemotronSuperLocalBridgeBuilder.concurrentImagesKey,
+        NemotronSuperLocalBridgeBuilder.concurrentVideoKey,
         NemotronSuperLocalBridgeBuilder.firstContentRefusalKey,
         MediaIngest.maxImagesEnvironmentKey,
+        MediaIngest.everyRoleEnvironmentKey,
+        GLM5NextPromptPolicy.referenceToolHistoryEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,
@@ -580,11 +608,18 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD",
         "DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD_SORTED",
         MTPAutomaticVerificationPolicy.gemmaLoneRowEnvironmentKey,
+        MTPAutomaticVerificationPolicy.gemmaTwoDraftsEnvironmentKey,
+        MTPAutomaticVerificationPolicy.gemmaM5UltraLoneRowEnvironmentKey,
+        EngineV2KVQuantizationPolicy.gemmaNativeRowsBeforeAssistantEnvironmentKey,
         "DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS",
         // SDK-read (`CBv2MTPConfig.envPenaltySpeculation`, once per process): rows
         // with a presence/frequency penalty speculate with exact acceptance;
         // `0`, `false`, `no` or `off` keeps them target-only (0.10.15).
         MTPPenaltyRows.environmentKey,
+        // SDK-read (`CBv2MTPConfig.envStopStringSpeculation`, once per process): rows
+        // with `stop` strings speculate on the builds that opt in; `0`, `false`, `no`
+        // or `off` keeps them target-only.
+        MTPStopStringRows.environmentKey,
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
@@ -601,6 +636,7 @@ public enum LaunchAgent: Sendable {
         GPTOSSForcedToolCalls.environmentKey,
         GPTOSSAutoToolGrammar.environmentKey,
         GPTOSSAutoToolGrammar.widenEnvironmentKey,
+        GPTOSSJSONAnswers.environmentKey,
         GLM5NextVisionBudget.geometryEnvironmentKey,
         GLM5NextVisionBudget.longVideoFitEnvironmentKey,
         GLM5NextVisionBudget.longVideoSamplingEnvironmentKey,
@@ -608,6 +644,7 @@ public enum LaunchAgent: Sendable {
         MediaIngest.qwenVideoTokensEnvironmentKey,
         OwnerMemoryWait.environmentName,
         OwnerMemoryWait.firstTokenWaitEnvironmentName,
+        OwnerMemoryWait.sharedGrantWaitEnvironmentName,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

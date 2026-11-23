@@ -166,6 +166,7 @@ extension EngineV2Factory {
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
         hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil,
         nativeKVLayerIndices: Set<Int> = [],
@@ -175,7 +176,7 @@ extension EngineV2Factory {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
         }
-        let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
+        let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity, physicalBytes: physicalBytes)
         try configureNativeQwen4Batching(model: model, environment: environment)
         // Flint is qualified only on paged attention. Automatic selection is an
         // explicit paged request: no crash-guard or failure fallback, and any

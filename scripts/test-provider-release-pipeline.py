@@ -14,9 +14,17 @@ ROOT = Path(__file__).resolve().parent.parent
 # that holds the resolve -> build -> sign -> stage -> publish job chain.
 CALLER = (ROOT / '.github/workflows/release-swift.yml').read_text()
 RELEASE = (ROOT / '.github/workflows/release-provider.yml').read_text()
+# The SDK qualification shards and their gate, called by each caller's job
+# `qualify` with no secrets before its credentialed release-provider.yml call.
+QUALIFY = (ROOT / '.github/workflows/release-qualify.yml').read_text()
+DEV_CALLER = (ROOT / '.github/workflows/release-dev-branch.yml').read_text()
+# The checked downloader: it fetches one artifact by ID and refuses it unless
+# its zip's SHA-256 equals the digest (provider_release_artifact.download).
+DOWNLOADER = 'scripts/provider-release-publication.py download'
+# A download that a name selects, which any job of the run can replace.
+BY_NAME = re.compile(r'gh run download|actions/download-artifact@|gh api [^\n]*artifacts\?name')
 WARM = (ROOT / '.github/workflows/provider-release-cache.yml').read_text()
 ACTION = (ROOT / '.github/actions/provider-release-build/action.yml').read_text()
-DEV_CALLER = (ROOT / '.github/workflows/release-dev-branch.yml').read_text()
 FACTS_SCRIPT = (ROOT / 'scripts/provider-cluster-runtime-facts.sh').read_text()
 REQUIREMENTS = ROOT / 'scripts/provider-release-publication-requirements.txt'
 STAGE_STEP = '- name: Stage bundle and smoke it before signing\n'
@@ -33,6 +41,19 @@ FIXED_STACK = '-Xlinker -stack_size -Xlinker 0x800000'
 def step(content, name):
     """The body of the step that starts with `name`, up to the next step."""
     return content.split(name, 1)[1].split('\n      - name:', 1)[0].split('\n      # ', 1)[0]
+
+
+def caller_jobs(text):
+    """Every job of a caller workflow, by id."""
+    body = text.split('\njobs:\n', 1)[1]
+    parts = re.split(r'(?m)^  ([a-z][a-z0-9_-]*):\n', body)
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def condition(job_text):
+    """A job's `if:` expression body, on one line."""
+    value = re.search(r'(?ms)^    if: (?:>-\n)?(.+?)\n    \S', job_text).group(1)
+    return ' '.join(value.strip().removeprefix('${{').removesuffix('}}').split())
 
 
 def named_steps(content):
@@ -66,6 +87,11 @@ def job(workflow, name):
     if match is None:
         raise AssertionError('Missing job: ' + name)
     return match.group(1)
+
+
+# A lane's gate: qualification passed, or it was skipped for a resume.
+QUALIFIED = ("(needs.qualify.result == 'success' || "
+             "(inputs.resume_run_id && needs.qualify.result == 'skipped'))")
 
 
 class ReleasePipelineTests(unittest.TestCase):
@@ -106,7 +132,8 @@ class ReleasePipelineTests(unittest.TestCase):
         # The dev lane runs only for a dispatched validation build and always
         # passes validation_only, so it never publishes.
         dev_if = lanes['dev'].split('    if:', 1)[1].split('\n', 1)[0]
-        self.assertEqual(dev_if, " ${{ github.event_name == 'workflow_dispatch' && inputs.validation_only }}")
+        self.assertEqual(dev_if, " ${{ !cancelled() && github.event_name == 'workflow_dispatch' && "
+                                 "inputs.validation_only && " + QUALIFIED + " }}")
         self.assertNotIn("github.event_name == 'push'", lanes['dev'])
         self.assertNotIn('inputs.environment', lanes['dev'])
         self.assertIn('      validation_only: true\n', lanes['dev'])
@@ -134,6 +161,42 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn('\n  ' + job, CALLER)
         self.assertEqual(CALLER.count('uses: ./.github/workflows/release-provider.yml'), 3)
 
+    def test_each_release_lane_starts_only_after_its_qualification_or_on_a_resume(self):
+        # Each caller has one `qualify` job, which calls release-qualify.yml
+        # with read-only permissions and no secrets, and every credentialed
+        # call of release-provider.yml needs it. Only a resume, which signs a
+        # retained build whose run already passed qualification
+        # (provider_release_resume/identity.py), skips it.
+        lanes = caller_lanes()
+        swift = caller_jobs(CALLER)
+        dev = caller_jobs(DEV_CALLER)
+        for text, jobs in ((CALLER, swift), (DEV_CALLER, dev)):
+            qualify = jobs['qualify']
+            self.assertEqual(text.count('uses: ./.github/workflows/release-qualify.yml'), 1)
+            self.assertIn('    uses: ./.github/workflows/release-qualify.yml\n', qualify)
+            self.assertIn('    permissions:\n      contents: read\n    uses:', qualify)
+            self.assertNotIn('secrets', qualify)
+            for name, job in jobs.items():
+                if 'uses: ./.github/workflows/release-provider.yml' in job:
+                    with self.subTest(lane=name):
+                        self.assertIn('    needs: qualify\n', job)
+                        self.assertIn('secrets: inherit', job)
+        dev_guard = "    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'\n"
+        self.assertIn(dev_guard, dev['qualify'])
+        self.assertIn('    needs: qualify\n' + dev_guard, dev['dev'])
+        # release-swift.yml: qualification runs exactly when one lane runs and
+        # this is not a resume; each lane runs on its own condition and only
+        # after qualification passed (or skipped on a resume).
+        triggers = {}
+        for name in ('dev', 'staging', 'prod'):
+            lane = condition(lanes[name])
+            self.assertTrue(lane.startswith('!cancelled() && '), lane)
+            self.assertTrue(lane.endswith(' && ' + QUALIFIED), lane)
+            triggers[name] = lane.removeprefix('!cancelled() && ').removesuffix(' && ' + QUALIFIED)
+        self.assertEqual(condition(swift['qualify']),
+                         "!inputs.resume_run_id && ((" + triggers['dev'] + ") || (" + triggers['staging'] +
+                         ") || " + triggers['prod'] + ")")
+
     def test_staging_lane_is_gated_off_until_the_infra_var_is_set(self):
         # A master push publishes staging only when the STAGING_ENABLED repo
         # variable is 'true' (set once the staging stack and STAGING_* secrets
@@ -147,8 +210,9 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("(github.event_name == 'push' && github.ref_type == 'branch')", staging_if)
         self.assertNotIn("vars.STAGING_ENABLED", lanes['dev'])
         self.assertNotIn("vars.STAGING_ENABLED", lanes['prod'])
-        self.assertEqual(CALLER.count("vars.STAGING_ENABLED"), 1)
-        self.assertEqual(CALLER.count("github.event_name == 'push'"), 2)
+        # Once in the staging lane and once in its qualification's condition.
+        self.assertEqual(CALLER.count("vars.STAGING_ENABLED"), 2)
+        self.assertEqual(CALLER.count("github.event_name == 'push'"), 3)
         self.assertIn("(github.event_name == 'push' && format('staging provider release (master push -staging.{0})', "
                       "github.run_number))", CALLER)
 
@@ -193,7 +257,7 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_release_lane_stamps_only_a_resolved_dev_version_after_clean_source_check(self):
         self.assertIn('version: ${{ needs.resolve-env.outputs.version }}', job(RELEASE, 'build-provider'))
-        self.assertNotIn('version:', job(RELEASE, 'qualify-sdk-shard').split('lane: qualification', 1)[1])
+        self.assertNotIn('version:', job(QUALIFY, 'qualify-sdk-shard').split('lane: qualification', 1)[1])
         stamp = ACTION.split('- name: Stamp dev release version\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertLess(ACTION.index('- name: Verify checked-out source'), ACTION.index('- name: Stamp dev release version'))
         self.assertLess(ACTION.index('- name: Stamp dev release version'), ACTION.index('- name: Build optimized provider products'))
@@ -202,11 +266,16 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('test "$(git diff --name-only)" = "$SOURCE"', stamp)
         self.assertNotIn('version:', WARM.split('uses: ./.github/actions/provider-release-build', 1)[1].split('\n      - ', 1)[0])
 
-    def test_parallel_lanes_use_sdk27_without_signing_secrets(self):
-        for name, lane in [('build-provider', 'release'), ('qualify-sdk-shard', 'qualification')]:
-            content = job(RELEASE, name)
-            self.assertRegex(content, r'(?m)^    needs: resolve-env$')
-            self.assertIn('runs-on: blacksmith-12vcpu-macos-27', content)
+    def test_build_and_qualification_lanes_use_sdk27_without_signing_secrets(self):
+        # The build stays on Blacksmith in the credentialed workflow; the
+        # shards read their lane in the workflow that gets no secrets.
+        lanes = [(RELEASE, 'build-provider', 'release', 'resolve-env', 'blacksmith-12vcpu-macos-27'),
+                 (QUALIFY, 'qualify-sdk-shard', 'qualification', 'route',
+                  "${{ fromJSON(needs.route.outputs.routes)['release-qualify'] }}")]
+        for workflow, name, lane, needed, runner in lanes:
+            content = job(workflow, name)
+            self.assertRegex(content, r'(?m)^    needs: ' + needed + '$')
+            self.assertIn('    runs-on: ' + runner + '\n', content)
             self.assertIn('lane: ' + lane, content)
             self.assertIn('contents: read', content)
             self.assertNotIn('secrets.', content)
@@ -215,7 +284,7 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_only_the_release_lane_compiles_the_release_environment(self):
         selector = 'DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}'
         self.assertIn(selector, job(RELEASE, 'build-provider'))
-        qualify = job(RELEASE, 'qualify-sdk-shard')
+        qualify = job(QUALIFY, 'qualify-sdk-shard')
         self.assertNotIn(selector, qualify)
         self.assertEqual(re.findall(r'DARKBLOOM_RELEASE_ENVIRONMENT: (\S+)', qualify), ['prod'])
         # Named once, in the job-level env: (no step or shell override).
@@ -230,9 +299,12 @@ class ReleasePipelineTests(unittest.TestCase):
         for name in ['build-and-release', 'validate-older-macos']:
             self.assertIn(resolve, job(RELEASE, name))
 
-    def test_signing_requires_both_sdk_lanes(self):
+    def test_signing_requires_the_build_after_qualification(self):
         content = job(RELEASE, 'build-and-release')
-        self.assertIn('needs: [resolve-env, build-provider, qualify-sdk]', content)
+        # Qualification passed before this workflow started (the callers' lanes need `qualify`).
+        self.assertIn('needs: [resolve-env, build-provider]', content)
+        self.assertNotRegex(RELEASE, r'(?m)^  qualify')
+        self.assertNotIn('needs.qualify', RELEASE)
         self.assertNotRegex(content, r'(?m)^    if:.*always')
         # Every release step is required. The only exceptions are the cluster
         # runtime facts steps: their failure fails the job only when the
@@ -293,11 +365,18 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertLess(resolver.index('ref: ${{ steps.trust.outputs.source_sha }}'),
                         resolver.index('./scripts/resolve-provider-release.sh'))
         self.assertIn('workflow_sha: ${{ steps.trust.outputs.source_sha }}', resolver)
-        for name in ['build-provider', 'qualify-sdk-shard', 'qualify-sdk', 'build-and-release',
+        for name in ['build-provider', 'build-and-release',
                      'stage-release', 'publish-release', 'validate-older-macos']:
             content = job(RELEASE, name)
             self.assertIn('ref: ${{ needs.resolve-env.outputs.workflow_sha }}', content)
             self.assertIn('resolve-env', content.split('steps:', 1)[0])
+        # The qualification jobs test the run's own commit; they hold nothing
+        # the source gate protects, and the build action refuses another HEAD.
+        for name in ['qualify-sdk-shard', 'qualify-sdk']:
+            content = job(QUALIFY, name)
+            self.assertIn('ref: ${{ github.sha }}', content)
+            self.assertNotRegex(content, r'(?m)^    environment:')
+        self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', ACTION)
 
     def test_no_separate_hardware_or_receipt_authority(self):
         for forbidden in ['qualify-release:', 'validate-signed-macos26:', 'validate-signed-macos27:',
@@ -619,7 +698,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('PUBLICATION_NAME="provider-publication-${ENV_PREFIX}-${RELEASE_SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}"', sign)
         # Both SDK lanes pass the environment so retained diagnostics never clash.
         self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'build-provider'))
-        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', job(RELEASE, 'qualify-sdk-shard'))
+        self.assertIn('environment: ${{ inputs.environment }}', job(QUALIFY, 'qualify-sdk-shard'))
         # Release lanes add an -<environment>- infix; a caller passing no
         # environment (the warm lane) keeps the historical name with no empty
         # double dash.
@@ -628,9 +707,10 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotRegex(WARM, r'(?m)^\s+environment:')
 
     def test_qualification_shards_run_the_ci_plan_and_one_audited_job_gates_signing(self):
-        shards = job(RELEASE, 'qualify-sdk-shard')
+        shards = job(QUALIFY, 'qualify-sdk-shard')
         self.assertIn('    name: Qualify provider with SDK 27 (shard ${{ matrix.shard }})\n', shards)
-        self.assertIn("    if: needs.resolve-env.outputs.resume != 'true'\n", shards)
+        # The callers skip the whole call on a resume.
+        self.assertNotRegex(shards, r'(?m)^    if:')
         self.assertIn('      fail-fast: false\n', shards)
         self.assertIn('        shard: [1, 2, 3, 4, 5]\n', shards)
         self.assertIn('          shard: ${{ matrix.shard }}/${{ strategy.job-total }}\n', shards)
@@ -638,18 +718,18 @@ class ReleasePipelineTests(unittest.TestCase):
         # recovery binds by name; a shard's name never matches it.
         identity = (ROOT / 'scripts/provider_release_resume/identity.py').read_text()
         self.assertIn('QUALIFY_JOB = "Qualify provider with SDK 27"', identity)
-        gate = job(RELEASE, 'qualify-sdk')
+        gate = job(QUALIFY, 'qualify-sdk')
         self.assertIn('    name: Qualify provider with SDK 27\n', gate)
         self.assertFalse(shards.split('    name: ', 1)[1].split('\n', 1)[0].endswith('Qualify provider with SDK 27'))
-        self.assertRegex(gate, r'(?m)^    needs: \[resolve-env, qualify-sdk-shard\]$')
+        self.assertRegex(gate, r'(?m)^    needs: qualify-sdk-shard$')
+        self.assertIn('    runs-on: ubuntu-24.04\n', gate)
         # The implicit success() condition: a failed or skipped shard skips the gate.
-        self.assertIn("    if: needs.resolve-env.outputs.resume != 'true'\n", gate)
-        self.assertNotRegex(gate, r'(?m)^    if:.*(always|cancelled|failure)')
+        self.assertNotRegex(gate, r'(?m)^    if:')
         self.assertNotIn('secrets.', gate)
         self.assertIn('contents: read', gate)
         self.assertNotIn('continue-on-error', gate)
         # The gate audits what every shard executed against the full suite list.
-        self.assertIn('pattern: provider-sdk-qualification-${{ needs.resolve-env.outputs.environment }}-'
+        self.assertIn('pattern: provider-sdk-qualification-${{ inputs.environment }}-'
                       '${{ github.sha }}-shard-*\n', gate)
         self.assertIn('python3 scripts/provider-test-shards.py audit "${lists[0]}" "$RUNNER_TEMP/provider-sdk-shards"', gate)
         self.assertLess(gate.index('diff <('), gate.index('provider-test-shards.py audit'))
@@ -666,16 +746,21 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('export PROVIDER_TEST_REPORT_DIR="$RUNNER_TEMP/provider-sdk-shard"', test)
         # Prompt Parity runs once, against the test build, and reports both suites.
         build = ACTION.index('- name: Build SDK test products and stage Metal library\n')
-        for name, script, suite in (('Verify public prompt golden vectors', 'verify-prompt-parity.sh',
-                                     'ProductionPromptParityTests'),
-                                    ('Verify pinned Nemotron prompts', 'verify-nemotron-prompt-parity.sh',
-                                     'NemotronTemplateParityLiveTests')):
+        for name, script, suite, label in (('Verify public prompt golden vectors', 'verify-prompt-parity.sh',
+                                            'ProductionPromptParityTests', 'prompt'),
+                                           ('Verify pinned Nemotron prompts', 'verify-nemotron-prompt-parity.sh',
+                                            'NemotronTemplateParityLiveTests', 'nemotron')):
             with self.subTest(step=name):
                 self.assertLess(build, ACTION.index('- name: ' + name + '\n'))
                 parity = ACTION.split('- name: ' + name + '\n', 1)[1].split('\n    - name:', 1)[0]
                 self.assertIn("if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'", parity)
-                self.assertIn('./scripts/' + script, parity)
-                self.assertIn('provider-test-shards.py counts parity ' + suite, parity)
+                # The count comes from the run's xUnit report and stdout, never
+                # the merged console a SwiftPM warning can split.
+                self.assertIn(f'NESTED_SUITE_REPORT="$report/parity-{label}" ./scripts/{script}\n', parity)
+                self.assertNotIn('2>&1', parity)
+                self.assertIn(f'provider-test-shards.py counts parity {suite} \\\n'
+                              f'          "$report/parity-{label}-swift-testing.xml" "$report/parity-{label}.log" ',
+                              parity)
         self.assertIn("PROMPT_PARITY_SKIP_BUILD: '1'", ACTION)
         # A shard applies to qualification only; the release lane builds whole.
         lane = ACTION.split('- name: Validate lane\n', 1)[1].split('\n    - name:', 1)[0]
@@ -683,6 +768,130 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('^([1-9][0-9]*)/([1-9][0-9]*)$', lane)
         self.assertNotIn('shard:', job(RELEASE, 'build-provider'))
         self.assertNotIn('shard:', WARM)
+
+    def test_every_signing_staging_and_publishing_input_is_pinned_by_id_and_digest(self):
+        # Any job of a run (a qualification shard on a Darkbloom Sandbox too)
+        # can replace an artifact of a name. So every job that signs,
+        # notarizes, stages, publishes or smoke-tests signed bytes downloads
+        # the producing Blacksmith job's upload by ID, and the downloader
+        # refuses a zip whose SHA-256 differs from that upload's digest.
+        pins = {
+            'build-and-release': ('build-provider', 'artifact'),
+            'stage-release': ('build-and-release', 'publication_artifact'),
+            'publish-release': ('build-and-release', 'publication_artifact'),
+            'validate-older-macos': ('build-and-release', 'validation_artifact'),
+        }
+        producers = {('build-provider', 'artifact'): 'unsigned_retention',
+                     ('build-and-release', 'publication_artifact'): 'publication_retention',
+                     ('build-and-release', 'validation_artifact'): 'validation_retention'}
+        for name in re.findall(r'(?m)^  ([a-z][a-z0-9-]*):\n', RELEASE.split('\njobs:\n', 1)[1]):
+            with self.subTest(job=name):
+                self.assertNotRegex(job(RELEASE, name), BY_NAME)
+                if 'secrets.' in job(RELEASE, name) or 'codesign' in job(RELEASE, name):
+                    self.assertIn(name, pins)
+        for name, (producer, output) in pins.items():
+            content = job(RELEASE, name)
+            with self.subTest(job=name):
+                self.assertIn(producer, content.split('    steps:', 1)[0])
+                # The signer of a resume takes resolve-env's retained build first.
+                self.assertIn('needs.%s.outputs.%s_id }}' % (producer, output), content)
+                self.assertIn('needs.%s.outputs.%s_digest }}' % (producer, output), content)
+                self.assertIn('python3 ' + DOWNLOADER + ' \\\n', content)
+                self.assertRegex(content, r'--artifact-id "\$[A-Z_]+" --artifact-digest "\$[A-Z_]+"')
+                self.assertRegex(content, r'--run-id "\$[A-Z_]+"')
+        for (producer, output), step_id in producers.items():
+            with self.subTest(output=output):
+                produced = job(RELEASE, producer)
+                self.assertIn('      %s_id: ${{ steps.%s.outputs.artifact-id }}\n' % (output, step_id), produced)
+                self.assertIn('      %s_digest: ${{ steps.%s.outputs.artifact-digest }}\n' % (output, step_id), produced)
+                self.assertRegex(produced, r'(?m)^        id: %s\n(?:        if: .+\n)?        uses: '
+                                           r'actions/upload-artifact@' % step_id)
+        # The signer of a resume takes the retained build by ID and digest too.
+        self.assertIn('python3 scripts/provider-release-resume.py download', job(RELEASE, 'build-and-release'))
+        # The downloader: metadata by ID, then the zip by ID, hashed before extraction.
+        downloader = (ROOT / 'scripts/provider_release_artifact.py').read_text()
+        body = downloader.split('def download(', 1)[1].split('\ndef ', 1)[0]
+        self.assertIn("api = f'repos/{repository}/actions/artifacts/{artifact_id}'", body)
+        self.assertIn("metadata.get('digest') != artifact_digest", body)
+        self.assertIn("str(metadata.get('workflow_run', {}).get('id')) != run_id", body)
+        self.assertLess(body.index("if sha256(archive) != artifact_digest.removeprefix('sha256:'):"),
+                        body.index('source.extractall(output)'))
+        # Signing validation hands its unsigned input to signing the same way.
+        build = job(SIGNING_VALIDATION, 'build')
+        signing = job(SIGNING_VALIDATION, 'signing')
+        self.assertNotRegex(SIGNING_VALIDATION, BY_NAME)
+        self.assertIn('      unsigned_artifact_id: ${{ steps.unsigned_retention.outputs.artifact-id }}\n', build)
+        self.assertIn('      unsigned_artifact_digest: ${{ steps.unsigned_retention.outputs.artifact-digest }}\n', build)
+        self.assertRegex(build, r'(?m)^        id: unsigned_retention\n        uses: actions/upload-artifact@')
+        self.assertIn('UNSIGNED_ARTIFACT_ID: ${{ needs.build.outputs.unsigned_artifact_id }}', signing)
+        self.assertIn('UNSIGNED_ARTIFACT_DIGEST: ${{ needs.build.outputs.unsigned_artifact_digest }}', signing)
+        self.assertIn('python3 tooling/' + DOWNLOADER + ' \\\n', signing)
+        self.assertIn('--run-id "$GITHUB_RUN_ID"', signing)
+        self.assertRegex(job(SIGNING_VALIDATION, 'build'), r'(?m)^    runs-on: blacksmith-')
+
+    def test_qualification_never_sits_in_the_credentialed_call(self):
+        # The plane refuses a Darkbloom-routable job inside a call that passes
+        # secrets. The shards and their gate live in release-qualify.yml,
+        # which reads no secret; release-provider.yml routes nothing.
+        code = re.sub(r'(?m)^\s*#.*$', '', QUALIFY)
+        self.assertNotRegex(code, r'(?i)(?<![A-Za-z0-9_.])secrets(?![A-Za-z0-9_])')
+        self.assertIn('\npermissions:\n  contents: read\n', QUALIFY)
+        self.assertNotIn('needs.route', RELEASE)
+        self.assertNotIn('darkbloom-route.yml', RELEASE)
+        for runner in re.findall(r'(?m)^    runs-on: (.+)$', RELEASE):
+            self.assertRegex(runner, r'^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$')
+        self.assertEqual(set(re.findall(r'(?m)^  ([a-z][a-z0-9-]*):\n', QUALIFY.split('\njobs:\n', 1)[1])),
+                         {'route', 'qualify-sdk-shard', 'qualify-sdk'})
+        # Qualification builds and tests on the release toolchain, as before.
+        self.assertIn("  DARKBLOOM_PROVIDER_TOOLCHAIN: release\n", QUALIFY)
+        self.assertIn("  MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'\n", QUALIFY)
+
+    def test_no_release_job_restores_or_saves_an_actions_cache(self):
+        # Any job of a run on a branch, a Darkbloom-routed one included, holds
+        # the run's cache token and can write any key of the branch's scope;
+        # GitHub cannot limit a key to Blacksmith jobs. So the release
+        # workflows pin CI_ACTIONS_CACHE off at their top, nothing turns it
+        # back on, and every cache step of the build action is gated on it.
+        for name, text in (('release-provider.yml', RELEASE), ('release-qualify.yml', QUALIFY)):
+            code = re.sub(r'(?m)^\s*#.*\n', '', text)
+            with self.subTest(workflow=name):
+                header = code.split('\njobs:\n', 1)[0]
+                self.assertRegex(header, r"(?m)^env:\n(?:  \S.*\n)*?  CI_ACTIONS_CACHE: 'off'\n")
+                self.assertEqual(code.count('CI_ACTIONS_CACHE'), 1)
+                self.assertNotIn('actions/cache', code)
+                self.assertNotRegex(code, r'(?m)^\s+cache(-dependency-path)?:')
+                self.assertIn('uses: ./.github/actions/provider-release-build', code)
+        steps = re.split(r'\n    - ', ACTION.split('\n  steps:\n', 1)[1])
+        cache_steps = [step for step in steps if re.search(r'(?m)^\s+uses: actions/cache(/restore|/save)?@', step)]
+        self.assertEqual(len(cache_steps), 6)
+        for step in cache_steps:
+            with self.subTest(step=step.split('\n', 1)[0]):
+                self.assertRegex(step, r"(?m)^      if: env\.CI_ACTIONS_CACHE != 'off'( && |$)")
+        # The action uses no other cache: no setup-* `cache:` input, no other
+        # cache action, no nested local action, and nothing it runs turns the
+        # switch back on (a `$GITHUB_ENV` write of CI_ACTIONS_CACHE).
+        self.assertNotRegex(ACTION, r'(?m)^\s+cache(-dependency-path)?:')
+        self.assertEqual(sorted(set(re.findall(r'(?m)^\s+uses: (\S+)', ACTION))), [
+            'actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57',
+            'actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57',
+            'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'])
+        self.assertNotIn('CI_ACTIONS_CACHE=', ACTION)
+        for script in sorted((ROOT / 'scripts').rglob('*')):
+            if script.is_file() and script.suffix in ('.py', '.sh') and not script.name.startswith('test-'):
+                self.assertNotIn('CI_ACTIONS_CACHE', script.read_text(errors='replace'), script.name)
+        # setup-node v4.4.0 caches only with `cache:`. v5 and later also cache
+        # on a packageManager field, so a bump must set package-manager-cache:
+        # false; this pin makes the bump fail here first.
+        desktop = (ROOT / '.github/workflows/release-desktop.yml').read_text()
+        self.assertEqual(set(re.findall(r'uses: actions/setup-node@(\S+)', desktop)),
+                         {'49933ea5288caeca8642d1e84afbd3f7d6820020'})
+        # The other signing workflows restore no Actions cache either.
+        for name in ('release-desktop.yml', 'provider-signing-validation.yml', 'release-swift.yml',
+                     'release-dev-branch.yml'):
+            code = re.sub(r'(?m)^\s*#.*\n', '', (ROOT / '.github/workflows' / name).read_text())
+            with self.subTest(workflow=name):
+                self.assertNotIn('actions/cache', code)
+                self.assertNotRegex(code, r'(?m)^\s+cache(-dependency-path)?:')
 
     def test_cluster_helper_objects_share_the_release_swift_cache(self):
         # The native worker build reuses objects like the provider build; the
@@ -970,10 +1179,13 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertEqual(RELEASE.count('contents: write'), 1)
         self.assertIn('    permissions:\n      contents: write', job(RELEASE, 'publish-release'))
         self.assertIn('gh release create', (ROOT / 'scripts/provider_release_github.py').read_text() + RELEASE)
-        for name in ('resolve-env', 'build-provider', 'qualify-sdk-shard', 'qualify-sdk', 'build-and-release',
+        for name in ('resolve-env', 'build-provider', 'build-and-release',
                      'stage-release', 'validate-older-macos'):
             with self.subTest(job=name):
                 self.assertIn('    permissions:\n      contents: read\n', job(RELEASE, name))
+        for name in ('qualify-sdk-shard', 'qualify-sdk'):
+            with self.subTest(job=name):
+                self.assertIn('    permissions:\n      contents: read\n', job(QUALIFY, name))
 
     def test_every_job_that_reads_a_secret_names_the_lanes_environment(self):
         jobs = re.findall(r'(?m)^  ([A-Za-z0-9_-]+):\n', RELEASE.split('\njobs:\n', 1)[1])

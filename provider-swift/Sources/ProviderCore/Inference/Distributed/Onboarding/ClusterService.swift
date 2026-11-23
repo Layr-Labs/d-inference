@@ -163,6 +163,8 @@ public final class ClusterService: @unchecked Sendable {
     private var updatingLine: String?
     /// Said once while the Macs run different builds after an update.
     private var updateWaitLine: String?
+    /// Said once while the update check waits for this Mac's own update to restart the service (`ClusterUpdateReplanGuard`).
+    private var updateHoldLine: String?
     /// The member's line while its saved setup pins an earlier build than it runs (said once per wait).
     private var memberSetupWaitLine: String?
     /// The other Mac's version as its service last published it (`pairUpdate.running`), for the wait lines, and when it
@@ -1466,14 +1468,18 @@ public final class ClusterService: @unchecked Sendable {
             // disk may be the new ones while this service still runs the old one. The service after the restart sets
             // the pair up again; a re-plan now would be ended by that restart (`ClusterUpdateReplanGuard`).
             let progressFile = ClusterServiceAgent.updateProgressPath(serviceDirectory: self.store.paths.directory)
-            if self.updateReplanGuard, ClusterUpdateReplanGuard.holdsReplan(ClusterPairUpdate.readProgress(from: progressFile),
-                                                                          running: ProviderCore.version,
-                                                                          now: Date().timeIntervalSince1970) {
-                self.lock.withLock {
-                    self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.recheckWhileWaitingSeconds)
-                }
-                return
+            let progress = self.updateReplanGuard ? ClusterPairUpdate.readProgress(from: progressFile) : nil
+            let holds = ClusterUpdateReplanGuard.holdsReplan(progress, running: ProviderCore.version,
+                                                             now: Date().timeIntervalSince1970)
+            // Said once per wait (`updateHoldLine`), so the log shows that the check waited and for which release.
+            let heldLine = holds ? progress.map(ClusterUpdateReplanGuard.holdLine) : nil
+            let saysHeld: Bool = self.lock.withLock {
+                defer { self.updateHoldLine = heldLine }
+                if holds { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.recheckWhileWaitingSeconds) }
+                return heldLine != nil && heldLine != self.updateHoldLine
             }
+            if saysHeld, let heldLine { say(heldLine) }
+            if holds { return }
             guard let saved = context.savedConfiguration().configuration, saved.peers.indices.contains(saved.localRank) else { return }
             let pinned = Dictionary(saved.peers.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { a, _ in a })
             let local = saved.peers[saved.localRank]
@@ -1964,6 +1970,24 @@ public final class ClusterService: @unchecked Sendable {
               let text = try? String(contentsOf: pidFile, encoding: .utf8),
               Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) == writer else { return nil }
         return status
+    }
+
+    /// `publishedLive`, only while its file was written within `seconds`: every tick rewrites it, so an older one is
+    /// from a service that stalled or could not write (a full disk), and what it says about the other Mac is stale.
+    static func publishedLive(writtenWithin seconds: Double, now: Date = Date()) -> ClusterServiceStatus? {
+        guard let directory = try? paths().pid.deletingLastPathComponent() else { return nil }
+        let file = directory.appendingPathComponent(ClusterServiceStatus.fileName)
+        // The file's time first: a status read after it is at least as new.
+        let modified = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
+        guard writtenRecently(modified, now: now, within: seconds) else { return nil }
+        return publishedLive()
+    }
+
+    /// A time in the future (the clock stepped back) proves nothing about the file's age.
+    static func writtenRecently(_ modified: Date?, now: Date, within seconds: Double) -> Bool {
+        guard let modified else { return false }
+        let age = now.timeIntervalSince(modified)
+        return age >= 0 && age <= seconds
     }
 
     // MARK: - This Mac's part

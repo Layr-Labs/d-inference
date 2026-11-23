@@ -304,6 +304,9 @@ enum EngineV2SlotFactory {
             enabled: assistantHandle != nil,
             maxDraftTokens: draftDepth.maximum,
             fixedDraftTokens: draftDepth.fixed,
+            fixedDraftTokensByDecodeRows: MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+                modelID: modelId,
+                hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil),
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
             acceptance: mtpAcceptance.acceptance)
@@ -392,7 +395,9 @@ enum EngineV2SlotFactory {
                     hybridPrefixCache: hybridPrefixCache,
                     nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
                         layerKinds: (servingModel as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
-                        gemmaAssistantActive: assistantHandle?.drafter != nil && mtpConfig.effectiveEnabled),
+                        gemmaAssistantActive: EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
+                            assistantAttached: assistantHandle?.drafter != nil,
+                            mtpEnabled: mtpConfig.effectiveEnabled, status: mtpStatus)),
                     pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(

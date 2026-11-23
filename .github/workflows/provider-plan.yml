@@ -14,7 +14,7 @@ on:
         type: string
         default: ''
       run_tests:
-        description: Whether to evaluate and route the macOS provider/cluster test lanes
+        description: Whether the caller runs the test jobs (provider-tests.yml); routes their lanes, ci-plan-checks's included
         type: boolean
         default: true
     outputs:
@@ -269,10 +269,11 @@ jobs:
   # Chooses a Darkbloom Sandbox or the Blacksmith fallback for the macOS jobs
   # of provider-tests.yml. This table is the one place that names each job's
   # lane and size. A lane is granted whole or falls back whole, so each job
-  # (each shard) has a lane of its own and falls back alone, except where two
-  # shards share one lane with a count of 2: the two Cluster Focused Checks
-  # shards, Cluster Runtime Tests shards 2 and 3 (test-cluster-2) and shards
-  # 4 and 5 (test-cluster-3). A lane asks for a job only when the job runs.
+  # (each shard) has a lane of its own and falls back alone, except where
+  # shards share one lane with a count: the two Cluster Focused Checks
+  # shards, Cluster Runtime Tests shards 2, 3, 6 and 7 (test-cluster-2, a
+  # count of 4) and shards 4 and 5 (test-cluster-3). A lane asks for a job
+  # only when the job runs.
   #
   # Every lane names its size (<vCPUs>x<GiB>) after its count and its
   # placement, `balanced` (darkbloom-route.yml), so no lane gets the
@@ -284,7 +285,7 @@ jobs:
   # the exception: they ask for 8x16, on which a cold build is 5 to 10%
   # slower, though a cold build with 12 compile jobs used up to 13.6 GiB,
   # more than 16 / 1.25. The sampled memory of each job is in
-  # docs/developer/build.md (Job sizes). Two test lanes ask for more than
+  # docs/developer/build.md (Job sizes). Three test lanes ask for more than
   # their memory needs: test-cluster-1 for 4x24, because its GLM-5.3
   # resident-stage tests need more than 16 GiB of physical memory
   # (ClusterStageResidency keeps max(16 GiB, a tenth) for the system), and
@@ -296,10 +297,21 @@ jobs:
   # memory and fail at 16 GiB. At 4x16 both lanes failed every Darkbloom run
   # (10 of 10, 14 of 14); at 8x16 test-provider-1 failed those suites.
   # 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB.
+  # test-provider-gates (Provider Gates) asks for 4x24, the size its gates
+  # passed on in the last shard: its 7.9 GiB would fit 4x16, but four of its
+  # native MiMo gates size their KV budget from the host's physical memory,
+  # and they have never run at 16 GiB. They kept at most 3.25 of 4 vCPUs busy
+  # (1.4 on average), so 12x32 would not end them sooner.
   #
   # The lanes are listed with the critical-path test shards first, then the
   # build jobs and Cluster Release Build Checks, then the non-blocking GPU
   # shards.
+  #
+  # Before them, Check the CI plans (provider-tests.yml's ci-plan-checks)
+  # asks for one Linux job on every run that runs the test jobs. It runs
+  # Python only, beside the test jobs, which usually outlast it by minutes,
+  # so the sandbox's start mainly delays a run that tests no component. Its
+  # fallback is the GitHub-hosted ubuntu-24.04 it ran on before it was routed.
   route:
     needs: components
     if: ${{ !cancelled() }}
@@ -308,7 +320,8 @@ jobs:
     with:
       lanes: |
         ${{ inputs.linux_lanes }}
-        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x24
+        ci-plan-checks linux_arm64 ubuntu-24.04 ${{ inputs.run_tests && 1 || 0 }} balanced 4x16
+        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 4 || 0 }} balanced 4x24
         test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
         test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
         test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
@@ -316,6 +329,8 @@ jobs:
         test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
         test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
         test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-5 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-gates macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
         build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
         build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
         cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16

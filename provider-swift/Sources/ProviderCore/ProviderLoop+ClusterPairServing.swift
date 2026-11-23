@@ -51,6 +51,23 @@ public struct ClusterPairServingContext: Sendable {
         self.observabilityFacts = observabilityFacts; self.makeOwner = makeOwner
     }
 
+    /// Why a pair did not become ready, as the leader records it: the pair's error, each rank's readiness and owner,
+    /// and rank 1's own words when it gave any (its worker refused its load, say), so the incident and the stopped line
+    /// say why rank 1 ended, not only that its owner exited. A clean exit is said as such (`cleanEndWords`).
+    static func notReadyReason(_ error: Error, rankZero: (ready: Bool, owner: String), rankOne: (ready: Bool, owner: String),
+                               followerSaid: String?) -> String {
+        "the pair did not become ready: \(String(reflecting: error)); "
+            + "rank 0 ready \(rankZero.ready) owner \(rankZero.owner); rank 1 ready \(rankOne.ready) owner \(rankOne.owner)"
+            + (followerSaid.map { ClusterOnboardingPairReport.followerSaidMarker + cleanEndWords($0) } ?? "")
+    }
+
+    /// The follower's words with its owner's clean exit ("its owner exited with status 0") said as "its owner ended
+    /// cleanly": the incident rules read "exited with status" as a crash, which a worker that refused its load and
+    /// ended properly is not. Any other exit keeps its words.
+    static func cleanEndWords(_ said: String) -> String {
+        said.replacingOccurrences(of: "its owner exited with status 0", with: "its owner ended cleanly")
+    }
+
     /// The production owner: `ClusterWorkerPair` over the session's endpoint
     /// (rank 0) and the follower's (`follower`: the link endpoint, S08), with
     /// keep-warm on, under the pipe owner the installed session uses.
@@ -95,9 +112,10 @@ public struct ClusterPairServingContext: Sendable {
                 if named is DistributedInstalledStartRefusal { throw named }
                 let link = peer as? ClusterLinkWorkerEndpoint
                 let own = start.endpoint as? ClusterRemoteWorkerEndpoint
-                throw ClusterPairSlotError.notServing("the pair did not become ready: \(String(reflecting: error)); "
-                    + "rank 0 ready \(start.endpoint.readiness != nil) owner \(own?.ownerTermination.map { "\($0)" } ?? "running"); "
-                    + "rank 1 ready \(peer.readiness != nil) owner \(link?.ownerTermination.map { "\($0)" } ?? "running")")
+                throw ClusterPairSlotError.notServing(Self.notReadyReason(error,
+                    rankZero: (start.endpoint.readiness != nil, own?.ownerTermination.map { "\($0)" } ?? "running"),
+                    rankOne: (peer.readiness != nil, link?.ownerTermination.map { "\($0)" } ?? "running"),
+                    followerSaid: link?.followerReason))
             }
             do { return try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: chunkTokens, routing: routing()?.routing) }
             catch { Task { await pair.shutdown() }; throw error }
@@ -149,7 +167,8 @@ extension ProviderLoop: NativePairMemberServingHost {
         catch {
             // S24: a pair that could not form is a launch failure with a reason.
             let guidance = recordClusterPairIncident(.activationLaunchFailed, error: error, context: context, start: start)
-            Self.reportPair(ClusterOnboardingPairReport.stoppedLine(guidance ?? "the pair did not form"))
+            Self.reportPair(ClusterOnboardingPairReport.stoppedLine(
+                ClusterOnboardingPairReport.stoppedWords(guidance: guidance, error: String(describing: error))))
             endClusterPairServing(epoch); throw error
         }
         // A stop that arrived while the pair formed wins: nothing publishes,

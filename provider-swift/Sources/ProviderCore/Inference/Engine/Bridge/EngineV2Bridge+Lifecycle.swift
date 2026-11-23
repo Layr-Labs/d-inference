@@ -7,6 +7,26 @@ import ProviderCoreFoundation
 import os
 #endif
 
+/// One-way submission fence for an installation that retained a native
+/// fault. Synchronous on both sides: the owner closes it in the same step
+/// that publishes its quarantine, and the bridge reads it at the submission
+/// commit (`canSubmitWithNativeOwner`). On a local engine that check, the
+/// engine's submit and the row's registration run in one actor step, so a
+/// submission either committed before the close (and is cancelled by
+/// `EngineV2Bridge.fenceAfterRetainedFault`) or is refused.
+final class EngineV2RetainedFaultFence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var closed = false
+
+    func close() {
+        lock.withLock { closed = true }
+    }
+
+    var isClosed: Bool {
+        lock.withLock { closed }
+    }
+}
+
 extension EngineV2Bridge {
     #if canImport(os)
     private static let lifecycleLogger = Logger(
@@ -30,6 +50,25 @@ extension EngineV2Bridge {
         }
         if let cbv2Id = idMap[requestId] {
             ownedEngine?.cancel(cbv2Id)
+        }
+    }
+
+    /// The bridge's installation retained a native fault (a failed fence in
+    /// media preparation, `NemotronSuperLocalBridgeBuilder.Owner`). Its owner
+    /// closed `retainedFaultFence` as it published the quarantine, so no
+    /// submission commits after that; this closes it too (idempotent) and
+    /// cancels every row committed before it, admitted or pending. The engine
+    /// drops each cancelled row at the first step boundary after its
+    /// cancellation is recorded. Neither the hop to this actor nor the sweep is
+    /// atomic with a boundary, so a committed row keeps stepping until its
+    /// cancellation lands; stopping every row at one boundary without retiring
+    /// the installation needs an engine operation the SDK does not have yet.
+    /// Resources stay with the quarantined installation; this is not a
+    /// shutdown or a retirement receipt.
+    public func fenceAfterRetainedFault() {
+        retainedFaultFence.close()
+        for requestID in Array(active.keys) + Array(pendingSubmissionIDs) {
+            cancel(requestId: requestID)
         }
     }
 

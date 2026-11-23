@@ -522,7 +522,9 @@ tier's refusals of a `memory_only` request's engine calls
 (`darkbloom_memory_only_ssd_refusals_total`) and every time one reached an SSD
 read, write or index path, each refused there
 (`darkbloom_memory_only_ssd_tier_touches_total`, which stays 0)
-(`RequestCachePolicyCounters`).
+(`RequestCachePolicyCounters`). Both SSD counts stay 0 while `memory_only`
+requests run with their cache off; they count only for a memory-only request
+that runs with a cache on, as with a RAM-only tier.
 
 ### A long prompt's progress
 

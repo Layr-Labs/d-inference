@@ -906,10 +906,11 @@ jobs:
     # DarkbloomClusterRuntimeTests in selections, each in its own process, on
     # separate Macs (scripts/cluster-test-plan.py): every test without a
     # switch, and the switched tests that pass on these runners. Shard 1 runs
-    # the base selection, the share probe, then qwen-tp-aqv-gpu, one at a
-    # time; shards 2, 3, 6 and 7 each run a GPU group beside a batch-session
-    # group; shards 4 and 5 each run two groups of model-free base
-    # selections at the same time.
+    # the base selection, the share probe, then base-gemma-runtime, one at a
+    # time; shards 2, 3, 6 and 7 each run a GPU group beside a group of base
+    # selections that starts with a batch-session selection; shards 4 and 5
+    # each run two groups of model-free base selections at the same time.
+    # Shard 6 also runs the worker package's request lifecycle tests.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
     # Starts beside Build cluster test products and waits for its products, as
     # test-provider does for its build.
@@ -1015,12 +1016,36 @@ jobs:
           key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Start the resource sampler
         run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      # The worker package's own request lifecycle tests (WorkerTests,
+      # WorkerLaneTests: the coordinator over its real pipes with a fake
+      # runtime, CPU only), which no other job runs: among them D6's no-exit
+      # path, a running request ended alone for a rank's memory while the
+      # worker serves the next. They need no test products, so shard 6, the
+      # shortest runtime shard, builds and runs them (a debug build of their
+      # own, outside the checkout, on the runner's 4 vCPUs) while it waits for
+      # the cluster build (scripts/ci-background-step.py).
+      - name: Select SDK 27 provider toolchain
+        id: toolchain
+        if: ${{ matrix.shard == 6 }}
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      - name: Start the worker's request lifecycle tests
+        id: worker-lifecycle
+        if: ${{ matrix.shard == 6 && steps.toolchain.outcome == 'success' }}
+        env:
+          DARKBLOOM_WORKER_TEST_JOBS: '4'
+          DARKBLOOM_WORKER_TEST_SCRATCH: ${{ runner.temp }}/worker-lifecycle-build
+        run: python3 scripts/ci-background-step.py start "$RUNNER_TEMP/worker-lifecycle" bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh
       - name: Download cluster test products
         id: test-products
         uses: ./.github/actions/provider-ci-products
         with:
           lane: cluster
           direction: download
+      # Fails the job when they failed. It ends before the runtime tests start,
+      # which then have the Mac to themselves, and they run either way.
+      - name: Wait for the worker's request lifecycle tests
+        if: ${{ !cancelled() && steps.worker-lifecycle.outcome == 'success' }}
+        run: python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/worker-lifecycle"
       - name: Run cluster runtime tests
         if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
         timeout-minutes: 40
@@ -1320,17 +1345,6 @@ jobs:
           DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
           DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
         run: bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
-      # The worker package's own request lifecycle tests (WorkerTests,
-      # WorkerLaneTests: the coordinator over its real pipes with a fake
-      # runtime, CPU only), which no other job runs: among them D6's no-exit
-      # path, a running request ended alone for a rank's memory while the
-      # worker serves the next. A debug build of its own, on all the cores.
-      - name: Run the worker's request lifecycle tests
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        timeout-minutes: 45
-        env:
-          DARKBLOOM_WORKER_TEST_JOBS: '12'
-        run: bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh
       # Only pushes to master and dev save the cluster build (SAVE_CACHES).
       - name: Record source timestamps for the cluster build
         if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}

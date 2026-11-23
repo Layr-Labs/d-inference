@@ -1123,6 +1123,7 @@
 "ProviderCoreTests.QwenJSONAnswerServingTests": 0.512,
 "ProviderCoreTests.QwenJSONFreeSpanTests": 0.319,
 "ProviderCoreTests.QwenJSONSchemaRewriteTests": 0.715,
+"ProviderCoreTests.QwenMediaPrepStreamTests": 2.0,
 "ProviderCoreTests.QwenPerImageVisionEquivalenceTests": 0.0,
 "ProviderCoreTests.QwenReasoningBeforeToolsTests": 4.39,
 "ProviderCoreTests.QwenStrayThinkCloseConformanceTests": 0.007,

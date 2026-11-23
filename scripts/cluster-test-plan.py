@@ -142,9 +142,10 @@ GEMMA_BATCH_DECODE_SUITES = ("Gemma4BatchDecodeTests",)
 GEMMA_OWN_SELECTION_SUITES = (GEMMA_TENSOR_PARALLEL_SUITES + GEMMA_RUNTIME_SUITES + GEMMA_PREFIX_SUITES
                               + GEMMA_BATCH_DECODE_SUITES)
 # CPU suites of other families that left `base` (469 s alone on shard 1 before they left) for
-# a CPU group on shard 5: the Qwen tensor-parallel wavefront and MTP session
-# suites (136 s) and the MiMo tensor-parallel suites (101 s). Their switched
-# tests still run only in their switch's selection.
+# CPU groups: the Qwen tensor-parallel wavefront and MTP session suites (86 s
+# in runs 44924815069 and 44927907327), on shard 2, and the MiMo
+# tensor-parallel suites (101 to 104 s), on shard 5. Their switched tests
+# still run only in their switch's selection.
 QWEN_TP_CPU_SUITES = ("QwenTensorParallelAssistedPromptWavefrontTests", "QwenTensorParallelMTPSessionTests")
 MIMO_TP_SUITES = ("MiMoTensorParallelFloat32PartialTests", "MiMoTensorParallelResidentTests",
                   "MiMoTensorParallelSpeculativeTests", "MiMoTensorParallelTests")
@@ -163,39 +164,39 @@ BATCH_SESSION_HISTORY_TESTS = (
     "actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives",
     "controlWordsInTheSelectionSumKeepTokensAndLogprobs",
 )
-# The suite's tenant-partition test (96 s), in a process of its own on shard 5.
+# The suite's tenant-partition test (89 to 96 s), in a process of its own on shard 7.
 BATCH_SESSION_PARTITION_TESTS = ("partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing",)
-# Small base suites (33 s) that run on shard 4, which keeps shard 1 under
-# about 360 s with qwen-tp-aqv-gpu after `base`.
+# Small base suites (32 to 46 s) that left `base` for shard 4 to shorten shard 1.
 SHARD_4_BASE_SUITES = ("GLM5NextTensorParallelPrefillPlanTests", "GPTOSSBatchForwardTests",
                        "QwenTensorParallelMediaAdmissionTests")
 # The three longest base suites without a model's memory (synthetic Qwen 3.5
 # stage KV and the SSD prefix record codec: 72 and 89 s in runs 44895671420 and
-# 44898503457), run on shard 5 after base-qwen-tp-cpu. Shard 1 ran `base`,
-# the probe and qwen-tp-aqv-gpu one after another for 411 and 469 s, the
-# longest shard in both runs; shard 5's group 1 ended about 100 s before its
-# group 2.
+# 44898503457), run on shard 5 after the Gemma batch decode suite. Shard 1
+# ran `base`, the probe and qwen-tp-aqv-gpu one after another for 411 and
+# 469 s, the longest shard in both runs.
 SHARD_5_BASE_SUITES = ("CBv2PagedGrowthSyntheticTests", "CBv2PagedQuantizedStageTests", "PrefixDiskEncodingTests")
 
 SELECTIONS = (
-    # The test steps of shards 2, 3, 6 and 7 are planned to stay under about
-    # 330 s on a 4-vCPU Darkbloom runner, and those of shards 1, 4 and 5 under
-    # about 470 s. Seconds below are each process's wall time in dev run
-    # 44670152270 unless they name other runs.
-    # Shard 1 runs one process at a time: `base` (198 s), then the share
-    # probe, then qwen-tp-aqv-gpu (151 s). The probe times its share against
-    # a 1.5 s budget, so it runs right after `base` and never on a Mac just
-    # after the concurrent GPU groups (run 41973436945 failed it there).
-    # Shards 2, 3, 6 and 7 each run a GPU group beside a CPU group of the
-    # batch-session suite (4x24 Darkbloom seconds of runs 44909381968,
-    # 44912466550 and 44914459288). Shard 2: qwen-tp-batch-gpu (364 to 400 s
-    # with its prefix depth test, 113 to 126 s of it) and tf32-off, beside
-    # base-batch-session. Shard 3: qwen-tp-batch-gpu-paged, the MoE, GLM
-    # prefix-SSD, row and depth invariance and Gemma diagnostic selections,
-    # beside the warm prefix tier test. Shard 6: qwen-tp-mtp-gpu (251 to
-    # 316 s), beside the SSD prefix tier test. Shard 7: the batch GPU prefix
-    # depth test and the GLM paged-KV selection, beside the suite's two
-    # history tests. On 5 shards, shards 2 and 3 ran 439 to 571 s.
+    # Every shard's test step is planned to stay under about 300 s on a
+    # 4-vCPU Darkbloom runner. Seconds below are each process's wall time in
+    # runs 44924815069 and 44927907327 (2026-11-21) unless they name other
+    # runs; in those runs shards 1, 4 and 5 ran 267 to 395 s and the others
+    # 169 to 243 s.
+    # Shard 1 runs one process at a time: `base` (108 to 145 s), then the
+    # share probe, then base-gemma-runtime (92 to 109 s). The probe times its
+    # share against a 1.5 s budget, so it runs right after `base` and never on
+    # a Mac just after the concurrent GPU groups (run 41973436945 failed it
+    # there).
+    # Shards 2, 3, 6 and 7 each run a GPU group beside a CPU group that starts
+    # with a batch-session selection. Shard 2: qwen-tp-batch-gpu (182 s) and
+    # tf32-off, beside base-batch-session (155 s), then base-qwen-tp-cpu.
+    # Shard 3: qwen-tp-batch-gpu-paged, the MoE, GLM prefix-SSD and paged-KV
+    # (35 to 54 s), row and depth invariance and Gemma diagnostic selections,
+    # beside the warm prefix tier test (179 to 217 s). Shard 6:
+    # qwen-tp-mtp-gpu (179 s), beside the SSD prefix tier test (112 s), then
+    # base-gemma-prefix (75 to 87 s). Shard 7: the batch GPU prefix depth test
+    # (80 s), then qwen-tp-aqv-gpu (128 to 161 s), beside the suite's two
+    # history tests (148 s), then its partition test.
     # Shards 4 and 5 each run two groups of base selections (below).
     Selection("base-batch-session", "blocking", 2, suites=BATCH_SESSION_SUITES, group=2),
     Selection("base-batch-session-warm-prefix-tier", "blocking", 3, suites=BATCH_SESSION_SUITES,
@@ -212,27 +213,25 @@ SELECTIONS = (
     # Shards 4 and 5: model-free base suites, nearly all on the CPU, where each
     # process keeps about one vCPU busy (busy vCPUs 0.83 on average while
     # Gemma4TensorParallelTests ran alone, run 44654386274). Each shard runs
-    # two groups at the same time, about 220 to 330 s each (run 44654386274, plus the later additions below):
-    # shard 4 the oracle (200 s), then the resident runtime suite (87 s),
-    # beside the rest of Gemma4TensorParallelTests (188 s), then the prompt
-    # prefix suite (77 s); shard 5 the Gemma batch decode suite (147 s), then
-    # the Qwen CPU suites (136 s), beside the other Gemma suites (120 s), then
-    # the MiMo tensor-parallel suites (101 s). Shard 4's group 2 then runs
-    # base-shard-4 (33 s); shard 5's group 1 then runs base-shard-5 (72 to
-    # 89 s) and its group 2 the batch-session suite's partition test (96 s).
+    # two groups at the same time: shard 4 the oracle (195 to 247 s), beside
+    # the rest of Gemma4TensorParallelTests (183 to 231 s), then base-shard-4
+    # (32 to 46 s); shard 5 the Gemma batch decode suite (146 s), then
+    # base-shard-5 (65 to 67 s), beside the other Gemma suites (123 to 125 s),
+    # then the MiMo tensor-parallel suites. The base selections of the other
+    # shards ran here, where shards 4 and 5 ran 316 to 395 s.
     Selection("base-gemma-tensor-parallel-oracle", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES,
               functions=GEMMA_TENSOR_PARALLEL_ORACLE_TESTS, group=1),
-    Selection("base-gemma-runtime", "blocking", 4, suites=GEMMA_RUNTIME_SUITES, group=1),
+    Selection("base-gemma-runtime", "blocking", 1, suites=GEMMA_RUNTIME_SUITES),
     Selection("base-gemma-tensor-parallel", "blocking", 4, suites=GEMMA_TENSOR_PARALLEL_SUITES, group=2),
-    Selection("base-gemma-prefix", "blocking", 4, suites=GEMMA_PREFIX_SUITES, group=2),
+    Selection("base-gemma-prefix", "blocking", 6, suites=GEMMA_PREFIX_SUITES, group=2),
     Selection("base-shard-4", "blocking", 4, suites=SHARD_4_BASE_SUITES, group=2),
     Selection("base-gemma-batch-decode", "blocking", 5, suites=GEMMA_BATCH_DECODE_SUITES, group=1),
-    Selection("base-qwen-tp-cpu", "blocking", 5, suites=QWEN_TP_CPU_SUITES, group=1),
+    Selection("base-qwen-tp-cpu", "blocking", 2, suites=QWEN_TP_CPU_SUITES, group=2),
     Selection("base-shard-5", "blocking", 5, suites=SHARD_5_BASE_SUITES, group=1),
     Selection("base-gemma", "blocking", 5,
               suites=tuple(suite for suite in GEMMA_SUITES if suite not in GEMMA_OWN_SELECTION_SUITES), group=2),
     Selection("base-mimo-tp", "blocking", 5, suites=MIMO_TP_SUITES, group=2),
-    Selection("base-batch-session-partitions", "blocking", 5, suites=BATCH_SESSION_SUITES,
+    Selection("base-batch-session-partitions", "blocking", 7, suites=BATCH_SESSION_SUITES,
               functions=BATCH_SESSION_PARTITION_TESTS, group=2),
     Selection("qwen-tp-batch-gpu", "blocking", 2, {"QWEN_TP_BATCH_GPU": "1"}, tests=(
         "bothTilesGiveTheSameBytes",
@@ -259,7 +258,7 @@ SELECTIONS = (
         "promptLayerSubmissionKeepsEveryBit",
     ), group=1),
     Selection("qwen-tp-mtp-gpu", "blocking", 6, {"QWEN_TP_MTP_GPU": "1"}, tests=QWEN_TP_MTP_GPU_TESTS, group=1),
-    Selection("qwen-tp-aqv-gpu", "blocking", 1, {"QWEN_TP_AQV_GPU": "1"}, tests=(
+    Selection("qwen-tp-aqv-gpu", "blocking", 7, {"QWEN_TP_AQV_GPU": "1"}, tests=(
         "declinesWhatItDoesNotCover",
         "agreesWithTheDequantizedProduct",
         "everyVectorEqualsItsOwnSingleVectorCall",
@@ -269,7 +268,7 @@ SELECTIONS = (
         "siluMultiplyEqualsTheUnfusedChain",
         "sigmoidGateEqualsTheUnfusedChain",
         "cachedGatedDeltaScalesEqualFreshOnes",
-    )),
+    ), group=1),
     Selection("qwen-tp-moe-gpu", "blocking", 3, {"QWEN_TP_MOE_GPU": "1", "QWEN_TP_MOE_GPU_DIAG": "1"}, tests=(
         "packedSharedExpertCollectiveIsBitIdenticalOnTwoGPURanks",
         "packedRunsRepeatAndShortPromptsOnTwoGPURanks",
@@ -278,7 +277,7 @@ SELECTIONS = (
         "aServingStageRestoresFromTheSSDExactly",
         "aServingStageRestoresFromABalancedRecord",
     ), group=1),
-    Selection("glm53-paged-kv", "blocking", 7, {"GLM53_PAGED_KV": "1"}, tests=(
+    Selection("glm53-paged-kv", "blocking", 3, {"GLM53_PAGED_KV": "1"}, tests=(
         "pagedRequestsDecideAndHoldWhatContiguousOnesDo",
         "pagedMediaRequestsDecideAndHoldWhatContiguousOnesDo",
     ), group=1),

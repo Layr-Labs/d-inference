@@ -512,7 +512,7 @@ enum ToolConstraintSchemaCompiler {
         var properties: [ToolValueSchema.Property] = []
         properties.reserveCapacity(rawProperties.count)
         for (name, raw) in rawProperties.sorted(by: { $0.key < $1.key }) {
-            if propertyNames == .identifiers, !ToolChoicePromptPolicy.isValidFunctionName(name) {
+            if !ToolChoicePromptPolicy.isValidFunctionName(name) {
                 throw ToolConstraintSchemaError.unsupported(
                     "\(path) property names must match ^[a-zA-Z0-9_-]{1,64}$")
             }

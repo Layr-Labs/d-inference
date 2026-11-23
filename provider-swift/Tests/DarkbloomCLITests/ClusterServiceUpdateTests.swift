@@ -19,22 +19,39 @@ struct ClusterServiceUpdateTests {
     }
 
     /// `darkbloom update`'s wait clock, moved only by the command's own sleeps: each moves it on by the time slept,
-    /// then calls `moved` with the milliseconds since the start. No assertion reads this Mac's clock.
+    /// then calls `moved` with the milliseconds since the start. No assertion reads this Mac's clock. A wait that never
+    /// ends is a failure, not a hang: after `maximumReadsWithoutASleep` reads with no sleep between them (a wait that
+    /// no longer sleeps on this clock), it records an issue and runs the clock out.
     private final class SteppedClock: @unchecked Sendable {
+        static let maximumReadsWithoutASleep = 100
+
         private let lock = NSLock()
         private var milliseconds = 0
         private var sleepCount = 0
+        private var readsWithoutASleep = 0
         private let moved: @Sendable (Int) -> Void
 
         init(moved: @escaping @Sendable (Int) -> Void) { self.moved = moved }
 
         var sleeps: Int { lock.withLock { sleepCount } }
 
+        private func read() -> Date {
+            let (now, ranOut) = lock.withLock { () -> (Int, Bool) in
+                readsWithoutASleep += 1
+                let ranOut = readsWithoutASleep == Self.maximumReadsWithoutASleep
+                if ranOut { milliseconds += 86_400_000 }
+                return (milliseconds, ranOut)
+            }
+            if ranOut { Issue.record("the wait read its clock \(Self.maximumReadsWithoutASleep) times without sleeping on it") }
+            return Date(timeIntervalSince1970: Double(now) / 1000)
+        }
+
         var wait: ClusterServiceUpdateRequest.WaitClock {
-            .init(now: { Date(timeIntervalSince1970: Double(self.lock.withLock { self.milliseconds }) / 1000) },
+            .init(now: { self.read() },
                   sleep: { seconds in
                       let now = self.lock.withLock { () -> Int in
                           self.sleepCount += 1
+                          self.readsWithoutASleep = 0
                           self.milliseconds += Int((seconds * 1000).rounded())
                           return self.milliseconds
                       }
@@ -343,7 +360,7 @@ struct ClusterServiceUpdateTests {
     /// R5-3 (M5 Ultra pair, 0.10.7 → 0.10.8): the restarted service published `idle` running the new release before
     /// the command saw its own request reach `restarting`, and the command waited out its whole timeout. This Mac
     /// running the release it asked for is the restart done, and the command says so.
-    @Test func darkbloomUpdateEndsOnceThisMacRunsTheRelease() async throws {
+    @Test(.timeLimit(.minutes(1))) func darkbloomUpdateEndsOnceThisMacRunsTheRelease() async throws {
         let directory = try temporaryDirectory("cluster-update-restarted")
         defer { try? FileManager.default.removeItem(at: directory) }
         let progressPath = ClusterServiceAgent.updateProgressPath(serviceDirectory: directory)

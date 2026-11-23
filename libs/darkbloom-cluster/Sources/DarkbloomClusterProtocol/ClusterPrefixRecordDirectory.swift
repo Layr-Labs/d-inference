@@ -27,8 +27,26 @@ public enum ClusterPrefixRecordDirectory {
         return fd
     }
 
-    /// A failed open (including a missing `in-use`) or flock never grants permission to clean.
+    /// A failed open (including a missing `in-use`) or flock never grants permission to clean
+    /// by itself; see `repairLease` for a missing lock under the root's exclusive lock.
     enum Lease { case acquired(Int32), held, unknown }
+
+    /// True only when the plan's `in-use` name does not exist at all.
+    static func leaseMissing(_ plan: Int32) -> Bool {
+        var s = stat()
+        return fstatat(plan, "in-use", &s, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT
+    }
+
+    /// Recreates a missing `in-use`, then leases it. Only for a caller that holds
+    /// the root exclusively: every rank holds the root shared before it creates a
+    /// plan or its lock, so none can be between those steps, and an earlier
+    /// build's interrupted removal or a crash leaves no other owner of the plan.
+    static func repairLease(_ plan: Int32) -> Lease {
+        let fd = openat(plan, "in-use", O_RDONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return .unknown }
+        close(fd)
+        return lease(plan)
+    }
 
     static func lease(_ plan: Int32) -> Lease {
         let fd = openat(plan, "in-use", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
@@ -43,14 +61,24 @@ public enum ClusterPrefixRecordDirectory {
         return .acquired(fd)
     }
 
-    public static func withIdlePlan<T>(root: Int32, name: String, device: dev_t, _ visit: (Int32) -> T) -> T? {
-        withLeasedPlan(root: root, name: name, device: device) { fd, _ in visit(fd) }
+    /// `repairingMissingLease`: a plan without `in-use` gets one when the root's
+    /// exclusive lock is free (no rank on this root); else it is skipped. Only
+    /// for a caller holding no other lock on `root`.
+    public static func withIdlePlan<T>(root: Int32, name: String, device: dev_t, repairingMissingLease: Bool = false,
+                                       _ visit: (Int32) -> T) -> T? {
+        withLeasedPlan(root: root, name: name, device: device, repairingMissingLease: repairingMissingLease) { fd, _ in visit(fd) }
     }
 
-    public static func withLeasedPlan<T>(root: Int32, name: String, device: dev_t, _ visit: (Int32, Int32) -> T) -> T? {
+    public static func withLeasedPlan<T>(root: Int32, name: String, device: dev_t, repairingMissingLease: Bool = false,
+                                         _ visit: (Int32, Int32) -> T) -> T? {
         guard isPlan(name), let plan = openChild(root, name, device: device) else { return nil }
         defer { close(plan) }
-        guard case .acquired(let lease) = lease(plan) else { return nil }
+        var leased = lease(plan)
+        if case .unknown = leased, repairingMissingLease, leaseMissing(plan), flock(root, LOCK_EX | LOCK_NB) == 0 {
+            leased = repairLease(plan)
+            _ = flock(root, LOCK_UN)
+        }
+        guard case .acquired(let lease) = leased else { return nil }
         defer { close(lease) }
         return visit(plan, lease)
     }
@@ -72,18 +100,20 @@ public enum ClusterPrefixRecordDirectory {
     }
 
     /// A rank publishes only its resolved duration. No pairing identity is needed by maintenance.
-    /// Older records have no stamp. An unreadable or malformed stamp skips the rank.
+    /// Older records have no stamp. An empty or malformed stamp (an interrupted
+    /// write) counts as none: `local` is never shorter than `min(local, stamp)`.
+    /// A stamp that cannot be opened or is not this user's regular file skips the rank.
     public static func cleanupTTL(rankFD: Int32, local: Int) -> Int? {
         let fd = openat(rankFD, ttlFile, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { return errno == ENOENT ? local : nil }
         defer { close(fd) }
         var s = stat()
-        guard fstat(fd, &s) == 0, s.st_mode & S_IFMT == S_IFREG, s.st_uid == getuid(),
-              (1...5).contains(s.st_size) else { return nil }
+        guard fstat(fd, &s) == 0, s.st_mode & S_IFMT == S_IFREG, s.st_uid == getuid() else { return nil }
+        guard (1...5).contains(s.st_size) else { return local }
         var bytes = [UInt8](repeating: 0, count: Int(s.st_size))
         guard read(fd, &bytes, bytes.count) == bytes.count, bytes.last == 10,
               let n = Int(String(decoding: bytes.dropLast(), as: UTF8.self)), (1...1_800).contains(n),
-              bytes == Array("\(n)\n".utf8) else { return nil }
+              bytes == Array("\(n)\n".utf8) else { return local }
         return min(local, n)
     }
 }

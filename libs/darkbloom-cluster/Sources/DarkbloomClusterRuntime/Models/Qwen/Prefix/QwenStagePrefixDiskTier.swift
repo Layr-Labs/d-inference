@@ -26,11 +26,12 @@ struct QwenStagePrefixDiskFault: Equatable {
 /// directory. Directories of other plans under the root are kept
 /// while their records are live, inside this rank's one byte budget (finding
 /// F5/S4: a model or mode switch deleted the other model's whole cache on
-/// both Macs, so switching back started cold). At load every rank deletes
-/// their expired records and every other plan directory left without a live
-/// record (deleted deployments still leave no orphans past the TTL), and
-/// their oldest records go first whenever all plans together exceed the
-/// budget. Switched off, every plan directory goes.
+/// both Macs, so switching back started cold). At load every rank removes
+/// their expired records it can lease and every other idle plan directory left
+/// without a live record (a deleted deployment's records are not reused past the
+/// TTL; their removal waits for a pass that can lease the plan), and their
+/// oldest records go first whenever all plans together exceed the budget.
+/// Switched off, every plan directory that no rank holds goes.
 ///
 /// A record is one prompt's state on this rank: its attention rows up to the
 /// prompt's deepest kept frontier (N-1) and its recurrent state at each kept
@@ -45,8 +46,9 @@ struct QwenStagePrefixDiskFault: Equatable {
 /// dropped, never waited for. Eviction is least recently used by record count
 /// (identical on both ranks, whose operations are identical), then by bytes
 /// against this rank's budget (a safety bound that may differ between ranks:
-/// a frontier one rank no longer holds is simply not chosen). Records expire
-/// after the sliding TTL (30 minutes maximum, as the product's SSD tier).
+/// a frontier one rank no longer holds is simply not chosen). A record is not
+/// reused after the sliding TTL (30 minutes maximum, as the product's SSD
+/// tier); its file goes at a later pass that finds it unpinned.
 /// Writes stop below the free-space floor and the daily write cap.
 ///
 /// Staging: a record is written to `<root>/staging/<membership epoch>/rank<r>/` and
@@ -239,7 +241,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         loadIndex()
         let stamp = directory.appendingPathComponent(ClusterPrefixRecordDirectory.ttlFile)
         let temp = directory.appendingPathComponent(".expiry-\(UUID().uuidString).tmp")
-        guard Self.writePrivateFile(temp, Data("\(configuration.ttlSeconds)\n".utf8)),
+        guard Self.writePrivateFile(temp, Data("\(configuration.ttlSeconds)\n".utf8), synced: true),
               rename(temp.path, stamp.path) == 0 else {
             unlink(temp.path)
             throw ProbeError("Cannot save prefix record expiry setting")
@@ -606,7 +608,8 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// bound (it is making progress; a queued record is what a restarted pair
     /// restores), never when it is stuck. A write still running when the
     /// final bound passes stops at its next unit and leaves only a temporary
-    /// file, deleted at next load.
+    /// file under this epoch's staging, which the pair's orphan sweep removes
+    /// (at member start and end, and before a supervisor restart).
     func close(timeoutSeconds: Double? = nil) {
         lock.withLock {
             closing = true
@@ -804,12 +807,24 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         }
     }
 
+    /// The name stays reserved (not written) across the unlink, as in
+    /// `removeExpired`. A failed unlink restores the entry without its
+    /// frontiers and already due, so it is never offered and the next expiry
+    /// pass retries it.
     private func retireLocked(_ name: String) {
+        guard let record = records[name] else { return }
         dropFromIndex(name)
+        var retiring = record; retiring.written = false
+        records[name] = retiring
         group.enter()
         queue.async { [self] in
             defer { group.leave() }
-            _ = unlinkat(rankFD, name, 0)
+            let gone = unlinkat(rankFD, name, 0) == 0 || errno == ENOENT
+            lock.withLock {
+                guard !gone else { records[name] = nil; return }
+                var due = record; due.lastUseTime = -Double(configuration.ttlSeconds) - 1
+                records[name] = due
+            }
         }
     }
 
@@ -907,10 +922,11 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// Creates `url` (never an existing file or a link) owner-only (0600), as
     /// the records are, and writes `data`; false on any failure (S7: the
     /// key-check and write-window files were created 0644).
-    static func writePrivateFile(_ url: URL, _ data: Data) -> Bool {
+    /// `synced`: on disk before a rename publishes it.
+    static func writePrivateFile(_ url: URL, _ data: Data, synced: Bool = false) -> Bool {
         let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { return false }
-        let written = (try? QwenStagePrefixDiskIO.writeAll(fd, data, at: 0)) != nil
+        let written = (try? QwenStagePrefixDiskIO.writeAll(fd, data, at: 0)) != nil && (!synced || fsync(fd) == 0)
         return Darwin.close(fd) == 0 && written
     }
 

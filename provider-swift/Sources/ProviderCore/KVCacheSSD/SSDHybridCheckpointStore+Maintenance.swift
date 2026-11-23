@@ -231,6 +231,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     /// Called by the engine's handler after durable commit AND donor release.
     func publishReady(requestID: CBv2RequestID, positions: [Int]) {
         guard !MemoryOnlyReceipt.refusesTierAccess(requestID) else { return }
+        let now = config.nowSeconds()
         let delivery = lock.withLock { () -> (ReadyReceipt, PrefixCacheReadyResult)? in
             guard !closed, let proof = readyReceipts[requestID],
                 epochMatches(proof.epoch) else { return nil }
@@ -241,8 +242,9 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 guard proof.hashes.indices.contains(offset) else { continue }
                 let tag = Data(proof.tags[offset].prefix(16))
                 let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
+                // Only a chain every later stage would accept is advertised.
                 guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular,
-                    let size = index.chain(tag16: tag)?.bytes
+                    let size = index.chain(tag16: tag, now: now, ttlSeconds: config.ttlSeconds)?.bytes
                 else { continue }
                 maximumFileBytes = max(maximumFileBytes, size)
                 let anchor = PrefixCacheAnchor(chainHash: proof.hashes[offset].hexString, tokenCount: UInt64(position))

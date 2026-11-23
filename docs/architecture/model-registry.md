@@ -51,8 +51,8 @@ writer lease to unwind.
 
 ### Ranged downloads
 
-Per-connection throughput to the model CDN varies by network, from about 1 to
-20 MB/s, so one connection per multi-GB shard leaves a slow network idle. Each
+Per-connection throughput to the model CDN varies widely by network, so one
+connection per multi-GB shard leaves a slow network idle. Each
 source of a manifest file (Hugging Face first where the build has an artifact,
 then R2) goes through `ModelDownloader.fetchManifestFile`
 (`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Segments.swift`),

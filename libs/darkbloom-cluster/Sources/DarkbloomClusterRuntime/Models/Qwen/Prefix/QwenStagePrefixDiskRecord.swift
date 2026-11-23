@@ -665,9 +665,9 @@ enum QwenStagePrefixDiskIO {
                 throw ProbeError("Prefix record history unit missing")
             }
             let all = rows.array([1, frontier, shared.hiddenSize], dtype: hiddenDType)
-            let allTokens = tokens.array([1, shared.prompt - 1], dtype: tokensDType)
+            let frontierTokens = tokens.array([1, frontier - 1], dtype: tokensDType)
             guard let view = QwenMTPPrefixHistory.view(hidden: all[0..., 0 ..< (frontier - 1), 0...],
-                    tokens: allTokens[0..., 0 ..< (frontier - 1)], last: all[0..., (frontier - 1) ..< frontier, 0...],
+                    tokens: frontierTokens, last: all[0..., (frontier - 1) ..< frontier, 0...],
                     prompt: frontier, frontier: frontier) else {
                 throw ProbeError("Prefix record history does not describe its frontier")
             }
@@ -890,7 +890,9 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                 throw ProbeError("Prefix record shared history unit size differs")
             }
             sharedRows = try QwenStagePrefixRestoreBuffer(bytes: frontier * rowBytes)
-            sharedTokensBuffer = try QwenStagePrefixRestoreBuffer(bytes: (shared.prompt - 1) * tokens.size)
+            // Only the frontier's tokens are restored, so a shorter prompt that
+            // covers the frontier fills them.
+            sharedTokensBuffer = try QwenStagePrefixRestoreBuffer(bytes: (frontier - 1) * tokens.size)
             sharedBlocks = (frontier + b - 1) / b
         } else {
             sharedRows = nil; sharedTokensBuffer = nil; sharedBlocks = 0
@@ -975,8 +977,10 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                     plain.withUnsafeBytes { rows.pointer.advanced(by: first * rowBytes).copyMemory(from: $0.baseAddress!, byteCount: take) }
                 } else {
                     let plain = try open(shared.tokens)
-                    guard plain.count == tokens.bytes else { throw ProbeError("Prefix record shared history tokens differ") }
-                    try fillHistoryTokens(tokens, dtype: shared.tokensDType, count: shared.prompt - 1)
+                    guard plain.count + QwenStagePrefixDiskFormat.tagBytes == shared.tokens.length else {
+                        throw ProbeError("Prefix record shared history tokens differ")
+                    }
+                    try fillHistoryTokens(tokens, dtype: shared.tokensDType, count: frontier - 1)
                 }
                 lock.withLock { sharedDone += 1 }
             } else {

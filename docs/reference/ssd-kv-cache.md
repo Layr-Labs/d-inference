@@ -40,8 +40,10 @@ their own ledgers (`CacheStorage.writeBudgetRoot`).
 
 A request whose sealed `cache_policy` is `memory_only`
 ([protocol](protocol-messages.md#sealed-cache-policy)) leaves nothing below:
-it runs with its prefix cache off, and every SSD store refuses a memory-only
-receipt besides (`PrefixCacheSubmissionPolicy`, `MemoryOnlyReceipt`,
+it runs with its prefix cache off, so it makes no SSD call at all
+(`PrefixCacheSubmissionPolicy`). A memory-only request that ran with a cache on,
+as with a RAM-only tier, would carry receipts in a range every SSD store refuses
+(`MemoryOnlyReceipt`,
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/RequestCachePolicy.swift`).
 No file below holds a token ID or text. Another request may cause these:
 
@@ -56,16 +58,18 @@ No file below holds a token ID or text. Another request may cause these:
 | `cluster-prefix-v1/v1-<plan>/rank<r>/<tag>.dbpx`, on a pair | The request's prefix on that rank | Encrypted attention rows, recurrent state, MTP hidden rows (history tokens as zeros); the sealed header holds the scope, frontier counts and unkeyed SHA-256 record keys of scope and prompt. See [cluster records](#cluster-prompt-prefix-records) |
 | `cluster-prefix-v1/…/rank<r>/key-check`, `write-window`, `staging/<epoch>/…` | A rank's first record; each record; during a write | A keyed tag of a constant; the window's start and byte count; a partial record |
 
-Outside the cache, each completed coordinator request, `memory_only` or not,
-adds one record to `~/.darkbloom/usage-history.json` (owner-only; the last
-4,096 records): its request ID, the session's start, its completion time, the
-model and its input, output, cached and reasoning token counts
-(`ProviderUsageHistory` in
-`provider-swift/Sources/ProviderCore/Service/ProviderUsageHistory.swift`,
-written from `ProviderLoop.handleInferenceRequest`). While the desktop app is
-open, it also keeps the coordinator's settled records for this Mac (request
-and job IDs, completion time, token counts and earnings) in
-`~/.darkbloom/desktop/usage-history.json` (`DesktopUsageArchive`).
+Outside the cache, any request, `memory_only` included, still causes these.
+None holds prompt or output text, media, token IDs or a prompt digest:
+
+| File | Written when | Holds |
+|---|---|---|
+| `~/.darkbloom/usage-history.json` (owner-only, the last 4,096 records) | Each completed coordinator request (`ProviderUsageHistory`, from `ProviderLoop.handleInferenceRequest`) | Request ID, session start, completion time, model, input, output, cached and reasoning token counts |
+| `~/.darkbloom/daemon-state.json` | While requests run (`DaemonStateFile`) | Each running request's model, the first 8 hex digits of its request ID's SHA-256, elapsed time, output tokens and speed; served and cached token counters; the last request's time |
+| `~/.darkbloom/provider.log` | The background service's output (`LaunchAgent`) | Request IDs, prompt token counts and timings |
+| Unified log | During the request (`ProviderLogger`) | Fixed public lines, and a loop-guard stop's public line with the request ID, model and token counts (`EngineV2Bridge.stopRepeatingRow`); every free-form line is private, so macOS stores it redacted |
+| `~/.darkbloom/cluster/pair-telemetry.json`, `served-speed.json`, on a pair's leader | Each finished pair request (`ClusterPairTelemetry`) | The engine's generation ID, model, mode, prompt, cached and completion token counts, first-token time, speed, outcome, route and ranks |
+| `worker.log` in a pair's setup folder, on each Mac (owner-only, 4 MiB, then rotated) | Each pair request (`ClusterWorkerDiagnosticsLog`) | Worker request IDs and prompt, reused and stored token counts |
+| `~/.darkbloom/desktop/usage-history.json` | While the desktop app is open (`DesktopUsageArchive`) | The coordinator's settled records for this Mac: request and job IDs, completion time, token counts, earnings |
 
 MLX and Metal caches (the metallib, compiled kernels and pipelines) belong to
 the model and binary and hold no request data. Model-weight files and the
@@ -157,7 +161,7 @@ codec. No public header field exposes those token boundaries
 |---|---|---|
 | Prefix | Chunk 0 stores `prefixDigest` = `HMAC-SHA256(K_lookup, "dbkv3-checkpoint-prefix-v1" ‖ u64le(count) ‖ each token as u32le)` in place of the manifest's `prefixTokens` (or the diffusion layout's `packedPrefixTokens`). A restore recomputes it from the request's own prompt and rebuilds the manifest with that prompt's tokens; another prompt is refused as an incompatible file | `SSDLookupKeys.swift` (`checkpointPrefixDigest`), `SSDHybridCheckpointEnvelope.swift` (`storedManifestBytes`, `decodeManifest`) |
 | MTP token tensor | An `assistantTokens` tensor of `n` int32 elements is the prefix's last `n` tokens (Qwen and Nemotron `n = position - 1`, MiMo `n = position`, Super its queued rows): every assistant's codec checks exactly that. The writer checks it and stores zeros (a different tensor is never written), and a restore streams the prompt's tokens in their place | `SSDHybridCheckpointEnvelope.swift` (`storedSegment`, `tokenTensorBytes`), `SSDHybridCheckpointStore+Write.swift`, `SSDHybridCheckpointStore+ChainRead.swift` (`streamChain`) |
-| Format | Format 2 folds `darkbloom-complete-checkpoint-envelope-v2` into each file's layout epoch and the model's epoch-record binding; the model directory keeps its format-1 name (`directoryEpoch`). Opening a store with either format finds the other's binding in `cache-epoch.json` and removes every file before the scan, after an update and after a rollback to 0.10.17 or 0.10.18 alike; a format-1 chunk 0 that reached a reader anyway is refused as corrupt and deleted | `SSDHybridCheckpointEnvelope.swift` (`layoutEpoch`, `directoryEpoch`), `SSDCacheEpochStore.swift` (`init`), `SSDHybridCheckpointStoreFactory.swift` (`namespace`) |
+| Format | Format 2 folds `darkbloom-complete-checkpoint-envelope-v2` into each file's layout epoch and the model's epoch-record binding; the model directory keeps its format-1 name (`directoryEpoch`). Opening a model's store with either format finds the other's binding in `cache-epoch.json` and removes every `.dbk3` file before the scan, after an update and after a rollback to a build before this change alike. Files of a model the build does not load stay until whole-root maintenance expires them (TTL, swept every 60 s), and a write's leftover temp file until the crash-temp sweep. A format-1 chunk 0 that reached a reader anyway is refused as corrupt and deleted | `SSDHybridCheckpointEnvelope.swift` (`layoutEpoch`, `directoryEpoch`), `SSDCacheEpochStore.swift` (`init`), `SSDHybridCheckpointStoreFactory.swift` (`namespace`) |
 
 | Contract | Bound / behavior | Code |
 |---|---|---|
@@ -666,7 +670,7 @@ per family and bindings are in the
 | Encoded entry | Header `nativeFrom` = committed tokens less the profile's `recentTokenCount` (128): per head, rows below it encoded (`encodedRowBytes`: codes, FP32 scales, FP32 offsets), the rest native; absent means every row native | `QwenStagePrefixDiskEncodedRows` |
 | Record encoding | Header `encoding` (`quantization`, `identity`, `family`), absent for native records; must equal the tier's, and every entry's `nativeFrom` must be what that encoding writes, or the record is refused and deleted | `QwenStagePrefixDiskRestoreWork`, `QwenStagePrefixDiskTier` (`loadIndex`) |
 | Always native | Recurrent and convolution state, speculative (MTP) history (a NextN history a record keeps as an attention entry included), GLM index keys and pool gates | `QwenStagePrefixDiskFamily`, `QwenStagePrefixDiskEncoding.nativeLayers` |
-| History tokens | Header versions 3 (per frontier) and 4 (shared): a speculative history's `tokens` unit holds zeros of its size; a restore fills it with the prompt's tokens `[1, f)`, the prompt whose key matched. Versions 1 and 2, which held the IDs, are refused, so the index load deletes them; 0.10.18 and earlier accept only 1 and 2 and delete 3 and 4 the same way | `QwenStagePrefixDiskHeader.version`, `QwenStagePrefixDiskRestoreWork.fillHistoryTokens` |
+| History tokens | Header versions 3 (per frontier) and 4 (shared): a speculative history's `tokens` unit holds zeros of its size; a restore fills it with the prompt's tokens `[1, f)`, the prompt whose key matched. Versions 1 and 2, which held the IDs, are refused, so the index load deletes them; builds before this change accept only 1 and 2 and delete 3 and 4 the same way | `QwenStagePrefixDiskHeader.version`, `QwenStagePrefixDiskRestoreWork.fillHistoryTokens` |
 | Restore | Decoded into page-aligned native buffers the arrays own: `[1, heads, frontier, width]` of the captured dtype, as a native record restores; older rows approximate | `QwenStagePrefixDiskRestoreWork.place` |
 | Restored rows written again | An encoded row whose native bytes equal the decode of the same row in the record holding the prompt's deepest kept prefix on this rank is stored as that record's bytes, not encoded again (the codec is not idempotent on its own output); that record is pinned until the new one is written, and if it cannot be read the new record is dropped (`reason=verbatim_source_unreadable`). The `persist` line logs `verbatim_rows` | `QwenStagePrefixDiskVerbatimSource`, `QwenStagePrefixDiskTier.persist` |
 | Switch | `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION` on the rank, from the owner ([configuration](configuration.md#cluster-ssd-prefix-record-precision)) | `QwenStagePrefixDiskEncoding.fromEnvironment` |

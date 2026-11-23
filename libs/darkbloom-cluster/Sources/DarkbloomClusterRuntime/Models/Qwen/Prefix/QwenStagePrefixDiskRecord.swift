@@ -397,7 +397,7 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
             sharedLast: sharedSources?.last, sharedTokens: sharedSources?.tokens)
     }
 
-    /// The plaintext of one version-2 history unit: rows
+    /// The plaintext of one version-4 history unit: rows
     /// `[block * blockTokens, ...)` of the deepest history's hidden rows
     /// followed by its `last` row.
     func sharedHistoryPlaintext(block: Int) -> Data {

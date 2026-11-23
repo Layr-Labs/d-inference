@@ -133,6 +133,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// When the writer last finished a record (progress, for `close`).
     private var lastCompletedWrite: TimeInterval?
     private var statistics = Statistics()
+    private var expiryTimer: DispatchSourceTimer?
     var now: () -> TimeInterval = { Date().timeIntervalSince1970 }
 
     public var stats: Statistics { lock.withLock { statistics } }
@@ -230,6 +231,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             + " swept_plans=\(sweptPlans) swept_files=\(statistics.sweptFiles) expired=\(statistics.expirations)"
             + " other_plan_records=\(statistics.keptOtherRecords) other_plan_bytes=\(statistics.keptOtherBytes)"
             + " ms=\((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)")
+        startExpirySweep()
     }
 
     // MARK: lookup and restore
@@ -240,8 +242,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         let time = now()
         let candidates: Set<Int> = lock.withLock {
             var values = Set<Int>()
-            for record in records.values where record.written && record.scope == scope
-                && time - record.lastUseTime <= Double(configuration.ttlSeconds) {
+            for record in records.values where record.written && record.scope == scope && !expired(record, at: time) {
                 for frontier in record.frontiers.keys where frontier <= maximumFrontier && frontier <= tokens.count {
                     values.insert(frontier)
                 }
@@ -253,7 +254,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         return lock.withLock {
             computed.filter { frontier, key in
                 guard let name = byKey[key], let record = records[name] else { return false }
-                return record.written && record.frontiers[frontier] == key && time - record.lastUseTime <= Double(configuration.ttlSeconds)
+                return record.written && record.frontiers[frontier] == key && !expired(record, at: time)
             }.keys.sorted(by: >)
         }
     }
@@ -266,8 +267,10 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         guard let key = QwenStagePrefixKeys.keys(scope: scope, tokens: tokens, frontiers: [frontier])[frontier] else {
             return nil
         }
+        let time = now()
         let found: String? = lock.withLock {
-            guard let name = byKey[key], let record = records[name], record.written, record.frontiers[frontier] == key else {
+            guard let name = byKey[key], let record = records[name], record.written, record.frontiers[frontier] == key,
+                  !expired(record, at: time) else {
                 return nil
             }
             pin(name)
@@ -359,7 +362,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         guard configuration.refreshesOnUse else { return }
         let time = now()
         let exists: Bool = lock.withLock {
-            guard var record = records[name] else { return false }
+            guard var record = records[name], !expired(record, at: time) else { return false }
             clock += 1; record.lastUse = clock; record.lastUseTime = time; records[name] = record
             return record.written
         }
@@ -564,7 +567,10 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=close-extended bound_s=\(Int(timeoutSeconds)) queued=\(lock.withLock { queuedJobs })")
             drained = drain(timeoutSeconds: timeoutSeconds)
         }
-        lock.withLock { cancelled = true; statistics.closeExtended = extended; statistics.closeDrained = drained }
+        lock.withLock {
+            cancelled = true; statistics.closeExtended = extended; statistics.closeDrained = drained
+            expiryTimer?.cancel(); expiryTimer = nil
+        }
         if !drained { _ = drain(timeoutSeconds: configuration.closeBounds.finalSeconds) }
         // This rank no longer uses the plan directory, nor its staging.
         lock.withLock { if inUse >= 0 { Darwin.close(inUse); inUse = -1 } }
@@ -617,13 +623,55 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         }
     }
 
+    /// Callers hold `lock`.
+    private func expired(_ record: Record, at time: TimeInterval) -> Bool {
+        time - record.lastUseTime > Double(configuration.ttlSeconds)
+    }
+
     private func removeExpired() {
         let time = now()
         let expired = lock.withLock {
-            records.values.filter { $0.written && pinned[$0.name] == nil
-                && time - $0.lastUseTime > Double(configuration.ttlSeconds) }.map(\.name)
+            records.values.filter { $0.written && pinned[$0.name] == nil && self.expired($0, at: time) }.map(\.name)
         }
         for name in expired { remove(name: name, reason: "expired"); lock.withLock { statistics.expirations += 1 } }
+    }
+
+    /// Every `expirySweepSeconds` on the writer's queue, between writes.
+    private func startExpirySweep() {
+        let seconds = configuration.expirySweepSeconds
+        guard seconds > 0 else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + seconds, repeating: seconds, leeway: .milliseconds(Int(min(seconds, 1) * 100)))
+        timer.setEventHandler { [weak self] in self?.sweepExpired() }
+        lock.withLock { expiryTimer = timer }
+        timer.resume()
+    }
+
+    /// Deletes this rank's records past the TTL (a record being read stays
+    /// until the next sweep) and the other plans' records kept at load that
+    /// are past it too; one another rank has used since keeps its newer time.
+    func sweepExpired() {
+        guard !lock.withLock({ cancelled }) else { return }
+        removeExpired()
+        let time = now(), ttl = Double(configuration.ttlSeconds)
+        let due = lock.withLock { otherRecords.filter { time - $0.modified > ttl } }
+        guard !due.isEmpty else { return }
+        var removed = Set<String>(), refreshed: [String: TimeInterval] = [:]
+        for record in due {
+            if let modified = Self.modificationTime(record.path), time - modified <= ttl {
+                refreshed[record.path] = modified
+            } else {
+                unlink(record.path)
+                removed.insert(record.path)
+            }
+        }
+        lock.withLock {
+            otherRecords = otherRecords.compactMap { record in
+                if removed.contains(record.path) { otherPlanBytes -= record.bytes; return nil }
+                return refreshed[record.path].map { OtherRecord(path: record.path, modified: $0, bytes: record.bytes) } ?? record
+            }.sorted(by: { ($0.modified, $0.path) < ($1.modified, $1.path) })
+            statistics.expirations += removed.count
+        }
     }
 
     private func remove(name: String, reason: String) {
@@ -818,7 +866,10 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         rmdir(directory.deletingLastPathComponent().path)
     }
 
-    deinit { if inUse >= 0 { Darwin.close(inUse) } }
+    deinit {
+        expiryTimer?.cancel()
+        if inUse >= 0 { Darwin.close(inUse) }
+    }
 
     static func modificationTime(_ path: String) -> TimeInterval? {
         var info = stat()

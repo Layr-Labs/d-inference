@@ -852,4 +852,46 @@ extension PrefixDiskTierTests {
         #expect(fixed ? (try modified()) == written : (try modified()) > written)
         tier.close()
     }
+
+    /// Past its TTL a record is neither offered, restored nor kept recent,
+    /// and an idle rank's sweep deletes its file with no write to trigger it.
+    @Test func anIdleRankDeletesARecordPastItsTTL() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(7_000..<7_040)
+        let tier = try openTier(configuration(root) { $0.expirySweepSeconds = 0.05 })
+        tier.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: [], seed: 6), blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20))
+        let url = try onlyRecord(tier)
+        let expiry = Date().timeIntervalSince1970 + Double(tier.configuration.ttlSeconds) + 5
+        tier.now = { expiry }
+        #expect(tier.frontiers(scope: "s", tokens: tokens, maximumFrontier: 39).isEmpty)
+        #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 39, check: {}) == nil)
+        let deadline = Date().addingTimeInterval(5)
+        while FileManager.default.fileExists(atPath: url.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(tier.recordCount == 0 && tier.stats.expirations == 1)
+        tier.close()
+    }
+
+    /// Another plan's record, kept at load because it was live, goes when it
+    /// expires too, while the rank that kept it serves its own plan.
+    @Test func anIdleRankDeletesAnotherPlansRecordPastItsTTL() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(8_000..<8_040)
+        let first = try openTier(configuration(root) { $0.expirySweepSeconds = 0 }, plan: "plan-a")
+        first.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: [], seed: 8), blockTokens: block)
+        #expect(first.drain(timeoutSeconds: 20))
+        let url = try onlyRecord(first)
+        first.close()
+        let other = try openTier(configuration(root) { $0.expirySweepSeconds = 0.05 }, plan: "plan-b")
+        #expect(other.stats.keptOtherRecords == 1 && FileManager.default.fileExists(atPath: url.path))
+        let expiry = Date().timeIntervalSince1970 + Double(other.configuration.ttlSeconds) + 5
+        other.now = { expiry }
+        let deadline = Date().addingTimeInterval(5)
+        while FileManager.default.fileExists(atPath: url.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        other.close()
+    }
 }

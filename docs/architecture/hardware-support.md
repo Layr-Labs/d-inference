@@ -284,9 +284,13 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 ([`prefix-cache.md`](prefix-cache.md)). The RAM-only tier of `memory_only`
 requests takes nothing from any grant. Each entry is charged to the process
 ledger instead (`reserveHostBuffers`), and is admitted only while a whole
-budget of headroom remains beside it. The tier is released on any refused
-charge (`GlobalKVCacheBudget.recordReservationRefusal`, the reclaimer), on
-memory pressure, and before a model load, which counts it as reclaimable
+budget of headroom remains beside it. When free system memory bounds the
+headroom, an entry's wired pages lower it too, so an entry can cost up to twice
+its size in admission headroom. A refused charge that the tier covers releases
+its least recently used entries and is retried once
+(`GlobalKVCacheBudget.yieldMemoryOnlyTier`); the tier is also released on
+memory pressure, before the Mac sleeps, and before a model load, which counts
+it as reclaimable
 ([RAM-only tier](prefix-cache.md#ram-only-tier-for-memory_only-requests)).
 
 Fused causal prompt attention changes the prefill transient, not these

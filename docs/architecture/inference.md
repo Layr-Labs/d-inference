@@ -2681,8 +2681,9 @@ its prefix cache. Its receipt is minted in the memory-only range
 `MemoryOnlyCheckpointTier`, and the SSD store hands the engine's take and
 donation for that receipt to the tier
 ([RAM-only tier](prefix-cache.md#ram-only-tier-for-memory_only-requests)).
-Everywhere else (media, a pair, a slot without the tier) it runs with
-`prefixCacheEnabled` off: the engine then makes no prefix lookup, capture or
+Everywhere else (media, a pair, a slot without the tier or with a tier
+budget of 0) it runs with `prefixCacheEnabled` off: the engine then makes no
+prefix lookup, capture or
 donation, and a pair's ranks get `ClusterWorkerPrefixCache.disabled`. In both
 cases the bridge stages nothing from the SSD tier and registers no SSD ready
 receipt or donation demand, the scheduler skips the prompt-token piece cache,

@@ -954,7 +954,7 @@ otherwise. Mechanism and limits:
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_ZDR_PREFIX_CACHE_RAM` | `auto`; any other nonempty value turns it off (trimmed, case-insensitive) | `auto` | `provider-swift/Sources/ProviderCore/KVCacheRAM/MemoryOnlyPrefixCachePolicy.swift` (`isEnabled`) | `auto` attaches the tier to each single-Mac complete-checkpoint slot (not GLM-5.3-Flash, DiffusionGemma, pairs, or slots built with `DARKBLOOM_PREFIX_CACHE_MEMORY=1`); off makes `memory_only` requests prefill cold. A negative `DARKBLOOM_PREFIX_CACHE` also turns it off. Read at slot construction and at each load and unload. Forwarded by LaunchAgent. |
+| `DARKBLOOM_ZDR_PREFIX_CACHE_RAM` | `auto`; any other nonempty value turns it off (trimmed, case-insensitive) | `auto` | `provider-swift/Sources/ProviderCore/KVCacheRAM/MemoryOnlyPrefixCachePolicy.swift` (`isEnabled`) | `auto` attaches the tier to each single-Mac complete-checkpoint slot (not GLM-5.3-Flash, DiffusionGemma, native MiMo, Nemotron Super, pairs, or slots built with `DARKBLOOM_PREFIX_CACHE_MEMORY=1`); off makes `memory_only` requests prefill cold. A negative `DARKBLOOM_PREFIX_CACHE` also turns it off. Read at slot construction and at each load and unload. Forwarded by LaunchAgent. |
 | `DARKBLOOM_ZDR_PREFIX_CACHE_RAM_MAX_MB` | whole MiB > 0 | `8192` | same file (`capBytes`, `budgetBytes`) | Replaces the cap. The budget is `min(cap, fleet KV headroom / 4)` and is 0 (off) below 1 GiB. Forwarded by LaunchAgent. |
 
 ### Benchmark, harness and tests

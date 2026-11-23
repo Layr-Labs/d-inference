@@ -39,12 +39,14 @@ their own ledgers (`CacheStorage.writeBudgetRoot`).
 ## What one request can leave on disk
 
 A request whose sealed `cache_policy` is `memory_only`
-([protocol](protocol-messages.md#sealed-cache-policy)) leaves nothing below:
-it runs with its prefix cache off, so it makes no SSD call at all
-(`PrefixCacheSubmissionPolicy`). A memory-only request that ran with a cache on,
-as with a RAM-only tier, would carry receipts in a range every SSD store refuses
+([protocol](protocol-messages.md#sealed-cache-policy)) leaves nothing below.
+On a slot with a RAM-only tier it keeps its prefix cache, in wired RAM only
+([RAM-only tier](../architecture/prefix-cache.md#ram-only-tier-for-memory_only-requests)):
+its receipts are in a range every SSD store refuses or hands to that tier
 (`MemoryOnlyReceipt`,
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/RequestCachePolicy.swift`).
+Elsewhere it runs with its prefix cache off, so it makes no SSD call at all
+(`PrefixCacheSubmissionPolicy`).
 No file below holds a token ID or text. Another request may cause these:
 
 | File | Written when | Holds |
@@ -72,7 +74,10 @@ None holds prompt or output text, media, token IDs or a prompt digest:
 | `~/.darkbloom/desktop/usage-history.json` | While the desktop app is open (`DesktopUsageArchive`) | The coordinator's settled records for this Mac: request and job IDs, completion time, token counts, earnings |
 
 MLX and Metal caches (the metallib, compiled kernels and pipelines) belong to
-the model and binary and hold no request data. Model-weight files and the
+the model and binary and hold no request data. macOS can write the pageable
+memory of a request in flight to its encrypted swap file and, on a Mac that
+hibernates, to its sleep image; the RAM-only tier's entries are wired, so never
+swapped, and released before the Mac sleeps. Model-weight files and the
 provider's logs are described in their own references.
 
 ## DBK3 file format

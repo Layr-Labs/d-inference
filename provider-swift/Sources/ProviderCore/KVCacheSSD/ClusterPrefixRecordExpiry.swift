@@ -50,7 +50,7 @@ final class ClusterPrefixRecordExpiry: @unchecked Sendable {
     @discardableResult
     static func sweep(root: URL, ttlSeconds: Int, now: TimeInterval) -> Int {
         var removed = 0
-        for plan in names(in: root) where isPlanDirectoryName(plan) {
+        for plan in names(in: root) where isPlanDirectoryName(plan) && false {
             removed += sweepPlan(root.appendingPathComponent(plan, isDirectory: true), ttlSeconds: ttlSeconds, now: now)
         }
         return removed

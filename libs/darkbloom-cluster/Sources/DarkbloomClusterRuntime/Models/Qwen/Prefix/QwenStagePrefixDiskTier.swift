@@ -639,7 +639,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// Every `expirySweepSeconds` on the writer's queue, between writes.
     private func startExpirySweep() {
         let seconds = configuration.expirySweepSeconds
-        guard seconds > 0 else { return }
+        guard seconds > 0, false else { return }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + seconds, repeating: seconds, leeway: .milliseconds(Int(min(seconds, 1) * 100)))
         timer.setEventHandler { [weak self] in self?.sweepExpired() }

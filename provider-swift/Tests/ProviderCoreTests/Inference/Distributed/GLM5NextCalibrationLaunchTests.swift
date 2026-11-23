@@ -12,21 +12,22 @@ import DarkbloomClusterRemote
 @Suite struct GLM5NextCalibrationLaunchTests {
     typealias D = GLM5NextCalibrationDocument
     final class Fixture {
-        let authorizationFixture: GLM5NextCalibrationAuthorizerTests.Fixture
         let root: URL
         let app: URL, worker: URL, metallib: URL, model: URL
         let appSHA256: String
         let body: D.Body
         let identity: ClusterWorkerIdentity
         let environment: [String: String]
-        let now = DispatchTime.now().uptimeNanoseconds
-        let attachment: ClusterOwnerBootstrapAttachment
         let binding: ClusterOwnerBinding
-        var deadline: UInt64 { now + 10_000_000_000 }
+        let authorized: GLM5NextCalibrationAuthorizer.Authorized
+        let document: URL
+        static let validityNanoseconds: UInt64 = 10_000_000_000
+        let now: UInt64
+        let attachment: ClusterOwnerBootstrapAttachment
+        var deadline: UInt64 { now + Self.validityNanoseconds }
 
         init() throws {
             let f = try GLM5NextCalibrationAuthorizerTests.Fixture()
-            authorizationFixture = f
             var canonical = [CChar](repeating: 0, count: Int(PATH_MAX))
             try #require(realpath(NSTemporaryDirectory(), &canonical) != nil)
             root = URL(fileURLWithPath: String(cString: canonical))
@@ -72,17 +73,18 @@ import DarkbloomClusterRemote
                     maximumPromptTokens: p.maximumPromptTokens, maximumOutputTokens: p.maximumOutputTokens,
                     maximumChunkTokens: p.maximumChunkTokens, maximumContextTokens: p.maximumContextTokens),
                 rank: 0, executionPlanSHA256: String(repeating: "e", count: 64))
-            attachment = try .calibration(profile: .mesh2, deadline: now + 10_000_000_000)
+            authorized = try GLM5NextCalibrationAuthorizer.authorize(body, identity: identity, rank: 0, now: 1000,
+                expectedVocabularySize: 512, memberIdentity: f.signer.key.publicKey.x963Representation,
+                peerIdentity: f.peer.publicKey.x963Representation, appSHA256: appSHA256, signer: f.signer,
+                verifySelection: {})
+            document = try GLM5NextCalibrationAuthorizer.write(authorized, directory: root, now: 1000)
+            // Read last, as the installed owner does, so setup never spends the attachment's and preflight's window.
+            now = DispatchTime.now().uptimeNanoseconds
+            attachment = try .calibration(profile: .mesh2, deadline: now + Self.validityNanoseconds)
         }
         deinit {
             attachment.cancelCalibration()
             try? FileManager.default.removeItem(at: root)
-        }
-        func authorize() throws -> GLM5NextCalibrationAuthorizer.Authorized {
-            let f = authorizationFixture
-            return try GLM5NextCalibrationAuthorizer.authorize(body, identity: identity, rank: 0, now: 1000, expectedVocabularySize: 512,
-                memberIdentity: f.signer.key.publicKey.x963Representation, peerIdentity: f.peer.publicKey.x963Representation,
-                appSHA256: appSHA256, signer: f.signer, verifySelection: {})
         }
         func prepare(_ authorized: GLM5NextCalibrationAuthorizer.Authorized, document: URL,
                      bindingOverride: ClusterOwnerBinding? = nil,
@@ -96,8 +98,7 @@ import DarkbloomClusterRemote
     }
 
     @Test func preparedLaunchUsesExactDocumentEnvironmentAndCredential() throws {
-        let f = try Fixture(), authorized = try f.authorize()
-        let document = try GLM5NextCalibrationAuthorizer.write(authorized, directory: f.root, now: 1000)
+        let f = try Fixture(), authorized = f.authorized, document = f.document
         var selectionChecks = 0
         let launch = try f.prepare(authorized, document: document) { selectionChecks += 1 }
         #expect(selectionChecks == 1)
@@ -122,8 +123,7 @@ import DarkbloomClusterRemote
     }
 
     @Test func preparationRefusesChangedSelectionAndInstalledBytes() throws {
-        let f = try Fixture(), authorized = try f.authorize()
-        let document = try GLM5NextCalibrationAuthorizer.write(authorized, directory: f.root, now: 1000)
+        let f = try Fixture(), authorized = f.authorized, document = f.document
         #expect(throws: (any Error).self) {
             try f.prepare(authorized, document: document) { throw D.invalid("Selection changed") }
         }
@@ -141,8 +141,7 @@ import DarkbloomClusterRemote
         #expect(throws: (any Error).self) { try f.prepare(authorized, document: traversal, verify: {}) }
     }
     @Test func ownerBindingMustMatchTheSignedMetadataBindingBeforeLaunch() throws {
-        let f = try Fixture(), authorized = try f.authorize()
-        let document = try GLM5NextCalibrationAuthorizer.write(authorized, directory: f.root, now: 1000)
+        let f = try Fixture(), authorized = f.authorized, document = f.document
         let original = f.binding
         for changeProfile in [false, true] {
             let profile = original.profile

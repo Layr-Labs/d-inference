@@ -55,31 +55,36 @@ Per-connection throughput to the model CDN varies by network, from about 1 to
 20 MB/s, so one connection per multi-GB shard leaves a slow network idle. Each
 source of a manifest file (Hugging Face first where the build has an artifact,
 then R2) goes through `ModelDownloader.fetchManifestFile`
-(`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Segments.swift`):
+(`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Segments.swift`),
+for model files and for MTP assistant files (`SpecDecResolver`) alike:
 
 | Step | What happens | Code |
 |---|---|---|
-| Choose | Ranges only when `segmentsPerFile` (`DARKBLOOM_DOWNLOAD_SEGMENTS`, [configuration](../reference/configuration.md#operator-facing-daemon-paths-updates)) is above 1 and the file is at least `ModelDownloadSegments.minimumFileBytes` (`256 << 20`) | `fetchManifestFile` |
-| Probe | A GET of `bytes=0-0`, redirects followed; only a 206 whose `Content-Range` total is the manifest size continues. A 200, a 416 or another total takes the single-stream `downloadFile`, unchanged | `servesRanges` |
-| Plan | Equal byte ranges of a `.part` sized to the manifest size with `truncate` (sparse until written), recorded in `<file>.part.segments`. A single-stream `.part` prefix is credited to the ranges it covers | `SegmentedPartFile.prepare`, `SegmentedPartLayout.planned` |
-| Fetch | The unfinished ranges, at most `segmentsPerFile` at once (a record saved with more ranges queues the rest), each over its own `URLSession` (the same configuration), so the ranges are separate connections rather than HTTP/2 streams of one. A 206 must name exactly the requested bytes and size before a byte is written at its offset | `downloadInSegments`, `fetchRange`, `RangeSegmentDownloadDelegate` |
-| Retry | An attempt that wrote bytes is retried at once from where it stopped; a range fails after `attempts` attempts in a row that wrote none (Hugging Face 1, R2 `ModelDownloader.defaultAttempts`), which fails the file. A 200, a 416 or a 206 for other bytes (`RangesRefused`) is not retried: the file continues from the same source over one connection, from the `.part`'s gap-free prefix | `fetchRange`, `fetchManifestFile` |
+| Choose | Ranges only when `segmentsPerFile` (`DARKBLOOM_DOWNLOAD_SEGMENTS`, [configuration](../reference/configuration.md#operator-facing-daemon-paths-updates)) is above 1, the file is at least `ModelDownloadSegments.minimumFileBytes` (`256 << 20`) and its volume keeps files sparse (`volumeSupportsSparseFiles`: APFS). Elsewhere a pre-sized file is allocated whole and a write far into it zero-fills the gap first, so the file stays single-stream | `fetchManifestFile`, `ModelDownloadSegments.volumeSupportsSparseFiles` |
+| Probe | A GET of `bytes=0-0`, redirects followed; only a 206 whose `Content-Range` total is the manifest size continues. A 200, a 4xx (a 416, a proxy refusing `Range`, a missing file) or another total takes the single-stream `downloadFile`, unchanged; a transport error or a 5xx is retried within the source's attempts, then fails the source as a failed transfer did | `servesRanges` |
+| Plan | Equal byte ranges of a `.part` sized to the manifest size with `ftruncate` (sparse on APFS until written), recorded in `<file>.part.segments`. A single-stream `.part` prefix is credited to the ranges it covers | `SegmentedPartFile.prepare`, `SegmentedPartLayout.planned` |
+| Fetch | The unfinished ranges, at most `segmentsPerFile` at once (a record saved with more ranges queues the rest), each over its own `URLSession` (the same configuration), so the ranges are separate connections rather than HTTP/2 streams of one. Requests ask for `Accept-Encoding: identity` and idle for at most `ModelDownloadSegments.rangeRequestTimeout` (`120` s; Hugging Face keeps its `30` s). A 206 must name exactly the requested bytes and size, with a `Content-Length`, when sent, of the range's length, before a byte is written at its offset | `downloadInSegments`, `fetchRange`, `rangeRequest`, `RangeSegmentDownloadDelegate` |
+| Retry | An attempt that wrote bytes is retried at once from where it stopped; a range fails after `attempts` attempts in a row that wrote none (Hugging Face 1, R2 `ModelDownloader.defaultAttempts`), which fails the file. A 200, a 416, a 206 for other bytes or a body longer than its range (`RangesRefused`) is not retried: the file continues from the same source over one connection, from the `.part`'s gap-free prefix | `fetchRange`, `fetchManifestFile` |
 | Verify | The whole file's SHA-256, read uncached under `uncachedWrites`. A mismatch deletes the `.part` and its record; the file is fetched again over one connection with the source's attempts that are left (R2: 2 more, 3 in all as before; Hugging Face: none, so it goes to R2 as before). The record is removed before the `.part` is promoted | `downloadInSegments`, `fetchManifestFile` |
 
 A foreground download keeps fetching `concurrency` (4) files at once and
 divides the ranges so that they open at most
 `ModelDownloadSegments.maximumConnections` (16) connections together
 (`ModelDownloadSegments.perFile`). Background prefetch, Autopilot placements
-and automatic revisions still fetch one file at a time, so their ranges are
-as many connections as the foreground's files without ranges.
+and automatic revisions still fetch one file at a time, over `segmentsPerFile`
+connections (4 by default, one before ranges), and their requests take the
+background network service type (`ModelDownloader.backgroundRanges`, set by
+`prefetch`), so the Mac's other traffic goes first.
 
 Invariants:
 
-1. The record never counts a byte that is not on disk: `SegmentedPartWriter`
-   writes with `pwrite` at the range's next offset, syncs the `.part` with
-   `fsync`, then saves the record atomically, every
+1. After a stop or a restart the record counts only bytes in the `.part`:
+   `SegmentedPartWriter` writes with `pwrite` at the range's next offset,
+   syncs the `.part` with `fsync`, then saves the record atomically, every
    `SegmentedPartWriter.checkpointBytes` (`32 << 20`) and when the transfer
-   stops for any reason, a cancellation included.
+   stops for any reason, a cancellation included. `fsync` does not flush the
+   drive's cache: after a power loss the record can count bytes that did not
+   persist, and the file's SHA-256 then fails and fetches it again.
 2. Bytes the record cannot account for are never kept: a record that does not
    decode, describes another size, or counts bytes beyond the `.part`'s length
    is unusable, and `prepare` deletes the `.part` with it
@@ -99,6 +104,20 @@ Invariants:
    (`SegmentedPartFile.remove`), so no Hugging Face byte reaches an R2 file.
 7. `uncachedWrites` opens the `.part` with `F_NOCACHE`, which applies to every
    `pwrite` on that descriptor (`SegmentedPartWriter.cachingDisabled`).
+
+Failure modes:
+
+- **A rollback to a release without ranged downloads** sees a pre-sized
+  `.part` and no use for its record: it asks for the bytes past the file's
+  end, takes the 416 as a complete file, fails its SHA-256, deletes the
+  `.part` and downloads that file again from the start (a Hugging Face file
+  from R2). Its free-disk check credits the `.part`'s apparent size, so on a
+  nearly full disk the download can stop for lack of space instead of being
+  refused at the start. The orphaned record can be published beside the
+  model; it is not an integrity file. Nothing corrupt is published.
+- **The slowest range sets the file's time:** ranges are fixed at the start,
+  and a connection that slows near the end is not helped by the finished
+  ones.
 
 Media discovery uses `ModelMediaPolicy.advertisesMedia` in
 `provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`.

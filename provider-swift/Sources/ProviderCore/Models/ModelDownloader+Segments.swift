@@ -20,7 +20,8 @@ extension ModelDownloader {
 
     /// Fetch one manifest file from one source into `job.destination`. Over
     /// `segmentsPerFile` ranges when that is above 1, the file is at least
-    /// `segmentMinimumFileBytes` and the source answers a ranged probe with a
+    /// `segmentMinimumFileBytes`, its volume keeps files sparse
+    /// (`sparseFilesSupported`) and the source answers a ranged probe with a
     /// 206 for exactly the manifest size; otherwise the single-stream
     /// `downloadFile`, after reducing a ranged `.part` to its gap-free prefix.
     /// The single stream also takes over when a range request shows that the
@@ -37,7 +38,10 @@ extension ModelDownloader {
         let partial = job.destination.appendingPathExtension("part")
         let size = job.file.sizeBytes
         var singleStreamAttempts = attempts
+        let directory = job.destination.deletingLastPathComponent()
         if segmentsPerFile > 1, size >= segmentMinimumFileBytes, let url = URL(string: urlString),
+           (try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)) != nil,
+           sparseFilesSupported(directory),
            try await servesRanges(url, size: size, label: job.file.path, attempts: attempts, requestTimeout: requestTimeout) {
             switch try await downloadInSegments(job, from: url, attempts: attempts, requestTimeout: requestTimeout,
                                                 onChunk: onChunk) {
@@ -59,14 +63,13 @@ extension ModelDownloader {
 
     /// Whether `url` serves byte ranges of a `size`-byte object: a GET of byte
     /// 0 answered 206 with a `Content-Range` total of `size`, after redirects.
-    /// A 200, a 416 or another total is false; a failed request is retried, then thrown.
+    /// A 200, a 4xx (a 416, a proxy refusing `Range`, a missing file, which the
+    /// single stream then reports) or another total is false; a transport
+    /// error or another status is retried, then thrown.
     private func servesRanges(
         _ url: URL, size: Int64, label: String, attempts: Int, requestTimeout: TimeInterval
     ) async throws -> Bool {
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = requestTimeout
-        request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        let request = rangeRequest(url, bytes: "0-0", requestTimeout: requestTimeout)
         var lastError: Error?
         for attempt in 1...max(1, attempts) {
             try Task.checkCancellation()
@@ -77,7 +80,7 @@ extension ModelDownloader {
                 guard let http = response as? HTTPURLResponse else {
                     throw ModelCatalogError.downloadFailed("\(label): unexpected response type")
                 }
-                if http.statusCode == 200 || http.statusCode == 416 { return false }
+                if http.statusCode == 200 || (400..<500).contains(http.statusCode) { return false }
                 guard http.statusCode == 206 else {
                     throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
                 }
@@ -113,6 +116,7 @@ extension ModelDownloader {
             at: job.destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         let layout = try SegmentedPartFile.prepare(partial: partial, size: size, count: segmentsPerFile)
         let writer = try SegmentedPartWriter(partial: partial, layout: layout, uncached: uncachedWrites, onChunk: onChunk)
+        segmentedWriterOpened?(writer)
         let unfinished = layout.ranges.indices.filter { !layout.ranges[$0].isComplete }
         let fetch: @Sendable (Int) async throws -> Void = { index in
             try await self.fetchRange(index, into: writer, from: url, label: label,
@@ -204,10 +208,7 @@ extension ModelDownloader {
         _ range: Range<Int64>, of index: Int, into writer: SegmentedPartWriter, session: URLSession,
         url: URL, label: String, requestTimeout: TimeInterval
     ) async throws {
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = requestTimeout
-        request.setValue("bytes=\(range.lowerBound)-\(range.upperBound - 1)", forHTTPHeaderField: "Range")
+        let request = rangeRequest(url, bytes: "\(range.lowerBound)-\(range.upperBound - 1)", requestTimeout: requestTimeout)
         let delegate = RangeSegmentDownloadDelegate(label: label, range: range, totalBytes: writer.size) { data in
             try writer.write(data, range: index)
         }
@@ -221,5 +222,19 @@ extension ModelDownloader {
         } onCancel: {
             task.cancel()
         }
+    }
+
+    /// A GET of `bytes` (`first-last`) without content coding, so `Content-Range`
+    /// offsets are the delivered bytes', idle for at most
+    /// `ModelDownloadSegments.rangeRequestTimeout`, and of the background network
+    /// service type under `backgroundRanges`.
+    private func rangeRequest(_ url: URL, bytes: String, requestTimeout: TimeInterval) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = min(requestTimeout, ModelDownloadSegments.rangeRequestTimeout)
+        request.setValue("bytes=\(bytes)", forHTTPHeaderField: "Range")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        if backgroundRanges { request.networkServiceType = .background }
+        return request
     }
 }

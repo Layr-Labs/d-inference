@@ -61,6 +61,13 @@ public struct ModelDownloader: Sendable {
     var segmentsPerFile = ModelDownloadSegments.count()
     /// Files below this size are fetched over one connection.
     var segmentMinimumFileBytes = ModelDownloadSegments.minimumFileBytes
+    /// Range requests take the background network service type, so they yield to the Mac's
+    /// other traffic; `prefetch` (Autopilot placements, revisions, background prefetch) sets it.
+    var backgroundRanges = false
+    /// Whether a directory's volume keeps a pre-sized `.part` sparse; ranges need it.
+    var sparseFilesSupported: @Sendable (URL) -> Bool = { ModelDownloadSegments.volumeSupportsSparseFiles($0) }
+    /// Tests observe the writer each ranged transfer opens.
+    var segmentedWriterOpened: (@Sendable (SegmentedPartWriter) -> Void)?
 
     public init(
         r2CDNURL: String? = nil,

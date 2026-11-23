@@ -16,16 +16,27 @@ enum ModelDownloadSegments {
     /// Smaller files stay on one connection: a probe and several connections
     /// would cost about what they save.
     static let minimumFileBytes: Int64 = 256 << 20
+    /// Idle limit of one range request (and the probe), below a source's own:
+    /// a stalled range resumes where it stopped, so waiting long gains nothing.
+    static let rangeRequestTimeout: TimeInterval = 120
 
-    /// Unset or unreadable: `defaultCount`. `1`, `0` or an off word (`off`,
-    /// `false`, `no`; trimmed, any case): one connection per file, the
-    /// single-stream download. `2`…`8`: that many ranges; more is `8`.
+    /// Unset or unreadable: `defaultCount`. `1` or an off word (`off`,
+    /// `false`, `0`, `none`, `no`, `disabled`; any case, surrounding space
+    /// ignored): one connection per file, the single-stream download.
+    /// `2`…`8`: that many ranges; more is `8`.
     static func count(environment: [String: String] = ProcessInfo.processInfo.environment) -> Int {
-        guard let raw = environment[environmentKey]?.trimmingCharacters(in: .whitespaces).lowercased(),
+        guard let raw = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
               !raw.isEmpty else { return defaultCount }
-        if ["0", "off", "false", "no"].contains(raw) { return 1 }
+        if ["off", "false", "0", "none", "no", "disabled"].contains(raw) { return 1 }
         guard let value = Int(raw), value >= 1 else { return defaultCount }
         return min(value, maximumCount)
+    }
+
+    /// Whether the volume holding `directory` keeps unwritten parts of a file
+    /// sparse (APFS). Elsewhere a pre-sized `.part` is allocated whole, and a
+    /// write far into it zero-fills the gap first, so files stay single-stream.
+    static func volumeSupportsSparseFiles(_ directory: URL) -> Bool {
+        (try? directory.resourceValues(forKeys: [.volumeSupportsSparseFilesKey]))?.volumeSupportsSparseFiles == true
     }
 
     /// Ranges per file when `filesAtOnce` files download together, so that
@@ -47,7 +58,7 @@ struct SegmentedPartLayout: Codable, Equatable {
         var done: Int64
 
         var length: Int64 { end - start }
-        var isComplete: Bool { done == length }
+        var isComplete: Bool { done >= length }
         /// The next byte this range still needs.
         var next: Int64 { start + done }
     }
@@ -161,7 +172,7 @@ enum SegmentedPartFile {
                 throw ModelCatalogError.downloadFailed("\(partial.lastPathComponent): could not create")
             }
         }
-        if byteCount(partial) < size, Darwin.truncate(partial.path, off_t(size)) != 0 {
+        if byteCount(partial) < size, !truncate(partial, to: size) {
             throw ModelCatalogError.downloadFailed(
                 "\(partial.lastPathComponent): could not size to \(size) bytes (\(String(cString: strerror(errno))))")
         }
@@ -183,7 +194,7 @@ enum SegmentedPartFile {
         case .unusable:
             try remove(partial: partial)
         case .valid(let layout):
-            if Darwin.truncate(partial.path, off_t(layout.contiguousPrefix)) != 0 {
+            if !truncate(partial, to: layout.contiguousPrefix) {
                 try remove(partial: partial)
                 return
             }
@@ -206,13 +217,24 @@ enum SegmentedPartFile {
     private static func byteCount(_ url: URL) -> Int64 {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
     }
+
+    /// Without following a link, as the writer opens the `.part`.
+    private static func truncate(_ partial: URL, to length: Int64) -> Bool {
+        let descriptor = Darwin.open(partial.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+        return ftruncate(descriptor, off_t(length)) == 0
+    }
 }
 
 /// Writes the ranges of one ranged download into its pre-sized `.part` and
 /// keeps its record (`SegmentedPartFile`). Bytes are written at each range's
-/// next offset; the record is saved only after the `.part` is synced, so it
-/// never counts a byte that is not on disk. Progress (`onChunk`) is the sum of
-/// every range's bytes, reported in order under one lock, so it only grows.
+/// next offset; the record is saved only after the `.part` is synced
+/// (`fsync`), so after a stop or a restart it counts only bytes in the file.
+/// After a power loss the drive's cache may not have kept them; the file's
+/// SHA-256 then fails and the file is fetched again. Progress (`onChunk`) is
+/// the sum of every range's bytes, reported in order under one lock, so it
+/// only grows.
 final class SegmentedPartWriter: @unchecked Sendable {
     /// Bytes written between two saves of the record.
     static let checkpointBytes: Int64 = 32 << 20
@@ -261,7 +283,7 @@ final class SegmentedPartWriter: @unchecked Sendable {
         let count = Int64(data.count)
         guard open else { throw CancellationError() }
         guard count <= end - offset else {
-            throw ModelCatalogError.downloadFailed("\(partial.lastPathComponent): response exceeds its byte range")
+            throw RangesRefused(description: "\(partial.lastPathComponent): response exceeds its byte range")
         }
         try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
             var written = 0

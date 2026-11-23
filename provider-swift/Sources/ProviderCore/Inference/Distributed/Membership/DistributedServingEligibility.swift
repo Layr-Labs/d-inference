@@ -27,6 +27,6 @@ public enum DistributedServingEligibility {
     /// ranks' prefix cache off. The coordinator sends such a request to a
     /// pair only when every member reports it.
     public static func memberRegistrationCapabilities(chipFamily: ChipFamily) -> Set<ProviderRuntimeCapability> {
-        memberCapabilities(chipFamily: chipFamily).union([.cachePolicy])
+        memberCapabilities(chipFamily: chipFamily)
     }
 }

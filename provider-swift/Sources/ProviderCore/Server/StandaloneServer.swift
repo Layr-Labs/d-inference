@@ -344,6 +344,9 @@ public actor StandaloneServer {
     /// KV/activation buffers accumulate in MLX's cache under sustained local
     /// serving and are only returned to the OS on unload/shutdown.
     private var kvSweepTask: Task<Void, Never>?
+    /// Releases the RAM-only prefix tier on an OS memory-pressure warning or
+    /// critical, as the provider loop's monitor does.
+    private var memoryPressureMonitor: MemoryPressureMonitor?
     /// Sweep cadence. Fixed (ProviderLoop derives its cadence from
     /// heartbeat/2; there is no heartbeat here); the reclaimer itself
     /// rate-limits and threshold-gates, so this only bounds reaction
@@ -594,6 +597,12 @@ public actor StandaloneServer {
                 kvBudget.proactiveReclaimSweep()
             }
         }
+        memoryPressureMonitor?.cancel()
+        let monitor = MemoryPressureMonitor(
+            clearCache: { MemoryOnlyCheckpointPool.shared.releaseAll(reason: .pressure) },
+            writeMarker: { _ in }, emit: { _, _ in })
+        monitor.start()
+        memoryPressureMonitor = monitor
         lifecycleState = .running
         startMTPUpgradeMonitor()
     }
@@ -687,6 +696,9 @@ public actor StandaloneServer {
     }
 
     func finishShutdown(serviceTask: Task<Void, Never>?) async {
+        MemoryOnlyCheckpointPool.shared.releaseAll(reason: .shutdown)
+        memoryPressureMonitor?.cancel()
+        memoryPressureMonitor = nil
         let originalServiceTask = stoppingServiceTask ?? serverTask ?? serviceTask
         stoppingServiceTask = originalServiceTask
         lifecycleControlTask?.cancel()
@@ -1268,6 +1280,7 @@ public actor StandaloneServer {
                 fleetKVBudgetBytes: fleetBudget,
                 minimumGrantBytes: minimumGrants)
         }
+        MemoryOnlyCheckpointPool.shared.updateBudget(fleetKVHeadroomBytes: fleetBudget)
         guard Self.resliceKeepsSlotsServiceable(targets, existing: existing)
         else {
             let floorGb = String(
@@ -1424,9 +1437,10 @@ public actor StandaloneServer {
     func resliceGrowSurvivors() async {
         guard nativeMiMoReclaimAllowed else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
+        let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
+        MemoryOnlyCheckpointPool.shared.updateBudget(fleetKVHeadroomBytes: fleetBudget)
         guard !survivors.isEmpty else { return }
         guard nativeMiMoReclaimAllowed else { return }
-        let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,
@@ -1615,10 +1629,12 @@ public actor StandaloneServer {
         }
     }
 
-    /// Drops what a load reclaims without evicting: retained free KV
-    /// segments (engines drop them at their next step; this waits briefly),
-    /// then MLX's buffer cache, which device-filled segments return to.
+    /// Drops what a load reclaims without evicting: the RAM-only prefix tier,
+    /// retained free KV segments (engines drop them at their next step; this
+    /// waits briefly), then MLX's buffer cache, which device-filled segments
+    /// return to.
     func releaseReclaimableMemoryForLoad() async {
+        MemoryOnlyCheckpointPool.shared.releaseAll(reason: .load)
         await GlobalKVCacheBudget.releaseRetainedKVSegments()
         if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
     }

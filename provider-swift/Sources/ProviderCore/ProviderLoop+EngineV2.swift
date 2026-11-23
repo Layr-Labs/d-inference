@@ -464,6 +464,7 @@ extension ProviderLoop {
                 fleetKVBudgetBytes: fleetBudget,
                 minimumGrantBytes: minimumGrants)
         }
+        MemoryOnlyCheckpointPool.shared.updateBudget(fleetKVHeadroomBytes: fleetBudget)
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
             targets, minimumGrantBytes: minimumGrants)
         else {
@@ -686,8 +687,9 @@ extension ProviderLoop {
         guard nativeMiMoAllowsReclamation() else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
         guard nativeMiMoAllowsReclamation() else { return }
-        guard !survivors.isEmpty else { return }
         let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
+        MemoryOnlyCheckpointPool.shared.updateBudget(fleetKVHeadroomBytes: fleetBudget)
+        guard !survivors.isEmpty else { return }
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,

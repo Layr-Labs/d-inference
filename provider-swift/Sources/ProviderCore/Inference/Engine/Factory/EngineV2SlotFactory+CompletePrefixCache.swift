@@ -80,10 +80,15 @@ extension EngineV2SlotFactory {
         else {
             return .init(cache: nil, status: .init(state: .disabled, reason: .runtimeIdentityUnavailable))
         }
+        // A slot with an engine-resident tier serves `memory_only` requests
+        // with their cache off, so it gets no RAM-only tier either.
+        let memoryOnlyTier = MemoryOnlyPrefixCachePolicy.isEnabled(environment: environment)
+            && !PrefixCachePolicy.isMemoryEnabled(environment: environment)
+            && !(model is GLM5NextProtectedModel)
         switch await SSDHybridCheckpointStoreFactory.build(
             modelId: modelId, identity: identity, backendLayout: storage.backendLayout,
             kvBudget: kvBudget, environment: environment,
-            persistentTestNamespace: persistentTestNamespace) {
+            persistentTestNamespace: persistentTestNamespace, memoryOnlyTier: memoryOnlyTier) {
         case .success(let cache):
             return .init(cache: cache, status: .scanPending,
                 checkpointQuantization: storage.checkpointQuantization)

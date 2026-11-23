@@ -157,7 +157,8 @@ where Inner.Context == BasicRequestContext {
         let body = MTPPrometheusRenderer.joinedBody(
             upstream: await service.prometheusMetrics(),
             mtp: MTPPrometheusRenderer.render(await mtpSlots()) + GLM5NextLoadFaultState.diagnosticMetrics
-                + RequestCachePolicyCounters.shared.prometheusMetrics)
+                + RequestCachePolicyCounters.shared.prometheusMetrics
+                + MemoryOnlyCheckpointPool.shared.prometheusMetrics)
         return Response(
             status: .ok,
             headers: [.contentType: "text/plain; charset=utf-8"],

@@ -314,7 +314,10 @@ extension EngineV2Bridge {
             try media.validate(prompt:promptTokens)
             imageBoundCacheScope = cacheScope.isEmpty ? "" : cacheScope + "|mimo=" + media.fingerprint
         } else { imageBoundCacheScope = cacheScope }
-        let submissionPolicy = PrefixCacheSubmissionPolicy(cachePolicy: cachePolicy)
+        let submissionPolicy = PrefixCacheSubmissionPolicy(
+            cachePolicy: cachePolicy,
+            memoryOnlyTierAvailable: ssdHybridCheckpointStore?.memoryOnlyTier != nil && multimodal == nil
+                && !servesDistributedPair && ownedEngine is EngineV2)
         // Never manufacture an authenticated scope from an image digest.
         let imageCacheEnabled = submissionPolicy.cacheEnabled(
             cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil && clusterQwenMedia == nil
@@ -647,7 +650,21 @@ extension EngineV2Bridge {
                 failure: .policy,
                 fallbackTier: prefixCacheFallbackTier)
         } else if !submissionPolicy.usesSSDTier {
-            // No SSD stage: the engine's RAM-tier lookup settles the receipt.
+            if submissionPolicy.usesMemoryOnlyTier, let tier = ssdHybridCheckpointStore?.memoryOnlyTier,
+                let prefixCacheReceiptID, let liveEngine = ownedEngine as? EngineV2
+            {
+                let importRequest = cbv2Request
+                let stageResult = await tier.stage(requestID: prefixCacheReceiptID, request: importRequest,
+                    reserveReadScratch: { try liveEngine.reserveCompleteCheckpointReadScratch() }) {
+                    try liveEngine.planCompleteCheckpointImport(manifest: $0, request: importRequest)
+                }
+                ssdStaged = stageResult.staged
+                ssdReuseAttempted = stageResult.staged
+                usageSignal?.record(stageResult: stageResult)
+                if case .skippedCapacity = stageResult.disposition {
+                    emitPrefixCacheColdFallback(requestId: id, reason: "stage_capacity", capacityRefusal: true)
+                }
+            }
         } else if let store = ssdHybridCheckpointStore, let prefixCacheReceiptID,
             let liveEngine = ownedEngine as? EngineV2
         {

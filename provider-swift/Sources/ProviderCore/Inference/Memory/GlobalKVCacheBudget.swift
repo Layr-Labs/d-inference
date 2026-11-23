@@ -188,7 +188,10 @@ public actor GlobalKVCacheBudget {
                     MLX.Memory.clearCache()
                 }
             },
-            releaseRetained: { CBv2RetainedKVSegments.requestRelease() })
+            releaseRetained: {
+                CBv2RetainedKVSegments.requestRelease()
+                MemoryOnlyCheckpointPool.shared.releaseAll(reason: .shortfall)
+            })
     }
 
     init(
@@ -395,7 +398,11 @@ public actor GlobalKVCacheBudget {
 
     func recordReservationRefusal(bytes: UInt64) {
         let available = processLedger.snapshot().remainingBytes
-        if bytes > available { reclaimer.scheduleReclaim(shortfall: bytes - available) }
+        if bytes > available {
+            // The RAM-only prefix tier yields at once, so a caller's retry finds the room.
+            MemoryOnlyCheckpointPool.shared.releaseAll(reason: .shortfall)
+            reclaimer.scheduleReclaim(shortfall: bytes - available)
+        }
         recordCommitRejection()
     }
 

@@ -53,6 +53,8 @@ extension ProviderLoop {
 
         let monitor = MemoryPressureMonitor(
             clearCache: { [nativeMiMoRegistry] in
+                // Host memory, so no native owner needs to agree first.
+                MemoryOnlyCheckpointPool.shared.releaseAll(reason: .pressure)
                 guard ProviderLoop.nativeProcessAllowsReclamation(),
                     !nativeMiMoRegistry.hasRetainedFault,
                     !nativeMiMoRegistry.hasUnretiredClosingTransactions else { return }

@@ -1,0 +1,263 @@
+import Foundation
+import MLX
+@testable import MLXLMCommon
+import Testing
+
+@testable import ProviderCore
+
+/// The RAM-only tier on a real complete-checkpoint codec and admission
+/// (`SSDHybridCheckpointTestFixture`), with no model weights.
+@Suite("RAM-only checkpoint tier for memory_only requests", .serialized)
+struct MemoryOnlyCheckpointTierTests {
+    final class Clock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Int64 = 1_000
+        var now: Int64 { lock.withLock { value } }
+        func advance(_ seconds: Int64) { lock.withLock { value += seconds } }
+    }
+
+    static func marked(_ raw: UInt64) -> CBv2RequestID { CBv2RequestID(MemoryOnlyReceipt.bit | raw) }
+
+    static func pool(budget: UInt64 = 1 << 30, ttl: Int64 = 1_800, ttlMode: SSDPrefixCachePolicy.TTLMode = .sliding,
+                     clock: Clock = Clock()) -> MemoryOnlyCheckpointPool {
+        let pool = MemoryOnlyCheckpointPool(ttlSeconds: ttl, ttlMode: ttlMode, nowSeconds: { clock.now })
+        pool.setBudget(budget)
+        return pool
+    }
+
+    static func tier(_ fixture: SSDHybridCheckpointTestFixture, pool: MemoryOnlyCheckpointPool,
+                     wire: @escaping LockedHostRegion.Wire = { mlock($0, $1) }) -> MemoryOnlyCheckpointTier {
+        MemoryOnlyCheckpointTier(
+            config: .init(identity: fixture.identity, backendLayout: fixture.backendLayout, minEffectiveTokens: 256),
+            kvBudget: fixture.budget, pool: pool, wire: wire)
+    }
+
+    static func donate(_ tier: MemoryOnlyCheckpointTier, _ fixture: SSDHybridCheckpointTestFixture,
+                       receipt: CBv2RequestID?, position: Int = 256, scope: String = "tenant-a") async throws -> [Int] {
+        let source = try fixture.source(position: position, scope: scope)
+        return await withCheckedContinuation { continuation in
+            tier.donate(source, requestID: receipt, tokens: fixture.tokens, cacheSalt: scope) {
+                continuation.resume(returning: $0)
+            }
+        }
+    }
+
+    static func stage(_ tier: MemoryOnlyCheckpointTier, _ fixture: SSDHybridCheckpointTestFixture,
+                      receipt: CBv2RequestID, scope: String = "tenant-a") async -> SSDPrefixCacheStageResult {
+        let request = fixture.request(scope: scope)
+        return await tier.stage(
+            requestID: receipt, request: request,
+            reserveReadScratch: { try fixture.reserveReadScratch() },
+            makeImportPlan: { try fixture.codec.plan(manifest: $0, request: request) })
+    }
+
+    /// Every file under `root`, with its size and modification time.
+    static func listing(_ root: URL) -> [String: [Double]] {
+        var files: [String: [Double]] = [:]
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        for case let url as URL in FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys) ?? .init() {
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            files[url.path] = [Double(values?.fileSize ?? -1),
+                               values?.contentModificationDate?.timeIntervalSince1970 ?? -1]
+        }
+        return files
+    }
+
+    @Test("a marked request restores the second identical prefix from RAM")
+    func markedDonationThenRestoreHits() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool)
+        defer { tier.close() }
+
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(1)).disposition == .missAbsent)
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        let snapshot = pool.snapshot
+        #expect(snapshot.entries == 1 && snapshot.bytes > 0 && snapshot.stores[.stored] == 1)
+
+        let result = await Self.stage(tier, fixture, receipt: Self.marked(2))
+        #expect(result.disposition == .staged(
+            matchedTokens: 256, expectedPrefillTokensSaved: 256, shortenedByCorruption: false))
+        #expect(result.tier == .memory && result.chainHashes.isEmpty)
+        let lookup = result.resolved(actualCachedTokens: 256)
+        #expect(lookup.tier == .memory && lookup.promptAnchor == nil && lookup.matchedAnchor == nil)
+        let staged = try #require(tier.takeStaged(
+            requestID: Self.marked(2), tokens: fixture.tokens, cacheSalt: "tenant-a",
+            maximumSequenceLength: fixture.request().maxTokens + fixture.tokens.count))
+        #expect(staged.manifest.position == 256 && staged.manifest.prefixTokens == Array(fixture.tokens.prefix(256)))
+        staged.close()
+        #expect(pool.snapshot.lookups[.hit] == 1 && pool.snapshot.hitTokens == 256)
+    }
+
+    @Test("an ordinary request's receipt is refused on every call, and nothing is stored")
+    func unmarkedReceiptsAreRefused() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool)
+        defer { tier.close() }
+
+        #expect(try await Self.donate(tier, fixture, receipt: CBv2RequestID(1)).isEmpty)
+        #expect(try await Self.donate(tier, fixture, receipt: nil).isEmpty)
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        let result = await Self.stage(tier, fixture, receipt: CBv2RequestID(2))
+        #expect(result.disposition == .skippedPolicy && result.tier == .memory)
+        #expect(pool.snapshot.unmarkedRefusals == 3 && pool.snapshot.entries == 1)
+    }
+
+    @Test("another scope never sees a marked entry")
+    func otherScopeMisses() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool)
+        defer { tier.close() }
+
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1), scope: "tenant-a") == [256])
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(2), scope: "tenant-b").disposition == .missAbsent)
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(3), scope: "tenant-a").staged)
+    }
+
+    @Test("the tier writes no file")
+    func noFileIsWritten() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let before = Self.listing(fixture.root)
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool)
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(2)).staged)
+        tier.completeStaging(requestID: Self.marked(2))
+        await tier.closeAndWait()
+        #expect(Self.listing(fixture.root) == before)
+    }
+
+    @Test("closing the slot's tier (model unload) releases its entries")
+    func closeReleasesEntries() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool)
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        await tier.closeAndWait()
+        #expect(pool.snapshot.entries == 0 && pool.bytesInUse == 0 && pool.snapshot.evictions[.unload] == 1)
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(2)).isEmpty)
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(3)).disposition == .skippedPolicy)
+    }
+
+    @Test("pressure, a load and shutdown release every entry", arguments: [
+        MemoryOnlyCheckpointPool.EvictionReason.pressure, .load, .shutdown, .shortfall,
+    ])
+    func releaseAll(reason: MemoryOnlyCheckpointPool.EvictionReason) async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool)
+        defer { tier.close() }
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        pool.releaseAll(reason: reason)
+        #expect(pool.snapshot.entries == 0 && pool.bytesInUse == 0 && pool.snapshot.evictions[reason] == 1)
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(2)).disposition == .missAbsent)
+    }
+
+    @Test("over its budget the tier drops its least recently used entry")
+    func leastRecentlyUsedEviction() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let probe = Self.pool()
+        let measure = Self.tier(fixture, pool: probe)
+        #expect(try await Self.donate(measure, fixture, receipt: Self.marked(1)) == [256])
+        let entryBytes = probe.bytesInUse
+        measure.close()
+
+        let pool = Self.pool(budget: entryBytes * 2)
+        let tier = Self.tier(fixture, pool: pool)
+        defer { tier.close() }
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(2), scope: "a") == [256])
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(3), scope: "b") == [256])
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(4), scope: "a").staged)  // "a" is now newest
+        tier.completeStaging(requestID: Self.marked(4))
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(5), scope: "c") == [256])
+        #expect(pool.snapshot.entries == 2 && pool.snapshot.evictions[.lru] == 1)
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(6), scope: "b").disposition == .missAbsent)
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(7), scope: "a").staged)
+    }
+
+    @Test("an entry larger than the budget, or a budget of 0, is not stored")
+    func budgetRefusal() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        for budget: UInt64 in [0, 16 << 10] {
+            let pool = Self.pool(budget: budget)
+            let tier = Self.tier(fixture, pool: pool)
+            #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)).isEmpty)
+            #expect(pool.snapshot.stores[.refusedBudget] == 1 && pool.bytesInUse == 0)
+            tier.close()
+        }
+    }
+
+    @Test("pages that can't be wired are never kept unwired")
+    func lockFailureStoresNothing() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool, wire: { _, _ in -1 })
+        defer { tier.close() }
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)).isEmpty)
+        #expect(pool.snapshot.stores[.refusedLock] == 1 && pool.snapshot.entries == 0 && pool.bytesInUse == 0)
+        #expect(LockedHostRegion(bytes: 1 << 20, wire: { _, _ in -1 }) == nil)
+    }
+
+    @Test("sliding TTL restarts on reuse; fixed TTL counts from the store", arguments: [
+        SSDPrefixCachePolicy.TTLMode.sliding, .fixed,
+    ])
+    func timeToLive(ttlMode: SSDPrefixCachePolicy.TTLMode) async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let clock = Clock()
+        let pool = Self.pool(ttl: 100, ttlMode: ttlMode, clock: clock)
+        let tier = Self.tier(fixture, pool: pool)
+        defer { tier.close() }
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        clock.advance(99)
+        #expect(await Self.stage(tier, fixture, receipt: Self.marked(2)).staged)
+        tier.completeStaging(requestID: Self.marked(2))
+        clock.advance(51)
+        let afterReuse = await Self.stage(tier, fixture, receipt: Self.marked(3))
+        tier.completeStaging(requestID: Self.marked(3))
+        #expect(afterReuse.staged == (ttlMode == .sliding))
+        clock.advance(100)
+        pool.sweepExpired()
+        #expect(pool.snapshot.entries == 0 && pool.bytesInUse == 0 && pool.snapshot.evictions[.ttl] == 1)
+    }
+
+    @Test("an entry needs a whole budget of ledger headroom beside it")
+    func headroomGuard() async throws {
+        let ledger = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0, memorySnapshot: {
+            .init(total: 3 << 30, active: 0, cache: 0, systemAvailable: 3 << 30)
+        })
+        let pool = Self.pool(budget: 2 << 30)
+        #expect(pool.admit(bytes: 1 << 20, ledger: ledger) == nil)
+        #expect(pool.snapshot.stores[.refusedHeadroom] == 1 && pool.bytesInUse == 0)
+        #expect(ledger.processLedger.snapshot().chargedBytes == 0)
+        pool.setBudget(512 << 20)
+        let admission = try #require(pool.admit(bytes: 1 << 20, ledger: ledger))
+        #expect(ledger.processLedger.snapshot().chargedBytes == admission.bytes)
+        admission.cancel(outcome: .refusedPolicy)
+        #expect(ledger.processLedger.snapshot().chargedBytes == 0 && pool.bytesInUse == 0)
+    }
+
+    @Test("a held entry is charged to the process ledger until it is released")
+    func ledgerCharge() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let pool = Self.pool()
+        let tier = Self.tier(fixture, pool: pool)
+        let before = fixture.budget.processLedger.snapshot().chargedBytes
+        #expect(try await Self.donate(tier, fixture, receipt: Self.marked(1)) == [256])
+        #expect(fixture.budget.processLedger.snapshot().chargedBytes == before + pool.bytesInUse)
+        await tier.closeAndWait()
+        #expect(fixture.budget.processLedger.snapshot().chargedBytes == before)
+    }
+}

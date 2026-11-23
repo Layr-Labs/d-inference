@@ -268,19 +268,24 @@ struct SSDPrefixCacheStageResult: Sendable, Equatable {
     let chainHashes: [Data]
     let blockSize: Int
     let deviceBytes: Int
+    /// `.memory` for the RAM-only tier of `memory_only` requests, which
+    /// reports no chain anchors.
+    let tier: PrefixCacheTier
 
     init(
         disposition: SSDPrefixCacheStageDisposition,
         stageMs: Double,
         chainHashes: [Data] = [],
         blockSize: Int = 0,
-        deviceBytes: Int = 0
+        deviceBytes: Int = 0,
+        tier: PrefixCacheTier = .ssd
     ) {
         self.disposition = disposition
         self.stageMs = stageMs
         self.chainHashes = chainHashes
         self.blockSize = blockSize
         self.deviceBytes = max(0, deviceBytes)
+        self.tier = tier
     }
 
     var staged: Bool {
@@ -301,7 +306,7 @@ struct SSDPrefixCacheStageResult: Sendable, Equatable {
             let saved = max(0, actualPrefillTokensSaved ?? cached)
             return PrefixCacheLookupResult(
                 outcome: .hit,
-                tier: .ssd,
+                tier: tier,
                 cachedTokens: cached,
                 prefillTokensSaved: saved,
                 stageMs: stageMs,
@@ -328,7 +333,7 @@ struct SSDPrefixCacheStageResult: Sendable, Equatable {
         }
         return PrefixCacheLookupResult(
             outcome: outcome,
-            tier: .ssd,
+            tier: tier,
             stageMs: stageMs,
             promptAnchor: anchor(tokenCount: chainHashes.count * blockSize))
     }
@@ -337,7 +342,7 @@ struct SSDPrefixCacheStageResult: Sendable, Equatable {
         if case .staged = disposition {
             return PrefixCacheLookupResult(
                 outcome: failure == .capacity ? .skippedCapacity : .skippedPolicy,
-                tier: .ssd,
+                tier: tier,
                 stageMs: stageMs,
                 promptAnchor: anchor(tokenCount: chainHashes.count * blockSize))
         }

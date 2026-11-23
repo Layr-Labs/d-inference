@@ -1382,8 +1382,8 @@ extension ProviderLoop {
     }
 
     /// What unloading `slots` and `releaseReclaimableMemoryForLoad` hand
-    /// back: their resident weights, MLX's buffer cache and, when counted,
-    /// retained free KV segments. Count those only to decide whether that
+    /// back: their resident weights, MLX's buffer cache, the RAM-only prefix
+    /// tier and, when counted, retained free KV segments. Count those only to decide whether that
     /// release could make room, never once it has run: engines drop them at
     /// their next step, which can outlast the release's wait, and can park
     /// more meanwhile, so only the memory sample taken after the release
@@ -1393,17 +1393,19 @@ extension ProviderLoop {
         from slots: [String: ModelSlot], countingRetainedKVSegments: Bool
     ) -> UInt64 {
         let retained = countingRetainedKVSegments ? CBv2RetainedKVSegments.retainedBytes : 0
-        let pools = [MLX.Memory.cacheMemory, retained]
+        let pools = [MLX.Memory.cacheMemory, retained, Int(clamping: MemoryOnlyCheckpointPool.shared.bytesInUse)]
         return (pools + slots.values.map(\.sizing.weightsBytes)).reduce(UInt64(0)) { total, bytes in
             let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, bytes)))
             return overflow ? .max : sum
         }
     }
 
-    /// Drops what a load reclaims without evicting: retained free KV
-    /// segments (engines drop them at their next step; this waits briefly),
-    /// then MLX's buffer cache, which device-filled segments return to.
+    /// Drops what a load reclaims without evicting: the RAM-only prefix tier,
+    /// retained free KV segments (engines drop them at their next step; this
+    /// waits briefly), then MLX's buffer cache, which device-filled segments
+    /// return to.
     func releaseReclaimableMemoryForLoad() async {
+        MemoryOnlyCheckpointPool.shared.releaseAll(reason: .load)
         await GlobalKVCacheBudget.releaseRetainedKVSegments()
         clearCacheAfterConfirmedNativeOwnership()
     }

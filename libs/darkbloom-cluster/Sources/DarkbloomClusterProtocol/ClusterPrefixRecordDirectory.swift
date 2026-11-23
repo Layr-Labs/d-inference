@@ -44,11 +44,15 @@ public enum ClusterPrefixRecordDirectory {
     }
 
     public static func withIdlePlan<T>(root: Int32, name: String, device: dev_t, _ visit: (Int32) -> T) -> T? {
+        withLeasedPlan(root: root, name: name, device: device) { fd, _ in visit(fd) }
+    }
+
+    public static func withLeasedPlan<T>(root: Int32, name: String, device: dev_t, _ visit: (Int32, Int32) -> T) -> T? {
         guard isPlan(name), let plan = openChild(root, name, device: device) else { return nil }
         defer { close(plan) }
         guard case .acquired(let lease) = lease(plan) else { return nil }
         defer { close(lease) }
-        return visit(plan)
+        return visit(plan, lease)
     }
 
     @discardableResult

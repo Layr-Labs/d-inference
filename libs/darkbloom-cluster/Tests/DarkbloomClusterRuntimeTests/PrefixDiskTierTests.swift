@@ -1,5 +1,5 @@
 import CryptoKit
-import DarkbloomClusterProtocol
+@testable import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import Testing
@@ -1048,5 +1048,25 @@ extension PrefixDiskTierTests {
         #expect(second.recordCount == (held ? 1 : 2))
         #expect(!second.frontiers(scope: "s", tokens: Array(200..<240), maximumFrontier: 39).isEmpty)
         #expect(second.frontiers(scope: "s", tokens: Array(100..<140), maximumFrontier: 39).isEmpty == held)
+    }
+
+    @Test func interruptedFinalRemovalRecoversOnlyTheRetiredInode() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = "v1-" + String(repeating: "a", count: 24)
+        let dir = root.appendingPathComponent(plan)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data().write(to: dir.appendingPathComponent("in-use"))
+        let failed = ClusterPrefixPlanReclaim.run(root: root, keeping: nil, includeStaging: true, expectedVolume: nil,
+                                                  removeRetired: { _, _ in -1 })
+        #expect(failed.needsRetry && !FileManager.default.fileExists(atPath: dir.path))
+        let retired = try #require(try FileManager.default.contentsOfDirectory(atPath: root.path).first { $0.hasPrefix(".retiring-") })
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent(retired).path).isEmpty)
+        // A new, unverified plan at the old name must not inherit the retirement decision.
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let retried = ClusterPrefixPlanReclaim.run(root: root, includeStaging: true)
+        #expect(retried.removedPlans == 1 && retried.needsRetry)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(retired).path))
+        #expect(FileManager.default.fileExists(atPath: dir.path))
     }
 }

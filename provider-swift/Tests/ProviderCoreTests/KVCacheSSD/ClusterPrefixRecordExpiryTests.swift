@@ -91,6 +91,11 @@ struct ClusterPrefixRecordExpiryTests {
         let staged = try file(root, "staging/session/rank0/.record.tmp", age: 0)
         let reply = ClusterMemberCacheControl.reclaimOnUnpair(root: root, store: store)
         #expect(!reply.problems.isEmpty && store.reclaimPending && exists(staged) && exists(record))
+        let other = directory.appendingPathComponent("another-cache"), b = try file(other, "\(Self.plan)/rank0/\(Self.record("b"))", age: 0)
+        _ = try file(other, "\(Self.plan)/in-use", age: 0)
+        let bStage = try file(other, "staging/session/rank0/.record.tmp", age: 0)
+        #expect(ClusterMemberCacheControl.finishPendingReclaim(root: other, store: store)?.needsRetry == true)
+        #expect(store.reclaimPending && exists(b) && exists(bStage) && exists(staged))
         let lease = root.appendingPathComponent("\(Self.plan)/in-use")
         try FileManager.default.createSymbolicLink(at: lease, withDestinationURL: record)
         #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store)?.needsRetry == true)
@@ -99,6 +104,26 @@ struct ClusterPrefixRecordExpiryTests {
         try Data().write(to: lease)
         let done = try #require(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store))
         #expect(done.rootRemoved && !done.needsRetry && !store.reclaimPending && !exists(staged))
+        #expect(exists(b) && exists(bStage))
+    }
+
+    @Test("a detached pinned volume and a legacy marker never authorize cleanup elsewhere")
+    func missingOriginalVolumeRemainsPending() throws {
+        let directory = temporaryRoot(), root = directory.appendingPathComponent("detached/cache")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let setup = directory.appendingPathComponent("setup")
+        try FileManager.default.createDirectory(at: setup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let store = ClusterMemberCacheControl.Store(directory: setup), pin = UUID().uuidString.lowercased()
+        let first = ClusterMemberCacheControl.reclaimOnUnpair(root: root, volumeUUID: pin, store: store)
+        #expect(!first.problems.isEmpty && store.reclaimPending)
+        #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, volumeUUID: pin, store: store)?.needsRetry == true)
+        let file = try self.file(root, "\(Self.plan)/rank0/\(Self.record("a"))", age: 0)
+        _ = try self.file(root, "\(Self.plan)/in-use", age: 0)
+        #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, volumeUUID: pin, store: store)?.needsRetry == true)
+        #expect(exists(file) && store.reclaimPending)
+        try Data("1\n".utf8).write(to: store.pendingFile); chmod(store.pendingFile.path, 0o600)
+        #expect(ClusterMemberCacheControl.finishPendingReclaim(root: root, store: store)?.needsRetry == true)
+        #expect(exists(file) && store.reclaimPending)
     }
 
     @Test("maintenance uses the saved volume and a rank's last applied duration")

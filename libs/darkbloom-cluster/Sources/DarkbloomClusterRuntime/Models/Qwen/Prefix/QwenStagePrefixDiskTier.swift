@@ -945,7 +945,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         var swept = 0, kept: [OtherRecord] = []
         ClusterPrefixRecordDirectory.forEachName(in: rootFD) { name in
             guard name != keeping else { return }
-            _ = ClusterPrefixRecordDirectory.withIdlePlan(root: rootFD, name: name, device: device) { plan in
+            _ = ClusterPrefixRecordDirectory.withLeasedPlan(root: rootFD, name: name, device: device) { plan, lease in
                 var empty = true
                 let inspectedPlan = ClusterPrefixRecordDirectory.forEachName(in: plan) { rank in
                     if rank == "in-use" { return }
@@ -974,7 +974,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
                         if unlinkat(plan, rank, AT_REMOVEDIR) != 0 { empty = false }
                     } else { empty = false }
                 }
-                if empty, inspectedPlan, unlinkat(plan, "in-use", 0) == 0, unlinkat(rootFD, name, AT_REMOVEDIR) == 0 {
+                if empty, inspectedPlan, ClusterPrefixPlanReclaim.retireEmptyPlan(root: rootFD, plan: plan, lease: lease, name: name) {
                     swept += 1
                 }
             }

@@ -20,6 +20,8 @@ public struct ClusterPrefixCacheSettings: Equatable, Sendable {
     /// `darkbloom/cluster-prefix-v1` (`rootDirectoryName`: the install's own
     /// cache namespace), beside the single-Mac `kv3` tier.
     public var root: URL
+    /// Local operator volume pin. It never comes from the peer's settings.
+    public var volumeUUID: String?
     /// The product's prefix-cache gate: off turns the pair's prefix cache and
     /// its SSD tier off (the rank keeps nothing anywhere).
     public var prefixCacheEnabled: Bool
@@ -36,9 +38,10 @@ public struct ClusterPrefixCacheSettings: Equatable, Sendable {
     /// was written (`DARKBLOOM_SSD_KV_TTL_MODE=fixed`, this Mac's own switch).
     public var fixedTTL: Bool
 
-    public init(root: URL, prefixCacheEnabled: Bool = true, byteBudget: Int? = nil, dailyWriteBytes: Int? = nil,
+    public init(root: URL, volumeUUID: String? = nil, prefixCacheEnabled: Bool = true, byteBudget: Int? = nil, dailyWriteBytes: Int? = nil,
                 ttlSeconds: Int? = nil, fixedTTL: Bool = false) {
-        self.root = root; self.prefixCacheEnabled = prefixCacheEnabled; self.byteBudget = byteBudget
+        self.root = root; self.volumeUUID = volumeUUID?.lowercased()
+        self.prefixCacheEnabled = prefixCacheEnabled; self.byteBudget = byteBudget
         self.dailyWriteBytes = dailyWriteBytes; self.ttlSeconds = ttlSeconds; self.fixedTTL = fixedTTL
     }
 
@@ -238,7 +241,7 @@ public struct ClusterPrefixSSDInspection: Equatable, Sendable, Encodable {
 public enum ClusterPrefixSSDReclaim {
     public typealias Report = ClusterPrefixPlanReclaim.Result
 
-    public static func reclaim(root: URL) -> Report {
-        ClusterPrefixPlanReclaim.run(root: root, includeStaging: true)
+    public static func reclaim(root: URL, volumeUUID: String? = nil, expectedInode: UInt64? = nil) -> Report {
+        ClusterPrefixPlanReclaim.run(root: root, includeStaging: true, expectedVolume: volumeUUID, expectedInode: expectedInode)
     }
 }

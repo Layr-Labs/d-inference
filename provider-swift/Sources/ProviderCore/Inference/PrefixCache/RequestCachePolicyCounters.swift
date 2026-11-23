@@ -10,8 +10,8 @@ final class RequestCachePolicyCounters: @unchecked Sendable {
         var defaultRequests: UInt64 = 0
         var memoryOnlyRequests: UInt64 = 0
         /// Engine calls (lookup, stage take, donation) that the SSD tier
-        /// refused for a `memory_only` request: expected, one or more per
-        /// cached request on a slot with an SSD store.
+        /// refused for a `memory_only` request that runs with a prefix cache
+        /// on (`MemoryOnlyReceipt`). 0 while such requests run with it off.
         var ssdRefusals: UInt64 = 0
         /// A `memory_only` request reached an SSD read, write or index path
         /// that only the bridge starts. Each one is refused where it is

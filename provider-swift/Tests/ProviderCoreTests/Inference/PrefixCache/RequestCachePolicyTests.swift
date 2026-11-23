@@ -82,8 +82,15 @@ struct RequestCachePolicyTests {
     func memoryOnlyReceiptRange() {
         #expect(!MemoryOnlyReceipt.contains(nil))
         #expect(!MemoryOnlyReceipt.contains(CBv2RequestID(1)))
-        #expect(!MemoryOnlyReceipt.contains(CBv2RequestID(UInt64.max >> 1)))
+        #expect(!MemoryOnlyReceipt.contains(CBv2RequestID(MemoryOnlyReceipt.bit - 1)))
         #expect(MemoryOnlyReceipt.contains(CBv2RequestID(1 | MemoryOnlyReceipt.bit)))
+        // A seeded engine ID carries its own tag bit and is never in the range.
+        for seed: UInt64 in 0 ..< 64 {
+            let seeded = EngineV2Bridge.stableSeededRawId(seed: seed, promptTokens: [1, 2, 3])
+            #expect(!MemoryOnlyReceipt.contains(CBv2RequestID(seeded)))
+            #expect(!MemoryOnlyReceipt.contains(CBv2RequestID(seeded | MemoryOnlyReceipt.bit)))
+        }
+        #expect(!MemoryOnlyReceipt.contains(CBv2RequestID(UInt64.max)))
     }
 
     @Test("the local API's policy comes from DARKBLOOM_LOCAL_CACHE_POLICY, failing closed")
@@ -126,7 +133,15 @@ struct RequestCachePolicyTests {
         #expect(ClusterPrefixCacheSettings(root: root).rankSwitches["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_MODE"] == nil)
         #expect(ClusterPrefixCacheSettings(root: root, fixedTTL: true)
             .rankSwitches["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_MODE"] == "fixed")
-        #expect(DistributedInstalledPrefixSSD.passedThrough.contains("DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_MODE"))
+        // The rank's environment carries it from this Mac's setting; the owner's own environment does not.
+        let home = URL(fileURLWithPath: "/tmp/cluster-home")
+        func rank(fixed: Bool, owner: [String: String] = [:]) -> String? {
+            DistributedInstalledPrefixSSD.environment(home: home, deviceDirectory: home, ownerEnvironment: owner,
+                prefixCacheOff: false, settings: ClusterPrefixCacheSettings(root: root, fixedTTL: fixed))[
+                    "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_MODE"]
+        }
+        #expect(rank(fixed: true) == "fixed" && rank(fixed: false) == nil)
+        #expect(rank(fixed: false, owner: ["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_MODE": "fixed"]) == nil)
     }
 
     @Test("the local metrics name the policy counters")

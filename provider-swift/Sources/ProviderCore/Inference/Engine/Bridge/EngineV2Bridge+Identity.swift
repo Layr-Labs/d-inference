@@ -79,7 +79,7 @@ extension EngineV2Bridge {
     /// callbacks remain retained for the coordinator settlement window.
     /// A `memoryOnly` receipt takes the reserved range (`MemoryOnlyReceipt`).
     func mintPrefixCacheReceiptID(memoryOnly: Bool = false) -> CBv2RequestID {
-        let raw = nextPrefixCacheReceiptRawId & ~MemoryOnlyReceipt.bit
+        let raw = nextPrefixCacheReceiptRawId & ~(MemoryOnlyReceipt.bit | Self.seededIdTagBit)
         nextPrefixCacheReceiptRawId &+= 1
         return CBv2RequestID(memoryOnly ? raw | MemoryOnlyReceipt.bit : raw)
     }

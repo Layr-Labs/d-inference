@@ -43,7 +43,6 @@ extension EngineProfile {
         detokDelayFirstNs = ns(t.detokDelayFirstNanos)
         prefixLookupNs = ns(t.prefixLookupNanos)
         prefixAdoptionNs = ns(t.prefixAdoptionNanos)
-        mtpIneligible = t.mtpIneligibility.map(EngineMTPIneligibility.init)
         if let finishReason {
             self.finishReason = EngineFinishReason(reason: finishReason)
         }

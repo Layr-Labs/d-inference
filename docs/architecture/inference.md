@@ -3357,12 +3357,13 @@ M3/M4/M5 and `4` on M1/M2/unknown, lowered by
 `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` (and for Gemma QAT, below)
 (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
 On measured chips the catalog `gemma-4-26b-qat-4bit` drafts two tokens a round
-at fixed depth (`MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName:)`): on
+at fixed depth (`MTPAutomaticVerificationPolicy.gemmaTwoDrafts(chipName:m5UltraLoneRow:)`): on
 M5 Ultra, M3 Ultra and M5 Max only a lone row drafts (per-row table
 `fixedDraftTokensByDecodeRows = [2, 0]`, envelope 3, one `[1, 3]` rectangle).
 Two or more rows get depth 0 and run ordinary chained decode.
 `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` restores M5 Ultra's earlier table: one
-or two rows draft (`[2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at most). Width-3
+or two rows draft (`[2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at most), and the
+deadline projection again charges three rows depth 1, more than they run. Width-3
 verification below 64 expert assignments (`[1, 3]`, and `[2, 3]` under that
 switch), outside the batch-decode and
 prompt projection scopes, takes Gemma's compiled feed-forward trace, with the

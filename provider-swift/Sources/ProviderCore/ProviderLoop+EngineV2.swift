@@ -203,7 +203,8 @@ extension ProviderLoop {
         extraModelType: String? = nil,
         activationReserveBytes: UInt64? = nil,
         excludingModelIDs: Set<String> = [],
-        quotingAfterRetirementOf: Set<String> = []
+        quotingAfterRetirementOf: Set<String> = [],
+        heldToGPULimit: Bool = true
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
         for (id, slot) in modelSlots where !excludingModelIDs.contains(id) {
@@ -239,7 +240,8 @@ extension ProviderLoop {
         return GLM5NextGPULimitKVBudget.budgetBytes(
             budget, modelTypes: modelTypes + [extraModelType], retainedGLMBytes: retainedGLM,
             residentWeightBytes: resident, activationReserveBytes: reserve,
-            limit: engineV2SlotHooks?.gpuLimit ?? (engineV2SlotHooks?.physicalMemoryBytes == nil ? .live() : .unread))
+            limit: engineV2SlotHooks?.gpuLimit ?? (engineV2SlotHooks?.physicalMemoryBytes == nil ? .live() : .unread),
+            enabled: heldToGPULimit && GLM5NextGPULimitKVBudget.enabled())
     }
 
     /// The prefill lanes, paged decode rows and MTP round work that resident
@@ -506,7 +508,14 @@ extension ProviderLoop {
         // Phase 1 — SHRINKS first, so Σ(ceilings) never exceeds the fleet
         // budget at any instant. Engine-side shrink semantics: in-flight
         // reservations untouched; new reserves fail until the pool drains.
-        let reslice = NewcomerReslice(grantBytes: targets[modelId] ?? 0, existing: existing, targets: targets)
+        var reslice = NewcomerReslice(grantBytes: targets[modelId] ?? 0, existing: existing, targets: targets)
+        if GLM5NextPromptPolicy.applies(modelType: modelType) {
+            reslice.rowsReferenceBytes = EngineV2KVSizing.resliceGrants(
+                existing: existing.map(\.slot), newcomer: newcomer,
+                fleetKVBudgetBytes: fleetKVBudgetBytes(
+                    extraWeightBytes: sizing.weightsBytes, extraModelType: modelType, heldToGPULimit: false),
+                minimumGrantBytes: minimumGrants)[modelId]
+        }
         await shrinkSurvivors(reslice)
 
         // Phase 2 — build the newcomer with its grant. Restore-on-throw,
@@ -529,6 +538,7 @@ extension ProviderLoop {
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: reslice.grantBytes,
+                glm5NextRowsReferenceBytes: reslice.rowsReferenceBytes,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,
                 modelArtifactSHA256: modelArtifactSHA256,
@@ -579,6 +589,9 @@ extension ProviderLoop {
         let grantBytes: Int
         fileprivate let existing: [ExistingSlotGrant]
         fileprivate let targets: [String: Int]
+        /// The newcomer's grant for the same set without the GPU-limit hold: the reference for its GLM rows
+        /// (`EngineV2Factory.prepareProductionBackend`). Nil where no hold applies.
+        var rowsReferenceBytes: Int? = nil
     }
 
     /// Phase 1 of `resliceAndBuildEngineV2Bundle` for an owner-built engine
@@ -745,6 +758,7 @@ extension ProviderLoop {
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int,
+        glm5NextRowsReferenceBytes: Int? = nil,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel?,
         modelArtifactSHA256: String? = nil,
@@ -754,7 +768,8 @@ extension ProviderLoop {
         try await makeEngineV2BundleForSlot(
             modelId: modelId, modelType: modelType, isVLM: isVLM, modelDirectory: modelDirectory,
             container: .autoregressive(container), tokenizer: tokenizer, sizing: sizing,
-            kvBytesCapacity: kvBytesCapacity, specDecPreparation: specDecPreparation,
+            kvBytesCapacity: kvBytesCapacity, glm5NextRowsReferenceBytes: glm5NextRowsReferenceBytes,
+            specDecPreparation: specDecPreparation,
             preparedModel: preparedModel.map(EngineV2ServingPreparation.autoregressive),
             modelArtifactSHA256: modelArtifactSHA256,
             cacheEligibleWeightHash: cacheEligibleWeightHash, registerInRuntime: registerInRuntime)
@@ -769,6 +784,7 @@ extension ProviderLoop {
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int,
+        glm5NextRowsReferenceBytes: Int? = nil,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2ServingPreparation?,
         modelArtifactSHA256: String? = nil,
@@ -835,6 +851,7 @@ extension ProviderLoop {
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: kvBytesCapacity,
+                glm5NextRowsReferenceBytes: glm5NextRowsReferenceBytes,
                 maxConcurrentRequests: maxConcurrent,
                 automaticallySelectConcurrency: !loopConfig.config.backend.engineV2MaxConcurrentIsExplicit
                     && loopConfig.config.backend.engineV2MaxConcurrentByModel[modelId] == nil,

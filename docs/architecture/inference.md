@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2003,7 +2003,7 @@ and KV bytes are charged into every fleet KV budget, so other families' new and
 regrown grants cannot reuse that memory. While GLM is resident, being loaded or
 retained, the fleet KV budget is also held to the GPU wired-memory limit, less
 the resident weights and activation reserve
-([hardware support](hardware-support.md), `GLM5NextGPULimitKVBudget`).
+([hardware support](hardware-support.md), `GLM5NextGPULimitKVBudget`). The held grant keeps GLM's running rows: the engine's step-scratch check (`GLM5NextPagedModelBinding.validateStepEnvelope`) is priced for the tokens the GLM gate admits within the admissible bytes, (admissible − setup) / (KV + step scratch per token), as well as for every row at the context, and the rows are capped at those the row-and-context check gives the same set without the hold (`EngineV2Factory.glm5NextServingRows`). `DARKBLOOM_GLM_GPU_LIMIT_KV=0` turns both off.
 Allocator-cache trimming only frees
 unowned cached allocations and is not native-retirement proof. Local `/metrics`
 reports the retained-fault state, retained owner-object count and charged bytes

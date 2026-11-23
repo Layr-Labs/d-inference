@@ -19,7 +19,7 @@ import Foundation
 /// .fullContextRefusal`). Where the limit leaves more than the cap does, as the
 /// production hosts' raised limit (240 GiB) does, the cap's budget stands. A
 /// grant follows the limit read at its last successful re-slice.
-enum GLM5NextGPULimitKVBudget {
+public enum GLM5NextGPULimitKVBudget {
     struct GPULimit: Sendable, Equatable {
         /// The GPU's wired-memory limit; 0 when it could not be read.
         let limitBytes: UInt64
@@ -32,17 +32,31 @@ enum GLM5NextGPULimitKVBudget {
         }
     }
 
+    /// `0`, `false`, `no` or `off` (trimmed, case-insensitive): no GLM set is
+    /// held to the GPU limit, and the engine's step envelope keeps its
+    /// row-and-context bound (`EngineV2Factory.glm5NextAdmittedBytesPerContextToken`),
+    /// both as in 0.10.17. Read at each re-slice and engine build; the
+    /// LaunchAgent forwards it.
+    public static let environmentName = "DARKBLOOM_GLM_GPU_LIMIT_KV"
+
+    public static func enabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard let raw = environment[environmentName] else { return true }
+        return !["0", "false", "no", "off"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
     /// `budget` (the cap's KV budget for the same set), held to `limit` when
-    /// any of `modelTypes` is GLM-5.3-Flash or `retainedGLMBytes` is charged.
+    /// any of `modelTypes` is GLM-5.3-Flash or `retainedGLMBytes` is charged,
+    /// unless the switch is off.
     static func budgetBytes(
         _ budget: UInt64,
         modelTypes: [String?],
         retainedGLMBytes: UInt64,
         residentWeightBytes: UInt64,
         activationReserveBytes: UInt64,
-        limit: @autoclosure () -> GPULimit
+        limit: @autoclosure () -> GPULimit,
+        enabled: Bool = enabled()
     ) -> UInt64 {
-        guard retainedGLMBytes > 0 || modelTypes.contains(where: GLM5NextPromptPolicy.applies(modelType:))
+        guard enabled, retainedGLMBytes > 0 || modelTypes.contains(where: GLM5NextPromptPolicy.applies(modelType:))
         else { return budget }
         let gpu = limit()
         guard gpu.limitBytes > 0 else { return budget }

@@ -11,5 +11,16 @@
   within the live GPU limit, less the resident weights and the activation
   reserve. At the macOS default GLM's grant is about 47.9 GiB instead of
   55.6 GiB. Macs with the raised limit (`iogpu.wired_limit_mb=245760`) keep
-  the full grant, and sets without GLM are unchanged. `darkbloom doctor` says when
-  the lower limit holds GLM's KV cache.
+  the full grant, and sets without GLM are unchanged.
+- The held grant keeps GLM's running rows. The engine's step-scratch check
+  priced every row at the 262,144-token context, so a 256 GB Mac at the
+  default limit would have dropped from 3 rows to 2. It is now priced for the
+  tokens the GLM gate can admit within the grant (KV and step scratch per
+  token), and the rows stay those the same set gets without the hold: 3 on a
+  256 GB Mac at either limit (mlx-swift-lm
+  `fix/glm-envelope-admitted-tokens`).
+- `darkbloom start` and `darkbloom doctor` say when the lower limit holds GLM's
+  KV cache, and how to raise it: `darkbloom cluster gpu-limit`, then
+  `darkbloom restart` (`--undo` takes it back).
+- `DARKBLOOM_GLM_GPU_LIMIT_KV=0` restores 0.10.17's grant and step check; the
+  LaunchAgent forwards it.

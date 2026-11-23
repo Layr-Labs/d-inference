@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-23
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -409,9 +409,16 @@ a guarantee about wired bytes. A running slot keeps the limit read at its last
 successful re-slice until the next successful re-slice or a restart; a failed
 load's rollback restores the earlier grants
 (`provider-swift/Sources/ProviderCore/Inference/Memory/GLM5NextGPULimitKVBudget.swift`,
-`GLM5NextGPULimitKVBudget`). `doctor`, `start` and failure logs give the
+`GLM5NextGPULimitKVBudget`). The held grant keeps the slot's running rows:
+GLM's step-scratch check is priced for the tokens its gate can admit within
+the grant, not only for every row at the 262,144-token context, and the rows
+are capped at those the same set gets without the hold
+(`EngineV2Factory.glm5NextServingRows`), so a 256 GB Mac keeps 3 rows at
+either limit instead of dropping to 2 at the default.
+`DARKBLOOM_GLM_GPU_LIMIT_KV=0` restores the cap's grant and the row-and-context
+check. `doctor`, `start` and failure logs give the
 operator the [sysctl values](../provider/hardware-requirements.md) that
-restore the full grant
+restore the full grant, and `darkbloom cluster gpu-limit` applies them
 (`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
 `GLM5NextWiredLimit`).
 

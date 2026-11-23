@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-23
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -4364,6 +4364,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`samplesLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's full 2 FPS sample, so a clip past the decoded-frame cap is refused with 400 again |
 | `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.waitsForFirstToken`); on by default, `0`/`false`/`no`/`off` restores a pair's first-token allowance for its local API's requests |
 | `DARKBLOOM_GLM_SHARED_GRANT_WAIT` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.waitsForSharedGrant`); on by default, `0`/`false`/`no`/`off` refuses a local GLM request that exceeds its share beside other models at once and restores 0.10.17's busy words |
+| `DARKBLOOM_GLM_GPU_LIMIT_KV` | `provider-swift/Sources/ProviderCore/Inference/Memory/GLM5NextGPULimitKVBudget.swift` (`GLM5NextGPULimitKVBudget.enabled`); on by default, `0`/`false`/`no`/`off` restores 0.10.17's GLM KV grant and step-scratch check |
 | `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.limit`); a bound on how long your local request waits for memory, whole seconds (`0` refuses at once); unset, it waits as long as it takes. A request's own `X-Darkbloom-Max-Wait` header can shorten it |
 | `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `0`/`off`/`false`/`no` turns off the JSON answer grammar for GLM-5.3-Flash JSON answers (on by default) |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |

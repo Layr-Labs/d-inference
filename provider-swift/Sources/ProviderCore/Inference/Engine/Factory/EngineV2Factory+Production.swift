@@ -384,7 +384,8 @@ extension EngineV2Factory {
             mtpConfig: mtpConfig,
             processMemoryOwner: processOwner,
             nativeCompletionTracking: glmNative != nil,
-            nativeExecutionContract: glmNative?.resources.contract)
+            nativeExecutionContract: glmNative?.resources.contract,
+            glm5NextAdmittedBytesPerContextToken: try preparedBackend.glm5NextAdmittedBytesPerContextToken())
         let glmOwner: GLM5NextNativeOperationOwner?
         if let glmNative, let protected = model as? GLM5NextProtectedModel {
             glmOwner = GLM5NextNativeOperationOwner(model: protected, resources: glmNative, engine: engine)

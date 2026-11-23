@@ -1049,7 +1049,7 @@ public actor StandaloneServer {
     /// held to the GPU limit (`GLM5NextGPULimitKVBudget`).
     func fleetKVBudgetBytes(
         extraWeightBytes: Int, extraModelType: String? = nil, activationReserveBytes: UInt64? = nil,
-        excludingModelIDs: Set<String> = []
+        excludingModelIDs: Set<String> = [], heldToGPULimit: Bool = true
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
         for (id, slot) in slots where !excludingModelIDs.contains(id) {
@@ -1072,7 +1072,8 @@ public actor StandaloneServer {
                 + [extraModelType],
             retainedGLMBytes: retainedGLM, residentWeightBytes: resident,
             activationReserveBytes: reserve,
-            limit: v2TestHooks?.gpuLimit ?? (v2TestHooks?.physicalMemoryBytes == nil ? .live() : .unread))
+            limit: v2TestHooks?.gpuLimit ?? (v2TestHooks?.physicalMemoryBytes == nil ? .live() : .unread),
+            enabled: heldToGPULimit && GLM5NextGPULimitKVBudget.enabled())
     }
 
     /// True iff every resident slot's re-sliced grant under `reserveBytes`
@@ -1305,6 +1306,16 @@ public actor StandaloneServer {
                     + "(fleet KV budget \(fleetBudget) B across \(existing.count + 1) slots) — refused")
         }
 
+        // The newcomer's grant for the same set without the GPU-limit hold: the reference for its GLM rows
+        // (`EngineV2Factory.prepareProductionBackend`).
+        let rowsReference = GLM5NextPromptPolicy.applies(modelType: modelType)
+            ? EngineV2KVSizing.resliceGrants(
+                existing: existing.map(\.slot), newcomer: newcomer,
+                fleetKVBudgetBytes: fleetKVBudgetBytes(
+                    extraWeightBytes: sizing.weightsBytes, extraModelType: modelType, heldToGPULimit: false),
+                minimumGrantBytes: minimumGrants)[modelId]
+            : nil
+
         // Phase 1 — SHRINKS first, so Σ(ceilings) never exceeds the fleet
         // budget at any instant.
         for entry in existing {
@@ -1334,6 +1345,7 @@ public actor StandaloneServer {
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
+                glm5NextRowsReferenceBytes: rowsReference,
                 maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelId),
                 automaticallySelectConcurrency: !config.engineV2MaxConcurrentIsExplicit
                     && config.engineV2MaxConcurrentByModel[modelId] == nil,

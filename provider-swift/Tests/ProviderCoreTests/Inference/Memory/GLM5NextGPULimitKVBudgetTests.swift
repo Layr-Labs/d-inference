@@ -80,3 +80,18 @@ private func budget(
         activationReserveBytes: reserve, limit: limit())
     #expect(reads == 1)
 }
+
+/// `DARKBLOOM_GLM_GPU_LIMIT_KV=0` keeps the cap's budget at the default limit, as 0.10.17 did; the LaunchAgent
+/// forwards it.
+@Test func theSwitchKeepsTheCapBudget() {
+    let name = GLM5NextGPULimitKVBudget.environmentName
+    #expect(GLM5NextGPULimitKVBudget.enabled(environment: [:]))
+    for off in ["0", " off ", "False", "no"] { #expect(!GLM5NextGPULimitKVBudget.enabled(environment: [name: off])) }
+    for on in ["1", "yes", ""] { #expect(GLM5NextGPULimitKVBudget.enabled(environment: [name: on])) }
+    let off = GLM5NextGPULimitKVBudget.budgetBytes(
+        capBudget(), modelTypes: ["glm5_next"], retainedGLMBytes: 0, residentWeightBytes: glmWeights,
+        activationReserveBytes: reserve, limit: .init(limitBytes: defaultLimit), enabled: false)
+    #expect(off == capBudget())
+    #expect(budget(["glm5_next"], limit: defaultLimit) < off)
+    #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(name))
+}

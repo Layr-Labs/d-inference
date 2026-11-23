@@ -20,10 +20,37 @@ private final class RangedCDNProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) private static var bodies: [String: Data] = [:]
     nonisolated(unsafe) private static var override: Override?
     nonisolated(unsafe) private static var requests: [(key: String, range: String?)] = []
+    /// Seconds each reply is held before it is sent (0: sent at once), so requests overlap.
+    nonisolated(unsafe) private static var hold: TimeInterval = 0
+    nonisolated(unsafe) private static var inFlight: [String: Int] = [:]
+    nonisolated(unsafe) private static var peaks: [String: Int] = [:]
+    nonisolated(unsafe) private static var inFlightTotal = 0
+    nonisolated(unsafe) private static var peakTotal = 0
     private static let lock = NSLock()
 
-    static func reset(bodies: [String: Data], override: Override? = nil) {
-        lock.withLock { self.bodies = bodies; self.override = override; requests = [] }
+    static func reset(bodies: [String: Data], hold: TimeInterval = 0, override: Override? = nil) {
+        lock.withLock {
+            self.bodies = bodies; self.override = override; self.hold = hold; requests = []
+            inFlight = [:]; peaks = [:]; inFlightTotal = 0; peakTotal = 0
+        }
+    }
+
+    /// Most requests held open at once for `key`, and for every key together.
+    static func peak(_ key: String) -> Int { lock.withLock { peaks[key, default: 0] } }
+    static var peakOverall: Int { lock.withLock { peakTotal } }
+
+    /// Flips byte `offset` of the body in every reply that carries it, or only
+    /// in the first `times` of them.
+    static func corrupting(offset: Int, times: Int = .max) -> Override {
+        let seen = Counter()
+        return { request, first, body in
+            var reply = standardReply(range: request.value(forHTTPHeaderField: "Range"), body: body)
+            let start = reply.status == 206 ? first ?? 0 : 0
+            guard reply.status == 200 || reply.status == 206,
+                  (start..<(start + reply.body.count)).contains(offset), seen.next(offset) < times else { return reply }
+            reply.body[reply.body.startIndex + offset - start] ^= 0xFF
+            return reply
+        }
     }
 
     /// The `Range` header of each request for `key` (a host, or a file name), in order.
@@ -70,7 +97,24 @@ private final class RangedCDNProtocol: URLProtocol, @unchecked Sendable {
         }
         let reply = override?(request, Self.bounds(header)?.first, body)
             ?? Self.standardReply(range: header, body: body)
-        let response = HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: "HTTP/1.1",
+        let (hold, key) = Self.lock.withLock { () -> (TimeInterval, String) in
+            let key = Self.bodies[url.host!] == nil ? url.lastPathComponent : url.host!
+            guard Self.hold > 0 else { return (0, key) }
+            Self.inFlight[key, default: 0] += 1
+            Self.inFlightTotal += 1
+            Self.peaks[key] = max(Self.peaks[key, default: 0], Self.inFlight[key]!)
+            Self.peakTotal = max(Self.peakTotal, Self.inFlightTotal)
+            return (Self.hold, key)
+        }
+        guard hold > 0 else { return send(reply) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + hold) {
+            Self.lock.withLock { Self.inFlight[key, default: 0] -= 1; Self.inFlightTotal -= 1 }
+            self.send(reply)
+        }
+    }
+
+    private func send(_ reply: Reply) {
+        let response = HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1",
                                        headerFields: reply.headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         var offset = 0
@@ -212,33 +256,58 @@ struct SegmentedModelDownloadTests {
         #expect(!FileManager.default.fileExists(atPath: record(job.destination).path))
     }
 
-    @Test("a range answered for another offset writes nothing and is asked again")
-    func misplacedRangeRetried() async throws {
-        let seen = Counter()
+    @Test("a range answer showing the source serves no ranges writes nothing and the file continues over one connection",
+          arguments: ["200", "another offset", "416"])
+    func refusedRangeFallsBack(answer: String) async throws {
         let rangeBytes = Self.rangeBytes
-        RangedCDNProtocol.reset(bodies: ["r2.test": bytes]) { _, first, body in
-            guard first == 2 * rangeBytes, seen.next(2) == 0 else { return nil }
-            let lie = first! + 1
-            return .init(status: 206, headers: ["Content-Range": "bytes \(lie)-\(3 * rangeBytes - 1)/\(body.count)"],
-                         body: Data(body[lie..<(3 * rangeBytes)]))
+        RangedCDNProtocol.reset(bodies: ["r2.test": bytes]) { request, first, body in
+            guard first == 2 * rangeBytes, RangedCDNProtocol.bounds(request.value(forHTTPHeaderField: "Range"))?.last != nil
+            else { return nil }
+            switch answer {
+            case "200":
+                return .init(status: 200, headers: ["Content-Length": "\(body.count)"], body: body)
+            case "416":
+                return .init(status: 416, headers: ["Content-Range": "bytes */\(body.count)"], body: Data())
+            default:
+                let lie = 2 * rangeBytes + 1
+                return .init(status: 206, headers: ["Content-Range": "bytes \(lie)-\(3 * rangeBytes - 1)/\(body.count)"],
+                             body: Data(body[lie..<(3 * rangeBytes)]))
+            }
         }
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let job = job(dir)
         try await downloader().downloadManifestFileWithResume(job)
         #expect(try Data(contentsOf: job.destination) == bytes)
-        #expect(RangedCDNProtocol.ranges().filter { $0 == range(2) }.count == 2)
+        let requested = RangedCDNProtocol.ranges()
+        // Asked once and never again as a range; then exactly one open-ended single-stream request, last.
+        #expect(requested.filter { $0 == range(2) }.count == 1)
+        let singleStream = requested.filter { $0 == nil || RangedCDNProtocol.bounds($0)?.last == nil }
+        #expect(singleStream.count == 1)
+        #expect(requested.last.map { $0 == nil || RangedCDNProtocol.bounds($0)?.last == nil } == true)
+        #expect(!FileManager.default.fileExists(atPath: record(job.destination).path))
     }
 
-    @Test("bytes that fail the file's SHA-256 delete the .part and its record, and the file fails")
-    func corruptRangeFails() async throws {
-        let rangeBytes = Self.rangeBytes
-        RangedCDNProtocol.reset(bodies: ["r2.test": bytes]) { request, first, body in
-            guard first == rangeBytes else { return nil }
-            var reply = RangedCDNProtocol.standardReply(range: request.value(forHTTPHeaderField: "Range"), body: body)
-            reply.body[reply.body.startIndex] ^= 0xFF
-            return reply
-        }
+    @Test("a ranged file that fails its SHA-256 once is fetched again over one connection")
+    func digestMismatchRetriedOverOneConnection() async throws {
+        RangedCDNProtocol.reset(bodies: ["r2.test": bytes],
+                                override: RangedCDNProtocol.corrupting(offset: Self.rangeBytes, times: 1))
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let job = job(dir)
+        try await downloader().downloadManifestFileWithResume(job)
+        #expect(try Data(contentsOf: job.destination) == bytes)
+        let requested = RangedCDNProtocol.ranges()
+        #expect(requested.count == 1 + 4 + 1)
+        // The .part and its record were deleted, so the single stream starts at byte 0.
+        #expect(requested.last == .some(nil))
+        #expect(!FileManager.default.fileExists(atPath: record(job.destination).path))
+    }
+
+    @Test("bytes that keep failing the SHA-256 use up the source's attempts, then delete the .part and its record")
+    func corruptFileFails() async throws {
+        RangedCDNProtocol.reset(bodies: ["r2.test": bytes],
+                                override: RangedCDNProtocol.corrupting(offset: Self.rangeBytes))
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let job = job(dir)
@@ -246,9 +315,31 @@ struct SegmentedModelDownloadTests {
             try await downloader().downloadManifestFileWithResume(job)
         }
         #expect(String(describing: error).contains("SHA-256 mismatch"))
+        // One ranged transfer, then the single stream's two remaining attempts: three in all, as before.
+        let requested = RangedCDNProtocol.ranges()
+        #expect(requested.filter { $0 == nil }.count == 2)
+        #expect(requested.count == 1 + 4 + 2)
         #expect(!FileManager.default.fileExists(atPath: job.destination.path))
         #expect(!FileManager.default.fileExists(atPath: job.destination.appendingPathExtension("part").path))
         #expect(!FileManager.default.fileExists(atPath: record(job.destination).path))
+    }
+
+    @Test("a Hugging Face file that fails its SHA-256 goes to R2, as before: its one attempt is spent")
+    func huggingFaceDigestMismatchFallsBack() async throws {
+        let corrupt = RangedCDNProtocol.corrupting(offset: Self.rangeBytes)
+        RangedCDNProtocol.reset(bodies: ["huggingface.co": bytes, "r2.test": bytes]) { request, first, body in
+            request.url?.host == "huggingface.co" ? corrupt(request, first, body) : nil
+        }
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let job = job(dir)
+        let artifact = HuggingFaceArtifact(repoID: "EigenLabs/test", revision: String(repeating: "a", count: 40))
+        try await downloader().downloadManifestFileWithResume(job, huggingFaceArtifact: artifact)
+        #expect(try Data(contentsOf: job.destination) == bytes)
+        #expect(RangedCDNProtocol.ranges(host: "huggingface.co").count == 1 + 4)
+        let r2 = RangedCDNProtocol.ranges(host: "r2.test")
+        #expect(r2.first == "bytes=0-0")
+        #expect(Set(r2.dropFirst().compactMap { $0 }) == Set((0..<4).map { range($0) }))
     }
 
     // MARK: - Resume
@@ -509,6 +600,44 @@ struct SegmentedModelDownloadTests {
             #expect(requested.first == "bytes=0-0")
             #expect(requested.count == 1 + 4)
         }
+    }
+
+    @Test("records saved with 8 ranges resume under a 4-file download at 4 ranges per file, 16 connections at most")
+    func savedRangesQueueBehindTheCeiling() async throws {
+        let id = "test-org/ranged-\(UUID().uuidString)"
+        let prefix = "v2/ranged-resume/\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: ModelDownloader.cacheModelDirectory(for: id)) }
+        let staging = ModelDownloader.cacheSnapshotDirectory(for: id).deletingLastPathComponent()
+            .appendingPathComponent(ModelDownloader.localStagingDirName(r2Prefix: prefix))
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let parts = (0..<4).map { index in Data(bytes[(index * Self.rangeBytes)..<((index + 1) * Self.rangeBytes)]) }
+        var bodies: [String: Data] = [:]
+        var files: [ManifestFile] = []
+        var digests = Data()
+        for (index, part) in parts.enumerated() {
+            let name = "model-\(index).safetensors"
+            bodies[name] = part
+            files.append(ManifestFile(path: name, sizeBytes: Int64(part.count), sha256: digest(part), role: "weight"))
+            digests.append(Data(SHA256.hash(data: part)))
+            // An earlier one-file-at-a-time run left 8 ranges, none started.
+            _ = try SegmentedPartFile.prepare(partial: staging.appendingPathComponent(name + ".part"),
+                                              size: Int64(part.count), count: 8)
+        }
+        RangedCDNProtocol.reset(bodies: bodies, hold: 0.05)
+        let aggregate = digest(digests)
+        let manifest = ModelManifest(schemaVersion: 1, modelID: id, version: "v1", r2Prefix: prefix,
+            aggregateSHA256: aggregate, totalSizeBytes: Int64(Self.size), fileCount: 4, files: files, createdAt: Date())
+        let model = CatalogModel(id: id, s3Name: prefix, displayName: id, sizeGb: 0,
+                                 r2Prefix: prefix, aggregateSHA256: aggregate)
+        var downloader = downloader(segments: 8)
+        downloader.byteProgress = { _, _ in }
+        try await downloader.downloadManifestModel(model: model, manifest: manifest, onProgress: nil)
+        for index in 0..<4 {
+            let name = "model-\(index).safetensors"
+            #expect(RangedCDNProtocol.ranges(host: name).count == 1 + 8, "\(name): the probe and all 8 saved ranges")
+            #expect(RangedCDNProtocol.peak(name) <= 4, "\(name): at most 4 ranges at once")
+        }
+        #expect(RangedCDNProtocol.peakOverall <= ModelDownloadSegments.maximumConnections)
     }
 
     // MARK: - Switch

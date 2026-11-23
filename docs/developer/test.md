@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-23
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -81,8 +81,10 @@ test-only seam whose default is the production value: the shutdown unload wait
 (`ProviderLoop.setShutdownUnloadWaitForTesting`), the engine's shutdown bound
 (`engineShutdownTimeout` of the Nemotron Super load), a member's negotiation
 window (`CoordinatorClientConfig.memberNegotiationWindow`), the stacked media
-wait (`NemotronSuperLocalImageHTTP(stackedMediaWait:)`) and the cluster
-supervisor's backoff (`ClusterMemberSupervisor.Configuration.backoffSecondScale`).
+wait (`NemotronSuperLocalImageHTTP(stackedMediaWait:)`), the cluster
+supervisor's backoff (`ClusterMemberSupervisor.Configuration.backoffSecondScale`)
+and `darkbloom update`'s restart wait, whose clock a test moves itself
+(`ClusterServiceUpdateRequest.restart(clock:)`, default `WaitClock.system`).
 A wedge check passes its instant to `backendSlotCapacity(now:)`. The Qwen4 and
 Nemotron balanced paging tests keep the real packed-kernel preflight: it is the
 only provider check that dispatches the packed kernels at those models' head

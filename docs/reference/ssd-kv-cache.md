@@ -56,6 +56,17 @@ No file below holds a token ID or text. Another request may cause these:
 | `cluster-prefix-v1/v1-<plan>/rank<r>/<tag>.dbpx`, on a pair | The request's prefix on that rank | Encrypted attention rows, recurrent state, MTP hidden rows (history tokens as zeros); the sealed header holds the scope, frontier counts and unkeyed SHA-256 record keys of scope and prompt. See [cluster records](#cluster-prompt-prefix-records) |
 | `cluster-prefix-v1/…/rank<r>/key-check`, `write-window`, `staging/<epoch>/…` | A rank's first record; each record; during a write | A keyed tag of a constant; the window's start and byte count; a partial record |
 
+Outside the cache, each completed coordinator request, `memory_only` or not,
+adds one record to `~/.darkbloom/usage-history.json` (owner-only; the last
+4,096 records): its request ID, the session's start, its completion time, the
+model and its input, output, cached and reasoning token counts
+(`ProviderUsageHistory` in
+`provider-swift/Sources/ProviderCore/Service/ProviderUsageHistory.swift`,
+written from `ProviderLoop.handleInferenceRequest`). While the desktop app is
+open, it also keeps the coordinator's settled records for this Mac (request
+and job IDs, completion time, token counts and earnings) in
+`~/.darkbloom/desktop/usage-history.json` (`DesktopUsageArchive`).
+
 MLX and Metal caches (the metallib, compiled kernels and pipelines) belong to
 the model and binary and hold no request data. Model-weight files and the
 provider's logs are described in their own references.

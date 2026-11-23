@@ -362,6 +362,7 @@ struct GLM5NextTensorParallelPrefixDiskTests {
             bytes[bytes.count - 9] ^= 0x10
             try bytes.write(to: url)
             #expect(reader.read(boundary: 32, prompt: prompt, scope: scope, stop: { false }) == nil)
+            #expect(reader.tier.drain(timeoutSeconds: 5))
             #expect(!FileManager.default.fileExists(atPath: url.path) && reader.tier.recordCount == 0)
         }
     }

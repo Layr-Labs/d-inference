@@ -18,7 +18,7 @@ extension ClusterPrefixCacheSettings {
         let base = CacheStorage.root(for: cacheSettings).deletingLastPathComponent().deletingLastPathComponent()
         let root = Self.root(cacheBase: base)
         let free = (freeBytes ?? PrefixCachePolicy.volumeFreeBytes(at:))(root)
-        return .init(root: root,
+        return .init(root: root, volumeUUID: cacheSettings.volumeUUID,
                      prefixCacheEnabled: PrefixCachePolicy.isGloballyEnabled(environment: environment),
                      byteBudget: PrefixCachePolicy.ssdDiskBudgetBytes(environment: environment, freeBytes: free),
                      dailyWriteBytes: CacheStorage.dailyWriteBytes(settings: cacheSettings, environment: environment),

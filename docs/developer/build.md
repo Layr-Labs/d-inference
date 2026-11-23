@@ -498,14 +498,23 @@ shards each planned 177 s; on five the shard that holds
 shard. Cluster Runtime Tests shards 2 and 3, the last jobs of two of the
 three rounds measured (runs 44909381968 and 44914459288), ran 439 to 571 s;
 their GPU and batch-session work now runs on four shards. Provider Gates
-fetches the MiMo audio codec while the build runs. Every
+fetches the MiMo audio codec while the build runs. In the next two rounds
+(runs 44924815069 and 44927907327) the cluster jobs ended last: Cluster
+Release Build Checks (its release build, then the worker's request lifecycle
+tests, 132 to 164 s, one after the other) and Cluster Runtime Tests shards 1,
+4 and 5 (267 to 395 s against 169 to 243 s for the others). The lifecycle
+tests now run on runtime shard 6 while it waits for the cluster build, and
+four selections of shards 1, 4 and 5 run on shards 2, 6 and 7, so every
+runtime shard plans under about 300 s. Every
 macOS job is routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once
 
 Each lane builds its debug test products once, on a large runner, and its
 test jobs run them with `swift test --skip-build`. No test job compiles the
-provider or the cluster packages. Every job below reads its runner from the
+provider or the cluster packages; runtime shard 6 also builds and runs the
+worker package's request lifecycle tests, which need no products, while it
+waits for them. Every job below reads its runner from the
 route ([CI Runner Routing](#ci-runner-routing)). Every job asks for its own
 size ([Job sizes](#job-sizes)).
 
@@ -513,10 +522,10 @@ size ([Job sizes](#job-sizes)).
 |---|---|---|---|
 | `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
-| `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
+| `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
 | `test-provider`, shards 1 to 5 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity (shard 1), the isolated processes (the last shard), the audit and coverage |
 | `test-provider-gates` (Provider Gates) | routed | `build-provider` (in the job) | The checks that run once beside the suite: the relocated-resource, MDM-reader and installer checks, the Gemma conformance switches, the desktop control API and the native MiMo gates (the audio gate when its inputs changed), and its own coverage |
-| `test-cluster`, shards 1 to 7 | routed | `build-cluster` (in the job) | The blocking cluster selections |
+| `test-cluster`, shards 1 to 7 | routed | `build-cluster` (in the job) | The blocking cluster selections; shard 6 first starts the worker package's request lifecycle tests (a debug build of their own) and waits for them before its selections |
 | `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` (in the job) | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
 

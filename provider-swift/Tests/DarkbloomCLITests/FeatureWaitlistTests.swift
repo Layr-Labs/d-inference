@@ -116,7 +116,8 @@ struct FeatureWaitlistTests {
     func help() {
         let waitlist = Darkbloom.helpMessage(for: Waitlist.self, columns: 1_000)
         #expect(waitlist.contains("waitlist [<name>] [--json] [--config <config>]"))
-        #expect(waitlist.contains("\n  \(Sandbox.cli) waitlist cluster\n  \(Sandbox.cli) waitlist sandbox\n"))
+        #expect(waitlist.contains("\n  \(Sandbox.cli) waitlist\n  \(Sandbox.cli) waitlist sandbox\n"))
+        #expect(!waitlist.contains("waitlist cluster"))
         #expect(!waitlist.contains("<action>") && !waitlist.contains("--macs"))
         #expect(!Darkbloom.helpMessage(for: Cluster.self, columns: 1_000).contains("\n  waitlist "))
         let sandbox = Darkbloom.helpMessage(for: Sandbox.self, columns: 1_000)

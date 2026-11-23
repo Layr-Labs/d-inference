@@ -2,9 +2,10 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 
-/// The approval a first setup of a feature needs: `sandbox setup` and
-/// `cluster` set up something new only for an account Darkbloom approved from
-/// the feature's waitlist. Each outcome:
+/// The approval a first setup of a feature needs: `sandbox setup` sets up
+/// something new only for an account Darkbloom approved from the feature's
+/// waitlist. (`cluster` needs none since the coordinator dropped its waitlist
+/// on 2026-11-23.) Each outcome:
 ///
 /// - approved: setup goes on;
 /// - the coordinator has no such waitlist (404, as one released before
@@ -19,7 +20,7 @@ import ProviderCore
 ///
 /// Every stop changes nothing and exits 1.
 struct FeatureWaitlistGate {
-    /// The waitlist's id in the coordinator's catalog, such as `cluster`.
+    /// The waitlist's id in the coordinator's catalog, such as `sandbox`.
     let feature: String
     /// Names the waitlist when the coordinator gave no answer; an answer
     /// brings the coordinator's own title.

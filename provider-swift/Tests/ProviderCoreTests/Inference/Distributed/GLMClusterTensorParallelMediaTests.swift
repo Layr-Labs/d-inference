@@ -116,11 +116,17 @@ struct GLMClusterTensorParallelMediaTests {
         await #expect(throws: MediaIngest.MediaError.self) {
             _ = try await ingress.prepare(request: bad, controls: .init(), tokenizer: GLMTensorParallelMediaTokenizer())
         }
-        // Media off the user role is refused as the product refuses it.
+        // Media off the user role is placed as the product places it: its
+        // bytes are encoded with the request's other media.
         let system = OpenAIChatCompletionRequest(model: "m", messages: [.init(role: .system,
-            content: .parts([.imageURL("data:image/png;base64," + Self.png)]))])
-        await #expect(throws: (any Error).self) {
+            content: .parts([.imageURL("data:image/png;base64," + Self.png)])),
+            .init(role: .user, content: .text("What is the reference image?"))])
+        if MediaIngest.everyRoleEnabled {
             _ = try await ingress.prepare(request: system, controls: .init(), tokenizer: GLMTensorParallelMediaTokenizer())
+        } else {
+            await #expect(throws: (any Error).self) {
+                _ = try await ingress.prepare(request: system, controls: .init(), tokenizer: GLMTensorParallelMediaTokenizer())
+            }
         }
         // A configuration other than the loaded peers' is refused at binding.
         #expect(throws: (any Error).self) {

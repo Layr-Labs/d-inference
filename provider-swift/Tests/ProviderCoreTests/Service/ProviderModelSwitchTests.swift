@@ -72,12 +72,15 @@ private func switchSnapshot(in root: URL) throws -> URL {
     return snapshot
 }
 
-private func connectSwitchLoop(_ loop: ProviderLoop, url: String) async -> (CoordinatorClient, Task<Void, Never>) {
+/// Returns once the mock holds the socket its pushes write to. The client's `.connected` (handshake done,
+/// registration sent) can come before the mock's WebSocket handler runs and stores that socket.
+private func connectSwitchLoop(_ loop: ProviderLoop, to mock: MockCoordinator, url: String) async -> (CoordinatorClient, Task<Void, Never>) {
     let client = CoordinatorClient(config: .init(url: url, hardware: switchHardware(),
         models: [switchModel("old-model")], backendName: "mlx-swift", heartbeatInterval: 60,
         publicKey: "cHVibGlj"), stats: AtomicProviderStats(), state: await loop.state, liveAPNsToken: { nil })
     let (events, send) = await client.start()
     for await event in events { if case .connected = event { break } }
+    for await event in mock.events { if case .wsConnected = event { break } }
     await loop.setCoordinatorClientForTesting(client)
     let handle = SendHandle { send($0) }
     await loop.setSwitchOutbound(handle)
@@ -157,7 +160,7 @@ struct ProviderModelSwitchTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let snapshot = try switchSnapshot(in: root)
         await loop.useSwitchSnapshot(snapshot)
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         let request = ProviderModelSwitchRequest(target: try #require(ProcessIdentity.current()),
             models: ["new-model"], timeoutSeconds: 0)
@@ -199,7 +202,7 @@ struct ProviderModelSwitchTests {
         let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
         defer { try? FileManager.default.removeItem(at: root) }
         await loop.useSwitchSnapshot(try switchSnapshot(in: root))
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         let identity = try #require(ProcessIdentity.current())
         let switching = Task { await loop.switchModels(request: .init(target: identity,
@@ -236,7 +239,7 @@ struct ProviderModelSwitchTests {
         let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
         defer { try? FileManager.default.removeItem(at: root) }
         await loop.useSwitchSnapshot(try switchSnapshot(in: root))
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await loop.shutdownSwitchPrefetches(); await client.shutdown() } }
         let obsolete = CoordinatorMessage.DesiredModelEntry(modelName: "old-model", desiredBuild: "old-model",
             revision: "replacement", aggregateSHA256: String(repeating: "c", count: 64))
@@ -265,7 +268,7 @@ struct ProviderModelSwitchTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let snapshot = try switchSnapshot(in: root)
         await loop.useSwitchSnapshot(snapshot)
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         let request = ProviderModelSwitchRequest(target: try #require(ProcessIdentity.current()),
             models: ["new-model"], timeoutSeconds: 0)
@@ -299,7 +302,7 @@ struct ProviderModelSwitchTests {
         let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
         defer { try? FileManager.default.removeItem(at: root) }
         await loop.useSwitchSnapshot(try switchSnapshot(in: root))
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         let tracker = await loop.localResponseTracker
         let lease = mutation ? nil : try tracker.admit()
@@ -332,7 +335,7 @@ struct ProviderModelSwitchTests {
         let gate = SwitchHashGate()
         defer { gate.release() }
         await loop.useSwitchSnapshot(try switchSnapshot(in: root), hashSnapshot: { gate.hash(snapshot: $0, modelID: $1) })
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         let identity = try #require(ProcessIdentity.current())
         let request = ProviderModelSwitchRequest(target: identity, models: ["new-model"], timeoutSeconds: 0)
@@ -530,7 +533,7 @@ struct ProviderModelSwitchTests {
             }
             return hash
         })
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         let result = await loop.switchModels(request: .init(target: try #require(ProcessIdentity.current()),
             models: ["new-model"], timeoutSeconds: 0))
@@ -550,7 +553,7 @@ struct ProviderModelSwitchTests {
         defer { Task { await mock.shutdown() } }
         let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
         defer { try? FileManager.default.removeItem(at: root) }
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await loop.shutdownSwitchPrefetches(); await client.shutdown() } }
         await loop.beginServingDrain(owner: .modelSwitch)
         let obsolete = CoordinatorMessage.DesiredModelEntry(modelName: "removed-alias",
@@ -628,7 +631,7 @@ struct ProviderModelSwitchTests {
         if let original { try original.write(to: configPath) }
         else { try FileManager.default.removeItem(at: configPath) }
         await loop.useSwitchSnapshot(try switchSnapshot(in: root))
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         let identity = try #require(ProcessIdentity.current())
         let switching = Task { await loop.switchModels(request: .init(target: identity,
@@ -694,7 +697,7 @@ struct ProviderModelSwitchTests {
         let newHash = try #require(WeightHasher.computeHash(snapshotDir: newSnapshot, modelID: "old-model"))
         #expect(newHash != oldHash)
         await loop.useSwitchSnapshot(newSnapshot)
-        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        let (client, reader) = await connectSwitchLoop(loop, to: mock, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         await client.stageModelSelection(previous.models)
         let request = ProviderModelSwitchRequest(target: try #require(ProcessIdentity.current()),

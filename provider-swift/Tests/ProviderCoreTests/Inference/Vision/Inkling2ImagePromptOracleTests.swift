@@ -101,7 +101,8 @@ struct Inkling2ImagePromptOracleTests {
         // As `EngineV2VisionPrefill.prepare` binds the loaded Inkling wrapper.
         let input = try await MediaIngest.buildUserInput(
             from: request, templateControls: inbound.extensions.templateControls,
-            tools: request.tools?.map { $0.toolSpec() }, preserveTemplateFields: true, modelType: type)
+            tools: request.tools?.map { $0.toolSpec() }, preserveTemplateFields: true,
+            keepNonUserMedia: MediaIngest.placesNonUserMedia(request), modelType: type)
         let tokenizer = try await LocalTokenizerLoader().load(from: checkpoint)
         let configuration = try JSONDecoder().decode(
             Inkling2ProcessorConfiguration.self,

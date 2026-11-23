@@ -8,9 +8,417 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.16 — candidate (unpublished)
+## v0.10.17 — candidate (unpublished)
 
-Prepared on 2026-11-19; tagging and publication are separate steps.
+Prepared on 2026-11-21; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Bug fixes, performance and security posture improvements.
+- **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.16 updates itself. `darkbloom update --rollback` puts back 0.10.16.
+- **Serving holds:** if authenticated root is disabled or the provider runs inside a sandbox it didn't set up, the Mac serves only its owner's requests until that's restored.
+- **State files:** release builds keep their state files in the install directory; the variables that used to move them (`DARKBLOOM_STATE_FILE` and the others in the changelog) apply to development builds only.
+- **Turning a change off:** `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0` (a pair whose start was stopped too early waits for `darkbloom cluster recover`, as in 0.10.16); `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` (a pair's update check runs while its update restarts, as in 0.10.16); `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN=off` (GPT-OSS automatic tool calls read Pydantic and zod schemas as in 0.10.16); `DARKBLOOM_HARMONY_JSON_ANSWERS=off` (GPT-OSS final answers aren't held to the requested JSON response format, as in 0.10.16); `DARKBLOOM_QWEN_CALL_END_GUARD=0` (Qwen requests with a required or named tool choice can end the turn inside an open tool call, as in 0.10.16); `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO=0` (a Nemotron 3.5 Super video request takes both media rows, as in 0.10.16); `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` (a restored prefix cache grows its remaining KV backing with a device fill, as in 0.10.16); `DARKBLOOM_NEMOTRON_SUPER_TOOL_GRAMMAR=off` (Nemotron 3.5 Super automatic tool-call arguments aren't held to the declared tools, as in 0.10.16); `DARKBLOOM_CONSTRAINT_SPANS=0` (Nemotron 3.5 Super rows held to a tool grammar decode without speculation); `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE=0` (prefix-cache hits restored from SSD read the checkpoint sequentially, as in 0.10.16); `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` (the Mac doesn't advertise Gemma prompt contract 2 when it registers, as in 0.10.16); `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0` (Gemma 4 26B drafts one token per round, as in 0.10.16); `DARKBLOOM_NEMOTRON_TOOL_GRAMMAR=off` (Nemotron 3.5 Lightning automatic tool-call arguments aren't held to the declared tools, as in 0.10.16).
+
+### Provider CI: a lighter Cluster Runtime Tests shard 1
+
+- Three base suites of the cluster runtime tests (`CBv2PagedGrowthSyntheticTests`, `CBv2PagedQuantizedStageTests` and `PrefixDiskEncodingTests`, synthetic models only) run in a new `base-shard-5` selection after shard 5's first group instead of in shard 1's `base`. The same tests run, each once.
+- Shard 1 runs its selections one after another and was the longest runtime shard in both runs after the build database fix (411 and 469 s). The move takes 72 to 89 s from it; shard 5's first group had about 100 s to spare before its second group ended.
+
+### Provider CI: the provider suite runs in four shards
+
+- Provider Unit Tests runs in 4 shards instead of 2, each running 3 selections at the same time (12 in all). The planned longest selection of a shard drops from about 399 s to about 199 s.
+- Shard 1 keeps the parallel class and Prompt Parity, and the last shard keeps the isolated processes and native gates. The new shards use the lanes `test-provider-3` and `test-provider-4` (4x24), so a full run asks for 17 macOS jobs instead of 15.
+
+### Provider CI: Metal library built beside the Swift build
+
+- The provider build job starts the source-matched `mlx.metallib` build in the background, right before its Swift build, and waits for it before staging the library into the test products. Before, the library built after the Swift build, 67 to 78 s on every cold run's critical path. A failed library build still fails the job; the library, its cache key and its checks are unchanged. The cluster lane, on a smaller VM, builds the library after its Swift build as before.
+
+### Provider CI: the nested-suite gate counts from xUnit, not the console
+
+- `scripts/run-nested-suite.sh` no longer greps the merged `swift test` console for its executed count and skips. SwiftPM writes its own warnings to stderr and the test output to stdout through a block buffer, so a warning can land inside any line: in run 44909219943 it split `✔ Test run with 29 tests` and the gate failed a passing selection as "executed ZERO tests"; split inside a skip line, it would have let the skip pass.
+- Swift Testing's counts and skips now come from its xUnit report (`--xunit-output`, written as `<name>-swift-testing.xml`), and XCTest's from SwiftPM's stdout alone, since SwiftPM writes no XCTest report without `--parallel`. The gate still fails on zero executed tests and on any skipped test, and now also on a missing or unreadable report. It refuses `--parallel` and `--xunit-output`.
+- `scripts/verify-prompt-parity.sh` (Prompt Parity) runs its suite through the same gate instead of its own copy of the greps.
+
+### Opt-in PR CI, hardened Darkbloom routing, and CI cost reductions
+
+- Pull-request macOS test suites in `ci-dev.yml` and `ci-master.yml` are now opt-in via the one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`), while `Release Integrity` and `Docs Lint` keep running automatically on `master` PRs and `master` PRs respect `scripts/ci-component-paths.py` diff filtering.
+- Non-blocking `Cluster GPU Tests (shard 1-3)` now run only on `master` pushes, manual dispatches, or PRs labeled `run-gpu-ci`, skipping routine PRs and `dev` pushes.
+- `darkbloom-route.yml` retries a transient plane failure once after 1 second (callers may raise `max-attempts` for bounded exponential backoff), `darkbloom-watchdog.yml` no longer cancels partially completed or active Darkbloom attempts, and `scripts/ci-tested-tree.py` deduplicates squash merges and skips build jobs on tested trees.
+- `release-dev-branch.yml` (6-hour schedule + dispatch) and `provider-release-cache.yml` (daily schedule + dispatch) now coalesce behind cheap `ubuntu-24.04` diff gates while keeping macOS release jobs on Blacksmith; all AWS Bedrock workflows (`threat-model-review.yml`, `bedrock-smoke.yml`) are paused (`pull_request_target` removed and all jobs gated on `BEDROCK_SCAN_ENABLED=true`); public Linux orchestration/utility jobs moved from paid Blacksmith Linux runners to free `ubuntu-24.04`; dead `ci-dev-hourly.yml` was removed.
+
+### Provider CI: submodules fetched in parallel
+
+- The macOS CI jobs check out the submodules with `scripts/ci-checkout-submodules.py` instead of `actions/checkout`'s `submodules: recursive`. It fetches each submodule's recorded commit once, at depth 1 and in parallel, where `submodules: recursive` cloned each default branch and then fetched the recorded commit, one submodule after another. The same `git submodule sync` and `git submodule update --init --force --depth=1 --recursive` then check them out, so the checked-out files, pins and `.git/modules` layout are unchanged.
+
+### CI: Check the CI plans runs on Darkbloom
+
+- The `ci-plan-checks` job (Check the CI plans) of every CI (dev) and CI (master) run that runs the test jobs now reads its own route lane, `ci-plan-checks` (Linux, 4x16), which the plan asks for in the run's one route request. It runs on a Darkbloom Linux sandbox when the plane grants one and keeps GitHub-hosted `ubuntu-24.04` otherwise. Its checks and the Provider Tests gate are unchanged.
+- The test jobs usually outlast it by minutes, so the sandbox's start mainly delays a run that tests no component.
+
+### Provider CI: the provider gates run in a job of their own
+
+- The checks that ran once after the last provider shard's selections (the Gemma conformance switches, the desktop control API, the native MiMo gates, the MiMo audio gate when its inputs changed, and the relocated-resource, MDM-reader and installer checks) run in a new job, `Provider Gates`, which starts beside the provider build as the shards do and downloads the same products. On Darkbloom's 4-vCPU Macs that work took 238 s after the last shard's Swift tests (107 s on a 12-vCPU Blacksmith runner), so the last shard ended about 100 s after the others.
+- The shard planner now counts only the isolated processes as the last shard's fixed work (44 s, was 190 s), so every shard is planned at about 196 s of tests and fixed work instead of 232 s.
+- `Provider Gates` uses its own route lane, `test-provider-gates` (4x24), and reports the coverage of its own processes; a full run asks for 18 macOS jobs instead of 17. The `Provider Tests` gate requires it. The lane routes to Darkbloom only once the plane's approval for this repository names it; until then it keeps its Blacksmith fallback.
+
+### Provider CI: the four provider shards end together again
+
+- The provider shard weights are refreshed from a green run of the current `dev` tree (run 44711129396). The old weights predated the 4-vCPU lanes, so shard 2 carried `BootSecurityServeLoopTests` at 26 s while it ran 167 to 181 s, and in most runs of 2026-11-20 shard 2 ended 1 to 3.5 minutes after the next shard.
+- The planner counts each process slot's 15 s start gap and the measured 12 s of the parallel process (was 31 s), so every shard is planned at about 232 s of tests and fixed work.
+- Each shard's audit prints, per selection, its suites' seconds against their weights and warns when they differ by more than 60 s, so stale weights show in the run that measures them. `weights --prune` no longer reads the weights file, so its output can replace that file directly.
+
+### Provider CI: provider test products built without debug info
+
+- The provider lane builds its test products with `-debug-info-format none`, so the build emits no DWARF and runs no `dsymutil`. No DWARF reached a test job before either: the products archive already drops the object files and `.dSYM` bundles. Test results, failure and crash messages, stalled-test samples and the coverage report are unchanged.
+- The provider lane's Swift build cache entries share no restore tier with builds made with DWARF (`scripts/provider-ci-cache.py`), which SwiftPM would recompile in full.
+
+### CI (master): Release Integrity runs its checks at the same time
+
+- Release Integrity's 52 offline checks (and the new runner's own tests) run in one step through `scripts/run-concurrent-checks.py`, one per CPU of the runner at a time, longest first, instead of one after another across ten steps.
+- Each check's output prints whole, in the listed order, with its exit status and duration. The step fails, naming each failed check, once every check has run. No check is retried, skipped or given a new time limit, and each gets its own `TMPDIR`.
+
+### CI: release SDK qualification runs on Darkbloom; releases pin their inputs and use no cache
+
+- The five "Qualify provider with SDK 27" shards and their gate moved into `release-qualify.yml`. Each release caller calls it from one job, `qualify`, with read-only permissions and no secrets, before its credentialed release call. The shards ask the Darkbloom plane on lane `release-qualify` (count 5, size 12x32, not in tag runs) and keep `blacksmith-12vcpu-macos-27` when the plane does not grant it.
+- The older-macOS smoke now takes the signed validation bundle by `build-and-release`'s artifact ID, as signing, staging and publication already did, and checks the zip's SHA-256 against its digest before it reads it, never by name.
+- No release job restores or saves an Actions cache, since any job of the branch, a routed one too, can write any cache key. Release builds and qualification compile cold.
+- A release now builds after qualification and without caches: expect roughly 45 to 60 minutes instead of about 17.
+
+### Provider CI: Darkbloom runners scoped to their workflow run
+
+- The route job asks the Darkbloom plane for run-scoped labels (`X-Darkbloom-Run-Scoped-Labels: 1`). The plane then names the run's ID in the last label, after any size, such as `darkbloom-macos-arm64-4x24-run-<run ID>`, and creates each runner with that label, so an idle runner of another run cannot take this run's job and lose it when that run ends.
+- A lane uses a grant only when its labels are the exact Darkbloom labels of its profile and size, unscoped or scoped to this run. A plane that ignores the header keeps answering the unscoped labels; another run's ID, or a scope anywhere else, keeps `blacksmith-12vcpu-macos-27` or the lane's Linux fallback.
+- A re-run keeps the run ID, so its jobs still match the labels the route saved.
+
+### Provider CI: concurrent Swift test processes no longer lock the build database
+
+- The provider shards' concurrent selections and the cluster shards' grouped selections run `swift test --skip-build` with `--disable-build-manifest-caching`. Each process plans the build in memory instead of in llbuild's package-structure step, which held `.build/build.db` in an exclusive transaction while it planned. A process that waited 5 s for another's step reported `database is locked`, ran its tests and exited 1: 11 selections in 9 of 90 provider runs (2026-11-20 and 21), each delaying its shard by 1 to 4.5 minutes.
+- The retry of such a selection is gone (`scripts/swift_test_lock_retry.py`, the `attempt-1-shard-*` files and the cluster `<log>.attempt-1` logs): every selection runs once, and any non-zero exit fails its shard.
+
+### Provider CI: a shard's concurrent test processes start together
+
+- The three `swift test` processes of each Provider Unit Tests shard start together instead of 15 s apart, and the planner no longer gives each later process 15 s less work (`START_GAP_SECONDS` and `PROVIDER_TEST_START_GAP` are gone). Replaying the measured seconds of four dev runs through both plans, the longest shard ends 15 to 35 s sooner.
+- The gap was added for SwiftPM's build database lock. Since the processes plan the build in memory, none opens that database, so starting together waits for nothing. The cluster runtime shards' groups keep their 15 s gap.
+- `UnreclaimableLoadMemoryFixture` empties MLX's buffer cache and the retained KV segments before each test. The refusal's "reclaimable" figure counts both, and an earlier suite in the same process could leave some behind: with the new plan, `UnevictableResidentReportTests` reported 17.7 GB instead of the scripted 16.8 GB.
+
+### A pair asks for its approval again once the other Mac is back
+
+- A pair that wasn't offered to Darkbloom yet (for example after a failed approval save) asked the coordinator for its cluster approval only once per run of its cluster service. When that one check came while the other Mac didn't answer, or while another cluster command was running, it changed nothing and nothing asked again: the pair kept serving only on its local API after the other Mac came back, until the service restarted. Such a check is now tried again a minute later, so the pair is offered once both Macs answer.
+
+### A pair set up through Darkbloom no longer stays on its local API after a stop that came too early
+
+- The setup's approval step stops both Macs' parts and saves the cluster approval. When that stop came seconds after the pair came up, it could leave this Mac's device journal behind, the save failed on it, and the pair kept serving only on its local API ("not offered to Darkbloom … run `darkbloom cluster recover`"), with nothing trying again. The save now runs the same recovery as `darkbloom cluster recover`, once, and saves again. It still clears nothing while anything from the earlier session runs.
+- If that recovery can't clear the journal yet, the cluster service tries the approval again as soon as it has cleared the journal itself, and the status no longer tells you to run `darkbloom cluster recover`.
+- `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0` turns this off, as it does the part's own recovery.
+
+### Two-Mac pairs: when the other Mac's part ends on its own, its log says why
+
+- When the session on the Mac that follows ended because its own side closed, its `rank.log` and the incident it records said only "session fenced: follower endpoint closed". They now add what closed it: its worker reported a failure (with its reason), its owner process ended, a record from that process was refused, its time ran out, or its cleanup was asked for. Nothing else about the pair changes.
+
+### A pair whose start stopped too early no longer needs `darkbloom cluster recover`
+
+- When a pair's part was stopped seconds after the pair came up (for example by the setup's approval step), every later start could end with "Unresolved native ownership journal … Run `darkbloom cluster recover`" until someone ran that command. The cluster service now runs the same recovery by itself, once, and starts the part again. It still clears nothing while anything from the earlier session runs, and it never stops a process.
+- `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0`, exported before `darkbloom start` or `darkbloom cluster`, turns this off.
+
+### Two-Mac pairs: a "leader lost" stop on the Mac that follows says which one it was
+
+- When the session on the Mac that follows ended as "leader lost", its `rank.log` and the incident it records said only that. They now say whether the leading Mac's process restarted, or whether this Mac's own session with the coordinator ended (and why: cancelled by the coordinator, its grant expired, its connection closed, its member stopping, and so on). Nothing else about the pair changes.
+
+### Two-Mac pairs: a start the other Mac refused for memory says so, with the figures
+
+- When the coordinator committed a pair's start but the Mac that follows refused its share because it lacked free memory, both Macs' status said "The coordinator didn't accept the pair (unknown_failure)". It now says "The other Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)" ("This Mac" on the Mac that follows), and the leading Mac's incident is a memory refusal. Any other start that ended reads "The pair stopped (…)", never blaming the coordinator.
+
+### Two-Mac pairs: a pairing record changed outside Darkbloom is no longer trusted
+
+- Each pairing's record in `pairings.json` is now kept in this Mac's Keychain too, beside the pair's link key. A record changed by anything other than Darkbloom no longer gets the link key: the pair does not link, and its error says to pair the Macs again. A key file put beside the records is no longer taken in once the store has been updated.
+- Existing pairs keep working: the first read after the update keeps their records. A rollback to an earlier release still links. While the Mac is locked after its first unlock, the pair keeps serving as before.
+
+### Two-Mac pairs: the guided setup lists the models right after both cluster services start
+
+- Run right after both Macs' cluster services started (for example after updating both Macs with the pair stopped), `darkbloom cluster` on the leading Mac could read both Macs, then fail to plan with "The other Mac has not answered yet." and offer only "Start over (unpair and set up again)" or "Quit". The plan now asks the other Mac first when it has no answer of its own, so the model list appears as usual.
+
+### Two-Mac pairs: a rollback to a release before 0.10.13 no longer gets the pair's link key back
+
+- Releases before 0.10.13 link the two Macs with an older handshake. A rollback to one of them used to write each pairing's link key back to a file so that release could link again. The updater now writes no key for such a release, so a pair never links with the older handshake again. The keys stay in the Keychain, and the pair links again once both Macs run 0.10.13 or later. Rollbacks to 0.10.13 or later are unchanged.
+
+### Two-Mac pairs: an update no longer leaves the pair stopped when the leader re-plans too early
+
+- A pair's update installs the release on both Macs before it restarts their cluster services. If the leading Mac's old service noticed the new release in between, it started setting the pair up again, the restart ended that halfway, and the pair stayed "■ Stopped" until someone ran `darkbloom start`. Now the leading Mac waits while its own update is restarting (the restarted service sets the pair up again), and a service ended halfway puts the pair's start back when it runs again.
+- `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0`, exported before `darkbloom start` or `darkbloom cluster`, turns this off.
+
+### Two-Mac pairs: the service log says when the leading Mac waits for its own update's restart
+
+- While a pair's update installs a release and restarts the cluster services, the leading Mac doesn't set the pair up again until its restart. Its `~/.darkbloom/cluster-setup/service.log` now says so once: "this Mac's update to … restarts the cluster service next: setting the cluster up again waits for that restart". `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off the wait and the line.
+
+### Coordinator connection check
+
+- Once a TLS connection to the coordinator is ready, the provider checks that
+  its host is the build's coordinator host and that its certificate chains to
+  one of the certificate authorities the coordinator's certificates come from,
+  and logs a warning for each difference. The connection continues either way.
+
+### Coordinator connection check in heartbeats
+
+- Heartbeats report how the current coordinator connection compares with the
+  build's coordinator host and certificate authorities
+  (`coordinator_connection_check`), so the coordinator can count the results by
+  provider version. Nothing is refused on it.
+
+### Coordinator reconnects
+
+- After a close with code 1001 (going away) or 1012 (service restart), which the
+  server side sends to every provider at once, the provider waits a random 0 to
+  15 s before it reconnects, so a whole fleet does not reconnect in the same
+  second.
+- A new connection may wait up to 30 s for the coordinator's first frame before
+  the provider counts it as dead; after that first frame the 6 s bound applies.
+  A coordinator that registers many providers at once no longer makes them drop
+  and reconnect again, as long as it answers each connection within 30 s. The
+  reconnect log names the bound that applied (`in 6s` or `in 30s`).
+
+### Coordinator request-signing keys
+
+- Production and dev builds pin their coordinator's request-signing public key.
+  A request that carries a decodable coordinator signature is served only if the
+  signature verifies for this Mac, is within 300 s of its clock and has not been
+  served already. A request without one is still served: no build requires a
+  signature yet.
+
+### Gemma 4 26B: two draft tokens per round on M5 Ultra, M5 Max and M3 Ultra
+
+- On M5 Ultra, Gemma 4 26B QAT now drafts two tokens per speculative round
+  while one or two requests decode; on M5 Max and M3 Ultra, while one request
+  decodes alone. More requests decode without speculation, and other chips
+  keep the one-draft policy for a request decoding alone.
+- `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0` (or `off`, `false`, `no`) restores the
+  one-draft policy on every chip; the LaunchAgent forwards it.
+
+### Attested registrations advertise Gemma 4 prompt contract 2
+
+- A Mac's registration with Darkbloom now advertises Gemma 4 prompt contract 2 (`gemma_prompt_contract: 2`) when it carries an attestation, which is how every Mac serving the network registers. Until now the attested registration left the field out, so the coordinator never asked a Mac for contract 2 and every Gemma 4 request rendered contract 1.
+- Where the coordinator has switched contract 2 on, a Gemma 4 text request served by an updated Mac renders the prompt vLLM-served endpoints render, so its `usage.prompt_tokens` matches theirs. While Macs update, a conversation whose prefix a Mac cached in contract 1 starts cold once in contract 2.
+- `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` still stops a Mac advertising contract 2.
+
+### GLM-5.3-Flash: a request whose prefix restore is refused gets its own assistant
+
+- When a GLM-5.3-Flash prefix-cache restore was refused for an ordinary
+  request (one without a first-token deadline), the request continued with a
+  cold prefill. Until the refused restore finished retiring, the request's MTP
+  assistant could be set up on the restore's binding, whose memory the restore
+  still held. If the restore then retired while that assistant still held
+  allocations on its binding, the engine could stop with a native completion
+  failure, failing that request and the others on the engine.
+- The request now gets its own assistant binding. The refused restore keeps
+  its memory until it retires (mlx-swift-lm `6f5cc339`, the current SDK pin
+  plus this fix).
+
+### GLM-5.3-Flash: a refused prefix restore no longer stops the provider
+
+- A GLM-5.3-Flash request submitted with a first-token deadline prepares its
+  prefix-cache restore before publishing it. When the restore was refused
+  under memory pressure, releasing the request added its MTP assistant's
+  charge, which the restore's checkpoint stage still held, to the engine's
+  memory ledger. The ledger refused that growth and the provider stopped with
+  a Swift trap, then restarted about 6 minutes later.
+- The release now leaves that charge on the stage, which refunds it once the
+  restore's native work retires (mlx-swift-lm `995f3a5e`, the 0.10.16 SDK pin
+  plus this fix). Other models and published restores are unchanged.
+
+### GPT-OSS JSON answers follow the requested format
+
+- A GPT-OSS request with a JSON `response_format` (and no tools) now gets an answer held to that format while it is generated: the model reasons as before, then its final message is one JSON value of the schema, or one JSON object for `json_object`. Schemas in the Pydantic, OpenAI strict and zod shapes are constrained too; a value limit the grammar can't hold (`minimum`, `pattern`, `format`, …) is left to the model. Before, the format was only requested in the prompt.
+- With a small `max_tokens`, the reasoning now ends early to keep half the output (64 to 256 tokens) for the answer, so the answer is complete more often.
+- Nothing is refused for it: a request the grammar can't serve (a cluster pair, a schema it can't express) is answered as before.
+- `DARKBLOOM_HARMONY_JSON_ANSWERS=off` restores the previous behaviour.
+
+### GPT-OSS tool calls follow Pydantic and zod schemas
+
+- GPT-OSS `auto` tool calls are now held to a function's schema when it uses the shapes agent clients send every day: Pydantic's optional fields (`anyOf` with `null`), zod's root `$schema`, and value limits such as `minimum`, `maxLength` or `format`. The grammar enforces the structure, types, enums and required keys; a value limit it can't hold is left to the model. Before, such a function's arguments were sampled as generated.
+- A function whose schema needs more (a union of several types, an allow-all `{}` such as `Optional[Any]`, a value with no stated type) keeps its arguments as generated, as before.
+- `DARKBLOOM_HARMONY_AUTO_TOOL_WIDEN=off` restores the previous behaviour.
+
+### Nemotron 3.5 Lightning: tool-call arguments follow the declared tools
+
+- Lightning's `auto` tool calls are now sampled under the call grammar already used for strict Qwen 3.5-family calls,
+  for every declared tool. A call can only name a declared function and its declared parameters, includes every
+  required parameter, and writes enum values and the JSON types the schema allows. Reasoning and text stay free, and
+  the model still decides whether to call.
+- A parameter with an assertion the grammar cannot hold (for example a numeric bound or a string format) keeps its type,
+  structure and enum values; only that assertion is left to the model. A parameter that still cannot be held is free
+  text, read as before.
+- The grammar admits only declared parameters, also where a schema leaves its object open. A tool that takes no
+  parameters (`"properties": {}` or `"parameters": {}`) is held to no arguments. An open object root that reaches the
+  provider without `properties` (`{"type": "object"}`) leaves its request unconstrained; a request routed through the
+  coordinator receives such a root with `"properties": {}` added, so there it is held to no arguments.
+- The bare `<function=…>` frame that Lightning's parser also reads is held the same way.
+- `DARKBLOOM_NEMOTRON_TOOL_GRAMMAR=off` restores unconstrained calls for Lightning. It is separate from
+  `DARKBLOOM_STRICT_TOOL_GRAMMAR`, which keeps governing the Qwen 3.5-family builds only.
+
+### Nemotron 3.5 Super: tool-call arguments follow the declared tools, with or without images
+
+- Super's `auto` tool calls are now sampled under the call grammar Lightning uses, for every declared tool, on text,
+  image and video requests. A call can only name a declared function and its declared parameters, includes every
+  required parameter, and writes enum values and the JSON types the schema allows. Reasoning and text stay free, and
+  the model still decides whether to call.
+- A parameter with an assertion the grammar cannot hold (for example a numeric bound or a string format) keeps its type,
+  structure and enum values; only that assertion is left to the model.
+- Requests with a reasoning budget (`reasoning.max_tokens`), requests whose unfinished reasoning becomes the answer
+  (`force_nonempty_content` with thinking on), forced tool choices and requests the grammar cannot hold are served as
+  before.
+- On a Mac where Super drafts with its MTP head, a text request held by the grammar keeps drafting: through its free
+  reasoning and text, and inside a call with drafts verified under the grammar (`DARKBLOOM_CONSTRAINT_SPANS` and
+  `DARKBLOOM_CBV2_MTP_GRAMMAR` now default on for Super). `DARKBLOOM_CONSTRAINT_SPANS=0` keeps such a request
+  target-only; `DARKBLOOM_CBV2_MTP_GRAMMAR=0` keeps it target-only inside a call. Image requests decode target-only, as
+  before.
+- `DARKBLOOM_NEMOTRON_SUPER_TOOL_GRAMMAR=off` restores unconstrained calls for Super. It is separate from
+  `DARKBLOOM_NEMOTRON_TOOL_GRAMMAR`, which governs Lightning.
+
+### Chat templates render on a thread with a larger stack
+
+- The provider renders chat templates on a thread of its own with a 16 MiB stack instead of the request's 512 KiB one. Templates that format a tool schema with a recursive macro, such as Gemma 4's and GPT-OSS's, now render schemas nested up to the 64 levels a request may carry. Rendered prompts and their tokens are unchanged.
+
+### Prefix cache: faster checkpoint restores
+
+- A prefix-cache hit restored from an SSD checkpoint now reads and authenticates the checkpoint's chunks ahead of the copy into memory, on several threads, instead of one chunk at a time. The restored state is the same bytes as before.
+- The read-ahead memory is charged with the restore's other scratch memory, so a restore reserves more memory while it runs and the reported staging bytes are higher. When memory is tight, the restore runs the earlier way rather than being refused.
+- `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE=0` turns it off; the LaunchAgent forwards it.
+
+### Super stream logprobs and a lost pair's capacity no longer depend on timing
+
+- A streamed Nemotron Super reply that ends with a tool call no longer carries,
+  at random, the logprob entry of the call's first tag. The owner now hands the
+  relay and the local stream an entry only before a chunk that shows reasoning
+  or content, as it already did for a complete response, so every path carries
+  the same entries.
+- A distributed pair whose peer was lost reports no capacity from the moment its
+  requests are told so. Before, a capacity read in that window could report the
+  full capacity again if the peer's readiness came back.
+
+### Qwen finishes a tool call it started instead of ending its turn inside it
+
+- Qwen 3.5, 3.6 and 3.8 sometimes ended their turn inside a tool call, right after the last line of a long string
+  argument and before the closing tags; on long forced writes this happened about 1 time in 10, and the call was refused
+  after its arguments had streamed. For requests whose `tool_choice` is `required` or a named function, the provider
+  now samples so that no end of turn is possible while a call is open: the model writes the rest of the value and
+  closes the call itself. The token limit still ends an answer as `length`, and `auto` requests are unchanged. Such
+  forced requests give up speculative drafting, about 8 % slower single-request decode on Qwen 3.6.
+- `DARKBLOOM_QWEN_CALL_END_GUARD=0` (or `off`, `false`, `no`) turns it off.
+
+### Release builds keep their state files in the install directory
+
+- A release build now keeps its daemon state, PID file, warm-model journal, verified weight records, watchdog state, crash-loop guard, device token and local API files at their defaults in its install directory, and downloads models from its build's CDN. The variables that moved them (`DARKBLOOM_STATE_FILE`, `DARKBLOOM_PID_FILE`, `DARKBLOOM_LOADED_MODELS_FILE`, `DARKBLOOM_VERIFIED_WEIGHTS_FILE`, `DARKBLOOM_WATCHDOG_STATE`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_AUTH_TOKEN_PATH`, `DARKBLOOM_LOCAL_DIR`, `DARKBLOOM_R2_CDN_URL`) are read by debug builds only (tests and development).
+- The native serve qualification still keeps its state in its own run directory, and `sudo darkbloom report` still reads the invoking user's state file. `darkbloom models download --r2-cdn` still picks a mirror explicitly.
+
+### Release runbook: full CI on the release head
+
+- Before a provider release is approved and tagged, the complete CI must pass
+  on the release PR's final head and on the `dev` commit the candidate was cut
+  from. A failing job is fixed or re-run until it passes; a release isn't
+  tagged on a red run.
+
+### Release jobs run in GitHub environments
+
+- The jobs that read a release secret, and the desktop release's publication
+  job, name a GitHub environment, so its deployment branch and tag policy and
+  its required reviewers apply before the job starts: `build-and-release`,
+  `stage-release` and `publish-release` of the provider release lane, `signing`
+  of `Provider Signing Validation`, and `sign`, `sign-dmg` and `publish` of the
+  desktop release.
+- The provider lane uses `dev` for a dev-branch release, `staging` for a
+  staging release and `prod` for a production release and for the signed
+  validation build. The other workflows use `prod`.
+- No other job of these workflows names an environment or reads a secret.
+- Operators: each job that names an environment with required reviewers waits
+  for its own approval, from someone other than the person who started the
+  run, and the environment's policy must admit the ref the lane runs on
+  (`refs/heads/dev` for `dev`; `refs/heads/master` for `staging`;
+  `refs/heads/master`, `v*` and `desktop-v*` tags for `prod`). The secrets
+  must exist in the environment before the repository-level copies are
+  removed.
+- The products handed from one job to the next are kept for 7 days instead of
+  3, so a later approval can still download them.
+- No release has run through these jobs yet.
+
+### A production release asks one approval, for publication
+
+- A production release signs, notarizes and stages (`build-and-release`,
+  `stage-release`) in the GitHub environment `prod-build`, which admits
+  `refs/heads/master` and `v*` tags and has no required reviewers, so the
+  tag's run, or a retained-build recovery on `master`, reaches staging by
+  itself.
+- Publication (`publish-release`), which registers the release with the
+  coordinator, still runs in `prod` and waits for one approval from someone
+  other than the person who started the run.
+- Dev, staging and the signed validation build keep one environment for every
+  job, as before. No secret moved; `prod-build` must never hold the release
+  registration key.
+
+### Response chunks are numbered, and the usage is sealed after them
+
+- The provider seals each response chunk of a request under a nonce that numbers it (a prefix drawn for the request, then the chunk's number from 0), so the coordinator can check that it received every chunk once and in order.
+- `inference_complete` also carries `encrypted_usage`: the usage and the number of chunks, sealed after the last chunk. The plaintext `usage` is unchanged, so coordinators that read only it work as before.
+
+### The provider zeroes the response text it gathers
+
+- The provider now keeps the response text it gathers while streaming (for the response hash, the billing floor and the reasoning token count) in storage that is zeroed as it grows and when the request ends. The response hash is unchanged and is computed without another copy of the text. Counting reasoning tokens (and, for a cancelled stream, the delivered text) still hands the tokenizer a string copy, which is not zeroed.
+
+### Provider-staged prefix restores grow their remaining KV backing like new requests
+
+- A request restored from a complete prefix checkpoint (the provider-staged,
+  non-native path) gets paged KV backing for the rest of its maximum length when
+  the restore is published. That growth created every new segment with a GPU
+  zero fill and a stream fence. New requests already grow from
+  zero-fill-on-demand host pages when segment retention and
+  `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS` are on (the default). A restored request
+  that asked for a long maximum length waited for that fill before its first
+  prefill launch: about 1 ms at maximum lengths up to 16K, rising to about
+  180 ms above 64K in one profiled workload (Qwen 3.8 27B, M5 Ultra).
+- Restores now grow the same way new requests do (mlx-swift-lm `main` at
+  `3296e1bc`, which carries this fix). Segments whose size is not a whole number of
+  VM pages, native-bound restores and `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` keep
+  the device fill. Outputs and the accounting rules are unchanged; measured
+  allocation footprints can differ.
+
+### The provider says why it couldn't read Secure Boot, and reads it again
+
+- When `system_profiler` can't report the Secure Boot setting, the Darkbloom service reads it again for up to a minute before it starts serving. On a Mac that serves alone, while the setting stays unread, the service reads it once more before each connection to Darkbloom. The service no longer reports `unknown` from one failed read; `darkbloom doctor` and `darkbloom status` still read it once.
+- When it stays unread, the registration says why (`secure_boot_read_failure`: `timed_out`, `launch_failed`, `exit_status`, `exit_unobserved`, `output_too_large`, `output_unreadable`, `not_json`, `no_report`, `no_value` or `unrecognized_value`) and after how many reads (`secure_boot_read_attempts`). The provider's log records each failed read, and `darkbloom doctor` and `darkbloom status` name the reason.
+- A `Reduced Security` or `Permissive Security` setting found by a later read at startup holds before anything loads, like one found by the first read. One found before a connection keeps this Mac from registering with Darkbloom: serving ends as at a stop, and the service then waits as it does when the setting is found at startup, until a stop or an update.
+- When a scheduled availability window closes, the next window begins only once serving has ended. If it ends needing a process restart (native model work still pending after the stop), the schedule ends instead of serving again in the same process.
+
+### The provider reports whether it runs from the Mac's internal disk
+
+- The registration now reports where the provider's executable runs from: the Mac's internal disk, a network volume, removable media, an external disk or a mounted disk image. A release build can also refuse to serve the network from anywhere but the internal disk; that is off by default and `DARKBLOOM_SERVING_VOLUME_CHECK=refuse` turns it on.
+
+### A switch to serve the network only on macOS 15.4 or later
+
+- The serving start check has a build switch that requires macOS to report each process's original parent, which macOS does from 15.4. It is off in this release, so nothing changes. With it on, a network-serving start before macOS 15.4 is refused, says to update macOS, and does not ask launchd to start the service; `darkbloom start --local --here` is unchanged.
+
+### Nemotron 3.5 Super: image and video answers that repeat are stopped
+
+- Super's image and video requests now take the same loop guard as its text requests: an eligible answer that repeats
+  one block verbatim is stopped once the guard detects the exact token loop (no earlier than 4,096 generated tokens)
+  and ends as `length`, instead of running to its output cap. Before, such an answer could run for up to 131,072
+  tokens and keep a media slot occupied the whole time, reducing capacity for other image and video requests.
+- The guard's way out of a repeating thought stays text-only, so a stopped media answer ends as `length` (inside its
+  reasoning: reasoning and no answer content).
+- `DARKBLOOM_LOOP_GUARD` governs it as for every other guarded request (`off` turns the guard off).
+
+### Nemotron 3.5 Super: a video request takes one of the owner's two media rows
+
+- On an owner serving three or more requests, a request whose only media is one video now runs beside an image or
+  another video, as two images already do. Frame decoding and the vision tower stay one request at a time on the
+  owner's preparation lane; the answers then decode side by side. Each video's full memory charge is reserved before
+  its frames decode and held until it settles, so a video that does not fit is still refused (503).
+- Before, a video was exclusive with other media: a second image or video sent to the same Mac waited a few seconds at
+  most and was otherwise refused with 429 until the first answer ended.
+- `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_VIDEO=off` keeps a video exclusive with other media again. `DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES`
+  set to an off word still keeps every media request alone. Both are forwarded to the service.
+
+## v0.10.16
+
+Published 2026-11-19 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.16)).
 
 ### Upgrade and rollout notes
 

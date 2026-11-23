@@ -402,7 +402,9 @@ enum EngineV2SlotFactory {
                     hybridPrefixCache: hybridPrefixCache,
                     nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
                         layerKinds: (servingModel as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
-                        gemmaAssistantActive: assistantHandle?.drafter != nil && mtpConfig.effectiveEnabled),
+                        gemmaAssistantActive: EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
+                            assistantAttached: assistantHandle?.drafter != nil,
+                            mtpEnabled: mtpConfig.effectiveEnabled, status: mtpStatus)),
                     pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(

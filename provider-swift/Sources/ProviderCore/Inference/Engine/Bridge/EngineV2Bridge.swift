@@ -70,6 +70,8 @@ public actor EngineV2Bridge {
     /// One GLM step's setup bytes. The engine charges step scratch from the
     /// same ledger as requests, so request admission leaves this much free.
     var glm5NextStepSetupBytes = 0
+    /// Only queried after a refusal. This hypothetical grant never admits a request.
+    var glmSoloGrant: (@Sendable () async -> UInt64?)?
     /// GLM requests between the capacity gate and `active`.
     var glm5NextGateReservations: [String: Int] = [:]
     var supportsNativeReasoningBudgets: Bool {

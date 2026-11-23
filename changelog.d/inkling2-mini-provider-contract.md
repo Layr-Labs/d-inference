@@ -8,8 +8,9 @@
   history require. Tool declarations and earlier tool calls' arguments render as the client sent them (`null`s
   kept, no inferred schema types, argument member order kept), and a message's list of text parts renders part by
   part, as the model's reference renders them, on every request. An image in a tool result is read in its place,
-  as the reference reads it; an image in an assistant or system message is refused with a 400, as the reference
-  refuses it; a `developer` message is still read as `system`.
+  as the reference reads it. An image in an assistant or system message is refused before decode with HTTP 400
+  `invalid_request` and refusal `media_role_not_rendered` by default, or `invalid_media` with
+  `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0`. A `developer` message is still read as `system`.
   The template self-check no longer renders a video part for a model that takes no video.
 - Reasoning effort: each of the seven names reaches the template as its own level (`none` 0 through `xhigh` and
   `max` 0.99). Turning thinking off renders effort 0, and whatever the model still thinks is counted but not

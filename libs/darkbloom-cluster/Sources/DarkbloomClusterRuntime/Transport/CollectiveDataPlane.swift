@@ -20,6 +20,7 @@ enum ClusterDataPlaneAgreement {
         func digit(_ c: UInt8) -> UInt8 { c <= 57 ? c - 48 : c - 87 }
         let scope = Data(stride(from: 0, to: 64, by: 2).map { digit(values[$0]) << 4 | digit(values[$0 + 1]) })
         let started = DispatchTime.now().uptimeNanoseconds
+        defer { ClusterLoadPhaseClock.add(.dataPlaneKeying, nanoseconds: DispatchTime.now().uptimeNanoseconds &- started) }
         _ = try collective.establishDataPlane(credential: credential, scopeSHA256: scope, tamper: tamper,
             rekey: rekey ?? .dataPlane, tensorParallelSeal: tensorParallelSeal, check: check)
         log("darkbloom-data-plane-exchange-v1 rank=\(collective.rank) transport=\(collective.transportLabel)"

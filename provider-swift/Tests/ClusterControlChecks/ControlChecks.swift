@@ -475,16 +475,24 @@ import Darwin
         var a2 = ClusterControlNode(localID: A, members: members, claim: term1, rankOrder: [A, B], now: 0, ttl: 30)
         var b1 = ClusterControlNode(localID: B, members: members, claim: term1, rankOrder: [A, B], now: 0, ttl: 30)
         expect(!a2.leadershipConfirmed(now: 2), "not before the member answered")
+        expect(a2.secondsUntilConfirmed(now: 2) == 28 && !a2.otherAnswering(now: 2),
+               "unconfirmed: the window's rest is published, and nobody answered yet")
         let (accepted, _) = b1.receiveLease(from: A, offered: term1, running: false, facts: members, now: 2)
         _ = a2.receiveAnswer(from: B, sent: term1, answer: accepted, now: 2)
         expect(a2.leadershipConfirmed(now: 2), "confirmed by the member")
+        expect(a2.secondsUntilConfirmed(now: 2) == 0 && a2.otherAnswering(now: 2) && !a2.otherAnswering(now: 32),
+               "confirmed: nothing left to wait; the member answered, and counts as answering for one time-to-live")
+        expect(b1.secondsUntilConfirmed(now: 2) == nil, "a follower publishes no window")
         // Nobody reachable: it may act only once the window passed (the member's time-to-live from the start).
         var a3 = ClusterControlNode(localID: A, members: members, claim: term1, rankOrder: [A, B], now: 100, ttl: 30)
         // Ticked at the service's cadence (a tick gap of a third of the time-to-live or more reads as a wake).
         for t in stride(from: 110.0, through: 129, by: 1) { _ = a3.tick(now: t) }
         expect(!a3.leadershipConfirmed(now: 129.5), "inside the window with nobody answering: not yet")
+        expect(a3.secondsUntilConfirmed(now: 129.5) == 0.5 && !a3.otherAnswering(now: 129.5),
+               "the published window ends when the member's time-to-live from the start does; nobody answers")
         _ = a3.tick(now: 130)
         expect(a3.leadershipConfirmed(now: 130), "the window passed with no member reachable")
+        expect(a3.secondsUntilConfirmed(now: 145) == 30, "a gap no tick has seen yet: the next tick starts a whole window")
         // A follower is never a confirmed leader; before a plan (onboarding, term 0) the same rule holds.
         expect(!b1.leadershipConfirmed(now: 500), "a follower never acts as the leader")
         let onboarding = ClusterControlClaim(term: 0, leaderID: B, members: [A, B], reason: "drove the onboarding")

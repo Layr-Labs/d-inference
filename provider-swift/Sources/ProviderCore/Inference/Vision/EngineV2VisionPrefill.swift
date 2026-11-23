@@ -343,7 +343,7 @@ public enum EngineV2VisionPrefill {
     /// `Qwen35` and its subclasses (Qwen 3.5, 3.6 and 3.8, dense and MoE).
     /// Their processor and Qwen3-VL tower select kernels by device, shape,
     /// dtype and settings, not by stream, so the embeddings are expected to be
-    /// identical (the tests and the release proof measure it). Fused kernels
+    /// identical (the tests measure it). Fused kernels
     /// elsewhere in the SDK run only on the process default stream
     /// (`MLXProcessStreams`), so other families keep it, including
     /// `PrismHadamardQwen35`, `Qwen4Exp` and `Qwen3VL`, which share the tower
@@ -399,7 +399,8 @@ public enum EngineV2VisionPrefill {
     /// wrapper module access never races).
     /// A Qwen 3.5-family wrapper runs the scoped part on its own GPU stream
     /// (`onMediaPrepStream`) when `ownMediaPrepStream` (default:
-    /// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM`, off unless set) is true.
+    /// `DARKBLOOM_TTFT_MEDIA_PREP_STREAM` in `environment`, off unless set) is
+    /// true.
     ///
     /// Throws `EngineV2VisionPrefillError` (and any `MediaError`/processor
     /// error the legacy path would also throw) — callers refuse loudly on
@@ -410,7 +411,8 @@ public enum EngineV2VisionPrefill {
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls = .init(),
-        ownMediaPrepStream: Bool? = nil
+        ownMediaPrepStream: Bool? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) async throws -> PreparedSubmission {
         try MediaIngest.rejectUnsupportedAudio(request)
         if await container.perform({ $0.model is GLM5NextModel }) {
@@ -443,7 +445,8 @@ public enum EngineV2VisionPrefill {
             userInput.processing.video = video
         }
         let towerLimits = VisionTowerBudget.liveLimits
-        let mediaPrepStream = ownMediaPrepStream ?? Self.mediaPrepStreamEnabled()
+        let mediaPrepStream =
+            ownMediaPrepStream ?? Self.mediaPrepStreamEnabled(environment: environment)
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
             // anywhere under this closure — most consequentially an allocation

@@ -24,6 +24,17 @@ enum MemoryOnlyPrefixCachePolicy {
         return raw == "auto"
     }
 
+    /// Whether a slot's complete-checkpoint store gets the tier. A slot with
+    /// an engine-resident tier (`DARKBLOOM_PREFIX_CACHE_MEMORY=1`) serves
+    /// `memory_only` requests with their cache off, so it gets none, nor does
+    /// an excluded model (GLM 5 Next, Nemotron Super).
+    static func attachesTier(
+        excludedModel: Bool, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        !excludedModel && isEnabled(environment: environment)
+            && !PrefixCachePolicy.isMemoryEnabled(environment: environment)
+    }
+
     /// A positive whole number of MiB replaces the default cap; anything else
     /// keeps it.
     static func capBytes(environment: [String: String] = ProcessInfo.processInfo.environment) -> UInt64 {

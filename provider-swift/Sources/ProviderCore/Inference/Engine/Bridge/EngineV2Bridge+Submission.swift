@@ -316,7 +316,7 @@ extension EngineV2Bridge {
         } else { imageBoundCacheScope = cacheScope }
         let submissionPolicy = PrefixCacheSubmissionPolicy(
             cachePolicy: cachePolicy,
-            memoryOnlyTierAvailable: ssdHybridCheckpointStore?.memoryOnlyTier != nil && multimodal == nil
+            memoryOnlyTierAvailable: ssdHybridCheckpointStore?.memoryOnlyTier?.isAvailable == true && multimodal == nil
                 && !servesDistributedPair && ownedEngine is EngineV2)
         // Never manufacture an authenticated scope from an image digest.
         let imageCacheEnabled = submissionPolicy.cacheEnabled(

@@ -1393,7 +1393,7 @@ extension ProviderLoop {
         from slots: [String: ModelSlot], countingRetainedKVSegments: Bool
     ) -> UInt64 {
         let retained = countingRetainedKVSegments ? CBv2RetainedKVSegments.retainedBytes : 0
-        let pools = [MLX.Memory.cacheMemory, retained, Int(clamping: MemoryOnlyCheckpointPool.shared.bytesInUse)]
+        let pools = [MLX.Memory.cacheMemory, retained, Int(clamping: kvBudget.memoryOnlyPool.bytesInUse)]
         return (pools + slots.values.map(\.sizing.weightsBytes)).reduce(UInt64(0)) { total, bytes in
             let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, bytes)))
             return overflow ? .max : sum
@@ -1405,7 +1405,7 @@ extension ProviderLoop {
     /// waits briefly), then MLX's buffer cache, which device-filled segments
     /// return to.
     func releaseReclaimableMemoryForLoad() async {
-        MemoryOnlyCheckpointPool.shared.releaseAll(reason: .load)
+        kvBudget.memoryOnlyPool.releaseAll(reason: .load)
         await GlobalKVCacheBudget.releaseRetainedKVSegments()
         clearCacheAfterConfirmedNativeOwnership()
     }
@@ -1433,6 +1433,7 @@ extension ProviderLoop {
         // resident model for room. Retained segments are eviction credit
         // only until then (`reclaimableMemoryBytes`).
         var poolDropped = !GlobalKVCacheBudget.busyEnginesKeepReclaimableMemory()
+        var tierReleased = false
         while true {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -1497,6 +1498,13 @@ extension ProviderLoop {
             if !poolDropped {
                 poolDropped = true
                 await releaseReclaimableMemoryForLoad()
+                continue
+            }
+            // With both rollbacks set the pool is never dropped, but the
+            // RAM-only prefix tier still yields before any model does.
+            if !tierReleased, kvBudget.memoryOnlyPool.bytesInUse > 0 {
+                tierReleased = true
+                kvBudget.memoryOnlyPool.releaseAll(reason: .load)
                 continue
             }
 

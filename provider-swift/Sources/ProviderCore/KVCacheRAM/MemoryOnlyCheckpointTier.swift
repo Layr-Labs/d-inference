@@ -68,6 +68,10 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
 
     var isClosed: Bool { lock.withLock { closed } }
 
+    /// Whether a `memory_only` request should keep its prefix cache for this
+    /// tier: with no budget every capture would be refused after its export.
+    var isAvailable: Bool { !isClosed && pool.budgetBytes > 0 }
+
     // MARK: - Donation
 
     /// Always calls `completion`, with no positions: a RAM entry is not a
@@ -77,9 +81,9 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
         _ source: CBv2CompleteCheckpointExport, requestID: CBv2RequestID?,
         tokens: [Int], cacheSalt: String?, completion: @escaping @Sendable ([Int]) -> Void
     ) {
-        func refuse(_ outcome: MemoryOnlyCheckpointPool.StoreOutcome?) {
+        func refuse(_ outcome: MemoryOnlyCheckpointPool.StoreOutcome?, counted: Bool = true) {
             source.close()
-            if let outcome { pool.recordStoreRefusal(outcome) } else { pool.recordUnmarkedRefusal() }
+            if let outcome { pool.recordStoreRefusal(outcome) } else if counted { pool.recordUnmarkedRefusal() }
             completion([])
         }
         guard MemoryOnlyReceipt.contains(requestID) else { return refuse(nil) }
@@ -95,9 +99,12 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
         guard chain.count == manifest.position / blockSize, let chainHash = chain.last else {
             return refuse(.refusedPolicy)
         }
-        let donation = Donation(
-            source: source, tag: lookupKeys.checkpointTag(chainHash: chainHash, cacheSalt: cacheSalt ?? ""),
-            completion: completion)
+        // Too large for the budget: refused before any copy or encode.
+        let payloadBytes = manifest.tensors.reduce(0) { $0 + $1.byteCount }
+        guard UInt64(payloadBytes) <= pool.budgetBytes else { return refuse(.refusedBudget) }
+        let tag = lookupKeys.checkpointTag(chainHash: chainHash, cacheSalt: cacheSalt ?? "")
+        guard !pool.holdsDuplicate(namespace: namespace, tag: tag) else { return refuse(nil, counted: false) }
+        let donation = Donation(source: source, tag: tag, completion: completion)
         // A full or shut-down queue hands the donation back unsettled.
         if !donations.submit(donation) { Self.settleUnstored(donation, pool: pool) }
     }
@@ -105,7 +112,7 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
     /// Settles a donation the queue did not store.
     private static func settleUnstored(_ donation: Donation, pool: MemoryOnlyCheckpointPool) {
         donation.source.close()
-        pool.recordStoreRefusal(.refusedPolicy)
+        pool.recordStoreRefusal(.refusedBusy)
         donation.completion([])
     }
 
@@ -117,6 +124,8 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
             donation.completion([])
         }
         guard !isClosed else { return pool.recordStoreRefusal(.refusedPolicy) }
+        // An earlier donation of this prefix, queued ahead of this one, is held now.
+        guard !pool.holdsDuplicate(namespace: namespace, tag: donation.tag) else { return }
         // In shared process mode the provider owns the engine's segment copies,
         // as the SSD writer does.
         var copyBuffers: ProcessHostBufferReservation?
@@ -223,6 +232,17 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
             pool.recordLookup(.miss)
             return result(.missAbsent)
         }
+        // `closeAndWait` joins a restore still filling an engine import.
+        let joined = lock.withLock { () -> Bool in
+            guard !closed else { return false }
+            activity.begin()
+            return true
+        }
+        guard joined else {
+            pool.recordLookup(.skipped)
+            return result(.skippedPolicy)
+        }
+        defer { activity.end() }
         do {
             let (position, deviceBytes) = try await restore(
                 entry, requestID: requestID, request: request,
@@ -255,18 +275,25 @@ final class MemoryOnlyCheckpointTier: @unchecked Sendable {
         reserveReadScratch: @Sendable () throws -> CBv2CompleteCheckpointIOLease,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> CBv2CompleteCheckpointImportPlan
     ) async throws -> (position: Int, deviceBytes: Int) {
-        let manifest = try entry.region.withBytes(at: 0, count: entry.manifestBytes) {
-            try JSONDecoder().decode(CBv2CompleteCheckpointManifest.self, from: $0)
-        }
+        // The read scratch covers the manifest's decode, as it does a file's.
+        var readScratch: CBv2CompleteCheckpointIOLease
+        do { readScratch = try reserveReadScratch() }
+        catch is CancellationError { throw RestoreFailure.policy }
+        catch { throw RestoreFailure.capacity }
+        defer { readScratch.close() }
+        guard !readScratch.usesProcessMemoryOwner || kvBudget != nil else { throw RestoreFailure.capacity }
+        let manifest: CBv2CompleteCheckpointManifest
+        do {
+            manifest = try entry.region.withBytes(at: 0, count: entry.manifestBytes) {
+                try JSONDecoder().decode(CBv2CompleteCheckpointManifest.self, from: $0)
+            }
+        } catch let released as LockedHostRegion.Released { throw released }
+        catch { throw RestoreFailure.incompatible }
         guard (try? manifest.validateStructure()) != nil,
             manifest.identity == config.identity, manifest.backendLayout == config.backendLayout,
             manifest.cacheSalt == request.checkpointCacheSalt, manifest.position < request.promptTokens.count,
             request.promptTokens.starts(with: manifest.prefixTokens)
         else { throw RestoreFailure.incompatible }
-        var readScratch: CBv2CompleteCheckpointIOLease
-        do { readScratch = try reserveReadScratch() } catch { throw RestoreFailure.capacity }
-        defer { readScratch.close() }
-        guard !readScratch.usesProcessMemoryOwner || kvBudget != nil else { throw RestoreFailure.capacity }
         let plan: CBv2CompleteCheckpointImportPlan
         do { plan = try makeImportPlan(manifest) }
         catch CBv2KVError.capacityExhausted { throw RestoreFailure.capacity }

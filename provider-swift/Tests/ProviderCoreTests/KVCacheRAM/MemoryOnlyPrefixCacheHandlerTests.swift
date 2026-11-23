@@ -9,7 +9,8 @@ import Testing
 /// Two sealed `memory_only` requests with the same prefix through
 /// `handleInferenceRequest`, on a real engine with a complete-checkpoint store
 /// and its RAM-only tier: the second restores the first's checkpoint from RAM,
-/// and the SSD directory is left exactly as it was.
+/// the SSD directory is left exactly as it was, and an ordinary request after
+/// them gets nothing from RAM.
 @Suite("memory_only requests reuse a prefix from RAM only", .serialized)
 struct MemoryOnlyPrefixCacheHandlerTests {
     @Test("the second marked request reports cached tokens from RAM; the SSD directory is unchanged")
@@ -50,14 +51,15 @@ struct MemoryOnlyPrefixCacheHandlerTests {
             sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 128,
                           maxContextLength: 8192, defaultMaxTokens: 4096))
 
-        func send(_ id: String) async throws -> UsageInfo {
+        func send(_ id: String, memoryOnly: Bool = true) async throws -> UsageInfo {
             let receiver = NodeKeyPair.generate()
             let recorder = CancelledPrefixRecorder(receiver: receiver)
-            let body = try JSONSerialization.data(withJSONObject: [
+            var fields: [String: Any] = [
                 "model": "fixture-model", "messages": [["role": "user", "content": "fixture"]],
                 "temperature": 0, "max_tokens": 2, "stream": true, "reasoning_parser": "none",
-                "_darkbloom_cache": ["cache_policy": "memory_only"],
-            ] as [String: Any])
+            ]
+            if memoryOnly { fields["_darkbloom_cache"] = ["cache_policy": "memory_only"] }
+            let body = try JSONSerialization.data(withJSONObject: fields)
             let encrypted = try receiver.encrypt(
                 recipientPublicKey: await loop.keyPair.publicKeyBytes, plaintext: body)
             await loop.handleInferenceRequest(
@@ -69,7 +71,7 @@ struct MemoryOnlyPrefixCacheHandlerTests {
                 if case .inferenceComplete(_, let usage, _, _, _, _, _) = message { return usage }
                 return nil
             }
-            #expect(!recorder.snapshot.contains {
+            #expect(!memoryOnly || !recorder.snapshot.contains {
                 if case .prefixCacheLookupV2 = $0 { return true }
                 return false
             }, "a memory_only request sends no SSD-tier evidence")
@@ -93,10 +95,14 @@ struct MemoryOnlyPrefixCacheHandlerTests {
         // The SSD store wrote, staged and kept nothing for these receipts.
         #expect(store.stats().filesWritten == 0 && store.stats().stages == 0)
         #expect(store.lock.withLock { store.readyReceipts.isEmpty })
+        #expect(MemoryOnlyCheckpointTierTests.listing(fixture.root) == ssdBefore)
+
+        let ordinary = try await send("ordinary-after", memoryOnly: false)
+        #expect(ordinary.cachedTokens == 0 && ordinary.cacheTier != .memory)
+        #expect(pool.snapshot.lookups[.hit] == 1 && pool.snapshot.unmarkedRefusals == 0)
         await bridge.shutdown()
         _ = await runtime.unregister(modelId: "fixture-model")
         #expect(pool.snapshot.entries == 0, "unload releases the slot's RAM entries")
-        #expect(MemoryOnlyCheckpointTierTests.listing(fixture.root) == ssdBefore)
     }
 }
 #endif

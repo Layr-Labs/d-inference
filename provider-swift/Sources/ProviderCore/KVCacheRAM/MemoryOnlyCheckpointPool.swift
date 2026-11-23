@@ -7,18 +7,24 @@ import Foundation
 /// The pool yields memory before anything else does: an entry is admitted only
 /// while the process ledger keeps a whole budget of headroom beyond it, and
 /// entries are released on a refused memory charge, on memory pressure, before
-/// a model load, on unload and at shutdown. Entries expire with the SSD tier's
-/// TTL and TTL mode: sliding on reuse, or fixed from the store.
+/// a model load, before the Mac sleeps (so no hibernation image holds them), on
+/// unload and at shutdown. Entries expire with the SSD tier's TTL and TTL mode:
+/// sliding on reuse, or fixed from the store.
 final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     static let shared = MemoryOnlyCheckpointPool()
 
     enum EvictionReason: String, CaseIterable, Sendable {
-        case lru, ttl, pressure, load, shortfall, unload, shutdown
+        case lru, ttl, pressure, load, shortfall, sleep, unload, shutdown
     }
 
     enum StoreOutcome: String, CaseIterable, Sendable {
         case stored
+        /// The prefix is already held: nothing is copied, and a fixed TTL
+        /// keeps counting from the first store.
+        case duplicate
         case refusedBudget = "refused_budget"
+        /// The donation queue was full.
+        case refusedBusy = "refused_busy"
         case refusedHeadroom = "refused_headroom"
         case refusedLock = "refused_lock"
         case refusedPolicy = "refused_policy"
@@ -150,6 +156,7 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     private var lastReleaseReason = EvictionReason.pressure
     private var counts = Snapshot()
     private var sweepTask: Task<Void, Never>?
+    private var sleepRelease: SystemSleepRelease?
 
     init(
         ttlSeconds: Int64 = SSDPrefixCachePolicy.ttlSeconds(),
@@ -159,7 +166,7 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     ) {
         self.ttlSeconds = ttlSeconds
         self.ttlMode = ttlMode
-        self.sweepInterval = sweepInterval
+        self.sweepInterval = min(sweepInterval, .seconds(max(1, ttlSeconds)))
         self.nowSeconds = nowSeconds
     }
 
@@ -199,16 +206,13 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
         guard bytes > 0, let rounded = LockedHostRegion.pageRounded(bytes) else { return nil }
         let size = UInt64(rounded)
         let (evicted, requiredHeadroom, epoch) = lock.withLock { () -> ([Entry], UInt64?, UInt64) in
-            guard budget > 0, size <= budget else {
+            // Entries of other slots still copying in can't be evicted for it.
+            let copying = reservedBytes - committedBytesLocked()
+            guard budget > 0, size <= budget, copying <= budget - size else {
                 counts.stores[.refusedBudget, default: 0] += 1
                 return ([], nil, releaseEpoch)
             }
             let evicted = evictLocked(downTo: budget - size, reason: .lru)
-            // Another slot's entry may still be copying in.
-            guard reservedBytes <= budget - size else {
-                counts.stores[.refusedBudget, default: 0] += 1
-                return (evicted, nil, releaseEpoch)
-            }
             reservedBytes += size
             return (evicted, budget, releaseEpoch)
         }
@@ -237,23 +241,27 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
     }
 
     private func insert(_ entry: Entry, key: Key, admission: Admission) -> Bool {
-        let (stored, dropped) = lock.withLock { () -> (Bool, Entry?) in
+        let (stored, dropped) = lock.withLock { () -> (Bool, [Entry]) in
             precondition(entry.bytes == admission.bytes)
             guard admission.releaseEpoch == releaseEpoch else {
                 reservedBytes -= entry.bytes
                 counts.evictions[lastReleaseReason, default: 0] += 1
-                return (false, entry)
+                return (false, [entry])
             }
             clock &+= 1
             entry.useOrder = clock
-            let replaced = removeLocked(key)
+            var dropped = removeLocked(key).map { [$0] } ?? []
             entries[key] = entry
             counts.stores[.stored, default: 0] += 1
-            refreshSizeLocked()
+            // A budget that shrank while the bytes were copied in still holds.
+            dropped += evictLocked(downTo: budget, reason: .lru)
             if sweepTask == nil { sweepTask = makeSweepTask() }
-            return (true, replaced)
+            if sleepRelease == nil {
+                sleepRelease = SystemSleepRelease { [weak self] in self?.releaseAll(reason: .sleep) }
+            }
+            return (true, dropped)
         }
-        dropped?.release()
+        dropped.forEach { $0.release() }
         return stored
     }
 
@@ -282,6 +290,20 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
         }
         expired.forEach { $0.release() }
         return found
+    }
+
+    /// Whether a live entry holds this prefix: then a donation of it copies
+    /// nothing and counts as a duplicate, and counts as a use like a restore.
+    func holdsDuplicate(namespace: UUID, tag: Data) -> Bool {
+        let now = nowSeconds()
+        let held = lock.withLock { () -> Bool in
+            guard let entry = entries[Key(namespace: namespace, tag: tag)], !isExpiredLocked(entry, now: now)
+            else { return false }
+            counts.stores[.duplicate, default: 0] += 1
+            return true
+        }
+        if held { touch(namespace: namespace, tag: tag) }
+        return held
     }
 
     /// A restored entry becomes the most recently used one, and under the
@@ -320,6 +342,16 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
         release(reason: reason) { _, _ in true }
     }
 
+    /// Releases least recently used entries until `bytes` are free, for a
+    /// refused charge that this much room lets through.
+    func release(bytes: UInt64, reason: EvictionReason) {
+        let evicted = lock.withLock { () -> [Entry] in
+            let committed = committedBytesLocked()
+            return evictLocked(downTo: reservedBytes - min(bytes, committed), reason: reason)
+        }
+        evicted.forEach { $0.release() }
+    }
+
     func sweepExpired() {
         let now = nowSeconds()
         release(reason: .ttl) { [self] _, entry in isExpiredLocked(entry, now: now) }
@@ -348,6 +380,10 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
         return evicted
     }
 
+    private func committedBytesLocked() -> UInt64 {
+        entries.values.reduce(UInt64(0)) { $0 + $1.bytes }
+    }
+
     /// Caller holds the lock. A committed entry's bytes leave the reservation
     /// only here.
     private func removeLocked(_ key: Key) -> Entry? {
@@ -363,7 +399,7 @@ final class MemoryOnlyCheckpointPool: @unchecked Sendable {
 
     private func refreshSizeLocked() {
         counts.entries = entries.count
-        counts.bytes = entries.values.reduce(UInt64(0)) { $0 + $1.bytes }
+        counts.bytes = committedBytesLocked()
     }
 
     private func makeSweepTask() -> Task<Void, Never> {

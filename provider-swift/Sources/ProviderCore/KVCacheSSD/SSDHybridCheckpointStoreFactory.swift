@@ -125,7 +125,7 @@ enum SSDHybridCheckpointStoreFactory {
             && backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout
             ? MemoryOnlyCheckpointTier(
                 config: .init(identity: identity, backendLayout: backendLayout, minEffectiveTokens: minEffectiveTokens),
-                kvBudget: kvBudget)
+                kvBudget: kvBudget, pool: kvBudget?.memoryOnlyPool ?? .shared)
             : nil
         let cache = SSDHybridCheckpointStore(config: .init(
             modelId: modelId, identity: identity, backendLayout: backendLayout,

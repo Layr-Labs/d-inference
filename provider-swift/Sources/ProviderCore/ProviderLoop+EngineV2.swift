@@ -464,7 +464,7 @@ extension ProviderLoop {
                 fleetKVBudgetBytes: fleetBudget,
                 minimumGrantBytes: minimumGrants)
         }
-        MemoryOnlyCheckpointPool.shared.updateBudget(fleetKVHeadroomBytes: fleetBudget)
+        kvBudget.memoryOnlyPool.updateBudget(fleetKVHeadroomBytes: fleetBudget)
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
             targets, minimumGrantBytes: minimumGrants)
         else {
@@ -685,7 +685,7 @@ extension ProviderLoop {
     /// back below it.
     internal func resliceGrowSurvivorsLocked() async {
         // Host memory: the RAM-only tier follows the serving set whatever native MiMo owns.
-        MemoryOnlyCheckpointPool.shared.updateBudget(fleetKVHeadroomBytes: fleetKVBudgetBytes(extraWeightBytes: 0))
+        kvBudget.memoryOnlyPool.updateBudget(fleetKVHeadroomBytes: fleetKVBudgetBytes(extraWeightBytes: 0))
         guard nativeMiMoAllowsReclamation() else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
         guard nativeMiMoAllowsReclamation() else { return }

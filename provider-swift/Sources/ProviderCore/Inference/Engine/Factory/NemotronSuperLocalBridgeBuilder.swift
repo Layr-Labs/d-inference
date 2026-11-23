@@ -848,8 +848,9 @@ enum NemotronSuperLocalBridgeBuilder {
 
     /// The complete-checkpoint store for the prepared backend, built as for
     /// every other model (`EngineV2SlotFactory.prepareCompletePrefixCache`),
-    /// including its effective checkpoint profile. Off the load transaction:
-    /// the store scans and keys its directory.
+    /// including its effective checkpoint profile, but without the RAM-only
+    /// tier: `memory_only` requests run with their prefix cache off here. Off
+    /// the load transaction: the store scans and keys its directory.
     private static func prepareDurableStore(
         _ assembly: Assembly, identity: NemotronSuperLocalPrefixCache.RoutingIdentity, modelID: String,
         checkpointQuantization: PagedKVQuantizationConfig?,
@@ -862,7 +863,8 @@ enum NemotronSuperLocalBridgeBuilder {
             weightHash: identity.modelAggregateHash, promptContractID: identity.promptContractID,
             mtpDrafter: assembly.speculation?.assistant,
             mtpConfig: assembly.speculation?.config ?? CBv2MTPConfig(),
-            kvBudget: kvBudget, environment: environment, identityOverride: identityOverride)
+            kvBudget: kvBudget, environment: environment, identityOverride: identityOverride,
+            allowsMemoryOnlyTier: false)
     }
 
     /// A bridge that never reached an owner: shut it down and, only once the

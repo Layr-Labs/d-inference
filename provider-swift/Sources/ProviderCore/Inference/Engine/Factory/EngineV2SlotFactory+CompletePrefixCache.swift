@@ -20,7 +20,8 @@ extension EngineV2SlotFactory {
         mtpDrafter: (any CBv2MTPDrafter)?, mtpConfig: CBv2MTPConfig,
         kvBudget: GlobalKVCacheBudget?, environment: [String: String],
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
-        identityOverride: CBv2CompleteCheckpointIdentity? = nil
+        identityOverride: CBv2CompleteCheckpointIdentity? = nil,
+        allowsMemoryOnlyTier: Bool = true
     ) async -> CompletePrefixCachePreparation? {
         let historicalCapability = model as? any CBv2HistoricalAttentionCheckpointProviding
         let historicalTarget = historicalCapability?.cbv2SupportsHistoricalAttentionCheckpoint == true
@@ -80,11 +81,8 @@ extension EngineV2SlotFactory {
         else {
             return .init(cache: nil, status: .init(state: .disabled, reason: .runtimeIdentityUnavailable))
         }
-        // A slot with an engine-resident tier serves `memory_only` requests
-        // with their cache off, so it gets no RAM-only tier either.
-        let attachesMemoryOnlyTier = MemoryOnlyPrefixCachePolicy.isEnabled(environment: environment)
-            && !PrefixCachePolicy.isMemoryEnabled(environment: environment)
-            && !(model is GLM5NextProtectedModel)
+        let attachesMemoryOnlyTier = MemoryOnlyPrefixCachePolicy.attachesTier(
+            excludedModel: !allowsMemoryOnlyTier || model is GLM5NextProtectedModel, environment: environment)
         switch await SSDHybridCheckpointStoreFactory.build(
             modelId: modelId, identity: identity, backendLayout: storage.backendLayout,
             kvBudget: kvBudget, environment: environment,

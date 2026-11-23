@@ -21,6 +21,30 @@ struct MemoryOnlyPrefixCachePolicyTests {
             fleetKVHeadroomBytes: 64 << 30, environment: [key: "off"]) == 0)
     }
 
+    @Test("the tier is attached by default, and never with a resident tier, when off, or for an excluded model")
+    func attachRules() {
+        #expect(MemoryOnlyPrefixCachePolicy.attachesTier(excludedModel: false, environment: [:]))
+        #expect(!MemoryOnlyPrefixCachePolicy.attachesTier(excludedModel: true, environment: [:]))
+        for environment in [
+            ["DARKBLOOM_PREFIX_CACHE_MEMORY": "1"], [MemoryOnlyPrefixCachePolicy.modeEnvironmentKey: "off"],
+            ["DARKBLOOM_PREFIX_CACHE": "0"],
+        ] {
+            #expect(!MemoryOnlyPrefixCachePolicy.attachesTier(excludedModel: false, environment: environment),
+                    "\(environment)")
+        }
+    }
+
+    @Test("a memory_only request keeps its prefix cache only where the tier is offered")
+    func submissionPolicy() {
+        let marked = PrefixCacheSubmissionPolicy(cachePolicy: .memoryOnly, memoryOnlyTierAvailable: true)
+        #expect(marked.usesMemoryOnlyTier && !marked.usesSSDTier && marked.cacheEnabled(true))
+        #expect(!marked.cacheEnabled(false))
+        let noTier = PrefixCacheSubmissionPolicy(cachePolicy: .memoryOnly, memoryOnlyTierAvailable: false)
+        #expect(!noTier.usesMemoryOnlyTier && !noTier.usesSSDTier && !noTier.cacheEnabled(true))
+        let ordinary = PrefixCacheSubmissionPolicy(cachePolicy: .default, memoryOnlyTierAvailable: true)
+        #expect(ordinary.usesSSDTier && !ordinary.usesMemoryOnlyTier && ordinary.cacheEnabled(true))
+    }
+
     @Test("the MiB setting replaces the cap but never the quarter of headroom")
     func cap() {
         let key = MemoryOnlyPrefixCachePolicy.maximumMegabytesEnvironmentKey

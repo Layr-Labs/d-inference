@@ -7149,8 +7149,17 @@ volume detached, the first root confirmed at that path on the original volume
 is bound by inode before cleanup. This identifies the first root observed on
 return, not a directory that could not be observed while detached. A retry
 does not act on a subsequently substituted directory or volume. A missing
-pinned volume, an unverifiable lease, or an old marker without a volume identity
-leaves cleanup unresolved; shared staging stays in place. An idle plan moves to
+pinned volume or an unverifiable lease leaves cleanup unresolved; shared
+staging stays in place. A marker that cannot be used (an earlier format,
+malformed, extra links or unsafe metadata) authorizes no removal and leaves a
+retry unresolved; the next unpair replaces it, in one rename, with its own
+intent for the current selection (a second `.cluster-*.tmp` link that an
+earlier version's interrupted publication left is removed first). While an
+earlier unpair's cleanup waits for its original cache selection, a later
+unpair on that Mac does not remove the current selection's pair cache; those
+files follow ordinary TTL cleanup. A plan that lost its `in-use` file gets a
+new one only while the member holds the cache root exclusively, so no rank is
+starting there. An idle plan moves to
 an inode-qualified `.retiring-…` name before its lock file goes. A later reclaim
 can finish removing that identified empty directory after interruption without
 treating a missing `in-use` in an ordinary plan as permission to delete it

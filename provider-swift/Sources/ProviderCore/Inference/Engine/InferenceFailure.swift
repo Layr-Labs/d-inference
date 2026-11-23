@@ -256,6 +256,7 @@ private extension ProviderOperationalMessage {
         case .requestExceedsContext: .refusalRequestExceedsContext
         case .unsupportedOutputControl: .refusalUnsupportedOutputControl
         case .missingUserQuery: .refusalMissingUserQuery
+        case .mediaRoleNotRendered: .refusalMediaRoleNotRendered
         }
     }
 }

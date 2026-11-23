@@ -118,10 +118,10 @@ public struct DistributedGLMMediaIngress: Sendable {
     func prepare(request: OpenAIChatCompletionRequest, controls: ChatTemplateControls,
                  tokenizer: any Tokenizer) async throws -> Prepared {
         let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: controls)
-        // The encoded bytes in the order the ingest decoded them: user
-        // messages' parts in order (media on other roles was refused above).
+        // The encoded bytes in the order the ingest decoded them
+        // (`MediaIngest.messagesKeepingMedia`).
         var imageBytes: [Data] = [], videoBytes: [Data] = []
-        for message in request.messages where message.role == .user {
+        for message in MediaIngest.messagesKeepingMedia(of: request) {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
                 switch part {

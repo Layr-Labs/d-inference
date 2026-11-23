@@ -130,11 +130,17 @@ enum ChatTemplateFixes {
         if Gemma4TemplateFix.applies(to: context) {
             ids.formUnion(Gemma4TemplateFix.extraEOSTokenIds(tokenToId: tokenToId))
         }
+        if Inkling2PromptContract.applies(modelType: context.modelType) {
+            ids.formUnion(Inkling2PromptContract.extraEOSTokenIds(tokenToId: tokenToId))
+        }
         return ids
     }
 
     static func stopStringScope(context: ChatTemplateFixContext) -> CBv2StopStringScope? {
-        GPTOSSHarmonyTemplateFix.applies(to: context)
+        if Inkling2PromptContract.applies(modelType: context.modelType) {
+            return Inkling2PromptContract.answerStopScope
+        }
+        return GPTOSSHarmonyTemplateFix.applies(to: context)
             ? GPTOSSHarmonyTemplateFix.finalChannelStopScope : nil
     }
 

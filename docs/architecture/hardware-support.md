@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -718,6 +718,15 @@ parameter bytes and retained assistant weights; the scanner's disk-size padding
 belongs to load admission, not this runtime grant. Default SSD streaming has no
 resident prefix-bank carve (`UnifiedMemoryCap.kvBudgetBytes`,
 `provider-swift/Sources/ProviderCore/Inference/Memory/SlotSizingSnapshot.swift`).
+
+Before a looped Inkling 2 Mini checkpoint loads, its pre-load rate counts one
+cache slot per layer application, not one per stored layer: 48 slots, of which
+the 8 full-attention slots grow 32,768 fp16 bytes per token, while its 40
+sliding slots plateau at their 1024-token window and each sequence carries
+short-convolution state (3,833,856 bytes in FP32, half that in BF16)
+(`provider-swift/Sources/ProviderCore/Inference/Memory/KVEstimation.swift`,
+`parseModelArchitecture`; `provider-swift/Sources/ProviderCoreFoundation/Inkling2ModelIdentity.swift`,
+`CacheLayout`; [contract reference](../reference/inkling2-mini-support.md#cache-layout)).
 
 One model slot receives the full fleet KV budget. With multiple slots,
 `EngineV2KVSizing.resliceGrants` divides it in proportion to each model's fp16

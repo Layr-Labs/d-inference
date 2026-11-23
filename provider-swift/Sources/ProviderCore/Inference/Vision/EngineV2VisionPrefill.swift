@@ -334,7 +334,7 @@ public enum EngineV2VisionPrefill {
     static func mediaPrepStreamEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        !["0", "false", "no", "off"].contains(
+        ["1", "true", "on", "yes"].contains(
             environment[mediaPrepStreamEnvironmentKey]?
                 .trimmingCharacters(in: .whitespaces).lowercased())
     }

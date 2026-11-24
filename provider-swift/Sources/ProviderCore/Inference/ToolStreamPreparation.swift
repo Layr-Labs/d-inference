@@ -183,7 +183,8 @@ enum ToolStreamPreparation {
         try ToolChoiceEnforcementPolicy.validateParser(
             format, strategy: strategy, modelContext: context)
         return BatchedToolStreamHandler(format: format,
-            tools: (isMiMo && prepared.mode == .none ? request.tools : prepared.tools)?.map { $0.toolSpec() },
+            tools: (isMiMo && prepared.mode == .none ? request.tools : prepared.argumentTools ?? prepared.tools)?
+                .map { $0.toolSpec() },
             strictGemma: modelType == "diffusion_gemma",
             streaming: streamToolCalls && exposesCallsWhileGenerated(request: request, prepared: prepared,
                 context: context, strategy: strategy, format: format, forced: streamForcedToolCalls,

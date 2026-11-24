@@ -499,6 +499,11 @@ Mac doesn't answer) is tried again a minute on and is not the service run's
 check yet, so a pair that isn't offered asks the coordinator again then
 (`checkApproval`'s `skipped`). It counts the quick ends of a part
 only from that part's own rank-log lines (`ClusterService.lastError(in:from:)`).
+A refusal because the saved setup no longer matches the approval names each
+pin that differs, with both values (`ClusterNativeMemberAttachment.differences`).
+The leader keeps the refused approval beside its note (`approvalRefused`), and
+the other Mac clears a refusal note of its own once it saves the leader's
+approval (`ClusterApprovalSync.clearRefusalNote`).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
 serving intent or change model eligibility and placement. See the
@@ -2333,7 +2338,11 @@ Work accounting, resource ownership and the health-check result are unchanged;
 overlapping customer requests remain independently measurable.
 
 Completed startup preloads and the pre-registration path schedule calibration
-without waiting for the first capacity tick. Ordinary model loads also schedule
+without waiting for the first capacity tick. The health check returns only once
+the bridge has released its request (`EngineV2Bridge.awaitRequestsReleased`, at
+most 2 s): a native engine's stream ends before its pump releases the request's
+service charge, and calibration starts only on an idle Mac, so the driver could
+otherwise find the Mac busy and leave calibration to the next tick. Ordinary model loads also schedule
 it after construction releases its device-work receipt. Capacity ticks retry
 when loading, foreground work or device posture initially prevents calibration.
 An uncancelled calibration retirement schedules the next eligible resident
@@ -3052,11 +3061,23 @@ only on a request that generated at least 32 tokens
 `completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same
 EWMA and restart rule over those samples): one short reply measures mostly its
 first steps or tail and could pull a Mac measuring 80–100 tok/s down to about
-11. A shorter request still feeds the deadline decode rate, the rate's age and
-`performance_measurements`, as before, so a slot that serves only short
-replies is still priced for deadline admission and never ages out while
-serving; it publishes no rate until a longer one. Deadline admission is
-unchanged: it charges the measured step shape. The projection also mirrors the
+11. A shorter request still feeds the rate's age and `performance_measurements`,
+as before, so a slot that serves only short replies never ages out while
+serving; it publishes no rate until a longer one. The deadline decode rate
+(`observedDecodeTpsEwma` and its measured step) follows the same 32-token rule
+once a counted request (32 tokens or more, or calibration) has moved it since
+it last restarted (`decodeEwmaCounted`, reset with it on calibration or when
+the decode evidence expired). Until then every completed request moves it as
+before, so a slot that serves only short replies keeps a rate that follows them
+and is still priced for deadline admission. Before that first sample, a deadline
+request beside decoding rows is priced at the slowest delivered cadence among
+requests decoding on the slot now (tokens after the first emission over the
+time since the first token, once a request has 8 such tokens;
+`EngineV2Bridge.liveDecodeCadence`), charged per row; with no such request, or
+with `DARKBLOOM_TTFT_ADMISSION_FIXES=0`, the decode rate stays unavailable and
+the request is refused as before. None of
+this reaches the heartbeat. Deadline admission otherwise charges the measured
+step shape. The projection also mirrors the
 live MTP plan's depth gates
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift`,
 `CBv2MTPRoundDriver.speculationDepthCeiling`): a step with more decode rows
@@ -3478,10 +3499,11 @@ output-indexed RNG stream. Presence and frequency penalties speculate since
 counts plus the drafts before it, in `LogitsPipelineV2.process`'s order and
 dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`).
 The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): the slot factory
-sets it for the catalog Qwen 3.5/3.6 builds and `gemma-4-26b-qat-4bit`
-(`SDKFeatureDefaults.penaltyRowBuilds`); `DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty
+sets it for the catalog Qwen 3.5/3.6 builds, `gemma-4-26b-qat-4bit` and, since
+0.10.18, the served Inkling 2 Mini (`SDKFeatureDefaults.penaltyRowBuilds`); `DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty
 rows target-only everywhere. Rows with `stop` strings speculate on the builds in
-`SDKFeatureDefaults.stopStringRowBuilds` (`gemma-4-26b-qat-4bit`;
+`SDKFeatureDefaults.stopStringRowBuilds` (`gemma-4-26b-qat-4bit` and, since 0.10.18,
+the served Inkling 2 Mini, whose answer-channel stop scope the row's detokenizer applies;
 `CBv2MTPConfig.stopStringSpeculation`): the round's finalize confirms each committed
 token through the row's detokenizer and ends the row at the first match, rolling back
 the rest: given the committed tokens, stop matching, scope, truncation and the finish
@@ -3492,17 +3514,20 @@ verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
-defaults to typical acceptance for eligible sampled target-prefix rows, except
-on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
-the owned Bonsai 9B candidate; the catalog Qwen 3.5/3.6 builds (`Qwen3.5-9B`,
-which looped under typical acceptance in the 0.10.12 gate, and since 0.10.16
-`qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`, whose card-penalty rows
-now draft and accept exactly in any case; see the Qwen 3.5/3.6 defaults below);
-the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
-10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
-27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
-`ModelRuntimeRequirements.qwen38ConcreteModelIDs`), whose lone requests draft
-on a single Mac. Qwen 3.8 pairs never read this rule and were already exact.
+uses exact acceptance for every model (0.10.18; `MTPAcceptancePolicy.resolve`).
+Typical acceptance is used only where `mtp_acceptance` or
+`mtp_acceptance_by_model` names it. Before 0.10.18 the built-in rule was typical
+except for a list of builds, each added after a sampled-loop finding: the
+catalog Qwen 3.5/3.6 builds (`Qwen3.5-9B` looped under typical acceptance in
+the 0.10.12 gate), the catalog `gemma-4-26b-qat-4bit` (OpenRouter's 10-31 GPQA
+run: 30 % of drafted answers ended at the 32,768-token cap), the Qwen 3.8 27B
+builds, the owned Bonsai 9B candidate, and Inkling 2 Mini (OpenRouter's GPQA
+shape at temperature 0.5: none of 8 drafter-on samples answered under typical
+acceptance; with exact acceptance the same questions answered, token for token
+as with the drafter off). The served families whose sampled drafting rows
+change with the all-model default are GLM-5.3-Flash (`glm5_next`) and Qwen 4
+(`qwen4_exp`) where served; Nemotron does not draft under `auto` and native MiMo
+was already exact. Greedy rows accept exactly under either rule.
 Exact keeps the model's output distribution; its tokens are not bit-identical
 to MTP off, since verify windows round differently.
 Under typical acceptance a draft is kept when the sampler-filtered target row
@@ -3698,7 +3723,7 @@ themselves until `max_tokens` (#1530). Every build also takes the cards'
 | Build | Omitted `presence_penalty` | Built-in MTP acceptance | Without the penalty |
 |---|---|---|---|
 | `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 1.5 | **exact** since 0.10.16 (typical before) | The 0.10.12 gate on the signed 0.10.11 (temperature 1 / 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens, nineteen everyday prompts at 8,192, three seeds each; an M5 Ultra): `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
-| `Qwen3.5-9B` | 1.5; none under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (`qwen35NineBNoPenaltyDefaults`, 0.10.12's default) | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | The same gate (the Studio M3 Ultra) saw it run away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, so 0.10.12 shipped it without the penalty. In production that was a regression. On 2026-11-12, on 0.10.12 Macs against 0.10.11 Macs (the penalty, MTP off) over the same period, answers with `max_tokens` ≥ 8,192 hit the cap on 5.5 % against 1.7 %, about three times as often. On the 4,096-token JSON `response_format` workload, in the same 10-minute windows, answers ran out and failed in 51 % of requests against 23 %. Its constrained JSON rows never speculate and their template is unchanged since 0.10.4, so the penalty is the difference we can establish: with nothing else running they failed 32.7 % against 13.6 %. A registry `presence_penalty` 1.5 brought both back within the hour |
+| `Qwen3.5-9B` | 1.5; none under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (`qwen35NineBNoPenaltyDefaults`, 0.10.12's default) | **exact** (`MTPAcceptancePolicy.resolve`) | The same gate (the Studio M3 Ultra) saw it run away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, so 0.10.12 shipped it without the penalty. In production that was a regression. On 2026-11-12, on 0.10.12 Macs against 0.10.11 Macs (the penalty, MTP off) over the same period, answers with `max_tokens` ≥ 8,192 hit the cap on 5.5 % against 1.7 %, about three times as often. On the 4,096-token JSON `response_format` workload, in the same 10-minute windows, answers ran out and failed in 51 % of requests against 23 %. Its constrained JSON rows never speculate and their template is unchanged since 0.10.4, so the penalty is the difference we can establish: with nothing else running they failed 32.7 % against 13.6 %. A registry `presence_penalty` 1.5 brought both back within the hour |
 
 Through 0.10.15 a row with a penalty did not speculate, so these builds'
 requests that omit the penalty ran without MTP (0.0–0.1 % of production rows
@@ -5152,6 +5177,58 @@ and the coordinator can refuse to route
 (`provider-swift/Sources/ProviderCoreFoundation/TemplateRenderCheck.swift`,
 `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift`).
 
+swift-jinja cannot take a JSON null, so the shared message sanitizer drops
+null leaves before rendering, with one exception: an earlier tool call's
+decoded `arguments` keep each null as Jinja `null`, at its key or array
+position, because dropping it shows the model a different call than the one it
+made (`sanitizeMessageForJinja`; Gemma 4's string-argument path does the same,
+`Gemma4ToolCallArguments`). Templates that print a plain argument value with
+swift-jinja's string rendering gain a branch that writes `null`: Gemma 4's
+`format_argument` macro and the Qwen 3.5 / Nemotron 3.5 Lightning XML parameter
+value (`renderingToolArgumentNulls`, applied by the serving tokenizer and the
+render check only, not the managed Nemotron Super contract). Templates that
+write arguments with `tojson` print the null as they already did. Tool
+parameter schemas keep the drop policy. GLM-5.3, MiMo and Flint build their own
+history and already kept these nulls. Such a request still plans and counts
+under normalization v9, which drops them, so it is served without the
+coordinator's prompt cache ([prefix cache](prefix-cache.md)).
+
+Gemma 4's `format_parameters` prints one render type per parameter and never
+`anyOf` / `oneOf`. The shared schema repair (`ToolSchemaNormalization`) gives
+a union the first non-null member's type, so a `string`-first union of
+`string` and one other scalar type rendered `STRING` and the model quoted
+typed values. Gemma's tool enforcement now renders the other member there
+(`INTEGER`, `NUMBER`, `BOOLEAN`; invariant 7 in
+`provider-swift/Sources/ProviderCore/Inference/Tools/Gemma4ToolSchemaEnforcement.swift`).
+The union stays on the wire, so the validator and constrained decoding, which
+read the request's tools rather than the render input, accept both members.
+Unions with more members, non-scalar members or an `enum` keep `STRING`, and
+other families keep the shared repair's render type. A property the caller
+declared without any type or schema keyword (`{}`) renders an empty type
+(`type:<|"|><|"|>`, the served template's rendering of a typeless property)
+instead of the injected `string` (invariant 8). Gemma's render reads the
+caller's declarations as sent (`ChatTemplateControls.declaredTools`) on every
+path that renders a coordinator request: serving, prompt recount and the
+diffusion media path. Such a request is also
+served without the coordinator's prompt cache ([prefix cache](prefix-cache.md)).
+
+GPT-OSS's Harmony template renders a schema as written: a `type` list as
+`a | b`, a `oneOf` as the union of its members and a node without a type as
+`any`. GPT-OSS therefore renders each tool's parameters from the body's own
+declaration (`ChatTemplateControls.declaredTools`) through the same repair
+with its invented types left out: a type is written only where the node
+states one (a single concrete member beside `null`, a union whose typed
+members share one type, `enum` / `const` values, structure or assertions of
+one family); a positional boolean becomes `{}`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSToolSchemaRender.swift`,
+`ToolSchemaNormalization.repairedParameters`). A tool whose declaration the
+repair would not change keeps its prepared tool, so a body whose tools arrive
+already repaired renders byte-identically. The prompt-token floor renders the
+same tools. The auto tool grammar already compiles each call's arguments from
+the declarations, so `{}` stays free and a union admits each member. Such a
+coordinator request is served without the prompt cache
+([prefix cache](prefix-cache.md)).
+
 A template `raise_exception` at request time is classified `jinja_template`
 and returned as HTTP 500, the provider-fault class, so a caller control that
 a template is known to reject must be resolved before rendering. The
@@ -5308,7 +5385,7 @@ as it is, or passes the request's body on unchanged.
 | Nemotron 3.5 Super | `medium_effort`, and the template's default depth | `minimal`, `low` and `medium` set `medium_effort`; `high`, `xhigh` and `max` keep the default | `ReasoningEffort.nemotronSuperMediumEffort` (`NemotronSuperPromptContract.controls(body:)`) |
 | MiMo V2.6, Gemma 4 (`gemma4`, `gemma4_text`, `gemma4_vision`), DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks (Gemma 4's template defaults thinking off) | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`; `ReasoningEffortPolicy.effortSetsThinkingSwitch` in `templateAdditionalContext`; `DiffusionGemmaReasoningControl`) |
 | Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (on) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
-| GPT-OSS | Harmony's `low`, `medium` (its default) and `high`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `high`. OpenRouter's traffic is capped at `medium` by the coordinator's service cap (darkbloom-platform#721, #703's rule), which must be live before any Mac runs this table (below) | `ReasoningEffort.harmonyLevel`, `ReasoningEffortPolicy.templateEffort` |
+| GPT-OSS | Harmony's `low`, `medium` (its default) and `high`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `high`, for every caller: the coordinator passes every effort as sent, OpenRouter's included (darkbloom-platform#721, below) | `ReasoningEffort.harmonyLevel`, `ReasoningEffortPolicy.templateEffort` |
 | Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
 
 An effort that is none of the names is refused on any model that reasons,
@@ -5367,12 +5444,11 @@ version, so while a provider and the sidecar render different levels, during a
 staggered rollout, those requests' cache receipts mismatch and their cache
 affinity is quarantined; serving continues.
 
-No Mac may run these levels before the coordinator's OpenRouter GPT-OSS cap
-(darkbloom-platform#721) is live: until then, OpenRouter's GPT-OSS `high` would
-render `high`, which #703 capped at `medium` to avoid upstream timeouts. So a
-provider release with them is tagged without being published to auto-update,
-snapshotted into #721, and published only once #721 is deployed, each step on
-the owner's go.
+The coordinator doesn't cap GPT-OSS's effort. #703 capped OpenRouter's
+GPT-OSS `high` at `medium` to avoid upstream timeouts, and an early version of
+darkbloom-platform#721 moved that cap to the coordinator. The merged #721
+removed it: every caller's effort, OpenRouter's included, reaches the provider
+as sent, so OpenRouter's GPT-OSS `high`, `xhigh` and `max` render `high`.
 
 ### Strict tool-call grammar
 

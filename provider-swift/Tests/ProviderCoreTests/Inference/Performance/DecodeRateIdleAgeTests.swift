@@ -7,10 +7,12 @@ import Testing
 /// synthetic observations and a scripted engine. No model or GPU is involved.
 @Suite("Decode rate idle age")
 struct DecodeRateIdleAgeTests {
-    private func decode(_ tps: Double, at: ContinuousClock.Instant, batchRows: Int) -> EngineRateObservation {
+    private func decode(_ tps: Double, at: ContinuousClock.Instant, batchRows: Int,
+                        setsPublishedDecode: Bool = true) -> EngineRateObservation {
         EngineRateObservation(phase: "decode", tps: tps, prompt: 1_024, context: 1_024, cache: "cold",
             overlap: .init(contended: batchRows > 1, peakRequests: batchRows), at: at,
-            postureEpoch: nil, aggregate: true, decodeShape: .init(batchRows: Double(batchRows)))
+            postureEpoch: nil, aggregate: true, decodeShape: .init(batchRows: Double(batchRows)),
+            setsPublishedDecode: setsPublishedDecode)
     }
 
     @Test("unset is 30 minutes, a positive whole number of seconds sets it, an off word disables it")
@@ -65,5 +67,42 @@ struct DecodeRateIdleAgeTests {
         let resumed = await bridge.backendSlotCapacity(now: start + .seconds(1_901))
         #expect(resumed.observedDecodeTps == 80)
         await bridge.shutdown()
+    }
+
+    @Test("the heartbeat sends the published rate's own age: a short reply neither moves nor dates it")
+    func publishedRateCarriesItsAge() async throws {
+        let bridge = EngineV2Bridge(engine: PrefillScriptEngine(), modelId: "gemma-4-26b-qat-4bit",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [], admissionFixes: true)
+        let start = ContinuousClock.now
+        let unmeasured = await bridge.backendSlotCapacity(now: start)
+        #expect(unmeasured.observedDecodeTps == 0 && unmeasured.observedDecodeTpsAgeMs == nil)
+        await bridge.applyRateObservation(decode(40, at: start, batchRows: 1),
+            requestID: "long", calibration: false)
+        let fresh = await bridge.backendSlotCapacity(now: start + .seconds(60))
+        #expect(fresh.observedDecodeTps == 40 && fresh.observedDecodeTpsAgeMs == 60_000)
+        // A reply under 32 tokens feeds the other estimates but not the published rate or its age.
+        await bridge.applyRateObservation(decode(10, at: start + .seconds(100), batchRows: 1, setsPublishedDecode: false),
+            requestID: "short", calibration: false)
+        let afterShort = await bridge.backendSlotCapacity(now: start + .milliseconds(160_500))
+        #expect(afterShort.observedDecodeTps == 40, "the published rate itself is unchanged")
+        #expect(afterShort.observedDecodeTpsAgeMs == 160_500)
+        // With no rate published there is no age.
+        let aged = await bridge.backendSlotCapacity(now: start + .seconds(1_801 + 100))
+        #expect(aged.observedDecodeTps == 0 && aged.observedDecodeTpsAgeMs == nil)
+        await bridge.shutdown()
+    }
+
+    @Test("the age goes on the wire only with a published rate")
+    func ageWireShape() throws {
+        var slot = BackendSlotCapacity(model: "m", state: "idle", numRunning: 0, numWaiting: 0,
+            activeTokens: 0, maxTokensPotential: 0, observedDecodeTps: 40)
+        func object() throws -> [String: Any] {
+            try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(slot)) as? [String: Any])
+        }
+        #expect(try object()["observed_decode_tps_age_ms"] == nil)
+        slot.observedDecodeTpsAgeMs = 1_234
+        #expect(try object()["observed_decode_tps_age_ms"] as? Int == 1_234)
+        let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: JSONEncoder().encode(slot))
+        #expect(decoded.observedDecodeTpsAgeMs == 1_234 && decoded == slot)
     }
 }

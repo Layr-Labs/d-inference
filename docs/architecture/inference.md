@@ -499,6 +499,11 @@ Mac doesn't answer) is tried again a minute on and is not the service run's
 check yet, so a pair that isn't offered asks the coordinator again then
 (`checkApproval`'s `skipped`). It counts the quick ends of a part
 only from that part's own rank-log lines (`ClusterService.lastError(in:from:)`).
+A refusal because the saved setup no longer matches the approval names each
+pin that differs, with both values (`ClusterNativeMemberAttachment.differences`).
+The leader keeps the refused approval beside its note (`approvalRefused`), and
+the other Mac clears a refusal note of its own once it saves the leader's
+approval (`ClusterApprovalSync.clearRefusalNote`).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
 serving intent or change model eligibility and placement. See the

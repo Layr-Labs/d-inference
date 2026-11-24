@@ -63,7 +63,7 @@ struct Inkling2PrefixCheckpointWiringTests {
         let storage = try #require(EngineV2SlotFactory.completeCheckpointStorage(
             kind: prepared.kind, layerKinds: prepared.layerKinds,
             supportsRecurrent: prepared.modelCapabilities.supportsRecurrentCheckpointReuse,
-            supportsHistoricalAttention: false, modelDTypes: nil,
+            supportsHistoricalAttention: false, isInkling2: EngineV2Factory.isInkling2(model), modelDTypes: nil,
             nativeDTypes: prepared.nativeLayerDTypes, pagedConfig: prepared.pagedPoolConfig,
             assistant: .none, checkpointQuantization: requested.configuration))
         #expect(storage.backendLayout == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout)
@@ -77,6 +77,76 @@ struct Inkling2PrefixCheckpointWiringTests {
         let engine = try #require(build.engine as? EngineV2)
         #expect(engine.completePrefixCache === store)
         await engine.shutdown()
+    }
+
+    static let fixtureWeightHash = String(repeating: "a", count: 64)
+    static let fixtureContractID = "inkling2-fixture-contract"
+
+    static func preparedBackend(_ model: Inkling2Model) throws -> EngineV2Factory.ProductionBackendPreparation {
+        try EngineV2Factory.prepareProductionBackend(
+            model: model, modelID: "inkling2-prefix-fixture", kvBytesCapacity: 128 << 20,
+            maxConcurrentRequests: 2, kvBackend: .auto, maxContextLength: 1_024,
+            environment: [KVBackendGuardStore.pathEnvKey: "/dev/null",
+                          EngineV2KVQuantizationPolicy.environmentKey: "native"])
+    }
+
+    /// The slot factory's complete-cache preparation over a prepared backend,
+    /// with an ephemeral store under `root`.
+    static func completePreparation(
+        _ model: any LanguageModel, _ prepared: EngineV2Factory.ProductionBackendPreparation, root: URL
+    ) async -> EngineV2SlotFactory.CompletePrefixCachePreparation? {
+        await EngineV2SlotFactory.prepareCompletePrefixCache(
+            modelId: "inkling2-prefix-fixture", model: model, preparedBackend: prepared,
+            weightHash: fixtureWeightHash, promptContractID: fixtureContractID,
+            mtpDrafter: nil, mtpConfig: .init(), kvBudget: nil,
+            environment: [PrefixCachePolicy.environmentFlag: "1",
+                          "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+                          "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": root.path],
+            identityOverride: .init(modelAggregateHash: fixtureWeightHash, promptContractID: fixtureContractID,
+                                    buildID: "inkling2-fixture-build", numericsFingerprint: "inkling2-fixture-numerics"))
+    }
+
+    static func temporaryRoot(_ name: String) -> URL {
+        FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("\(name)-\(UUID().uuidString)")
+    }
+
+    /// The slot factory's own call names Inkling 2 (`EngineV2Factory.isInkling2`),
+    /// so its prepared backend gets the historical recurrent store.
+    @Test func theSlotFactoryBuildsTheHistoricalRecurrentStoreForInkling2() async throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        let model = try Self.tinyTarget()
+        let prepared = try Self.preparedBackend(model)
+        let root = Self.temporaryRoot("inkling2-complete")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let result = await Self.completePreparation(model, prepared, root: root)
+        let cache = try #require(result?.cache)
+        #expect(cache.config.backendLayout == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout)
+        #expect(result?.checkpointQuantization == nil)
+        await cache.closeAndWait()
+    }
+
+    /// The historical recurrent codec was reviewed for Inkling 2 alone. A model
+    /// that is not Inkling 2, over a prepared backend of Inkling's layer shape
+    /// (sliding windows beside recurrent state on the native paged pool), gets
+    /// no complete checkpoint store, as before that codec.
+    @Test func aModelThatIsNotInkling2GetsNoHistoricalRecurrentStore() async throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        let prepared = try Self.preparedBackend(Self.tinyTarget())
+        #expect(prepared.kind == .paged && prepared.modelCapabilities.supportsRecurrentCheckpointReuse)
+        let other = GPTOSSModel(try JSONDecoder().decode(GPTOSSConfiguration.self, from: Data("""
+            {"model_type":"gpt_oss", "num_hidden_layers":2,
+             "num_local_experts":4, "num_experts_per_tok":2, "vocab_size":128,
+             "rms_norm_eps":0.00001, "hidden_size":64, "intermediate_size":64,
+             "head_dim":64, "num_attention_heads":4, "num_key_value_heads":2,
+             "sliding_window":32}
+            """.utf8)))
+        let root = Self.temporaryRoot("inkling2-shape-other")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let result = await Self.completePreparation(other, prepared, root: root)
+        if let cache = result?.cache { await cache.closeAndWait() }
+        #expect(result?.cache == nil)
+        #expect(result?.status.reason == .unsupportedLayout)
     }
 
     /// Records the position of every donated checkpoint; every lookup misses.

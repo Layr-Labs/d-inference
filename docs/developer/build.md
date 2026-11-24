@@ -429,8 +429,8 @@ checkout of the tested tree, the tested-tree record and the run name
 every component and never skips a tested tree. Its check runs belong to the
 head of `--ref`, not to the tested commit, so when the two differ Release
 Integrity reports as `Release Integrity (dispatch)` and never satisfies
-`master`'s ruleset. The route job sends no OIDC token (this repository is
-public), on a dispatch as on any event.
+`master`'s ruleset. The route (in CI, the plan job's last step) sends no OIDC
+token (this repository is public), on a dispatch as on any event.
 
 The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`
 is selected and the trigger is a `master` push, a manual `workflow_dispatch`, or
@@ -676,20 +676,20 @@ where the lane is the job's name; each provider shard reads its own lane,
 shard the lane its matrix entry names, `matrix.lane`.
 
 CI (dev) and CI (master) route without that job: the plan job's last step,
-`Choose a Darkbloom or fallback runner for each lane`, runs
-`.github/actions/darkbloom-route`, a local action whose script is the route
-workflow's, byte for byte (`scripts/test-darkbloom-route.py` pins it), and the
+`Choose a Darkbloom or fallback runner for each lane`, runs the route
+workflow's step script, byte for byte, with its environment
+(`scripts/test-darkbloom-route.py` pins both). It lists the lanes in `LANES`
+and keeps the script's defaults for the attempts and `require-darkbloom`. The
 test jobs read `inputs.routes`, the plan's `routes` output. The plan job holds
 `contents: read` and `actions: read` and no `id-token`, so the step sends no
 OIDC token, as the route job did. A separate route job added a second
 GitHub-hosted job's queue, setup and teardown before the routed jobs: a median
 7 s, 90th percentile 8 s, from the plan job's end to the first routed job's
 creation in 102 runs on 2026-11-23 and 2026-11-24. With the step, about 2 s
-remain (model). When the plan job's checkout does not run (no test jobs, or a
-refused dispatch `ref`), a sparse checkout of the action does. If the plan job
-ends before the step, for example on its 10-minute timeout, the run has no
-routes: a routed job that would run fails to start instead of falling back,
-and the run fails either way, since its plan job failed.
+remain (model). If the plan job ends before the step, for example on its
+10-minute timeout, the run has no routes: a routed job that would run fails to
+start instead of falling back, and the run fails either way, since its plan
+job failed.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
@@ -758,7 +758,8 @@ route step's), one per line:
 Every lane in this repository names all six fields, with `balanced`, for
 example
 `release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16`.
-The route job fails on a bad line before it sends a request.
+The route job (in CI, the plan job) fails on a bad line before it sends a
+request.
 
 Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
 `on`. The route job reads no other repository variable except
@@ -1010,8 +1011,8 @@ lane). A new lane routes only after the operator adds it to the approval's
 `lanes`; until then it keeps its fallback. On 2026-11-10 the approval named
 `test-cluster-gpu-1` and `test-cluster-gpu-2` but not `test-cluster-gpu-3`
 (run 42924487818).
-For each lane, the route job's log and step summary show the runner and the
-decision with its reason. They do not show the request body. The size
+For each lane, the route job's log and step summary (in CI, the plan job's)
+show the runner and the decision with its reason. They do not show the request body. The size
 appears only in a granted lane's last label; the lane table of the caller
 names every lane's size.
 

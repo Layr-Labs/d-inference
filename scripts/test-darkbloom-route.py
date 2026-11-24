@@ -2,8 +2,8 @@
 """Exercise the Darkbloom route step against a loopback HTTPS plane; pin callers.
 
 The route step runs exactly as the workflow defines it, with throwaway TLS
-credentials and the real curl/jq; CI's plan runs the same step, byte for
-byte, through a local action. It must choose only between each lane's
+credentials and the real curl/jq; CI's plan job runs the same script, byte
+for byte, as its last step. It must choose only between each lane's
 fallback label and the exact Darkbloom label array for its profile (qualified
 by the lane's size and placement when it sends them), and must never fail
 because of the plane unless `require-darkbloom` is true. The workflow is
@@ -33,10 +33,8 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github/workflows"
 ROUTER = WORKFLOWS / "darkbloom-route.yml"
-# CI's plan routes in its plan job's last step: this local action runs the
-# router's step, byte for byte, in the calling job.
-ROUTE_ACTION = ROOT / ".github/actions/darkbloom-route/action.yml"
-ROUTE_ACTION_USES = "        uses: ./.github/actions/darkbloom-route\n"
+# CI routes in its plan job's last step, which runs the router's step script
+# byte for byte (test_the_plan_job_routes_with_the_routers_own_step).
 PLAN_ROUTE_STEP = "      - name: Choose a Darkbloom or fallback runner for each lane\n"
 # darkbloom-sandbox's public/darkbloom-actions/.github/workflows/route.yml, last
 # changed in c79f29871 (origin/master 7fb82ec52, 2026-11-20). Update the copy
@@ -93,8 +91,9 @@ LANE_NAME = {"qualify-sdk-shard": "release-qualify"}
 EVENT_COUNTED = {"warm", "qualify-sdk-shard"}
 # CI: the callers run provider-plan.yml, whose plan job's route step is the
 # run's only route request (the plane routes a run attempt once), with the
-# caller's own Linux lanes. Every macOS job (provider-tests.yml) reads `inputs.routes`; CI
-# (master)'s Release Integrity and Docs Lint read the plan's output.
+# caller's own Linux lanes. Every macOS job (provider-tests.yml) reads
+# `inputs.routes`; CI (master)'s Release Integrity and Docs Lint read the
+# plan's output.
 CALLERS = ("ci-dev.yml", "ci-master.yml")
 PLAN = "provider-plan.yml"
 COMPONENT = "${{{{ steps.choose.outputs.{} == 'true' && {} || 0 }}}}"
@@ -278,8 +277,8 @@ def plan_route(text=None):
 
 
 def plan_lane_lines(text=None):
-    """Return the literal `lanes` block lines of CI's route step."""
-    return literal_block(plan_route(text), "lanes", 10).splitlines()
+    """Return the literal `LANES` block lines of CI's route step."""
+    return literal_block(plan_route(text), "LANES", 10).splitlines()
 
 
 def route_lanes(route_job):
@@ -944,72 +943,48 @@ class RouteWorkflowTests(unittest.TestCase):
             self.assertIn(f"    - {label}\n", actionlint)
 
     def test_the_plan_job_routes_with_the_routers_own_step(self):
-        # CI routes in the plan job's last step, not in a job of its own: the
-        # local action runs the router's step script byte for byte, with the
-        # same environment, so RouteStepTests exercise it too. A composite
-        # action cannot read `vars`, so the step passes the two repository
-        # variables the router reads; the other inputs keep the router's
-        # defaults.
-        action = ROUTE_ACTION.read_text()
-        self.assertEqual(literal_block(action, "run", 6), route_step())
+        # CI routes in the plan job's last step, not in a job of its own. The
+        # step's script is the router's, byte for byte, so RouteStepTests
+        # exercise it too. Its environment is the router's but for the lanes,
+        # which it lists itself, and the attempts and require-darkbloom, which
+        # keep the script's defaults, as the router's inputs do by default.
+        text = self.texts[PLAN]
+        step = plan_route(text)
+        self.assertEqual(literal_block(step, "run", 8), route_step())
 
-        def step_env(text, indent):
-            block = text.split(f"{' ' * indent}env:\n", 1)[1].split(f"{' ' * indent}run: |\n", 1)[0]
-            return textwrap.dedent(block).splitlines()
+        def env_entries(block):
+            env = block.split("        env:\n", 1)[1].split("        run: |\n", 1)[0]
+            return [line.strip() for line in env.splitlines() if re.match(r"^ {10}\S", line)]
 
-        router_env = step_env(ROUTER.read_text(), 8)
-        self.assertEqual(step_env(action, 6), [line.replace("vars.DARKBLOOM_ROUTING", "inputs.routing")
-                                               .replace("vars.DARKBLOOM_SANDBOX_URL", "inputs.plane-url")
-                                               for line in router_env])
-        self.assertEqual(re.findall(r"(?m)^  ([a-z-]+):$", action.split("\ninputs:\n", 1)[1].split("\noutputs:\n", 1)[0]),
-                         ["lanes", "routing", "plane-url", "max-attempts", "require-darkbloom"])
-        self.assertIn("  max-attempts:\n    description: As the router's input (1 to 9)\n    default: '2'\n", action)
-        self.assertIn("  require-darkbloom:\n    description: As the router's input\n    default: 'false'\n", action)
-        self.assertIn("  routes:\n    description: JSON object mapping every lane to its runs-on value\n"
-                      "    value: ${{ steps.route.outputs.routes }}\n", action)
-        runs = action.split("\nruns:\n", 1)[1]
-        self.assertIn("  using: composite\n", runs)
-        self.assertEqual(len(re.findall(r"(?m)^    - ", runs)), 1)
-        self.assertIn("      id: route\n      shell: bash\n", runs)
-        code = runs.split("      run: |\n", 1)[0]
-        for forbidden in ("uses:", "secrets", "checkout", "${{ github.token"):
-            self.assertNotIn(forbidden, code)
-            self.assertNotIn(forbidden, route_step())
-
-        plan = jobs(self.texts[PLAN])
-        components = plan["components"]
-        step = plan_route(self.texts[PLAN])
-        # The last step of the job, which outputs its routes as the plan's.
-        self.assertNotRegex(step, r"(?m)^      - ")
-        # The router job's 3-minute bound, on the step.
-        self.assertEqual(re.findall(r"(?m)^        ([a-z-]+): ", step),
-                         ["id", "if", "timeout-minutes", "uses"])
+        router = env_entries(jobs(ROUTER.read_text())["select"])
+        self.assertEqual([entry.split(":", 1)[0] for entry in router],
+                         ["LANES", "MAX_ATTEMPTS", "REQUIRE_DARKBLOOM", "ROUTING", "PLANE_URL", "REPOSITORY",
+                          "EVENT_NAME", "HEAD_REPOSITORY", "RUN_ID", "RUN_ATTEMPT"])
+        self.assertEqual(env_entries(step), ["LANES: |", *router[3:]])
+        max_attempts = ROUTER.read_text().split("      max-attempts:\n", 1)[1].split("      require-darkbloom:\n", 1)[0]
+        self.assertIn("        default: 2\n", max_attempts)
+        self.assertIn("max_attempts=${MAX_ATTEMPTS:-2}\n", route_step())
+        self.assertIn("require_darkbloom=${REQUIRE_DARKBLOOM:-false}\n", route_step())
+        # The router step's keys, with its job's 3-minute bound and the
+        # condition the route job had.
+        self.assertEqual(re.findall(r"(?m)^        ([a-z-]+):", step.split("        run: |\n", 1)[0]),
+                         ["id", "if", "timeout-minutes", "shell", "env"])
+        self.assertIn("        id: route\n        if: ${{ !cancelled() }}\n", step)
         self.assertIn("        timeout-minutes: 3\n", step)
         self.assertEqual(job_field(jobs(ROUTER.read_text())["select"], "timeout-minutes"), "3")
-        self.assertIn(ROUTE_ACTION_USES, step)
-        self.assertEqual(re.findall(r"(?m)^          ([a-z-]+):", step.split("        with:\n", 1)[1]),
-                         ["routing", "plane-url", "lanes"])
-        self.assertIn("          routing: ${{ vars.DARKBLOOM_ROUTING }}\n", step)
-        self.assertIn("          plane-url: ${{ vars.DARKBLOOM_SANDBOX_URL }}\n", step)
+        self.assertIn("        shell: bash\n", step)
+        # The last step of the job, whose routes are the plan's.
+        self.assertNotRegex(step, r"(?m)^      - ")
+        components = jobs(text)["components"]
         self.assertIn("      routes: ${{ steps.route.outputs.routes }}\n", components)
-        self.assertIn("      routes:\n        value: ${{ jobs.components.outputs.routes }}\n", self.texts[PLAN])
+        self.assertIn("      routes:\n        value: ${{ jobs.components.outputs.routes }}\n", text)
         # The job runs on GitHub-hosted Ubuntu and holds no id-token or write
         # permission, so the route sends no OIDC token (the repository is
         # public), as the router's callers grant `{}`.
         self.assertEqual(job_field(components, "runs-on"), "ubuntu-24.04")
         self.assertEqual(permissions(components, 4), {"contents": "read", "actions": "read"})
         self.assertNotIn("secrets", components)
-        # The action is in the workspace on every run: from the classifier's
-        # checkout, or else from a sparse checkout of it alone, before the
-        # route step.
-        checkouts = re.findall(r"(?m)^      - uses: actions/checkout@[0-9a-f]{40} # v[0-9.]+\n        if: (.+)$",
-                               components)
-        classifier = "inputs.run_tests && needs.commit.result == 'success'"
-        self.assertEqual(checkouts, [f"${{{{ {classifier} }}}}", f"${{{{ !cancelled() && !({classifier}) }}}}"])
-        sparse = components.split(f"        if: ${{{{ !cancelled() && !({classifier}) }}}}\n", 1)[1]
-        self.assertTrue(sparse.startswith("        with:\n          persist-credentials: false\n"
-                                          "          sparse-checkout: .github/actions/darkbloom-route\n"
-                                          + PLAN_ROUTE_STEP), sparse[:300])
+        self.assertEqual(components.count("actions/checkout@"), 1)
 
     def test_routed_jobs_read_their_lane_and_keep_their_fallback(self):
         for filename, expected in ROUTED.items():
@@ -1199,12 +1174,10 @@ class RouteWorkflowTests(unittest.TestCase):
         for filename, text in self.texts.items():
             if "\njobs:\n" not in text:
                 continue
-            blocks = []
+            blocks = [plan_lane_lines(text)] if filename == PLAN else []
             for job in jobs(text).values():
                 if job_field(job, "uses") == route:
                     blocks.append(lane_lines(job))
-                if ROUTE_ACTION_USES in job:
-                    blocks.append(literal_block(job.split(ROUTE_ACTION_USES, 1)[1], "lanes", 10).splitlines())
                 if "      linux_lanes: |\n" in job:
                     blocks.append(literal_block(job, "linux_lanes", 6).splitlines())
             for line in (line for block in blocks for line in block if line.strip() and not line.startswith("${{")):
@@ -1243,7 +1216,9 @@ class RouteWorkflowTests(unittest.TestCase):
                     self.assertRegex(runner, r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$")
         for filename, text in self.texts.items():
             # The watchdog names the labels it looks for; it routes nothing.
-            if filename not in ("darkbloom-route.yml", WATCHDOG):
+            # The router's script names the labels it accepts, in the router
+            # and in the plan job's copy of its step.
+            if filename not in ("darkbloom-route.yml", WATCHDOG, PLAN):
                 with self.subTest(workflow=filename):
                     for label in ("self-hosted", "darkbloom-linux-arm64", "darkbloom-macos-arm64"):
                         self.assertNotIn(label, text)

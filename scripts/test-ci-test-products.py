@@ -200,7 +200,7 @@ def job(name, status, conclusion=None):
     return {"name": name, "status": status, "conclusion": conclusion}
 
 
-PLAN = job("plan / route / Select Runners", "completed", "success")
+PLAN = job("plan / Plan the components to test", "completed", "success")
 SHARD = job("Tests / Provider Unit Tests (shard 1)", "in_progress")
 BUILD = "Tests / Build provider test products"
 

@@ -13,7 +13,6 @@ import subprocess
 COMPONENTS = ("provider", "cluster", "mimo_audio")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/darkbloom-route.yml",
-    ".github/actions/darkbloom-route/action.yml",
     ".github/workflows/ci-dev.yml", ".github/workflows/ci-master.yml", ".github/workflows/provider-plan.yml",
     "scripts/ci-tested-tree.py", "scripts/test-ci-tested-tree.py",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",

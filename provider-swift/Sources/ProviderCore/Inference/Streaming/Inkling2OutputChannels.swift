@@ -56,6 +56,13 @@ enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
 /// template's unmatched text) and messages of a kind the model never answers
 /// with (`image`, `xml`) are dropped and counted, never shown.
 ///
+/// With `readsCallOpeningAnswer` (a request that declares tools), an answer
+/// that opens with a function name and `<|content_invoke_tool_json|>`
+/// (`<|content_text|>NAME<|content_invoke_tool_json|>{...}<|end_message|>`) is
+/// that call: the model opened a text message where the call's header belongs.
+/// Only the answer's first bytes are held for this, up to 64 name characters,
+/// and released with the text that follows them as one piece.
+///
 /// The lexer reads detokenized text with special tokens kept (the CBv2
 /// detokenizer's default), so a marker spelled out from ordinary tokens reads
 /// like the special token. Every bound is fixed: the header, a call's body and
@@ -116,12 +123,17 @@ struct Inkling2OutputChannels {
     private static let markers: [(bytes: [UInt8], marker: Marker)] = markerSpellings.map { (Array($0.0.utf8), $0.1) }
 
     private static let endMessageBytes = Array(endMessage.utf8)
+    private static let invokeToolJSONBytes = Array("<|content_invoke_tool_json|>".utf8)
+    /// A function name as requests declare it: `^[a-zA-Z0-9_-]{1,64}$`.
+    private static let maximumNameBytes = 64
     private static let endOfSamplingBytes = Array(endOfSampling.utf8)
     private static let lessThan = UInt8(ascii: "<")
 
     private enum State: Equatable {
         case boundary
         case header
+        /// The first bytes of an answer, read as a possible call header.
+        case answerStart
         case body(Kind)
         case ended
     }
@@ -129,6 +141,8 @@ struct Inkling2OutputChannels {
     private let limits: Limits
     /// `invoke_tool_json` opens a content body instead of a call.
     private let callsAreText: Bool
+    /// An answer opening with `NAME<|content_invoke_tool_json|>` is that call.
+    private let readsCallOpeningAnswer: Bool
     /// The content body a header-only answer goes on in: it ends at any marker.
     private var answerFromHeader = false
     private var state = State.boundary
@@ -150,16 +164,17 @@ struct Inkling2OutputChannels {
     /// Some reasoning text was published.
     private(set) var hasReasoning = false
 
-    init(limits: Limits = Limits(), callsAreText: Bool = false) {
+    init(limits: Limits = Limits(), callsAreText: Bool = false, readsCallOpeningAnswer: Bool = false) {
         self.limits = limits
         self.callsAreText = callsAreText
+        self.readsCallOpeningAnswer = readsCallOpeningAnswer && !callsAreText
     }
 
     /// The channel of the message being read, if any.
     var openChannel: Channel? {
         switch state {
         case .body(.reasoning): .reasoning
-        case .body(.content): .content
+        case .body(.content), .answerStart: .content
         case .body(.toolCall): .toolCall
         default: nil
         }
@@ -179,6 +194,8 @@ struct Inkling2OutputChannels {
         switch state {
         case .header:
             closeHeaderOnly(into: &pieces)
+        case .answerStart:
+            unterminatedChannel = .content
         case .body(.reasoning):
             unterminatedChannel = .reasoning
         case .body(.content):
@@ -210,6 +227,9 @@ struct Inkling2OutputChannels {
                 index = step
             case .header:
                 guard let step = readHeader(from: index, final: final, into: &pieces) else { break loop }
+                index = step
+            case .answerStart:
+                guard let step = readAnswerStart(from: index, final: final) else { break loop }
                 index = step
             case .body(let kind) where kind == .toolCall:
                 guard let step = readToolBody(from: index, final: final, into: &pieces) else { break loop }
@@ -362,6 +382,45 @@ struct Inkling2OutputChannels {
             header = []
         }
         state = .body(kind)
+        if marked == .content, readsCallOpeningAnswer {
+            state = .answerStart
+        }
+    }
+
+    /// The start of an answer: a function name then `<|content_invoke_tool_json|>`
+    /// makes the message that call, with the name as its header. The name's
+    /// bytes stay unread until that is decided; any other byte, or a name too
+    /// long, leaves them to the answer, read with what follows as one piece.
+    private mutating func readAnswerStart(from index: Int, final: Bool) -> Int? {
+        var cursor = index
+        while cursor < pending.count, cursor - index <= Self.maximumNameBytes {
+            let byte = pending[cursor]
+            if byte == Self.lessThan {
+                if cursor > index, hasPrefix(Self.invokeToolJSONBytes, at: cursor) {
+                    let name = Array(pending[index..<cursor])
+                    enter(.toolCall)
+                    header = name
+                    return cursor + Self.invokeToolJSONBytes.count
+                }
+                if !final, cursor > index, isStrictPrefix(at: cursor, of: Self.invokeToolJSONBytes) { return nil }
+                break
+            }
+            guard Self.isNameByte(byte) else { break }
+            cursor += 1
+        }
+        if cursor == pending.count, !final, cursor - index <= Self.maximumNameBytes { return nil }
+        state = .body(.content)
+        return index
+    }
+
+    private static func isNameByte(_ byte: UInt8) -> Bool {
+        switch byte {
+        case UInt8(ascii: "a")...UInt8(ascii: "z"), UInt8(ascii: "A")...UInt8(ascii: "Z"),
+            UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "_"), UInt8(ascii: "-"):
+            true
+        default:
+            false
+        }
     }
 
     /// A thought or an answer: published as read, up to `<|end_message|>`.

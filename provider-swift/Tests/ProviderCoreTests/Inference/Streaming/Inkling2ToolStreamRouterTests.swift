@@ -95,6 +95,22 @@ struct Inkling2ToolStreamRouterTests {
         }
     }
 
+    /// A request that declares tools reads a call the model wrote as an
+    /// answer message (`NAME<|content_invoke_tool_json|>{...}`) as that call.
+    @Test func callWrittenAsAnAnswerMessageIsACall() throws {
+        let (_, prepared) = try Self.prepared(clientStreams: false)
+        let wrapped = #"<|message_model|><|content_text|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","args":{"location":"Paris"}}<|end_message|>"#
+        for width in [1, 5, 4096] {
+            var router = Self.router(prepared, streams: false)
+            let routed = Routed(try Self.feed(&router, Self.thought + wrapped, width: width))
+            #expect(routed.reasoning == "Need the weather.")
+            #expect(routed.content.isEmpty)
+            let finished = try router.finishCompleteCalls(truncated: false)
+            #expect(finished.calls.map(\.function.name) == ["get_weather"])
+            #expect(finished.calls.first?.function.arguments == ["location": .string("Paris")])
+        }
+    }
+
     /// To a client that streams, each call leaves complete when its frame closes.
     @Test func callsLeaveWhenTheirFrameCloses() throws {
         let (request, prepared) = try Self.prepared()

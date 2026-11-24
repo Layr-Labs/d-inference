@@ -245,6 +245,51 @@ struct QwenStrictToolGrammarTests {
         #expect(F.allows("[{\"sku\": \"\\u00e9 \u{1F600}\", \"qty\": 1}]\n</parameter>\n", constraint, after: items))
     }
 
+    /// A strict tool as the coordinator forwards it: `{}`, `true` and `false`
+    /// parameters (and items) as string render types with the marker. Its
+    /// argument reading (`argumentTools`) holds bare `{}` and `false` schemas;
+    /// the grammar either constrains the call or declines it, and never
+    /// holds those values to the render type's string.
+    @Test(arguments: [nil, #""required""#])
+    func renderMarkedParametersConstrainOrDecline(_ choice: String?) throws {
+        let marker = ToolSchemaNormalization.originalBooleanSchemaKey
+        let tools = #"[{"type":"function","function":{"name":"probe","strict":true,"parameters":{"type":"object","properties":{"#
+            + #""any":{"type":"string","\#(marker)":true,"description":"anything"},"#
+            + #""none":{"type":"string","\#(marker)":false},"#
+            + #""list":{"type":"array","items":{"type":"string","\#(marker)":true}}},"#
+            + #""required":["any"],"additionalProperties":false}}}]"#
+        if choice != nil {
+            // A forced choice compiles the declared tools, where a marked node
+            // compiles only as exactly `{type: string, <marker>: true}`
+            // (`ToolConstraintSchema`, unchanged here): an annotated or `false`
+            // marker is refused before any argument reading, as before.
+            #expect(throws: (any Error).self) { try F.prepared(F.body(tools: tools, choice: choice)) }
+            return
+        }
+        let (request, base) = try F.prepared(F.body(tools: tools, choice: choice))
+        let prepared = base.withDeclaredTools(base.declaredTools, modelType: "qwen3_5")
+        guard case .object(let parameters)? = prepared.argumentTools?.first?.function.parameters,
+              case .object(let properties)? = parameters["properties"] else {
+            Issue.record("no argument reading")
+            return
+        }
+        #expect(properties["any"] == .object(["description": .string("anything")]))
+        #expect(properties["none"] == .bool(false))
+        // Reading a bare boolean schema or `{}` never fails: both read as text
+        // to the grammar's conversion.
+        #expect(QwenStrictToolSchema.parserConversion(properties["none"]).kind == .text)
+        #expect(QwenStrictToolSchema.parserConversion(properties["any"]).kind == .text)
+        let constraint = QwenStrictToolGrammar.constraint(prepared: prepared, request: request, parser: .qwen35,
+            tokenizer: F.handle, modelType: "qwen3_5", defaultMaxTokens: 512, stopTokenIDs: F.stops,
+            promptTokens: QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false)),
+            runsTokenConstraints: true, setting: F.qwenTypes, allTools: false)
+        guard let constraint else { return }  // declined: the call is served as before
+        let call = "<tool_call>\n<function=probe>\n<parameter=any>\n45\n</parameter>\n"
+        #expect(F.allows("</function>\n</tool_call>", constraint, after: call))
+        #expect(F.allows("<parameter=any>\n{\"k\": [1]}\n</parameter>\n",
+                         constraint, after: "<tool_call>\n<function=probe>\n"))
+    }
+
     /// An optional string (`["string","null"]`, `anyOf` string or null) keeps
     /// its text constraint although the parser reads its `null` text as null:
     /// that literal is one the declaration admits.

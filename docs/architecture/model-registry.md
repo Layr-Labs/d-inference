@@ -83,11 +83,6 @@ probes charge the probe's whole media reservation
 [registry reference](../reference/model-registry-format.md#nemotron-super).
 Discovery does not register or publish the model.
 
-Inkling 2 Mini discovers as published, but the provider serves it with a
-40,960-token window (`Inkling2ModelIdentity.servedContextTokens`): its context,
-as advertised and enforced, is that window, not the checkpoint's 1,048,576
-([hardware support](hardware-support.md)).
-
 Published metadata is not a loadability or quality certificate. Keep full LOAD
 quotations, native transient allowances, memory safeguards and post-load
 serviceability checks. Do not replace registry discovery with a hardcoded model

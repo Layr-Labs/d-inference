@@ -8,16 +8,17 @@ import MLXLMServer
 ///
 /// On by default for the families whose answers were seen repeating verbatim
 /// to their cap: Gemma 4, Qwen 3.5/3.6/3.8 (and Flash-Next), GPT-OSS,
-/// Nemotron 3.5 Lightning and Super, GLM-5.3, MiMo and Inkling 2 Mini (whose
-/// card warns of long reasoning loops). Super's requests take the owner's own
-/// route, which resolves the same guard from its request plan
+/// Nemotron 3.5 Lightning and Super, GLM-5.3 and MiMo. Super's requests take
+/// the owner's own route, which resolves the same guard from its request plan
 /// (`NemotronSuperRequestPlan.loopGuard()`), its image and video requests
 /// included. One Mac's image and video requests (`EngineV2VisionPrefill`) take
 /// the same rule as text; the pairs' media routes and MiMo's native media pass
 /// none.
-/// Off for every other family (diffusion Gemma, exact Flint, Bonsai,
-/// Qwen3-VL), and for any request whose output is a constrained or JSON value:
-/// a token constraint, a forced tool call, or a JSON `response_format`.
+/// Off for every other family (diffusion Gemma, exact Flint, Bonsai, Qwen3-VL,
+/// and Inkling 2 Mini, which thinks at length before a correct answer; a list
+/// that names `inkling2_loop` guards it), and for any request whose output is
+/// a constrained or JSON value: a token constraint, a forced tool call, or a
+/// JSON `response_format`.
 ///
 /// `DARKBLOOM_LOOP_GUARD`: unset, `1` or `on` keeps the default list; `0` or
 /// `off` turns the guard off; any other value is the comma-separated list of
@@ -32,7 +33,6 @@ enum GenerationLoopGuardPolicy {
         "nemotron_h", "nemotron_h_omni",
         "glm5_next",
         "mimo_v2",
-        "inkling2_loop",
     ]
 
     /// Text that opens a tool call in any served family's output (Qwen, GLM,

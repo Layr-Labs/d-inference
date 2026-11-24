@@ -19,8 +19,9 @@
   drafted inside a thought stays reasoning, markers inside argument strings are data, nesting and sizes are bounded,
   and a malformed call is refused. Required and named tool choices are prompt-forced and each call is checked before
   it leaves; to a client that streams, each call leaves when its message closes.
-- The reasoning-loop guard covers Inkling 2 as it does the other served families: a reply repeating verbatim ends
-  as `length`, and a call message turns the guard off. Its exit from a repeating thought is in place but stays off
+- The reasoning-loop guard does not cover Inkling 2 by default: the model thinks at length before a correct
+  answer. `DARKBLOOM_LOOP_GUARD` can list `inkling2_loop`; a reply repeating verbatim then ends as `length`, and a
+  call message turns the guard off. Its exit from a repeating thought is in place but stays off
   until measured (`DARKBLOOM_LOOP_EXIT_THINKING=inkling2_loop` turns it on).
 - The DSpark drafter serves by default (up to 7 drafts and 8 speculating rows, adaptive depth); image rows run without
   it. Before serving, every draft depth also runs once on a private engine with its own scratch memory, so a first

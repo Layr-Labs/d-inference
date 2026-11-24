@@ -41,7 +41,8 @@ enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
 ///   the template renders for history. A header name, when present, must equal
 ///   the body's name. With `callsAreText` (an `auto` request that declares no
 ///   tools, so its prompt has no `tool_declare`), no call can be valid and the
-///   frame's body is content, as `invoke_tool_text` is.
+///   frame's body is content, as `invoke_tool_text` is; so is the text of a
+///   header no content marker follows (a header-only message).
 /// - `<|content_model_end_sampling|>` (EOS) ends the output, and so does the
 ///   start of another role's turn (`<|message_user|>`, `<|message_system|>`,
 ///   `<|message_tool|>`, `<|endoftext|>`, `<|begin_of_text|>`): nothing after
@@ -172,10 +173,10 @@ struct Inkling2OutputChannels {
     /// End of generation. A message still open is reported in
     /// `unterminatedChannel`; its text is published, a call is not.
     mutating func finish() -> [Inkling2OutputPiece] {
-        let pieces = drain(final: true)
+        var pieces = drain(final: true)
         switch state {
         case .header:
-            droppedBytes += header.count
+            closeHeaderOnly(into: &pieces)
         case .body(.reasoning):
             unterminatedChannel = .reasoning
         case .body(.content):
@@ -206,7 +207,7 @@ struct Inkling2OutputChannels {
                 guard let step = readBoundary(from: index, final: final) else { break loop }
                 index = step
             case .header:
-                guard let step = readHeader(from: index, final: final) else { break loop }
+                guard let step = readHeader(from: index, final: final, into: &pieces) else { break loop }
                 index = step
             case .body(let kind) where kind == .toolCall:
                 guard let step = readToolBody(from: index, final: final, into: &pieces) else { break loop }
@@ -261,12 +262,20 @@ struct Inkling2OutputChannels {
     }
 
     /// After `<|message_model|>`: the name, up to the content marker.
-    private mutating func readHeader(from index: Int, final: Bool) -> Int? {
+    private mutating func readHeader(
+        from index: Int, final: Bool, into pieces: inout [Inkling2OutputPiece]
+    ) -> Int? {
         var cursor = index
         while cursor < pending.count, pending[cursor] != Self.lessThan {
             header.append(pending[cursor])
             cursor += 1
             if header.count > limits.headerBytes {
+                if callsAreText {
+                    // Too long for a name: the start of a header-only answer.
+                    closeHeaderOnly(into: &pieces)
+                    state = .body(.content)
+                    return cursor
+                }
                 // Not a header the response template reads: the bytes are
                 // text outside every message.
                 droppedBytes += header.count + Self.messageModel.utf8.count
@@ -279,14 +288,20 @@ struct Inkling2OutputChannels {
         switch match(at: cursor) {
         case .partial:
             if final {
-                droppedBytes += header.count + (pending.count - cursor)
-                header = []
+                closeHeaderOnly(into: &pieces)
+                droppedBytes += pending.count - cursor
                 state = .boundary
                 return pending.count
             }
             // Keep the bytes read so far; resume at the possible marker.
             return cursor == index ? nil : cursor
         case .none:
+            if callsAreText {
+                // A `<` that opens no marker: the answer goes on as text.
+                closeHeaderOnly(into: &pieces)
+                state = .body(.content)
+                return cursor
+            }
             // `[^<]*` cannot hold this `<`: no message starts here.
             droppedBytes += header.count + Self.messageModel.utf8.count
             header = []
@@ -296,21 +311,34 @@ struct Inkling2OutputChannels {
             enter(kind)
             return cursor + length
         case .marker(.messageModel, let length):
-            droppedBytes += header.count + length
-            header = []
+            closeHeaderOnly(into: &pieces)
+            droppedBytes += length
             return cursor + length
         case .marker(.endMessage, let length):
-            droppedBytes += header.count + length
-            header = []
+            closeHeaderOnly(into: &pieces)
+            droppedBytes += length
             state = .boundary
             return cursor + length
         case .marker(.endOfOutput, let length):
-            droppedBytes += header.count
-            header = []
+            closeHeaderOnly(into: &pieces)
             endedByMarker = true
             state = .ended
             return cursor + length
         }
+    }
+
+    /// A message whose header no content marker followed. With `callsAreText`
+    /// the model answered in the header itself (a request without declared
+    /// tools, e.g. `<|message_model|>get_weather(city: Paris)<|end_message|>`):
+    /// its text is the answer. Otherwise it is text outside every message.
+    /// A header never holds `<`, so no control token reaches the answer.
+    private mutating func closeHeaderOnly(into pieces: inout [Inkling2OutputPiece]) {
+        if callsAreText, !header.isEmpty {
+            pieces.append(.content(String(decoding: header, as: UTF8.self)))
+        } else {
+            droppedBytes += header.count
+        }
+        header = []
     }
 
     private mutating func enter(_ marked: Kind) {

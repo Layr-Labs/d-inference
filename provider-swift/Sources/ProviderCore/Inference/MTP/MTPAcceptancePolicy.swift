@@ -91,6 +91,17 @@ public enum MTPPenaltyRows {
     public static let environmentKey = "DARKBLOOM_MTP_PENALTY_ROWS"
 }
 
+/// On the builds in `SDKFeatureDefaults.repetitionPenaltyRowBuilds` (the
+/// catalog Qwen 3.5/3.6 builds, Gemma 4 26B QAT and Inkling 2 Mini), rows with
+/// a repetition penalty speculate: the engine re-derives the penalty over each
+/// verify position's window (prompt, confirmed output, earlier drafts), always
+/// with exact acceptance. The SDK reads the switch once per process
+/// (`CBv2MTPConfig.envRepetitionPenaltySpeculation`); the LaunchAgent forwards
+/// it. `0`, `false`, `no` or `off` keeps such rows target-only.
+public enum MTPRepetitionPenaltyRows {
+    public static let environmentKey = "DARKBLOOM_MTP_REPETITION_PENALTY_ROWS"
+}
+
 /// On the builds in `SDKFeatureDefaults.stopStringRowBuilds` (the catalog
 /// Gemma 4 26B QAT build and Inkling 2 Mini), rows with `stop` strings speculate; the round's
 /// finalize ends the row at the first match. The SDK reads the switch once

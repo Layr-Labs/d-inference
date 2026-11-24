@@ -1,0 +1,17 @@
+{
+  "feature": "decode_rate_age_decay",
+  "cases": [
+    {"name": "absent", "decays": false,
+     "message": {"type": "trust_status", "trust_level": "hardware", "status": "online"}},
+    {"name": "empty", "decays": false,
+     "message": {"type": "trust_status", "trust_level": "hardware", "status": "online", "coordinator_features": []}},
+    {"name": "other", "decays": false,
+     "message": {"type": "trust_status", "trust_level": "hardware", "status": "online", "coordinator_features": ["some_later_feature"]}},
+    {"name": "advertised", "decays": true,
+     "message": {"type": "trust_status", "trust_level": "hardware", "status": "online", "coordinator_features": ["decode_rate_age_decay"]}},
+    {"name": "advertised_among_others", "decays": true,
+     "message": {"type": "trust_status", "trust_level": "self_signed", "status": "online", "reason": "qualified", "coordinator_features": ["some_later_feature", "decode_rate_age_decay"]}},
+    {"name": "malformed", "decays": false,
+     "message": {"type": "trust_status", "trust_level": "hardware", "status": "online", "coordinator_features": "decode_rate_age_decay"}}
+  ]
+}

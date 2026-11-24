@@ -578,6 +578,8 @@ public enum LaunchAgent: Sendable {
         SSDPrefixCachePolicy.incrementalCheckpointsFlag,
         SSDPrefixCachePolicy.parallelStageFlag,
         SSDPrefixCachePolicy.terminalBeforePublicationFlag,
+        SSDPrefixCachePolicy.ttlModeEnvironmentFlag,
+        RequestCachePolicy.localServingEnvironmentKey,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GemmaJSONAnswerPolicy.environmentKey,

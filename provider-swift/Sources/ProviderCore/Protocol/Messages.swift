@@ -1745,6 +1745,10 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// The coordinator's signature over this request; nil from a
         /// coordinator that does not sign (`CoordinatorRequestVerifier`).
         public var coordinatorSignature: CoordinatorRequestSignature?
+        /// A `cache_policy` on the plaintext frame. Coordinators never send
+        /// one (the policy is sealed in `_darkbloom_cache`); when present it
+        /// can only narrow the sealed policy (`RequestCachePolicy.narrowed`).
+        public var frameCachePolicy: RequestCachePolicy
 
         public init(
             requestId: String,
@@ -1759,10 +1763,12 @@ public enum CoordinatorMessage: Sendable, Equatable {
             serviceReservationID: String? = nil,
             promptWork: PromptWork? = nil,
             gemmaPromptContract: Int? = nil,
-            coordinatorSignature: CoordinatorRequestSignature? = nil
+            coordinatorSignature: CoordinatorRequestSignature? = nil,
+            frameCachePolicy: RequestCachePolicy = .default
         ) {
             self.gemmaPromptContract = gemmaPromptContract
             self.coordinatorSignature = coordinatorSignature
+            self.frameCachePolicy = frameCachePolicy
             self.requestId = requestId
             self.encryptedBody = encryptedBody
             self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
@@ -1976,6 +1982,7 @@ extension CoordinatorMessage: Codable {
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case gemmaPromptContract = "gemma_prompt_contract"
         case coordinatorSignature = "coordinator_signature"
+        case cachePolicy = "cache_policy"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload
@@ -2033,6 +2040,9 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.promptWork, forKey: .promptWork)
             try container.encodeIfPresent(r.gemmaPromptContract, forKey: .gemmaPromptContract)
             try container.encodeIfPresent(r.coordinatorSignature, forKey: .coordinatorSignature)
+            if r.frameCachePolicy != .default {
+                try container.encode(r.frameCachePolicy.rawValue, forKey: .cachePolicy)
+            }
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -2161,7 +2171,11 @@ extension CoordinatorMessage: Codable {
                 // A malformed signature reads as none: the request is then
                 // served or refused like an unsigned one, never dropped unanswered.
                 coordinatorSignature: try? container.decodeIfPresent(
-                    CoordinatorRequestSignature.self, forKey: .coordinatorSignature)
+                    CoordinatorRequestSignature.self, forKey: .coordinatorSignature),
+                // The policy belongs in the sealed body only. A plaintext key,
+                // which no signature covers, may only narrow the request: any
+                // value but "default", a malformed one included, is memory_only.
+                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy)
             ))
 
         case .cancel:

@@ -874,8 +874,9 @@ enough, so N concurrent recurrent donors stage at most N × 3 copies, plus
 one transient copy while a donor rolls its latest (the new copy is reserved
 before the old latest retires). Revisit if state sizes grow. Window copies finish
 before successor writes and remain owned until their captured stream drains.
-The encrypted manifest binds exact input token IDs, scope, checkpoint position,
-codec/layout and tensor descriptors. DBK3 writes bounded tensor segments into
+The encrypted manifest binds the exact input prefix through a keyed digest (its
+token IDs are never stored; a restore takes them from the request's prompt),
+scope, checkpoint position, codec/layout and tensor descriptors. DBK3 writes bounded tensor segments into
 one atomically published file; failed/cancelled exports grant no ready evidence.
 After commit, the engine retires donor/export aliases before publishing the
 actual ready anchor and DONE. The default path keeps only metadata between

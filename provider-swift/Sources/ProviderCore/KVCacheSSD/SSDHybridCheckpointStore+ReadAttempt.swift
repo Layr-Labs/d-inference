@@ -69,7 +69,7 @@ extension SSDHybridCheckpointStore {
                 return true
             }
             guard installed else { staged.close(); return .init(.skippedPolicy) }
-            index.touch(tags16: candidate.chain, now: config.nowSeconds())
+            if config.ttlMode.refreshesOnHit { index.touch(tags16: candidate.chain, now: config.nowSeconds()) }
             statsBox.update { $0.stages += 1 }
             return .init(.staged(matchedTokens: candidate.position, expectedPrefillTokensSaved: candidate.position,
                                 shortenedByCorruption: false), deviceBytes: loaded.destinationBytes)
@@ -130,6 +130,7 @@ extension SSDHybridCheckpointStore {
     /// persists the last hit (`SSDOwnedEntryRetirement.remove`), but a restart
     /// scan before that sweep ages the file from the old mtime.
     private func persistRecency(of candidate: ReadCandidate, access: SSDCheckpointFileCoordinator.Access) {
+        guard config.ttlMode.refreshesOnHit else { return }
         let now = config.nowSeconds()
         for tag in candidate.chain where !recencyIsCurrent(at: fileURL(tag), now: now) {
             whileSoleHolder(of: tag, in: candidate, access: access) {
@@ -165,7 +166,8 @@ extension SSDHybridCheckpointStore {
         var importer: SSDCheckpointImport?
         defer { importer?.close() }
         statsBox.update { $0.filesRead += candidate.chain.count }
-        let manifest = try openChain(candidate, tracksIdentity: false, check: check, beforeRead: budget.beforeRead,
+        let manifest = try openChain(candidate, promptTokens: request.promptTokens, tracksIdentity: false,
+                                     check: check, beforeRead: budget.beforeRead,
                                      countRead: countRead, blame: blame).last!.link.manifest
         guard manifest.position == candidate.position, manifest.identity == identity,
             manifest.backendLayout == config.backendLayout,
@@ -220,7 +222,8 @@ extension SSDHybridCheckpointStore {
         // Any touch precedes the identity this second open records.
         persistRecency(of: candidate, access: access)
         statsBox.update { $0.filesRead += candidate.chain.count }
-        var files = try openChain(candidate, tracksIdentity: true, check: check, beforeRead: budget.beforeRead,
+        var files = try openChain(candidate, promptTokens: request.promptTokens, tracksIdentity: true,
+                                  check: check, beforeRead: budget.beforeRead,
                                   countRead: countRead, blame: blame)
         guard files.last?.link.manifest == manifest else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
         let authenticatedFile = try streamChain(&files, parallel: parallel, check: check, blame: blame) {

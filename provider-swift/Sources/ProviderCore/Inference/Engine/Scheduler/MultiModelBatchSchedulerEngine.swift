@@ -113,6 +113,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// (`cache_repeated_prefix_tokens`). Nil for local HTTP, tests and older
     /// coordinators: the store then writes every captured checkpoint.
     private let donationDemand: SSDCheckpointDonationDemand?
+    /// The sealed cache policy, or the local API's (`localServing`).
+    /// `memoryOnly` runs the request with its prefix cache off
+    /// (`EngineV2Bridge.submitTokenized`) and skips the prompt-token piece cache.
+    private let cachePolicy: RequestCachePolicy
     /// Per-request usage-detail signal: the bridge
     /// records the engine's terminal matched/saved token detail here so the
     /// caller's frames loop can splice OpenAI-standard
@@ -186,6 +190,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         donationDemand: SSDCheckpointDonationDemand? = nil,
+        cachePolicy: RequestCachePolicy = .default,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
         engineV2Sampling: EngineV2SamplingOverrides? = nil,
         engineV2Vision: EngineV2VisionPlumbing? = nil,
@@ -211,6 +216,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.nativeLocalCacheScope = nil
         self.cacheEnabled = cacheEnabled
         self.donationDemand = donationDemand
+        self.cachePolicy = cachePolicy
         self.engineV2Logprobs = engineV2Logprobs
         self.engineV2Sampling = engineV2Sampling
         self.engineV2Vision = engineV2Vision
@@ -247,7 +253,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeLocalCacheScope: String? = nil,
         modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
         seedsContentForUnknownPromptTail: Bool = false,
-        engineV2Logprobs: EngineV2LogprobsPlumbing? = nil
+        engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
+        cachePolicy: RequestCachePolicy = .default
     ) {
         self.measurementPurpose = .serving
         self.acquire = acquire
@@ -266,6 +273,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.nativeLocalCacheScope = nativeLocalCacheScope
         self.cacheEnabled = true
         self.donationDemand = nil
+        self.cachePolicy = cachePolicy
         // The single-Mac --local path serves SSE frames inside the upstream
         // router, so there is no provider seam to decorate frames with
         // logprobs (none emitted). The cluster's API decorates its own frames
@@ -892,6 +900,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         requestId: visionRequestId,
                         cacheScope: requestCacheScope,
                         cacheEnabled: cacheEnabled,
+                        cachePolicy: cachePolicy,
                         // Media requests are prefix-cache-excluded engine-
                         // side (hit tokens always 0), but the signal still
                         // reaches its terminal so the frames loop never
@@ -929,6 +938,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         let measurementPurpose = measurementPurpose
                         let cacheScope = requestCacheScope
                         let cacheEnabled = cacheEnabled
+                        let cachePolicy = cachePolicy
                         let donationDemand = donationDemand
                         let promptTokens = visionPrepared.promptTokens
                         let multimodal = visionPrepared.multimodalInput()
@@ -969,6 +979,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                             requestId: continuationId,
                                             cacheScope: cacheScope,
                                             cacheEnabled: cacheEnabled,
+                                            cachePolicy: cachePolicy,
                                             multimodal: multimodal,
                                             mediaKind: mediaKind,
                                             stopStringScope: continuationStopScope,
@@ -1094,7 +1105,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 modelType: modelType,
                 templateControls: templateControls,
                 // Token reuse is partitioned exactly like the prefix KV cache.
-                promptCacheScope: cacheEnabled ? requestCacheScope : nil)
+                // The prompt-token piece cache keeps a prompt's token IDs past
+                // the request, so a memory_only request does not use it.
+                promptCacheScope: cacheEnabled && cachePolicy == .default ? requestCacheScope : nil)
             promptTokens = measured.tokens
             prepTiming = measured.timing
             try checkFirstContentDeadline()
@@ -1304,6 +1317,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // funds the cache).
                     cacheScope: requestCacheScope,
                     cacheEnabled: cacheEnabled,
+                    cachePolicy: cachePolicy,
                     usageSignal: requestUsage,
                     tokenConstraint: tokenConstraint,
                     stopStringScope: stopStringScope,
@@ -1348,6 +1362,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let measurementPurpose = measurementPurpose
             let cacheScope = requestCacheScope
             let cacheEnabled = cacheEnabled
+            let cachePolicy = cachePolicy
             let donationDemand = donationDemand
             // The continuation's output starts after the end of thinking, so
             // stop strings apply from its first token, whatever the prompt opened
@@ -1401,6 +1416,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 requestId: continuationId,
                                 cacheScope: cacheScope,
                                 cacheEnabled: cacheEnabled,
+                                cachePolicy: cachePolicy,
                                 usageSignal: continuationUsage,
                                 tokenConstraint: continuationConstraint,
                                 stopStringScope: continuationStopScope,
@@ -1760,7 +1776,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let upstream = try await bridge.submitTokenized(promptTokens:host.tokens,
                 request:Self.translate(openAIRequest:request,defaultMaxTokens:maximum,
                     logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed),
-                requestId:id,cacheScope:cacheScope,cacheEnabled:true,usageSignal:requestUsage,
+                requestId:id,cacheScope:cacheScope,cacheEnabled:true,cachePolicy:cachePolicy,usageSignal:requestUsage,
                 mimoClusterImages:host.wire,firstContentDeadline:firstContentDeadline,profile:profile,
                 measurementPurpose:measurementPurpose)
             do {

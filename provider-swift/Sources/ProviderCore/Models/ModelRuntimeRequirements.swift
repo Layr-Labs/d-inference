@@ -34,6 +34,10 @@ public struct ProviderRuntimeCapability: RawRepresentable, Codable, Hashable, Se
     /// This build serves GLM-5.3-Flash and the Mac passes
     /// `GLM5NextHardwareRequirement` (M5 Max/Ultra, at least 256 GiB).
     public static let glm5Next = Self(rawValue: "glm5_next_v1")
+    /// This build honours the sealed `cache_policy` (`RequestCachePolicy`):
+    /// a `memory_only` request never uses the SSD tier. Every build carries it,
+    /// in the registration and in the signed attestation alike.
+    public static let cachePolicy = Self(rawValue: "cache_policy_v1")
 }
 
 /// Pure, dependency-injected capability detection. Production supplies the
@@ -109,7 +113,7 @@ public enum ProviderRuntimeCapabilityDetector {
             chipFamily: hardware.chipFamily,
             naxAvailable: naxAvailable,
             liveMetallibHash: { boundMetallibHash }
-        ).union([.modelRevisions])
+        ).union([.modelRevisions, .cachePolicy])
             .union(GLM5NextHardwareRequirement.refusal(hardware: hardware) == nil ? [.glm5Next] : [])
     }
 }

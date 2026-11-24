@@ -105,4 +105,14 @@ struct Inkling2MemorySizingTests {
             gpuActiveBytes: 0, gpuCacheBytes: 0, reserveBytes: reserve)
         #expect(free == 0)
     }
+
+    /// The window the slot is sized and served for is 40,960 tokens (prompt
+    /// plus output), not the checkpoint's 1,048,576: past 41,432 the DSpark
+    /// drafter's per-request pool cannot be reserved and the request fails.
+    @Test func theServedWindowIsFortyThousandNineHundredSixtyTokens() throws {
+        let url = try #require(Bundle.module.url(
+            forResource: "config.json", withExtension: nil, subdirectory: "Fixtures/Inkling2"))
+        let architecture = KVEstimation.parseModelArchitecture(at: url)
+        #expect(architecture.maxContextLength == 40_960)
+    }
 }

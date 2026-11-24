@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import ProviderCoreFoundation
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -15,7 +16,8 @@ import Darwin
 /// measured in its ON state:
 ///
 /// - Per build: the slot factory turns `constraintSpansBuilds`,
-///   `grammarMTPBuilds`, `nativeGrammarMTPBuilds`, `penaltyRowBuilds` and `stopStringRowBuilds` on in that engine's
+///   `grammarMTPBuilds`, `nativeGrammarMTPBuilds`, `penaltyRowBuilds`, `repetitionPenaltyRowBuilds` and
+///   `stopStringRowBuilds` on in that engine's
 ///   `CBv2MTPConfig` (`applyMTPDefaults`); `NativeReasoningBudget.isEnabled(for:)` admits
 ///   budgets for `reasoningBudgetFamilies` only.
 /// - Process-wide (`onByDefault`, for what the SDK reads with no per-model
@@ -47,21 +49,33 @@ public enum SDKFeatureDefaults {
 
     /// SDK penalty-aware MTP verification: rows with a presence/frequency
     /// penalty speculate with exact acceptance on the catalog Qwen 3.5/3.6
-    /// builds (card default presence 1.5) and the catalog Gemma 4 26B QAT
-    /// build (requests that send a penalty). The SDK's process kill switch
-    /// `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
-    /// Exact catalog ids (case-sensitive, like `qwen35CardModelTypes` and
-    /// `MTPAcceptancePolicy.builtInIsExact`).
+    /// builds (card default presence 1.5), the catalog Gemma 4 26B QAT
+    /// build and the served Inkling 2 Mini identities (requests that send a
+    /// penalty). Repetition penalty rows follow `repetitionPenaltyRowBuilds`.
+    /// The SDK's process kill switch `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
+    /// Exact catalog ids (case-sensitive, like `qwen35CardModelTypes`).
     static let penaltyRowBuilds: Set<String> = Set(
         [EngineV2SamplingDefaults.qwen35NineBModelID, MTPAcceptancePolicy.gemmaQATModelID]
-    ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs)
+    ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs).union(Inkling2ModelIdentity.servedModelIDs)
+
+    /// SDK repetition-penalty MTP rows: rows with `repetition_penalty != 1`
+    /// speculate with exact acceptance on the same builds as presence/frequency
+    /// rows (every one drafts with target-prefix acceptance). The verifier
+    /// penalizes each draft position over the last `repetitionContextSize`
+    /// tokens of prompt, confirmed output and the drafts before it, as ordinary
+    /// decode does. The SDK's process kill switch
+    /// `DARKBLOOM_MTP_REPETITION_PENALTY_ROWS=0` still wins. Exact catalog ids.
+    static let repetitionPenaltyRowBuilds: Set<String> = penaltyRowBuilds
 
     /// SDK stop-string MTP rows: rows with `stop` strings speculate on the
-    /// catalog Gemma 4 26B QAT build; the round's finalize confirms committed
-    /// tokens one at a time and ends the row at the first match (ordinary
-    /// decode semantics). The SDK's process kill switch
-    /// `DARKBLOOM_MTP_STOP_STRING_ROWS=0` still wins. Exact catalog ids.
-    static let stopStringRowBuilds: Set<String> = [MTPAcceptancePolicy.gemmaQATModelID]
+    /// catalog Gemma 4 26B QAT build and the served Inkling 2 Mini identities;
+    /// the round's finalize confirms committed tokens one at a time through
+    /// the row's detokenizer (Inkling's answer-channel stop scope included)
+    /// and ends the row at the first match (ordinary decode semantics). The
+    /// SDK's process kill switch `DARKBLOOM_MTP_STOP_STRING_ROWS=0` still
+    /// wins. Exact catalog ids.
+    static let stopStringRowBuilds: Set<String> = Set([MTPAcceptancePolicy.gemmaQATModelID])
+        .union(Inkling2ModelIdentity.servedModelIDs)
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper, .mimoV26]
@@ -133,6 +147,7 @@ public enum SDKFeatureDefaults {
         spansBuilds: Set<String> = constraintSpansBuilds, grammarBuilds: Set<String> = grammarMTPBuilds,
         nativeGrammarBuilds: Set<String> = nativeGrammarMTPBuilds,
         penaltyBuilds: Set<String> = penaltyRowBuilds,
+        repetitionPenaltyBuilds: Set<String> = repetitionPenaltyRowBuilds,
         stopStringBuilds: Set<String> = stopStringRowBuilds
     ) -> [String] {
         func unset(_ key: String) -> Bool {
@@ -156,6 +171,13 @@ public enum SDKFeatureDefaults {
         if penaltyBuilds.contains(modelId) {
             config.penaltySpeculation = true
             if CBv2MTPConfig.envPenaltySpeculation { on.append(MTPPenaltyRows.environmentKey) }
+        }
+        // Same kill-switch-only shape (`CBv2MTPConfig.effectiveRepetitionPenaltySpeculation`).
+        if repetitionPenaltyBuilds.contains(modelId) {
+            config.repetitionPenaltySpeculation = true
+            if CBv2MTPConfig.envRepetitionPenaltySpeculation {
+                on.append(MTPRepetitionPenaltyRows.environmentKey)
+            }
         }
         // Same kill-switch-only shape (`CBv2MTPConfig.effectiveStopStringSpeculation`).
         if stopStringBuilds.contains(modelId) {
@@ -238,6 +260,8 @@ public enum SDKFeatureDefaults {
                 spansBuilds: constraintSpansBuilds, grammarBuilds: grammarMTPBuilds,
                 nativeGrammarBuilds: nativeGrammarMTPBuilds,
                 penaltyBuilds: CBv2MTPConfig.envPenaltySpeculation ? penaltyRowBuilds : [],
+                repetitionPenaltyBuilds: CBv2MTPConfig.envRepetitionPenaltySpeculation
+                    ? repetitionPenaltyRowBuilds : [],
                 stopStringBuilds: CBv2MTPConfig.envStopStringSpeculation ? stopStringRowBuilds : [])
     }
 
@@ -245,6 +269,7 @@ public enum SDKFeatureDefaults {
                         spansBuilds: Set<String>, grammarBuilds: Set<String>,
                         nativeGrammarBuilds: Set<String> = [],
                         penaltyBuilds: Set<String> = [],
+                        repetitionPenaltyBuilds: Set<String> = [],
                         stopStringBuilds: Set<String> = []) -> String? {
         var on = injected.sorted().map { key in
             key == NativeReasoningBudget.environmentKey
@@ -258,6 +283,10 @@ public enum SDKFeatureDefaults {
         }
         if !penaltyBuilds.isEmpty {
             on.append("\(MTPPenaltyRows.environmentKey) (\(penaltyBuilds.sorted().joined(separator: ", ")))")
+        }
+        if !repetitionPenaltyBuilds.isEmpty {
+            on.append(
+                "\(MTPRepetitionPenaltyRows.environmentKey) (\(repetitionPenaltyBuilds.sorted().joined(separator: ", ")))")
         }
         if !stopStringBuilds.isEmpty {
             on.append(

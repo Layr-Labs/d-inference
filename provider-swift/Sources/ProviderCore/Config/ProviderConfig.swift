@@ -87,9 +87,21 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     /// it cannot create an assistant or bypass native head/owner validation.
     static let automaticEmbeddedModelTypes: Set<String> = [
         "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "mimo_v2",
-        // Inkling 2 Mini's DSpark drafter beside its checkpoint (`mtp.safetensors`).
-        "inkling2_loop",
     ]
+
+    /// `model_type` values whose embedded heads `auto` requests only on an
+    /// explicit `DARKBLOOM_CBV2_MTP` on-word (`1`, `true`, `yes`, `on`); unset,
+    /// `auto` serves them target-only. Inkling 2 Mini's DSpark drafter
+    /// (`mtp.safetensors`): with it on, sampled GPQA answers looped and ran to
+    /// their length on 0.10.18 candidates. `on` still requests it.
+    static let optInEmbeddedModelTypes: Set<String> = ["inkling2_loop"]
+
+    /// An explicit on-word in `DARKBLOOM_CBV2_MTP`; unset or any other value is not.
+    static func environmentOptsIn(_ environment: [String: String]) -> Bool {
+        guard let raw = environment["DARKBLOOM_CBV2_MTP"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
+        return ["1", "true", "yes", "on"].contains(raw)
+    }
 
     static func isAutomaticExternalTarget(modelType: String?, modelID: String?) -> Bool {
         (modelID == "gemma-4-26b-qat-4bit"
@@ -107,7 +119,8 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     func enablesMTP(
         forModelType modelType: String?,
         embeddedArtifactDeclared: Bool,
-        modelID: String? = nil
+        modelID: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
         switch self {
         case .on:
@@ -124,6 +137,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased(), !raw.isEmpty
             else { return false }
+            if Self.optInEmbeddedModelTypes.contains(raw) { return Self.environmentOptsIn(environment) }
             return Self.automaticEmbeddedModelTypes.contains(raw)
         }
     }

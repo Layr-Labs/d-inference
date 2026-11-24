@@ -146,6 +146,9 @@ PARITY_STEPS = {
     "Verify pinned Nemotron prompts and numeric cache plans":
         ("./scripts/verify-nemotron-prompt-parity.sh", "NemotronTemplateParityLiveTests", "nemotron"),
 }
+# Shard 1 downloads Prompt Parity's pinned artifacts in the background while the
+# build runs, and waits for them before the parity steps.
+PARITY_DOWNLOAD_STEPS = ("Start the pinned prompt fixture downloads", "Wait for the pinned prompt fixture downloads")
 
 
 
@@ -506,12 +509,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 restores = [step for step in steps
                             if "actions/cache/restore@" in step and field(step, "id") != "git-cache"]
                 if lane == "provider":
-                    # The verified MiMo metadata downloads after the products,
-                    # then the shards' prompt fixture downloads. Provider Gates
-                    # restores its audio codec before the products: it needs
-                    # none, so it is fetched while the build runs.
-                    caches = {"test-provider": [("mimo-metadata-cache", "mimo-metadata-v1-", True),
-                                                ("prompt-fixture-cache", "prompt-fixtures-v1-", True)],
+                    # Shard 1's prompt fixture downloads and Provider Gates'
+                    # audio codec before the products: they need none, so they
+                    # are fetched while the build runs. The verified MiMo
+                    # metadata downloads after the products.
+                    caches = {"test-provider": [("prompt-fixture-cache", "prompt-fixtures-v1-", False),
+                                                ("mimo-metadata-cache", "mimo-metadata-v1-", True)],
                               GATES: [("mimo-audio-cache", "mimo-audio-source-v2-", False),
                                       ("mimo-metadata-cache", "mimo-metadata-v1-", True)]}
                     expected = caches[job_id]
@@ -662,7 +665,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 steps = work_steps(self.jobs[job_id])
                 runs = [run_command(step) for step in steps
                         if field(step, "run") and field(step, "name", indent=6) not in
-                        (*COVERAGE_STEPS, *GATES_COVERAGE_STEPS, *PARITY_STEPS, *SHARD_CHECK_STEPS)]
+                        (*COVERAGE_STEPS, *GATES_COVERAGE_STEPS, *PARITY_STEPS, *PARITY_DOWNLOAD_STEPS,
+                         *SHARD_CHECK_STEPS)]
                 self.assertEqual(runs, list(commands))
         everywhere = Counter(run_command(step) for job in self.jobs.values() for step in step_blocks(job))
         for command in (*gates, PROVIDER_TEST_COMMAND):
@@ -802,12 +806,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         names = [field(step, "name", indent=6) for step in steps]
         tests = names.index("Run Swift tests")
         shard = f"matrix.shard == {(shards.PARITY_SHARD - 1) // PROVIDER_PROCESSES + 1}"
+        downloads = "steps.prompt-fixture-downloads-done.outcome == 'success'"
         conditions = {
             "Verify public prompt golden vectors":
                 "${{ !cancelled() && %s && steps.test-products.outcome == 'success' && "
-                "steps.mimo-prompt-fixtures.outcome == 'success' }}" % shard,
+                "steps.mimo-prompt-fixtures.outcome == 'success' && %s }}" % (shard, downloads),
             "Verify pinned Nemotron prompts and numeric cache plans":
-                "${{ !cancelled() && %s && steps.test-products.outcome == 'success' }}" % shard,
+                "${{ !cancelled() && %s && steps.test-products.outcome == 'success' && %s }}" % (shard, downloads),
         }
         self.assertEqual(sorted(filter_ for _, filter_, _ in PARITY_STEPS.values()),
                          sorted(shards.PARITY_FILTERS))
@@ -867,8 +872,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(save, "key", indent=10), "${{ steps.prompt-fixture-cache.outputs.cache-primary-key }}")
         for step in (restore, save):
             self.assertEqual(field(step, "path", indent=10), cache)
-        self.assertEqual(field(restore, "if"),
-                         gated("${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}"))
+        # Restored before the products, while the build runs (it needs none).
+        self.assertEqual(field(restore, "if"), gated("${{ !cancelled() && matrix.shard == 1 }}"))
         # A push saves once both parity steps verified every artifact; a pull
         # request or an exact hit saves nothing.
         self.assertEqual(field(save, "if"),
@@ -880,6 +885,45 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertLess(steps.index(parity[1]), steps.index(save))
         for step in parity:
             self.assertEqual(field(step, "PROMPT_PARITY_DOWNLOAD_CACHE", indent=10), cache)
+        # The same downloader fetches what the entry lacks into that cache in
+        # the background, from the products' interpreter on, while the build
+        # runs; the parity steps wait for it and run only if it succeeded.
+        python, start, wait = (steps[index] for index in (
+            names.index("Restore verified prompt fixture downloads") - 1, *map(names.index, PARITY_DOWNLOAD_STEPS)))
+        products = next(step for step in steps if field(step, "uses") == PRODUCTS_ACTION)
+        tests = steps[names.index("Run Swift tests")]
+        self.assertTrue(uses(python).startswith("actions/setup-python@"), python)
+        self.assertEqual(field(python, "python-version", indent=10), "'3.12.10'")
+        self.assertEqual([steps.index(step) for step in (python, restore, start, products, tests, wait, parity[0])],
+                         sorted(steps.index(step) for step in (python, restore, start, products, tests, wait, parity[0])))
+        self.assertEqual(steps.index(start) + 1, steps.index(products))
+        self.assertEqual(steps.index(wait) + 1, steps.index(parity[0]))
+        for step in (python, start):
+            self.assertEqual(field(step, "if"), "${{ !cancelled() && matrix.shard == 1 }}")
+        self.assertEqual(field(start, "id"), "prompt-fixture-downloads")
+        self.assertEqual(field(start, "PROMPT_PARITY_DOWNLOAD_CACHE", indent=10), cache)
+        command = run_command(start)
+        self.assertTrue(command.startswith('python3 scripts/ci-background-step.py start '
+                                           '"$RUNNER_TEMP/prompt-fixture-downloads" bash -c \'\n'), command)
+        self.assertIn("set -euo pipefail\n", command)
+        self.assertIn("for contracts in v1 nemotron; do\n", command)
+        self.assertIn('--download-cache "$PROMPT_PARITY_DOWNLOAD_CACHE"', command)
+        # Exactly the manifests and the CDN each parity script provisions from.
+        self.assertIn("python3 scripts/prepare-prompt-fixtures.py \\\n", command)
+        self.assertIn('--manifest-source-directory "$root/fixtures/prompt-contract/$contracts/manifests"', command)
+        self.assertIn('--cdn-url "${PROMPT_PARITY_CDN_URL:-https://models.darkbloom.ai}"', command)
+        for script, contracts in zip((script for script, _, _ in PARITY_STEPS.values()), ("v1", "nemotron")):
+            source = (ROOT / script).read_text()
+            self.assertIn(f'--manifest-source-directory "$ROOT/fixtures/prompt-contract/{contracts}/manifests"', source)
+            self.assertIn('--cdn-url "${PROMPT_PARITY_CDN_URL:-https://models.darkbloom.ai}"', source)
+        self.assertEqual(field(wait, "id"), "prompt-fixture-downloads-done")
+        self.assertEqual(field(wait, "if"), "${{ !cancelled() && matrix.shard == 1 && "
+                                            "steps.test-products.outcome == 'success' && "
+                                            "steps.prompt-fixture-downloads.outcome == 'success' }}")
+        self.assertEqual(run_command(wait),
+                         'python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/prompt-fixture-downloads"')
+        for step in (python, start, wait):
+            self.assertNotIn("continue-on-error:", step)
         # Both scripts hand the cache to the one downloader, which re-verifies it.
         for script, _, _ in PARITY_STEPS.values():
             source = (ROOT / script).read_text()

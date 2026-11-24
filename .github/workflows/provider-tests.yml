@@ -404,6 +404,48 @@ jobs:
           key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Start the resource sampler
         run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      # The prompt artifacts both parity steps download (tokenizers, templates
+      # and configs), one file per pinned SHA-256
+      # (scripts/verified_download_cache.py). The key hashes the manifests that
+      # pin them; prepare-prompt-fixtures.py uses an entry only if its bytes
+      # still have the pinned size and digest, and downloads any other. They
+      # need no test products, so shard 1 restores them and downloads what the
+      # entry lacks while the build runs, in the background, with the
+      # interpreter the products step selects for the later steps. Only this
+      # shard saves the entry, so few Macs hold it: in 82 of 110 green pull
+      # requests on 2026-11-23 and 24, Prompt Parity downloaded all of it
+      # after the tests, in 12 to 317 s (docs/developer/build.md#ci-caching).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        with:
+          python-version: '3.12.10'
+      - name: Restore verified prompt fixture downloads
+        id: prompt-fixture-cache
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && matrix.shard == 1 }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /private/tmp/dinf-ci/prompt-fixture-cache
+          key: prompt-fixtures-v1-${{ hashFiles('fixtures/prompt-contract/v1/manifests/*.json', 'fixtures/prompt-contract/nemotron/manifests/*.json') }}
+      # The same downloader, manifests and cache as the parity scripts; it
+      # stores only verified bytes, and its output is printed by the wait below.
+      - name: Start the pinned prompt fixture downloads
+        id: prompt-fixture-downloads
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        env:
+          PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
+        run: |
+          python3 scripts/ci-background-step.py start "$RUNNER_TEMP/prompt-fixture-downloads" bash -c '
+            set -euo pipefail
+            root=$(pwd -P)
+            mkdir "$RUNNER_TEMP/prompt-fixture-prefetch"
+            work=$(cd "$RUNNER_TEMP/prompt-fixture-prefetch" && pwd -P)
+            for contracts in v1 nemotron; do
+              python3 scripts/prepare-prompt-fixtures.py \
+                --manifest-source-directory "$root/fixtures/prompt-contract/$contracts/manifests" \
+                --cdn-url "${PROMPT_PARITY_CDN_URL:-https://models.darkbloom.ai}" \
+                --artifact-root "$work/$contracts/artifacts" --manifest-directory "$work/$contracts/manifests" \
+                --download-cache "$PROMPT_PARITY_DOWNLOAD_CACHE"
+            done'
       - name: Download provider test products
         id: test-products
         uses: ./.github/actions/provider-ci-products
@@ -477,18 +519,12 @@ jobs:
             ${{ runner.temp }}/provider-unit-shard/slot-*.out
           if-no-files-found: warn
           retention-days: 7
-      # The prompt artifacts both parity steps download (tokenizers, templates
-      # and configs), one file per pinned SHA-256
-      # (scripts/verified_download_cache.py). The key hashes the manifests that
-      # pin them; prepare-prompt-fixtures.py uses an entry only if its bytes
-      # still have the pinned size and digest, and downloads any other.
-      - name: Restore verified prompt fixture downloads
-        id: prompt-fixture-cache
-        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: /private/tmp/dinf-ci/prompt-fixture-cache
-          key: prompt-fixtures-v1-${{ hashFiles('fixtures/prompt-contract/v1/manifests/*.json', 'fixtures/prompt-contract/nemotron/manifests/*.json') }}
+      # A failed download fails here, with the downloader's output, and the
+      # parity steps then do not run, as when their own download failed.
+      - name: Wait for the pinned prompt fixture downloads
+        id: prompt-fixture-downloads-done
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.prompt-fixture-downloads.outcome == 'success' }}
+        run: python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/prompt-fixture-downloads"
       # Prompt Parity runs once, in shard 1 (the shard of selection
       # PARITY_SHARD), against the provider products. A failure fails the shard,
       # and with it the Provider Tests gate. The summary checks each run's
@@ -496,7 +532,7 @@ jobs:
       # xUnit report and stdout (NESTED_SUITE_REPORT, scripts/run-nested-suite.sh).
       - name: Verify public prompt golden vectors
         id: prompt-parity
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.prompt-fixture-downloads-done.outcome == 'success' }}
         env:
           PROMPT_PARITY_SKIP_BUILD: '1'
           PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
@@ -509,7 +545,7 @@ jobs:
             "$report/parity-prompt-swift-testing.xml" "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
       - name: Verify pinned Nemotron prompts and numeric cache plans
         id: nemotron-parity
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.prompt-fixture-downloads-done.outcome == 'success' }}
         env:
           PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
         run: |

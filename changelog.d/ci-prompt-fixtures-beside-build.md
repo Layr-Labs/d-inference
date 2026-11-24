@@ -1,0 +1,4 @@
+### Provider CI: Prompt Parity's downloads run while the build runs
+
+- Provider shard 1 restores the verified prompt fixture cache and starts the pinned downloads in the background before it waits for the test products, instead of downloading them inside Prompt Parity after its tests. The two parity steps wait for that download, fail when it fails, and run the same scripts, suites and counts; every artifact is still checked against its pinned size and SHA-256.
+- Only shard 1 saves that cache, so few Macs hold it: on the 110 green pull-request runs of 2026-11-23 and 2026-11-24 the key never changed, and 82 runs downloaded all 32 files (104 MB) after the tests, in 12 to 317 s (median 24 s). Modelled on those runs (not measured), shard 1 is the last provider job in 23 instead of 46 of them once `BootSecurityServeLoopTests` runs beside its selections.

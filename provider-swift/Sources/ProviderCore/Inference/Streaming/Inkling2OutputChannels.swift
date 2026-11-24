@@ -129,6 +129,8 @@ struct Inkling2OutputChannels {
     private let limits: Limits
     /// `invoke_tool_json` opens a content body instead of a call.
     private let callsAreText: Bool
+    /// The content body a header-only answer goes on in: it ends at any marker.
+    private var answerFromHeader = false
     private var state = State.boundary
     private var pending: [UInt8] = []
     private var header: [UInt8] = []
@@ -269,11 +271,12 @@ struct Inkling2OutputChannels {
         while cursor < pending.count, pending[cursor] != Self.lessThan {
             header.append(pending[cursor])
             cursor += 1
-            if header.count > limits.headerBytes {
+            if header.count > limits.headerBytes, !callsAreText || Self.endsOnCharacter(header) {
                 if callsAreText {
                     // Too long for a name: the start of a header-only answer.
                     closeHeaderOnly(into: &pieces)
                     state = .body(.content)
+                    answerFromHeader = true
                     return cursor
                 }
                 // Not a header the response template reads: the bytes are
@@ -300,6 +303,7 @@ struct Inkling2OutputChannels {
                 // A `<` that opens no marker: the answer goes on as text.
                 closeHeaderOnly(into: &pieces)
                 state = .body(.content)
+                answerFromHeader = true
                 return cursor
             }
             // `[^<]*` cannot hold this `<`: no message starts here.
@@ -327,6 +331,13 @@ struct Inkling2OutputChannels {
         }
     }
 
+    /// The bytes end on a whole UTF-8 character, so a cut never splits one.
+    private static func endsOnCharacter(_ bytes: [UInt8]) -> Bool {
+        guard let lead = bytes.lastIndex(where: { $0 & 0xC0 != 0x80 }) else { return true }
+        let need = bytes[lead] < 0x80 ? 1 : bytes[lead] >= 0xF0 ? 4 : bytes[lead] >= 0xE0 ? 3 : 2
+        return bytes.count - lead >= need
+    }
+
     /// A message whose header no content marker followed. With `callsAreText`
     /// the model answered in the header itself (a request without declared
     /// tools, e.g. `<|message_model|>get_weather(city: Paris)<|end_message|>`):
@@ -343,6 +354,7 @@ struct Inkling2OutputChannels {
 
     private mutating func enter(_ marked: Kind) {
         let kind = marked == .toolCall && callsAreText ? Kind.content : marked
+        answerFromHeader = false
         if kind == .toolCall {
             toolBody = []
             json = BoundedJSONShape()
@@ -377,6 +389,13 @@ struct Inkling2OutputChannels {
                 {
                     end = cursor
                     break
+                }
+                if answerFromHeader {
+                    // Any marker ends it, unread: the boundary takes it, as after a dropped header.
+                    // A marker's prefix waits for its bytes, and at the end it is never text.
+                    let next = match(at: cursor)
+                    if case .marker = next { close = (0, false); end = cursor; break }
+                    if case .partial = next { end = cursor; if final { close = (pending.count - cursor, false) }; break }
                 }
             }
             cursor += 1

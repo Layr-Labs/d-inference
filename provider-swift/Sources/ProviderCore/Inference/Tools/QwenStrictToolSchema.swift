@@ -278,7 +278,8 @@ struct QwenStrictToolSchema: Sendable {
         if case .object(let object)? = schema, QwenParserLiteralReading.admitsLiteralType(object) {
             text.literalSchema = object
         }
-        guard case .object(let object)? = schema, object["type"] != .string("string"),
+        guard case .object(let object)? = schema,
+              object["type"] != .string("string") || QwenParserLiteralReading.rendersSiblingType(object),
               let types = declaredTypes(object, depth: 0) else { return text }
         var concrete = types.subtracting(["null"])
         if concrete.contains("number") { concrete.remove("integer") }
@@ -300,7 +301,8 @@ struct QwenStrictToolSchema: Sendable {
             return nil
         }
         var result: Set<String>?
-        if let raw = schema["type"] {
+        let hinted = QwenParserLiteralReading.rendersSiblingType(schema)
+        if !hinted, let raw = schema["type"] {
             let names: [String]
             switch raw {
             case .string(let name):
@@ -335,6 +337,7 @@ struct QwenStrictToolSchema: Sendable {
             }
             result = result.map { $0.intersection(combined) } ?? combined
         }
+        if hinted, schema["nullable"] != .bool(true) { result?.remove("null") }
         return result
     }
 

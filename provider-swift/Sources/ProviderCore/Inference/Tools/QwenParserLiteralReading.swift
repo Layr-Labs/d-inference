@@ -207,6 +207,45 @@ enum QwenParserLiteralReading {
         return Int((negative ? "-" : "") + digits)
     }
 
+    /// Whether a node's `type` is a render hint (the SDK's
+    /// `ToolArgumentNormalization.rendersSiblingType`): beside `anyOf`/`oneOf`
+    /// whose branches include that type, an `enum` with a member it does not
+    /// admit, a `not` of that type, or an `if`/`then`/`else` branch typed
+    /// otherwise. A null still needs `nullable: true` beside a hinted type.
+    static func rendersSiblingType(_ schema: [String: MLXLMCommon.JSONValue]) -> Bool {
+        guard case .string(let raw)? = schema["type"], let type = canonicalType(raw) else { return false }
+        func typeName(_ node: MLXLMCommon.JSONValue?) -> String? {
+            guard case .object(let object)? = node, case .string(let name)? = object["type"] else { return nil }
+            return canonicalType(name)
+        }
+        for key in ["anyOf", "oneOf"] {
+            if case .array(let branches)? = schema[key], branches.contains(where: { typeName($0) == type }) {
+                return true
+            }
+        }
+        if case .array(let members)? = schema["enum"],
+           members.contains(where: { !typeAdmits(type, carried($0)) }) {
+            return true
+        }
+        if schema["not"] != nil, typeName(schema["not"]) == type { return true }
+        for key in ["if", "then", "else"] {
+            if let name = typeName(schema[key]), name != type { return true }
+        }
+        return false
+    }
+
+    static func typeAdmits(_ type: String, _ value: MLXLMCommon.JSONValue) -> Bool {
+        switch value {
+        case .null: type == "null"
+        case .bool: type == "boolean"
+        case .int: type == "integer" || type == "number"
+        case .double: type == "number"
+        case .string: type == "string"
+        case .array: type == "array"
+        case .object: type == "object"
+        }
+    }
+
     /// A type name as the SDK's parser reads it, aliases included.
     static func canonicalType(_ name: String) -> String? {
         let type = name.lowercased()
@@ -263,7 +302,9 @@ enum QwenParserLiteralReading {
         guard depth < 32, case .object(let schema) = node, schema["$dynamicRef"] == nil, schema["$ref"] == nil
         else { return .unknown }
         var parts: [Admission] = []
-        if let raw = schema["type"] {
+        let hinted = rendersSiblingType(schema)
+        if hinted, probe.type == "null", schema["nullable"] != .bool(true) { parts.append(.no) }
+        if !hinted, let raw = schema["type"] {
             let names: [String]
             switch raw {
             case .string(let name): names = [name]

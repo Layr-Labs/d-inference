@@ -66,7 +66,7 @@ enum Gemma4ToolCallArguments {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "tool_calls[].function.arguments must be a JSON object")
             }
-            // The raw string bypassed the earlier message-level pass; convert
+            // The raw string skipped the earlier message-level pass; convert
             // its nulls the same way, to Jinja `null` (the bridge throws on
             // NSNull, and dropping them would show the model a different call).
             return sanitizeForJinjaKeepingNulls(object) as? [String: any Sendable] ?? [:]

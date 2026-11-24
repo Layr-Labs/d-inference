@@ -40,7 +40,7 @@ struct GemmaToolUnionTypeTests {
         return try template.render(["tools": try Jinja.Value(any: tools ?? [])])
     }
 
-    private static let stringFirstUnions: [([String: Any], String)] = [
+    private static var stringFirstUnions: [([String: Any], String)] { [
         (["type": ["string", "integer"]], "INTEGER"),
         (["anyOf": [["type": "string"], ["type": "integer"]]], "INTEGER"),
         (["oneOf": [["type": "string"], ["type": "integer"]]], "INTEGER"),
@@ -50,7 +50,7 @@ struct GemmaToolUnionTypeTests {
         (["type": ["string", "boolean"]], "BOOLEAN"),
         (["anyOf": [["type": "string"], ["type": "boolean"]]], "BOOLEAN"),
         (["oneOf": [["type": "string"], ["type": "boolean"]]], "BOOLEAN"),
-    ]
+    ] }
 
     @Test("a string-first union of string and one scalar renders as that scalar for Gemma")
     func stringFirstUnionRendersItsTypedMember() throws {

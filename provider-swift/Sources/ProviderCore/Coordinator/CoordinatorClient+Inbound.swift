@@ -88,6 +88,11 @@ extension CoordinatorClient {
         // A member that lost trust or runtime verification may not keep an
         // attachment: its session's native work is cancelled at once.
         if case .trustStatus(let status) = parsed, ["untrusted", "offline"].contains(status.status) { detachNativePairMember() }
+        // Only the connected coordinator's latest `trust_status` says whether
+        // it decays a stale decode rate (`DecodeRateIdleAge.coordinatorDecays`).
+        if case .trustStatus(let status) = parsed {
+            DecodeRateIdleAge.coordinatorDecays.update(features: status.coordinatorFeatures)
+        }
         if case .runtimeStatus(let status) = parsed, !status.verified || !status.mismatches.isEmpty { detachNativePairMember() }
         // A coordinator that does not know the member role answers its
         // registration like any provider's (desired builds, challenges...).

@@ -3508,7 +3508,7 @@ the served Inkling 2 Mini, whose answer-channel stop scope the row's detokenizer
 token through the row's detokenizer and ends the row at the first match, rolling back
 the rest: given the committed tokens, stop matching, scope, truncation and the finish
 reason follow ordinary decode; `DARKBLOOM_MTP_STOP_STRING_ROWS=0` keeps
-them target-only. Since 0.10.19 rows with a repetition penalty speculate on the builds in
+them target-only. Since 0.10.18 rows with a repetition penalty speculate on the builds in
 `SDKFeatureDefaults.repetitionPenaltyRowBuilds` (the same builds;
 `CBv2MTPConfig.repetitionPenaltySpeculation`): each verify position's window is the last
 `repetitionContextSize` tokens of prompt, confirmed output and the drafts before it, penalized

@@ -100,6 +100,17 @@ struct QwenTensorParallelBatchSessionTests {
         })
     }
     private func bytes(_ a: MLXArray) -> Data { eval(a); return a.asData(access: .copy).data }
+    /// How many `itemSize`-byte elements of two equal-length byte strings
+    /// differ, and the first one's bytes on each side.
+    private func difference(_ left: Data, _ right: Data, itemSize: Int) -> String {
+        guard left.count == right.count, itemSize > 0 else { return "\(left.count) vs \(right.count) bytes" }
+        func element(_ data: Data, _ offset: Int) -> Data { data[(data.startIndex + offset)..<(data.startIndex + offset + itemSize)] }
+        let differing = stride(from: 0, to: left.count, by: itemSize).filter { element(left, $0) != element(right, $0) }
+        guard let first = differing.first else { return "no element differs" }
+        func hex(_ data: Data) -> String { element(data, first).map { String(format: "%02x", $0) }.joined() }
+        return "\(differing.count) of \(left.count / itemSize) elements differ, first element \(first / itemSize): "
+            + "\(hex(left)) vs \(hex(right))"
+    }
 
     @Test func actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives() throws {
         try verify(hybrid: false)
@@ -371,9 +382,12 @@ struct QwenTensorParallelBatchSessionTests {
                     let a = reference[rank].sessions[row], b = candidate[rank].sessions[row]
                     for (index, (left, right)) in zip(a.state.rows, b.state.rows).enumerated() {
                         let x = left!.snapshot(), y = right!.snapshot()
-                        #expect(x.offset == y.offset, "\(label) kv=\(index) offset")
-                        #expect(bytes(x.keys) == bytes(y.keys), "\(label) kv=\(index) keys")
-                        #expect(bytes(x.values) == bytes(y.values), "\(label) kv=\(index) values")
+                        let keys = (bytes(x.keys), bytes(y.keys)), values = (bytes(x.values), bytes(y.values))
+                        #expect(x.offset == y.offset, "\(label) kv=\(index) offset \(x.offset) vs \(y.offset)")
+                        #expect(keys.0 == keys.1,
+                            "\(label) kv=\(index) keys: \(difference(keys.0, keys.1, itemSize: x.keys.itemSize))")
+                        #expect(values.0 == values.1,
+                            "\(label) kv=\(index) values: \(difference(values.0, values.1, itemSize: x.values.itemSize))")
                     }
                 }
                 for row in 0..<width {
@@ -389,7 +403,8 @@ struct QwenTensorParallelBatchSessionTests {
                         try parallel(candidate) { $0.output = try $0.sessions[row].prefill(check: {}) }
                         for rank in 0..<2 {
                             if let expected = reference[rank].output {
-                                #expect(bytes(expected) == bytes(candidate[rank].output!))
+                                #expect(bytes(expected) == bytes(candidate[rank].output!),
+                                    "width=\(width) rank=\(rank) prefill row=\(row) logits")
                             }
                         }
                     }

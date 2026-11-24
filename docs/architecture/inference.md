@@ -12,17 +12,22 @@ The [native block adapter](native-block-inference.md) reuses this bridge boundar
 for committed diffusion output and explicit native-container slot ownership.
 
 CBv2 samples a nonzero-temperature row with an exponential race: the token with
-the largest `probability / e`, where `e = -log1p(-u)` for a keyed Float32
-uniform draw `u`, and a zero draw counts as 2⁻³³ (the middle of the 32-bit
-generator's zero bucket). The plain `-log(1 - u)` loses draws below about
+the largest `probability / e`, where `e = max(-log1p(-max(u, 2⁻³³)), 2⁻³³)` for
+a keyed Float32 uniform draw `u`: a zero draw counts as 2⁻³³ (the middle of the
+32-bit generator's zero bucket). The plain `-log(1 - u)` loses draws below about
 3·10⁻⁸: Float32 rounds `1 - u` to one, so the noise rounds to zero, a floor of
 10⁻²⁰ replaces it, and a token of almost no probability wins the race.
-`log1p` keeps those draws. Ordinary decoding, MTP verification and coupled MTP
-proposals share this transform and the per-request keys, so a verify position
-draws exactly what ordinary decoding would. Seeded sampled output is repeatable
+`log1p` keeps those draws. With an accurate `log1p` the outer 2⁻³³ floor never
+binds (`-log1p(-v) ≥ v`), so it changes no bits; it keeps the noise positive if
+the Metal fast-math `log` behind MLX's `log1p` rounds a small draw's noise to
+zero, which would otherwise give an infinite or NaN score. Ordinary decoding,
+MTP verification and coupled MTP proposals share this transform and the
+per-request keys, so a verify position draws exactly what ordinary decoding
+would. Seeded sampled output is repeatable
 for one build, GPU and set of logits. Greedy decoding (temperature 0) is an
 argmax and never draws noise.
-Source: `SamplerV2.exponentialNoise(vocab:key:)` in
+Source: `SamplerV2.exponentialNoise(fromUniform:)`, called by
+`SamplerV2.exponentialNoise(vocab:key:)`, in
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift`.
 
 Standalone and cluster chat HTTP use the same scalar-stop normalization,

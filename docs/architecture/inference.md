@@ -3504,6 +3504,12 @@ the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
 27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
 `ModelRuntimeRequirements.qwen38ConcreteModelIDs`), whose lone requests draft
 on a single Mac. Qwen 3.8 pairs never read this rule and were already exact.
+Since 0.10.18 the served Inkling 2 Mini (`thinkingmachines/Inkling-2-Mini`,
+`Inkling2ModelIdentity.isServedModelID`) is exact too: its DSpark drafter
+proposes greedy drafts, and on OpenRouter's GPQA shape at temperature 0.5 none
+of 8 drafter-on samples under typical acceptance answered (they repeated until
+the 32,768-token cap or the loop guard), while all 4 drafter-off samples of the
+same questions answered correctly.
 Exact keeps the model's output distribution; its tokens are not bit-identical
 to MTP off, since verify windows round differently.
 Under typical acceptance a draft is kept when the sampler-filtered target row

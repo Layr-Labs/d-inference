@@ -110,3 +110,8 @@ public enum MTPRepetitionPenaltyRows {
 public enum MTPStopStringRows {
     public static let environmentKey = "DARKBLOOM_MTP_STOP_STRING_ROWS"
 }
+
+/// Red control: the key only; nothing lists or forwards it.
+public enum MTPLogprobRows {
+    public static let environmentKey = "DARKBLOOM_MTP_LOGPROB_ROWS"
+}

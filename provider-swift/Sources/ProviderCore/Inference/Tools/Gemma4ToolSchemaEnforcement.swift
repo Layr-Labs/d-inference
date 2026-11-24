@@ -95,6 +95,8 @@ enum Gemma4ToolSchemaEnforcement {
     /// Invariant 8: whether a declared property accepts any value (a mapping
     /// with no schema keyword, such as `{}` or one with only a description).
     static func declaresAnyValue(_ declared: Any?) -> Bool {
+        // Red control: no property counts as declared without a type.
+        if declared != nil || declared == nil { return false }
         guard let mapping = declared as? [String: Any] else { return false }
         return !schemaKeywords.contains { mapping[$0] != nil }
     }

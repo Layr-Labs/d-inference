@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-24
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -655,6 +655,11 @@ through the measured free memory.
   request reservation is released (loads and other charges are not counted as
   freeable); otherwise it is refused at once as larger than the Mac holds
   (`EngineV2Bridge+OwnerMemoryWait.swift`).
+- A text request's prompt rendering and tokenization hold one share of the
+  whole-Mac service allowance (`WholeMacServiceBudget.acquirePreparation`), so
+  a full Mac refuses a request as capacity before preparing its prompt and
+  concurrent preparation counts against the serving width. Submission takes
+  the share over as the request's allowance.
 - Reservation age is diagnostic only. `GlobalKVCacheBudget.recordCommitRejection`
   logs sustained rejection and keeps every owner's charge until the caller
   releases it after its resources retire. The asynchronous allocator-cache
@@ -960,7 +965,9 @@ memory concurrency and the coordinator's per-model quality cap. The automatic
 width stays at 8 at nominal or fair thermal state with Low Power Mode off.
 Low Power Mode, a serious or critical thermal state, or an unknown state returns
 the bridge to the configured width (`EngineV2Bridge.widthPostureAllowsExpansion`).
-A reviewed profile's expanded width requires nominal thermal state. Explicit `engine_v2_max_concurrent`
+A reviewed profile's expanded width requires nominal thermal state. The bridge
+reads Low Power Mode and the thermal state from `ProcessInfo` whenever admission
+or the reported width asks (`EngineV2Bridge.servingPosture`, which tests replace). Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
 
 The [prompt geometry](inference.md#prompt-geometry) likewise changes no KV

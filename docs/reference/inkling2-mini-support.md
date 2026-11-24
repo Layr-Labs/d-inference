@@ -1,6 +1,6 @@
 # Inkling 2 Mini provider contract reference
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-24
 
 Reference for the provider's side of Thinking Machines' Inkling 2 Mini (`inkling2_loop`): identity, prompt, output, cache and drafter contracts read from the pinned checkpoint `thinkingmachines/Inkling-2-Mini` at `6e7c8248f75265bdd4fbab5273304243b5d8c2cb`. The native model lives in the SDK (`Inkling2Model`, and the `Inkling2VLM` wrapper with its vision tower); nothing here publishes a model, approves a catalog entry or qualifies hardware.
 
@@ -9,6 +9,7 @@ Reference for the provider's side of Thinking Machines' Inkling 2 Mini (`inkling
 | Concern | Contract | Source |
 |---|---|---|
 | Architecture | Exact root `model_type` `inkling2_loop` with a `text_config` of type `inkling2_loop_text` whose loop and attention geometry yields a cache layout. Other spellings and Inkling 2 Small (`inkling2`) are not this architecture | `provider-swift/Sources/ProviderCoreFoundation/Inkling2ModelIdentity.swift` (`isNativeType`, `declaresNativeTextTower`) |
+| Context window | The checkpoint's `model_max_length`, 1,048,576 tokens of prompt plus output. The DSpark drafter's per-request pool is granted what the paged pool's segments charge (SDK `PagedState`), so long prompts no longer fail at prompt plus output past 41,432 tokens; a pool that cannot be reserved now is refused as retryable capacity (503), not an untyped 500 | `provider-swift/Sources/ProviderCore/Inference/Memory/KVEstimation.swift` (`parseModelArchitecture`); `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngineError.swift` (`fromSchedulerMessage`) |
 | Served identities | The upstream download id receives the serving defaults; a catalog listing id joins `servedModelIDs` when the catalog registers one | `Inkling2ModelIdentity.swift` (`servedModelIDs`, `isServedModelID`) |
 | Media | Still images through the checkpoint's own tower (`vision_config.model_type` `inkling2_vision`, `language_model_only` not true). The model takes no video or audio, so video is never advertised and the template self-check renders no video part | `provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift` (`advertisesMedia`, `advertisesVideo`); `provider-swift/Sources/ProviderCoreFoundation/TemplateRenderCheck.swift` (`renderOK`) |
 | Serving | Advertised by the exact type; the CBv2 adapter serves the text model or the VLM wrapper directly (48 slots, recurrent convolution state, native paged KV) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`, `directServingModel`) |

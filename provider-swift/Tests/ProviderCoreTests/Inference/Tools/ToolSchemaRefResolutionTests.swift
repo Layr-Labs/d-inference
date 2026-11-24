@@ -52,18 +52,19 @@ private enum RefFixture {
     /// The render-safe repair applied to every schema home, as the coordinator
     /// does after resolution (`normalizeToolEntry`).
     static func repaired(_ tools: [Any]) -> [Any] {
-        tools.map { tool -> Any in
+        var budget = ToolSchemaNormalization.maxNormalizedNodes
+        return tools.map { tool -> Any in
             guard var dict = tool as? [String: Any] else { return tool }
             if var function = dict["function"] as? [String: Any] {
                 if let parameters = function["parameters"] {
-                    function["parameters"] = ToolSchemaNormalization.injectDefaultTypes(parameters)
+                    function["parameters"] = ToolSchemaNormalization.injectDefaultTypes(parameters, budget: &budget)
                 }
                 dict["function"] = function
             } else if let parameters = dict["parameters"] {
-                dict["parameters"] = ToolSchemaNormalization.injectDefaultTypes(parameters)
+                dict["parameters"] = ToolSchemaNormalization.injectDefaultTypes(parameters, budget: &budget)
             }
             if let schema = dict["input_schema"] {
-                dict["input_schema"] = ToolSchemaNormalization.injectDefaultTypes(schema)
+                dict["input_schema"] = ToolSchemaNormalization.injectDefaultTypes(schema, budget: &budget)
             }
             return dict
         }

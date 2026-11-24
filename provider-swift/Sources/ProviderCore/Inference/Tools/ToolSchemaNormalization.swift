@@ -99,12 +99,16 @@ enum ToolSchemaNormalization {
     /// marker-key evidence: booleans (the valid allow/deny-all shorthand)
     /// become render-safe string schemas carrying their original semantic
     /// value, and maps are guaranteed a string `type`.
-    static func injectDefaultTypes(_ node: Any) -> Any {
-        var unbounded = Int.max
-        return (try? injectTypes(node, positional: false, budget: &unbounded)) ?? node
+    ///
+    /// `budget` is the nodes left to the request, shared by its schemas as in
+    /// ``ensureParameterTypes(in:)`` (start from ``maxNormalizedNodes``): a
+    /// schema that spends the rest is returned unchanged, as is every schema
+    /// after it.
+    static func injectDefaultTypes(_ node: Any, budget: inout Int) -> Any {
+        (try? injectTypes(node, positional: false, budget: &budget)) ?? node
     }
 
-    /// Traversal core behind ``injectDefaultTypes(_:)``; `positional` reports
+    /// Traversal core behind ``injectDefaultTypes(_:budget:)``; `positional` reports
     /// whether `node` sits in a schema-positional slot (see the mirror note
     /// above). Arrays keep positionality for their members (tuple-form
     /// `items`, `prefixItems`, union member lists).

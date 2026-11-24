@@ -82,6 +82,35 @@ struct Inkling2OutputChannelsTests {
         #expect(reading.content == "et")
     }
 
+    /// `callsAreText` (an `auto` request without tools, #200): every call
+    /// frame is content, parsed or not, closed or not; none is a call or a
+    /// failure. Without it the same frame is a call.
+    @Test func callFramesAreContentWhenCallsAreText() {
+        let output = Self.thought + "t" + Self.end
+            + Self.call("get_weather", #"{"name":"get_weather","args":{"city":"Paris"}}"#)
+            + Self.call("f", #"{"name":"f","arguments":[]}"#)
+            + #"<|content_invoke_tool_json|>{"open":"#
+        let characters = Array(output)
+        for width in [1, 5, 4096] {
+            var lexer = Inkling2OutputChannels(callsAreText: true)
+            var pieces: [Inkling2OutputPiece] = []
+            for start in stride(from: 0, to: characters.count, by: width) {
+                pieces += lexer.parse(String(characters[start..<min(start + width, characters.count)]))
+            }
+            pieces += lexer.finish()
+            let reading = Reading(pieces)
+            #expect(reading.reasoning == "t")
+            #expect(reading.content
+                == #"{"name":"get_weather","args":{"city":"Paris"}}{"name":"f","arguments":[]}{"open":"#)
+            #expect(reading.calls.isEmpty)
+            #expect(lexer.toolFailures.isEmpty)
+            #expect(lexer.unterminatedChannel == .content)
+            #expect(lexer.droppedBytes == 0)
+        }
+        let (declared, _) = Self.read(Self.call("get_weather", #"{"name":"get_weather","args":{"city":"Paris"}}"#))
+        #expect(declared.calls.map(\.function.name) == ["get_weather"])
+    }
+
     @Test func toolCallArgumentsKeepTheirValues() throws {
         let body = #"{"name":"get_weather","args":{"b":true,"days":[1,2],"f":1.5,"location":"Paris, France","n":null,"opts":{"unit":"celsius"},"z":0}}"#
         let (reading, lexer) = Self.read(Self.thought + "Need weather." + Self.end + Self.call("get_weather", body))

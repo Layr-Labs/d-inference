@@ -36,11 +36,15 @@ enum Gemma4ToolSchemaEnforcement {
     static func normalizeToolSpecs(
         _ tools: [[String: any Sendable]]
     ) -> [[String: any Sendable]] {
-        tools.map(normalizeToolSpec)
+        // The inbound pass's node budget, so a request it left as sent is not
+        // rewritten here instead.
+        var budget = ToolSchemaNormalization.maxNormalizedNodes
+        return tools.map { normalizeToolSpec($0, budget: &budget) }
     }
 
     private static func normalizeToolSpec(
-        _ tool: [String: any Sendable]
+        _ tool: [String: any Sendable],
+        budget: inout Int
     ) -> [String: any Sendable] {
         var output = tool
         guard var function = output["function"] as? [String: any Sendable] else {
@@ -51,7 +55,7 @@ enum Gemma4ToolSchemaEnforcement {
         function["name"] = stringValue(function["name"]) ?? ""
         function["description"] = stringValue(function["description"]) ?? ""
         if let parameters = function["parameters"] {
-            if let normalized = normalizeParametersValue(parameters) {
+            if let normalized = normalizeParametersValue(parameters, budget: &budget) {
                 function["parameters"] = normalized
             } else {
                 function.removeValue(forKey: "parameters")
@@ -67,14 +71,15 @@ enum Gemma4ToolSchemaEnforcement {
     /// `{%- if params -%}` guard is falsy regardless of how the Jinja runtime
     /// treats empty mappings.
     private static func normalizeParametersValue(
-        _ parameters: any Sendable
+        _ parameters: any Sendable,
+        budget: inout Int
     ) -> [String: any Sendable]? {
         guard let mapping = parameters as? [String: any Sendable] else { return nil }
         if mapping.isEmpty { return nil }
         // Exhaustive shared normalization first (the positional rule), then the
         // gemma-specific render invariants on top.
         let injected =
-            ToolSchemaNormalization.injectDefaultTypes(mapping)
+            ToolSchemaNormalization.injectDefaultTypes(mapping, budget: &budget)
             as? [String: any Sendable] ?? mapping
         var root = enforceSchemaNode(injected)
         // Invariant 3: the closing `}` of `parameters:{` is only emitted inside

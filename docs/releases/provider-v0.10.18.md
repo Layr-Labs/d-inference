@@ -32,6 +32,7 @@ Set the variable before `darkbloom start`; the installed service keeps it.
 | `DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` | cluster commands wait a fixed 40 s for this Mac's leadership, as in 0.10.17 |
 | `DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` | `cluster stop --service` on a leading Mac whose partner doesn't answer refuses, as in 0.10.17 |
 | `DARKBLOOM_TTFT_SHAPE_WARMUP=0` | Inkling 2 Mini loads without warming its first prefill chunk and its decode and drafter shapes |
+| `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0` | an Inkling 2 Mini tool call in a request that declares no tools is refused again instead of answered as text |
 | `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` | Qwen 3.5, 3.6 and 3.8 image and video preparation shares the running requests' GPU stream, as in 0.10.17 |
 
 The full technical changelog is in [CHANGELOG.md](https://github.com/Layr-Labs/d-inference/blob/v0.10.18/CHANGELOG.md).

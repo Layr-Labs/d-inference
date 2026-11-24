@@ -152,7 +152,7 @@ struct MTPConfigKeyTests {
     }
 
     /// Under the two-draft policy on M5 Ultra, a Gemma QAT prompt longer than
-    /// 4,096 tokens decodes without drafts; `DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS`
+    /// 16,384 tokens decodes without drafts; `DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS`
     /// moves the limit or, with `0`, removes it. No other chip, model or
     /// policy gets a limit, whatever the setting.
     @Test func gemmaQATLongPromptsOnM5UltraDecodeWithoutDrafts() {
@@ -166,8 +166,8 @@ struct MTPConfigKeyTests {
                 modelID: model, chipName: chip, hasBenchmarkVerificationOverride: benchmark,
                 twoDrafts: twoDrafts, limit: setting)
         }
-        #expect(MTPAutomaticVerificationPolicy.gemmaM5UltraMaxDraftPromptTokens == 4096)
-        #expect(limit("Apple M5 Ultra", .chipDefault) == 4096)
+        #expect(MTPAutomaticVerificationPolicy.gemmaM5UltraMaxDraftPromptTokens == 16384)
+        #expect(limit("Apple M5 Ultra", .chipDefault) == 16384)
         #expect(limit("Apple M5 Ultra", .tokens(8192)) == 8192)
         #expect(limit("Apple M5 Ultra", .off) == nil)
         for setting in [Limit.chipDefault, .off, .tokens(2048)] {

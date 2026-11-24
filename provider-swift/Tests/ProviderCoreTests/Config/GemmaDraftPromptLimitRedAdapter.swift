@@ -27,7 +27,7 @@ extension MTPAutomaticVerificationPolicy {
     static let gemmaMaxDraftPromptTokensEnvironmentKey = "DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS"
     static let gemmaDraftPromptLimit = GemmaDraftPromptLimit(
         ProcessInfo.processInfo.environment[gemmaMaxDraftPromptTokensEnvironmentKey])
-    static let gemmaM5UltraMaxDraftPromptTokens = 4096
+    static let gemmaM5UltraMaxDraftPromptTokens = 16384
 
     static func maxDraftPromptTokens(
         modelID: String?, chipName: String? = nil, hasBenchmarkVerificationOverride: Bool = false,

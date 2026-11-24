@@ -23,13 +23,14 @@ struct ProviderLoopCalibrationTests {
     }
 
     @Test("preload completion schedules calibration after self-test even if the registration gate timed out",
-        arguments: [false, true])
+        .timeLimit(.minutes(1)), arguments: [false, true])
     func calibrationScheduledAfterPreload(timedOut: Bool) async throws {
         let id = ServeLoopFixture.modelId
         let info = ModelInfo(id: id, modelType: "gemma4", parameters: nil,
             quantization: "4bit", sizeBytes: 1, estimatedMemoryGb: 0.01)
+        // The timed-out case holds its load until the gate has returned; the warm one must never reach the bound.
         let fixture = try await ServeLoopFixture.make(models: [info], backend: BackendSettings(
-            preloadModels: [id], startupPreloadTimeoutSecs: 1, startupSelftest: true))
+            preloadModels: [id], startupPreloadTimeoutSecs: timedOut ? 1 : 600, startupSelftest: true))
         let gate = RecoveryStepGate()
         defer { gate.release() }
         let bridge = try await installCalibrationSlot(fixture, gate: gate, afterSelfTest: true)
@@ -43,14 +44,19 @@ struct ProviderLoopCalibrationTests {
                 container: cancelledPrefixContainer(tokenizer: CancelledPrefixTokenizer(prompt: [1, 2, 3])),
                 tokenizer: TokenizerHandle(ModelCalibrationTokenizer()), engineV2: bridge)
         }
+        // The real self-test decode. Its pump releases the request's service charge only after the stream the
+        // self-test reads has ended, and calibration starts only on an idle Mac, so the self-test here returns once
+        // the bridge has let go of it, as a self-test followed by shape warmup does (`runShapeWarmupBeforeServing`).
+        await fixture.loop.setStartupSelfTestOverrideForTesting { modelId in
+            let elapsed = try await fixture.loop.runStartupSelfTestDecode(modelId: modelId)
+            while !(await bridge.selfTestReleased()) { try await Task.sleep(for: .milliseconds(1)) }
+            return elapsed
+        }
         if !timedOut { load.continuation.yield(); load.continuation.finish() }
         let outcome = await fixture.loop.runStartupPreloadGateForTesting()
         #expect(outcome == (timedOut ? .timedOut : .warm))
         if timedOut { load.continuation.yield(); load.continuation.finish() }
-        let until = ContinuousClock.now + .seconds(5)
-        while await fixture.loop.startupPreloadTaskRunningForTesting(), ContinuousClock.now < until {
-            try await Task.sleep(for: .milliseconds(1))
-        }
+        await fixture.loop.startupPreloadFinished()
         #expect(await bridge.hasScheduledCalibration())
         gate.release()
         _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
@@ -369,9 +375,13 @@ private extension EngineV2Bridge {
     func scheduledCalibrationTask() -> Task<Void, Never>? { modelCalibration.task }
     func completedCalibration() -> Bool { modelCalibration.bootstrapCompleted }
     func hasScheduledCalibration() -> Bool { modelCalibration.task != nil || modelCalibration.bootstrapCompleted }
+    func selfTestReleased() -> Bool { active.isEmpty && pendingSubmissionIDs.isEmpty && serviceBudget?.isIdle == true }
 }
 private extension ProviderLoop {
     func hasPublishedCalibrationSlot() -> Bool { modelSlots[ServeLoopFixture.modelId] != nil }
+
+    /// Waits for the startup preload driver, which schedules calibration in its epilogue.
+    func startupPreloadFinished() async { await startupPreloadTask?.value }
 
     func calibrationHandoffState() -> (Bool, Int, Int) {
         (isLoadingAny, loadingWaiters[ServeLoopFixture.modelId]?.count ?? 0, loadGateWaiters.count)

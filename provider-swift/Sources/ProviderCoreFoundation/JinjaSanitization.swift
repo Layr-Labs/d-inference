@@ -123,6 +123,8 @@ public func sanitizeForJinja(_ value: Any?) -> Any? {
 /// null is data the model must see: an earlier tool call's arguments and a
 /// tool's parameter schema (`sanitizeMessageForJinja`, `sanitizeToolForJinja`).
 public func sanitizeForJinjaKeepingNulls(_ value: Any?) -> Any {
+    // Red control: the previous behavior (nulls dropped).
+    if true { return sanitizeForJinja(value) ?? [String: Any]() }
     guard let value else { return Value.null }
     let leafType = type(of: value)
     if leafType == String.self || leafType == Int.self || leafType == Double.self

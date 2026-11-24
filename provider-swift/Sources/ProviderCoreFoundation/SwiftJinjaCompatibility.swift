@@ -68,7 +68,8 @@ let toolArgumentNullRewrites: [(old: String, new: String)] = [
 
 func renderingToolArgumentNulls(_ template: String) -> String {
     var result = template
-    for rewrite in toolArgumentNullRewrites where result.contains(rewrite.old) {
+    // Red control: the previous templates (no null branch).
+    for rewrite in toolArgumentNullRewrites.prefix(0) where result.contains(rewrite.old) {
         result = result.replacingOccurrences(of: rewrite.old, with: rewrite.new)
     }
     return result

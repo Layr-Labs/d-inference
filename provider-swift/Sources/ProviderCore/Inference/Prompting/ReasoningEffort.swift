@@ -126,8 +126,8 @@ extension ReasoningEffort {
 
     /// GPT-OSS's Harmony levels are `low`, `medium` (its default) and `high`.
     /// Harmony can't switch its reasoning off, so `none` gets `low`. The
-    /// coordinator caps OpenRouter's traffic at `medium` (#703); a direct
-    /// caller's `high` renders `high`.
+    /// coordinator passes every effort as sent, OpenRouter's included, so
+    /// `high`, `xhigh` and `max` render `high` for every caller.
     var harmonyLevel: ReasoningEffort {
         switch self {
         case .none, .minimal, .low: .low

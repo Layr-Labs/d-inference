@@ -644,6 +644,41 @@ the hint when it carries one; the frame supplies the rest
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/SealedPrefixCacheMetadata.swift`;
 [protocol](../reference/protocol-messages.md#inference_request)).
 
+A coordinator request whose earlier tool call carries a JSON null in its
+arguments is served without that context. The shared chat-template path
+renders the null, while the prompt contract the coordinator plans and counts
+with (normalization v9) renders the call without it, so the provider's prompt
+anchor would not match the plan. Once the slot's model type is known, the
+handler replaces the planned context with one without scope or receipt nonce:
+no lookup or ready receipt, no cached-token usage, no checkpoint write. The
+coordinator's attempt then expires unanswered, which carries no proof fence or
+holder invalidation; only the request's exact prompt-work count stops
+qualifying, so it is admitted without calibrated first-content admission.
+GLM-5.3, MiMo, Flint and the managed Nemotron Super owner build their own
+history, already kept these nulls and keep their plan. The template controls
+still come from the planned context. `darkbloom logs` notes each such request
+and the daemon state counts them (`promptCacheSkippedToolCallNull`)
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCache/ToolCallHistoryNullCache.swift`).
+
+A Gemma 4 request is served cold the same way when its declared tools carry a
+parameter whose `string`-first union of `string` and one other scalar type now
+renders as that other type, or a parameter declared without a type that now
+renders untyped (`Gemma4ToolSchemaEnforcement` invariants 7 and 8), while
+normalization v9 renders `STRING`. The check runs the shared tool path once
+more on the declared tools, a superset of the rendered ones, and reports
+whether invariant 7 or 8 changed a render type
+(`ChatTemplateFixes.changesGemmaToolRenderType`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/GemmaToolUnionTypeCache.swift`);
+its counter is `promptCacheSkippedToolUnionType`.
+
+A GPT-OSS request is served cold the same way when one of its declared tools
+renders differently from the repaired declaration normalization v9 renders:
+a `type` list, a union of several types or a node without a type, which
+GPT-OSS now renders as written (`GPTOSSToolSchemaRender.changesRender`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/GPTOSSToolSchemaCache.swift`);
+its counter is `promptCacheSkippedToolRawSchema`. A body whose tools arrive
+already repaired renders as before and keeps its cache context.
+
 Native MiMo historical checkpoints retain only actual uniform-chunk frontiers
 whose target and optional assistant state completed their native observation
 and promotion fences. Their fork target is the deepest successfully captured

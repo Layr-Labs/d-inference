@@ -88,6 +88,55 @@ struct ProviderSignalTests {
         }
     }
 
+    @Test("a second Ctrl-C ends the process at once; SIGTERM and SIGHUP only ever join the drain")
+    func secondInterruptExits() {
+        var interrupted = ProviderStopSignalState()
+        #expect(interrupted.receive(SIGINT) == .drain)
+        #expect(interrupted.receive(SIGINT) == .exitNow)
+        var terminated = ProviderStopSignalState()
+        #expect(terminated.receive(SIGTERM) == .drain)
+        #expect(terminated.receive(SIGTERM) == .drain, "the cluster supervisor may send SIGTERM more than once")
+        #expect(terminated.receive(SIGHUP) == .drain)
+        #expect(terminated.receive(SIGINT) == .exitNow, "a Ctrl-C during a drain another signal started")
+        #expect(ProviderStopSignalState.interruptedStatus == 130)
+    }
+
+    @Test("a second Ctrl-C during the drain exits the process with status 130")
+    func secondInterruptExitsTheProcess() async {
+        await #expect(processExitsWith: .exitCode(130)) {
+            startAsIfByHand()
+            let calls = DrainCalls()
+            let handler = ProviderSignalHandler {
+                calls.add()
+                try? await Task.sleep(for: .seconds(60))
+            }
+            _ = kill(getpid(), SIGINT)
+            guard await calls.reach(1) else { exit(2) }
+            _ = kill(getpid(), SIGINT)
+            try? await Task.sleep(for: .seconds(30))
+            withExtendedLifetime(handler) {}
+            exit(1)
+        }
+    }
+
+    @Test("a second SIGTERM during the drain joins it and the process keeps running")
+    func secondTerminationKeepsDraining() async {
+        await #expect(processExitsWith: .success) {
+            startAsIfByHand()
+            let calls = DrainCalls()
+            let handler = ProviderSignalHandler {
+                calls.add()
+                try? await Task.sleep(for: .seconds(60))
+            }
+            _ = kill(getpid(), SIGTERM)
+            guard await calls.reach(1) else { exit(2) }
+            _ = kill(getpid(), SIGTERM)
+            let joined = await calls.reach(2)
+            withExtendedLifetime(handler) {}
+            exit(joined ? 0 : 1)
+        }
+    }
+
     @Test("when re-executing fails, a hangup still drains")
     func failedExecLeavesHangupDraining() async {
         await #expect(processExitsWith: .success) {
@@ -160,4 +209,20 @@ private func drainCompletes(markedBy marker: URL, within limit: Duration = .seco
     let drained = (try? Data(contentsOf: marker)) == Data("drained".utf8)
     try? FileManager.default.removeItem(at: marker)
     return drained
+}
+
+/// Counts the drain's starts in a child process.
+private final class DrainCalls: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func add() { lock.withLock { count += 1 } }
+
+    /// Whether `count` starts happened, looked at every 10 ms for at most 10 s.
+    func reach(_ target: Int) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while lock.withLock({ count }) < target, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return lock.withLock { count } >= target
+    }
 }

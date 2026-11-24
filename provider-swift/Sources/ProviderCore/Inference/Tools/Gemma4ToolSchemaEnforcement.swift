@@ -64,6 +64,8 @@ enum Gemma4ToolSchemaEnforcement {
     /// `null` member is skipped, as `nullable` carries it), else nil. A node
     /// with `enum`, `const` or `allOf` keeps `string`.
     static func stringFirstUnionRenderType(_ node: [String: any Sendable]) -> String? {
+        // Red control: the previous render type.
+        if !node.isEmpty || node.isEmpty { return nil }
         guard (node["type"] as? String)?.lowercased() == "string",
             node["enum"] == nil, node["const"] == nil, node["allOf"] == nil
         else { return nil }

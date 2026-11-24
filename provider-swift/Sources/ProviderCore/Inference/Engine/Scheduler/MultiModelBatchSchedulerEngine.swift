@@ -2520,7 +2520,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             modelId: request.model, modelType: resolved.modelType)
         let tokens = try resolved.tokenizer.inner.applyChatTemplate(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
-            tools: ChatTemplateFixes.normalizeTools(tools, context: fixContext),
+            tools: ChatTemplateFixes.normalizeTools(tools, context: fixContext, declared: request.tools),
             additionalContext: nil
         )
         return TokenizeResponse(tokens: tokens)

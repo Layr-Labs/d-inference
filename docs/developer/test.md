@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -170,6 +170,16 @@ markers, scalar/string answers, exhaustion and non-Qwen fallback.
 Run these with the normal source-matched provider test products and isolated
 runner below. Tiny fixtures do not qualify full-model throughput, production
 resource use or native completion-tracked engines.
+
+The Inkling image-role fixtures in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Inkling2/image-role-requests.json`
+exercise the public request decoder, the image-role guard and native image ingest.
+Run `Inkling2ServingWiringTests/imageRolesMatchPublicContract` and
+`mediaRefusalsAreExplicit` twice in fresh test processes, once with
+`DARKBLOOM_MEDIA_ON_EVERY_ROLE` unset and once with it set to `0`.
+User and paired tool images reach ingest in both runs. System, assistant and
+aliased developer images return HTTP 400 in both. Check the error code and
+refusal reason for each mode, and the separate invalid-media response for video.
 
 From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
 to prepare the inputs and run `make provider-test`.
@@ -685,6 +695,33 @@ The SDK's reference-math policy disables TF32 on M5 for float32 comparisons
 (`libs/mlx-swift-lm/CONTRIBUTING.md`). This test precision setting is not proof
 of an ordinary serving default or of full-model performance.
 
+### Inkling 2 Mini contract tests
+
+`Inkling2PromptContractTests`, `Inkling2OutputChannelsTests`,
+`Inkling2ToolStreamRouterTests` and `Inkling2DSparkArtifactTests` need no weights
+or GPU. They read the unmodified upstream template, configuration and tokenizer
+configuration pinned in `provider-swift/Tests/ProviderCoreTests/Fixtures/Inkling2/`
+(provenance and hashes in its README) and the regenerated
+`fixtures/prompt-contract/v1/reasoning_effort_vectors.json`:
+
+```bash
+swift test --skip-build --filter 'Inkling2|CachePromptParityTests|ReasoningEffortValuesTests|TemplateRenderCheck'
+```
+
+They cover the template's byte output through the provider's filters, the cache
+layout and media policy from the configuration, the integrity set of every file
+the load path reads, the output lexer under every split, malformed and deeply
+nested frames, forced, streamed and withheld routing, the loop guard
+(`Inkling2LoopGuardTests`) and the 48 GB KV sizing (`Inkling2MemorySizingTests`).
+The native model, its drafter and media prefill are separate SDK gates.
+
+Two checks need files outside the repository and are skipped, not passed,
+without them: `INKLING2_ORACLE_TEMPLATE_DIR` names the reference renders of the
+chat template (byte-identical prompts and refusals), and with it
+`INKLING2_MODEL_DIR` names a verified checkpoint whose tokenizer and processor
+files (no weights) run the provider's image path
+(`Inkling2ImagePromptOracleTests`: identical input ids, bit-identical pixels).
+
 ### MiMo regression fixtures
 
 Before the full provider test gate, provision its ordinary MiMo regression
@@ -836,7 +873,9 @@ before the retry deadline plus acceptance at the deadline despite fresh rates.
 `ProviderLoopCalibrationTests` runs registration against loopback and exercises
 normal and timed-out startup preloads. It checks eager scheduling after the
 self-test, before the first capacity tick, while retaining a blocked-posture
-case. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
+case. `calibrationStartsWhenTheSelfTestIsReleased` holds the self-test's pump
+after its stream ended and checks that calibration still starts once it is
+released. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
 cannot suppress the unfinished bootstrap.
 The loop suite also checks serial calibration across three resident engines
 without another capacity tick, stops that chain for foreground work or draining
@@ -1512,6 +1551,13 @@ its `README.md`). `TemplateRenderStackTests` renders that template, and
 `Gemma4ServedTemplateRenderTests` the served Gemma 4 macros, with a tool schema
 nested 64 levels deep, the most a request may carry, on the render stack
 (`TemplateRenderStack`) in the debug test build.
+
+The same directory holds `tool-schema-corpus.json`, the distinct tool
+`parameters` of a realistic tool-call schema corpus (descriptions and titles
+reduced to `d`). `GPTOSSToolSchemaRenderTests` renders each through that
+template as the ingress repair forwards it and requires a byte-identical
+prompt and an unchanged cache context, and renders each as written without a
+template failure (`GPTOSSToolSchemaRender`).
 
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never

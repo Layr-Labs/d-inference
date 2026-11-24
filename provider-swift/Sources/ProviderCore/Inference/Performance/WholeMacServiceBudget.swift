@@ -50,6 +50,10 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     private var activityEpoch: UInt64 = 0
     private var advertisedEligibility: [DeadlineApplicability: Bool] = [:]
     private var charges: [String: Charge] = [:]
+    /// Serving shares held while a request's prompt is prepared
+    /// (`acquirePreparation`). They count only toward admission; deadline,
+    /// calibration and reported usage see a request from its `acquire` on.
+    private var preparations: [String: Double] = [:]
     private var retirementWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var unboundedActivities: Set<UUID> = []
     private var evidenceGuard = CBv2FirstContentEvidenceGuard()
@@ -140,12 +144,16 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             ?? ServiceReservationLifetime.normalizedID(serviceReservationID)
         let (acquired, notification) = lock.withLock { () -> (Bool, AsyncStream<Void>.Continuation?) in
             guard charges[ownerID] == nil, concurrency > 0 else { return (false, nil) }
+            // The owner's own preparation share becomes this charge; other
+            // requests' preparation shares are occupied capacity.
+            let otherPreparations = preparationFractionLocked(excluding: ownerID)
             if requiresIdle, !charges.isEmpty || !unboundedActivities.isEmpty { return (false, nil) }
             if let reservationID, charges.values.contains(where: { $0.reservationID == reservationID }) {
                 return (false, nil)
             }
             let charge = 1 / Double(concurrency)
-            guard overcommit || charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else {
+            guard overcommit
+                || charges.values.reduce(0, { $0 + $1.fraction }) + otherPreparations + charge <= 1 + 1e-12 else {
                 return (false, nil)
             }
             // A continuation joins any charge but the recovery's: at width 1 it shares the Mac with a whole-Mac charge,
@@ -166,10 +174,38 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             } else { proof = nil }
             charges[ownerID] = Charge(fraction: charge, reservationID: reservationID,
                 lifetime: serviceReservation, work: work, deadlineProof: proof, exclusive: requiresIdle)
+            preparations[ownerID] = nil
             return (true, observer)
         }
         notification?.yield()
         return acquired
+    }
+
+    /// Holds one serving share for `ownerID` while its prompt is rendered
+    /// and tokenized, so preparation counts against the serving width before
+    /// the prompt's size is known. `acquire` with the same owner takes the
+    /// share over in place; `releasePreparation` drops a share not taken over.
+    /// `overcommit` as in `acquire`.
+    func acquirePreparation(ownerID: String, concurrency: Int, overcommit: Bool = false) -> Bool {
+        lock.withLock {
+            guard charges[ownerID] == nil, preparations[ownerID] == nil, concurrency > 0 else { return false }
+            let share = 1 / Double(concurrency)
+            guard overcommit || charges.values.reduce(0, { $0 + $1.fraction })
+                + preparationFractionLocked(excluding: nil) + share <= 1 + 1e-12 else { return false }
+            preparations[ownerID] = share
+            return true
+        }
+    }
+
+    /// No effect once `acquire` took the share over or it was released.
+    func releasePreparation(ownerID: String) {
+        _ = lock.withLock { preparations.removeValue(forKey: ownerID) }
+    }
+
+    var preparationCount: Int { lock.withLock { preparations.count } }
+
+    private func preparationFractionLocked(excluding ownerID: String?) -> Double {
+        preparations.reduce(0) { $0 + ($1.key == ownerID ? 0 : $1.value) }
     }
 
     func release(ownerID: String) {

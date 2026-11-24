@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-24
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -587,7 +587,8 @@ routing on them.
 | `request_limits` | `*SlotRequestLimits` | `SlotRequestLimits?` | opt | The request sizes a cluster pair leader's slot serves; [schema below](#slotsrequest_limits). Omitted by a single Mac's slot and by providers before 0.10.10 |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
-| `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
+| `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS; omitted when unmeasured, and when the slot is idle and its newest decode sample is older than `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` (30 minutes by default) |
+| `observed_decode_tps_age_ms` | (not read yet) | `Int64?` | opt | Milliseconds since the newest sample that moved `observed_decode_tps` (a reply of at least 32 tokens, or a calibration cell; `EngineV2Bridge.publishedDecodeAt`). Sent only with a published rate. Informational in this release: the provider's rate and the coordinator's ranking are unchanged until the coordinator reads it (`DecodeRateIdleAge.publishedAgeMilliseconds`) |
 | `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
 | `kv_bytes_per_token` | `int64` | `Int64` | opt | Capacity price per reserved token (prompt + max output), excluding fixed per-request bytes; it divides `active_token_budget_max`. A GLM slot reports target KV plus native step scratch and embedded-MTP state per token; its capacity also excludes one step's setup |

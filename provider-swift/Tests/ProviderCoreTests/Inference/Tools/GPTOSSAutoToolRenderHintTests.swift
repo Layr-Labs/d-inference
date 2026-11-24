@@ -59,6 +59,24 @@ struct GPTOSSAutoToolRenderHintTests {
         #expect(Self.accepts(constraint, "mode", "\"inherit\""))
     }
 
+    @Test("a hinted node marked nullable admits null, as the strict check reads it")
+    func hintedNullableNodesAdmitNull() throws {
+        let tools = [
+            Self.tool("adjust", [
+                "anyOf": [["type": "string"], ["type": "integer"]], "type": "string", "nullable": true,
+            ]),
+            Self.tool("pick", ["oneOf": [["type": "integer"]], "type": "integer", "nullable": true]),
+            Self.tool("mode", ["enum": ["default", "inherit", -1] as [Any], "type": "string", "nullable": true]),
+        ]
+        let constraint = try A.constraint(tools: tools)
+        for name in ["adjust", "pick", "mode"] {
+            #expect(Self.accepts(constraint, name, "null"), "\(name)")
+        }
+        #expect(Self.accepts(constraint, "adjust", "-4200"))
+        #expect(Self.accepts(constraint, "pick", "7"))
+        #expect(Self.accepts(constraint, "mode", "-1"))
+    }
+
     /// Declarations without a render hint, which the pre-pass returns as
     /// they are, and Pydantic's nullable unions, whose render type the
     /// widening already drops (`withoutUnionRepair`): their compiled

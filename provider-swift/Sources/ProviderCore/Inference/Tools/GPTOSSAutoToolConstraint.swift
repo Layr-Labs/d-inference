@@ -129,10 +129,28 @@ enum GPTOSSAutoToolGrammar {
         return copy
     }
 
+    /// A hinted node marked `nullable` admits null whatever its type, as the
+    /// strict check reads it; without the type, its union or `enum` must carry
+    /// null itself so the grammar admits it too.
+    private static func admittingNull(_ object: inout [String: MLXLMCommon.JSONValue]) {
+        for key in ["anyOf", "oneOf"] {
+            guard case .array(var branches)? = object[key] else { continue }
+            if !branches.contains(where: isNullBranch) {
+                branches.append(.object(["type": .string("null")]))
+                object[key] = .array(branches)
+            }
+        }
+        if case .array(var members)? = object["enum"], !members.contains(.null) {
+            members.append(.null)
+            object["enum"] = .array(members)
+        }
+    }
+
     private static func withoutRenderHintTypes(_ schema: MLXLMCommon.JSONValue, depth: Int) -> MLXLMCommon.JSONValue {
         guard depth <= ToolConstraintSchemaCompiler.maxDepth, case .object(var object) = schema else { return schema }
         if QwenParserLiteralReading.rendersSiblingType(object) {
             object.removeValue(forKey: "type")
+            if object["nullable"] == .bool(true) { admittingNull(&object) }
         }
         for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
             guard case .array(let branches)? = object[key] else { continue }

@@ -199,14 +199,18 @@ struct LocalHeadHoldTests {
     @Test(arguments: streamed)
     func aRequestsOwnBoundEndsItsWaitInTheEngineQueue(stream: Bool) async throws {
         let engine = HeadHoldEngine(), clock = PrefillTestClock()
+        let leaseEnded = HeadHoldFlag()
         let start = ContinuousClock.now
         let response = try await Self.app(engine, clock: clock).test(.router) { client in
             async let answer = client.execute(uri: "/v1/chat/completions", method: .post,
                                               headers: Self.headers(maxWait: "1"), body: Self.chat(stream: stream))
             #expect(await clock.eventually { _ in engine.submitted == 1 })
-            // The engine's own lease, three seconds in, if the request were still queued then.
+            // The engine's own lease, well past the bound, if the request were still queued then. Whether it ended
+            // the request is recorded, not timed: the CI watchdog pauses the whole test process to sample it once
+            // the suite has run 900 s, which can stretch any real-time upper bound.
             let lease = Task {
-                try await Task.sleep(for: .seconds(3))
+                try await Task.sleep(for: .seconds(20))
+                leaseEnded.set()
                 engine.end(.terminal(cause: .admissionTimeout, message: "admission lease expired"))
             }
             defer { lease.cancel() }
@@ -216,7 +220,8 @@ struct LocalHeadHoldTests {
         let body = String(buffer: response.body)
         #expect(response.status == .serviceUnavailable, "\(body.prefix(300))")
         #expect(body.contains(Self.memoryWords) && !body.contains("data:"), "\(body.prefix(300))")
-        #expect(took >= .seconds(1) && took < .milliseconds(2_500), "\(took)")
+        #expect(took >= .seconds(1), "\(took)")
+        #expect(!leaseEnded.isSet, "the request's own bound ended its wait, not the engine's lease (\(took))")
         #expect(engine.cancelled == 1, "taken out of the engine's queue")
     }
 }
@@ -339,6 +344,13 @@ final class SteppingHeadHoldEngine: CBv2Engine, @unchecked Sendable {
         }
     }
     func shutdown() async { stop() }
+}
+
+private final class HeadHoldFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
 }
 
 /// Renders every conversation to 8 tokens.

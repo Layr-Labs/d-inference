@@ -3508,7 +3508,13 @@ the served Inkling 2 Mini, whose answer-channel stop scope the row's detokenizer
 token through the row's detokenizer and ends the row at the first match, rolling back
 the rest: given the committed tokens, stop matching, scope, truncation and the finish
 reason follow ordinary decode; `DARKBLOOM_MTP_STOP_STRING_ROWS=0` keeps
-them target-only. Repetition penalty, bias, logprobs and token constraints retain their
+them target-only. Since 0.10.18 rows with a repetition penalty speculate on the builds in
+`SDKFeatureDefaults.repetitionPenaltyRowBuilds` (the same builds;
+`CBv2MTPConfig.repetitionPenaltySpeculation`): each verify position's window is the last
+`repetitionContextSize` tokens of prompt, confirmed output and the drafts before it, penalized
+with `LogitsPipelineV2.process`'s ops before presence/frequency, and such rows accept exactly
+(`CBv2DefaultSampler.applyWindowRepetition`); `DARKBLOOM_MTP_REPETITION_PENALTY_ROWS=0` keeps
+them target-only. Bias, logprobs and token constraints retain their
 ordinary-decode exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,

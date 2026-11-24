@@ -231,12 +231,12 @@ public enum TemplateRenderCheck {
         // faithful to "renders here == renders at request time".
         context["messages"] = .array(
             try fixture.messages.map { message in
-                try Value(any: sanitizeForJinja(stripHarmonyFramingFromAssistantMessage(message)))
+                try Value(any: sanitizeMessageForJinja(stripHarmonyFramingFromAssistantMessage(message)))
             })
         context["add_generation_prompt"] = .boolean(true)
         if let tools = fixture.tools {
             context["tools"] = .array(
-                try tools.map { try Value(any: sanitizeForJinja($0)) })
+                try tools.map { try Value(any: sanitizeToolForJinja($0)) })
         }
         return context
     }

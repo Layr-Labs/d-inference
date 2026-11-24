@@ -245,6 +245,28 @@ struct QwenStrictToolGrammarTests {
         #expect(F.allows("[{\"sku\": \"\\u00e9 \u{1F600}\", \"qty\": 1}]\n</parameter>\n", constraint, after: items))
     }
 
+    /// An optional string (`["string","null"]`, `anyOf` string or null) keeps
+    /// its text constraint although the parser reads its `null` text as null:
+    /// that literal is one the declaration admits.
+    @Test func optionalStringParametersKeepTheirConstraint() throws {
+        let order = try #require(try F.constraint(F.body(tools: F.order)))
+        let call = "<tool_call>\n<function=place_order>\n"
+        #expect(F.allows("<parameter=note>\nnull\n</parameter>\n", order, after: call))
+        #expect(F.allows("<parameter=note>\nfragile\n</parameter>\n", order, after: call))
+        #expect(!F.allows("<parameter=nope>", order, after: call))
+        let unions = try #require(try F.constraint(F.body(tools: F.unions)))
+        let label = "<tool_call>\n<function=f>\n<parameter=limit>\nnull\n</parameter>\n<parameter=label>\n"
+        #expect(F.allows("x\n</parameter>\n", unions, after: label))
+        #expect(F.allows("null\n</parameter>\n", unions, after: label))
+        for schema in [#"{"type":["string","null"]}"#, #"{"anyOf":[{"type":"string"},{"type":"null"}]}"#] {
+            let decoded = try JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(schema.utf8))
+            let conversion = QwenStrictToolSchema.parserConversion(decoded)
+            #expect(conversion.kind == .text)
+            #expect(conversion.literal("null") == .null)
+            #expect(conversion.literal("x") == nil)
+        }
+    }
+
     @Test func requiredOptionalUndeclaredAndDuplicateParameters() throws {
         let constraint = try #require(try F.constraint(F.body(tools: F.order)))
         let call = "<tool_call>\n<function=get_time>\n"

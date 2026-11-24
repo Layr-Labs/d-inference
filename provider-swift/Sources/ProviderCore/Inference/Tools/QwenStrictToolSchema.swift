@@ -207,8 +207,6 @@ struct QwenStrictToolSchema: Sendable {
         let null = conversion.acceptsNull && conversion.kind != .text
         let json: ToolValueSchema
         switch (schema, conversion.kind) {
-        case (.string, .text) where conversion.literalSchema != nil:
-            throw ToolConstraintSchemaError.unsupported("the call parser reads some texts of this parameter as literals")
         case (.string(let values, _), .text):
             guard let values else { return .text }
             let spellings = Set(values.compactMap { value -> [UInt8]? in
@@ -263,7 +261,10 @@ struct QwenStrictToolSchema: Sendable {
         /// `null` (also `none`, `nil`) is read as JSON null.
         let acceptsNull: Bool
         /// For a `.text` reading: the schema under which some texts read as
-        /// JSON literals (`QwenParserLiteralReading`), else nil.
+        /// JSON literals (`QwenParserLiteralReading`), else nil. The grammar
+        /// still holds such a parameter as text: the parser returns only a
+        /// literal the declaration admits (`null` for an optional string), so
+        /// every text the grammar admits still parses to a valid argument.
         var literalSchema: [String: MLXLMCommon.JSONValue]? = nil
 
         /// The literal the parser reads `text` as, when it does not keep it.

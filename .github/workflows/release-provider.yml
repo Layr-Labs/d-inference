@@ -548,7 +548,11 @@ jobs:
           # authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/$APP_NAME"
           mkdir -p "$STAGE"
-          cp -R "$UNSIGNED_ROOT/$APP_NAME" "$APP"
+          # -p keeps the unpacked modes whatever the runner's umask (plain -R
+          # gives 0700 under umask 077); every executable stays 0755, the mode
+          # the final archive check and the installer require of the fan helper.
+          cp -pR "$UNSIGNED_ROOT/$APP_NAME" "$APP"
+          python3 scripts/provider-signing-validation.py executable-modes --app "$APP" --version "$VERSION"
           printf '1\n' > "$APP/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
 
           cat > "$APP/Contents/Info.plist" << PLIST

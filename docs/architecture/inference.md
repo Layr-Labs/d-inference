@@ -2640,6 +2640,20 @@ reaches a destination
 ([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
 (`CBv2CompleteCheckpointImport`)).
+That decode runs on up to eight cores (at most half the active ones), 1,024
+whole rows at a time, and writes a paged native layer's rows straight to their
+page addresses (`CBv2PagedCheckpointStorage.rowTargets`, the addresses its
+`append` writes); other destinations keep the ordered copies. Each row's bytes
+depend only on its coded bytes, so the staged state is the one a single thread
+leaves. When the serving pool wraps zero-fill-on-demand pages
+(`hostZeroedSegments`), the staged checkpoint's pages are wrapped the same way
+instead of being copied from host zeros. Before this, a 1,024-token Gemma 4 26B
+hit staged in about 141 ms on an M5 Ultra, mostly the one-thread decode and the
+page allocation, against about 30 ms for Qwen 3.6, whose checkpoints are
+native. `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE=0` keeps the decode on one
+thread
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/NativeCheckpointRowCodec.swift`,
+`CBv2NativeCheckpointRowDecoder`).
 
 A donor's stream retires only after its complete checkpoint is published
 (`EngineLoopV2.finishAfterCompletePrefixPublication`), so export time is added

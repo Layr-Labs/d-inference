@@ -73,7 +73,7 @@ enum GPTOSSToolSchemaRender {
     /// repair's own result wherever the served prompt keeps it. Other
     /// families keep `declared`.
     static func servedTools(_ declared: [OpenAITool]?, modelId: String?, modelType: String?) -> [OpenAITool]? {
-        guard applies(modelId: modelId, modelType: modelType), let declared else { return declared }
+        guard !redControl, applies(modelId: modelId, modelType: modelType), let declared else { return declared }
         return declared.map { tool in
             guard let parameters = repairedParameters(tool, writesRenderTypes: false) else { return tool }
             var copy = tool

@@ -206,6 +206,8 @@ struct QwenStrictToolSchema: Sendable {
         let null = conversion.acceptsNull && conversion.kind != .text
         let json: ToolValueSchema
         switch (schema, conversion.kind) {
+        case (.string, .text) where conversion.literalSchema != nil:
+            throw ToolConstraintSchemaError.unsupported("the call parser reads some texts of this parameter as literals")
         case (.string(let values, _), .text):
             guard let values else { return .text }
             let spellings = Set(values.compactMap { value -> [UInt8]? in
@@ -259,10 +261,21 @@ struct QwenStrictToolSchema: Sendable {
         let kind: Kind
         /// `null` (also `none`, `nil`) is read as JSON null.
         let acceptsNull: Bool
+        /// For a `.text` reading: the schema under which some texts read as
+        /// JSON literals (`QwenParserLiteralReading`), else nil.
+        var literalSchema: [String: MLXLMCommon.JSONValue]? = nil
+
+        /// The literal the parser reads `text` as, when it does not keep it.
+        func literal(_ text: String) -> MLXLMCommon.JSONValue? {
+            literalSchema.flatMap { QwenParserLiteralReading.literal(text, schema: $0) }
+        }
     }
 
     static func parserConversion(_ schema: MLXLMCommon.JSONValue?) -> ParserConversion {
-        let text = ParserConversion(kind: .text, acceptsNull: false)
+        var text = ParserConversion(kind: .text, acceptsNull: false)
+        if case .object(let object)? = schema, QwenParserLiteralReading.admitsLiteralType(object) {
+            text.literalSchema = object
+        }
         guard case .object(let object)? = schema, object["type"] != .string("string"),
               let types = declaredTypes(object, depth: 0) else { return text }
         var concrete = types.subtracting(["null"])
@@ -323,24 +336,7 @@ struct QwenStrictToolSchema: Sendable {
         return result
     }
 
-    private static func canonicalType(_ name: String) -> String? {
-        let type = name.lowercased()
-        switch type {
-        case "string", "str", "text", "varchar", "char", "enum": return "string"
-        case "integer", "int", "uint", "long", "short", "unsigned": return "integer"
-        case "number", "float": return "number"
-        case "boolean", "bool", "binary": return "boolean"
-        case "object", "dict": return "object"
-        case "array", "arr", "list": return "array"
-        case "null": return "null"
-        default:
-            if ["int", "uint", "long", "short", "unsigned"].contains(where: type.hasPrefix) { return "integer" }
-            if type.hasPrefix("num") || type.hasPrefix("float") { return "number" }
-            if type.hasPrefix("dict") { return "object" }
-            if type.hasPrefix("list") { return "array" }
-            return nil
-        }
-    }
+    private static func canonicalType(_ name: String) -> String? { QwenParserLiteralReading.canonicalType(name) }
 
     // MARK: - `$ref`
 

@@ -332,7 +332,7 @@ connection, first.
 | `models` | `[]ModelInfo` | `[ModelInfo]` | req | [`models[]`](#models) |
 | `backend` | `string` | `String` | req | e.g. `"mlx-swift"`; the coordinator sends `load_model`, `prefetch_model` and `desired_models` only to `backend == "mlx-swift"` |
 | `model_autopilot` | `*ModelAutopilotState` | `ModelAutopilotSnapshot?` | opt | Explicit consent and resident ownership; [state object](#model_autopilot-state). Missing state does not grant consent; scheduling/reconciliation requires a fresh paired backend-capacity snapshot |
-| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty. `glm5_next_v1` is reported only by builds that serve GLM-5.3-Flash on Apple M5 Max or M5 Ultra with at least 256 GiB (`GLM5NextHardwareRequirement`); the platform accepts it only beside an attested M5 chip family |
+| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty. `glm5_next_v1` is reported only by builds that serve GLM-5.3-Flash on Apple M5 Max or M5 Ultra with at least 256 GiB (`GLM5NextHardwareRequirement`); the platform accepts it only beside an attested M5 chip family. `cache_policy_v1`: every build that honours the sealed [`cache_policy`](#sealed-cache-policy) reports it, here and in the signed attestation's `runtimeCapabilities` (one detected set feeds both, `ProviderRuntimeCapabilityDetector.detectPrepared`); a pair member reports it beside its hardware capabilities (`DistributedServingEligibility.memberRegistrationCapabilities`) |
 | `version` | `string` | `String?` | opt | provider binary version, e.g. `"0.2.31"` |
 | `public_key` | `string` | `String?` | opt | base64 X25519 public key `K` for E2E encryption |
 | `encrypted_response_chunks` | `bool` | `Bool` | opt | Swift encodes only when `true` |
@@ -587,7 +587,7 @@ routing on them.
 | `request_limits` | `*SlotRequestLimits` | `SlotRequestLimits?` | opt | The request sizes a cluster pair leader's slot serves; [schema below](#slotsrequest_limits). Omitted by a single Mac's slot and by providers before 0.10.10 |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
-| `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS; omitted when unmeasured, and when the slot is idle and its newest decode sample is older than `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` (30 minutes by default) |
+| `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS; omitted when unmeasured, and when the slot is idle and its newest decode sample is older than `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` (30 minutes by default), unless the connected coordinator advertises `trust_status.coordinator_features` `decode_rate_age_decay` |
 | `observed_decode_tps_age_ms` | (not read yet) | `Int64?` | opt | Milliseconds since the newest sample that moved `observed_decode_tps` (a reply of at least 32 tokens, or a calibration cell; `EngineV2Bridge.publishedDecodeAt`). Sent only with a published rate. Informational in this release: the provider's rate and the coordinator's ranking are unchanged until the coordinator reads it (`DecodeRateIdleAge.publishedAgeMilliseconds`) |
 | `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
@@ -1357,6 +1357,7 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, [coordinator/registry/cache_attempt_ownership.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_attempt_ownership.go)). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, [e2e/testbed/provider_wire_relay.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/e2e/testbed/provider_wire_relay.go)) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
 | `gemma_prompt_contract` | `int` | `Int?` | opt | the [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the coordinator planned and counted this request with. `2` asks a provider that registered `gemma_prompt_contract: 2` for the text-parts render; absent (older coordinators, or a model the coordinator has not switched on) renders contract 1. A provider renders `2` only while it advertises it, only for the model types `gemma4` and `gemma4_text` (not `gemma4_vision` or `diffusion_gemma`) and only for text requests (no image, video or audio parts); any other value, or a malformed one, renders contract 1 and never refuses the frame. **Coordinator preconditions** (anything else serves a prompt other than the one planned, which fails the cache receipt and fences the provider): send `2` only to a provider that registered it, only for a text request, with contract 2's cache plan and prompt work (or none); choose again for every attempt, so a retry or handoff to another provider recomputes or clears it as it does the cache fields. For other model types both contracts plan the same prompt, so the ask changes nothing |
+| `cache_policy` | — | `RequestCachePolicy` | — | Never sent: the policy is sealed in `_darkbloom_cache` ([below](#sealed-cache-policy)). No signature covers the frame's key, so one that a frame carries anyway can only narrow the sealed policy: any value but the string `default`, a malformed one included, makes the request `memory_only` (`CoordinatorMessage.InferenceRequest.frameCachePolicy`) |
 | `coordinator_signature` | `*CoordinatorRequestSignature` | `CoordinatorRequestSignature?` | opt | The coordinator's Ed25519 signature over this request: `version` (1), `key_id` (first 16 hex characters of SHA-256 of the public key), `issued_at_ms` (coordinator Unix time at dispatch), `model` (the build the sealed body asks for) and `signature` (base64, 64 bytes). Version 1 signs, each as a 4-byte big-endian length and its bytes: the domain `darkbloom-coordinator-inference-request-v1`, `key_id`, `issued_at_ms`, `request_id`, `service_reservation_id`, the provider's own X25519 public key, `model`, SHA-256 of the raw `ephemeral_public_key` followed by the raw `ciphertext`, `cache_scope`, `cache_receipt_nonce`, `prefix_cache_protocol`, `cache_receipt_boundary_mode`, `cache_repeated_prefix_tokens`, `tool_schema_metadata_protocol` and `gemma_prompt_contract` (an absent value is empty; an integer is decimal). A provider build checks it only against the keys it pins (`CoordinatorRequestSigningKeys`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSigningKeys.swift`): production builds pin the production coordinator's key (`key_id` `e7d53f46617e9494`), dev builds DevNet's (`7c638fff1a85dd4a`), staging builds none, and no build requires a signature yet. With a pinned key, a signed request is served only if it verifies for this provider's key and its `issued_at_ms` is within 300 s of the Mac's clock; a build that also sets `requireSignature` refuses a request without one. A refused request gets `inference_error` `encryption_failure` (502) and releases its reservation; the provider log names the reason (`coordinator signature unknown_key`, `stale`, …). The same signed request is served once: a second copy within its 300 s gets no answer, so the first copy keeps its reservation (`CoordinatorRequestVerifier.check`, `CoordinatorServedRequests`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSignature.swift`). A value that does not decode as this object reads as absent; one that decodes but fails a check is refused. Without a pinned key it is ignored, as older providers ignore it |
 
 A coordinator can also put the attempt's prefix-cache identity inside the
@@ -1373,6 +1374,28 @@ frame without a nonce, or a member that is malformed or has a blank `nonce` or
 `scope` leaves the frame's fields in force, so a coordinator that writes no
 copy is served as before, and a copy without the attempt's receipt nonce never
 selects a scope.
+
+#### Sealed cache policy
+
+The same member may carry `"cache_policy"`; the member may hold that key alone,
+with no `nonce` or `scope` (`SealedPrefixCacheMetadata.BodyProbe`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/RequestCachePolicy.swift`):
+
+| Value | Request |
+|---|---|
+| absent, or the string `default` | as before |
+| `memory_only` | runs with its prefix cache off: it never reads, writes, stages, donates or restores anything on the SSD tier, keeps nothing in the engine-resident tiers or the prompt-token piece cache, and on a two-Mac pair its ranks get `ClusterWorkerPrefixCache.disabled` |
+| anything else: another string, `null`, a number, an object, or a `_darkbloom_cache` that is not an object | `memory_only` |
+
+The policy does not need the attempt's nonce: a member with another `nonce`
+still narrows the request, while its `scope` stays unused as above. A
+`memory_only` request sends no SSD-tier `prefix_cache_lookup_v2` or
+`prefix_cache_ready_v2`, because each takes a sequence number that the epoch
+record on disk persists; with no memory-tier evidence either, it sends no
+prefix-cache evidence at all (`EngineV2Bridge.prefixCacheEvidenceCallbacks`,
+`durable`). Its usage still reports a cache miss. Requests count by policy on
+the local [`/metrics`](../provider/direct-mode.md#cache-policy-of-local-requests)
+(`darkbloom_cache_policy_requests_total`).
 
 A decrypted body that nests objects and arrays more than 64 deep
 (`JSONNestingLimit.maximumDepth`,
@@ -1661,7 +1684,18 @@ See [revision lifecycle](../architecture/model-revisions.md).
 
 Go `TrustStatusMessage` · Swift `TrustStatus`. `trust_level` ∈ {`none`,
 `self_signed`, `hardware`}; `status` (`online`, `untrusted`, …); `reason`
-(opt in Go, `String` in Swift). Operator diagnostics only.
+(opt in Go, `String` in Swift). Operator diagnostics only, except
+`coordinator_features`.
+
+`coordinator_features` (opt, list of strings; Swift `coordinatorFeatures`)
+names coordinator behaviours a provider may rely on. Each `trust_status`
+replaces the previous list, a disconnect clears it, and absent, malformed or
+unknown names leave the provider as it was. `decode_rate_age_decay`: the
+coordinator decays a stale `observed_decode_tps` by its
+`observed_decode_tps_age_ms`, so the provider stops omitting an idle slot's
+rate after `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS`
+(`DecodeRateIdleAge.coordinatorDecays`). Shared cases:
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/coordinator_features_wire.json`.
 
 ### `capacity_probe`
 

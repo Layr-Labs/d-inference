@@ -664,6 +664,7 @@ final class EndpointBox: @unchecked Sendable {
             && inspected.line.hasPrefix("Cluster prefix tier: 2 plans, 3 records, 0.00 GB"),"cluster tier inspection miscounts")
         try require(!ClusterPrefixSSDInspection.inspect(root:tierRoot.appendingPathComponent("absent")).present,"an absent root must read as none")
         let inUse=planB.appendingPathComponent("in-use")
+        try Data().write(to:planA.appendingPathComponent("in-use"))
         try Data().write(to:inUse)
         let held=open(inUse.path,O_RDONLY)
         try require(held>=0 && flock(held,LOCK_EX|LOCK_NB)==0,"could not hold the live plan")

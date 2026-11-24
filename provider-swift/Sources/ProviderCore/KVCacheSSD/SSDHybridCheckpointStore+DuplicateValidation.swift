@@ -32,7 +32,8 @@ extension SSDHybridCheckpointStore {
                 metadata = header
             }, consumeChunk: { index, bytes in
                 if index == 0 {
-                    let stored = try SSDHybridCheckpointEnvelope.decodeManifest(bytes)
+                    let stored = try SSDHybridCheckpointEnvelope.decodeManifest(
+                        bytes, promptTokens: incoming.prefixTokens, lookupKeys: self.lookupKeys)
                     guard stored.identity == incoming.identity,
                         stored.backendLayout == incoming.backendLayout,
                         stored.position == incoming.position,
@@ -47,7 +48,7 @@ extension SSDHybridCheckpointStore {
                     // A delta's chunk sizes are authenticated metadata; its chain resolved above.
                     if metadata.parentCommitment != nil { return isDelta = true }
                     let envelope = try SSDHybridCheckpointEnvelope(
-                        manifest: stored, maximumPlaintextBytes: self.config.maxReadBytes)
+                        manifest: stored, lookupKeys: self.lookupKeys, maximumPlaintextBytes: self.config.maxReadBytes)
                     guard bytes == envelope.manifestBytes,
                         envelope.matches(metadata, tag: job.tag, identity: self.identity,
                                          backendLayout: self.config.backendLayout)

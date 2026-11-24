@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-23
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -181,7 +181,13 @@ contain this path. Lookup names remain keyed HMACs. Some operational
 metadata (sizes, model/layout binding and times) remains visible; the precise
 [format and observable fields](../../reference/ssd-kv-cache.md#dbk3-file-format)
 list it. A delta checkpoint names its parent only through a keyed commitment, so
-files of one conversation stay unlinkable without the cache key. TTL checks on reuse, tenant binding and authentication remain in
+files of one conversation stay unlinkable without the cache key. Inside the
+encryption no file holds a token ID: a complete checkpoint keeps a keyed digest
+of its prefix under `K_lookup` and an MTP token tensor as zeros, both rebuilt
+from the request's prompt on restore, and a pair's records keep their history
+tokens as zeros ([format](../../reference/ssd-kv-cache.md#no-token-ids-in-complete-checkpoints)).
+A request whose sealed `cache_policy` is `memory_only` writes, reads and touches
+nothing in the cache ([files a request can leave](../../reference/ssd-kv-cache.md#what-one-request-can-leave-on-disk)). TTL checks on reuse, tenant binding and authentication remain in
 force. Switching locations leaves earlier ciphertext in its old location; the
 new location's maintenance does not sweep the old one or securely erase a disk.
 TTL limits ordinary cache reuse, not physical retention: detached or inaccessible

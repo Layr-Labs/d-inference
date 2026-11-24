@@ -235,7 +235,7 @@ final class GPTOSSCheckpointRestartFixture: @unchecked Sendable {
                 maximumPlaintextBytes: SSDPrefixCachePolicy.maxStageBytes(environment: [:]),
                 requireEOF: true, validateMetadata: { _ in },
                 consumeChunk: { index, data in if index == 0 { manifestBytes = data } })
-            let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(try #require(manifestBytes))
+            let manifest = try SSDHybridCheckpointEnvelope.inspectStoredManifestForTesting(try #require(manifestBytes))
             #expect(manifest.identity == identity)
             #expect(manifest.backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
             #expect(manifest.cacheSalt?.hasPrefix("tenant-") == true)

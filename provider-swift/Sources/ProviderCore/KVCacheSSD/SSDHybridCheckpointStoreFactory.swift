@@ -129,7 +129,8 @@ enum SSDHybridCheckpointStoreFactory {
             maxReadBytes: SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(environment: environment),
             maxStageMillis: SSDPrefixCachePolicy.completeCheckpointMaxStageMillis(environment: environment),
             minEffectiveTokens: SSDPrefixCachePolicy.minEffectiveTokens(environment: environment),
-            ttlSeconds: ttl, strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
+            ttlSeconds: ttl, ttlMode: SSDPrefixCachePolicy.ttlMode(environment: environment),
+            strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
             nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: budget,
             maintainWholeRoot: maintain,
             incrementalCheckpoints: SSDPrefixCachePolicy.incrementalCheckpoints(environment: environment),
@@ -149,7 +150,7 @@ enum SSDHybridCheckpointStoreFactory {
     static func namespace(
         modelId: String, identity: CBv2CompleteCheckpointIdentity, backendLayout: String
     ) -> String {
-        let epoch = SSDHybridCheckpointEnvelope.layoutEpoch(identity: identity, backendLayout: backendLayout)
+        let epoch = SSDHybridCheckpointEnvelope.directoryEpoch(identity: identity, backendLayout: backendLayout)
         return String(Data(SHA256.hash(
             data: Data(("complete-checkpoint-v2:" + modelId + ":" + epoch).utf8))).hexString.prefix(12))
     }

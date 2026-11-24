@@ -127,9 +127,11 @@ enum Gemma4ToolSchemaEnforcement {
     }
 
     /// Invariant 8: whether a declared property accepts any value, directly
-    /// (`declaresAnyValue`), behind a local `$ref`, or as an `anyOf`/`oneOf`/
-    /// `allOf` (and nothing else) whose members all do, a `{"type": "null"}`
-    /// member of `anyOf`/`oneOf` aside (`nullable` carries it).
+    /// (`declaresAnyValue`), behind a local `$ref`, or as a combinator (and
+    /// nothing else) that does: an `anyOf` with a member that accepts any
+    /// value, or a `oneOf` / `allOf` whose members all do, a `{"type": "null"}`
+    /// member of `oneOf` aside (`nullable` carries it). The shared repair folds
+    /// such an `anyOf` (and an `allOf` of them) to `string`.
     static func declaresUntypedValue(_ declared: Any?, root: [String: Any]) -> Bool {
         let node = resolvingLocalReference(declared, root: root)
         if declaresAnyValue(node) { return true }
@@ -139,15 +141,16 @@ enum Gemma4ToolSchemaEnforcement {
             let members = mapping[combinator] as? [Any],
             mapping.keys.allSatisfy({ $0 == combinator || !schemaKeywords.contains($0) })
         else { return false }
+        let resolved = members.map { resolvingLocalReference($0, root: root) }
+        if combinator == "anyOf" { return resolved.contains(where: declaresAnyValue) }
         var acceptsAny = false
-        for member in members {
-            let resolved = resolvingLocalReference(member, root: root)
-            if combinator != "allOf", let null = resolved as? [String: Any], null["type"] as? String == "null",
+        for member in resolved {
+            if combinator == "oneOf", let null = member as? [String: Any], null["type"] as? String == "null",
                 null.keys.allSatisfy({ $0 == "type" || !schemaKeywords.contains($0) })
             {
                 continue
             }
-            guard declaresAnyValue(resolved) else { return false }
+            guard declaresAnyValue(member) else { return false }
             acceptsAny = true
         }
         return acceptsAny

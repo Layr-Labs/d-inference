@@ -3482,8 +3482,14 @@ rows target-only everywhere. Rows with `stop` strings speculate on the builds in
 token through the row's detokenizer and ends the row at the first match, rolling back
 the rest: given the committed tokens, stop matching, scope, truncation and the finish
 reason follow ordinary decode; `DARKBLOOM_MTP_STOP_STRING_ROWS=0` keeps
-them target-only. Repetition penalty, bias, logprobs and token constraints retain their
-ordinary-decode exclusions. Explicit offline serial
+them target-only. Rows that request logprobs speculate on the builds in
+`SDKFeatureDefaults.logprobRowBuilds` (Inkling 2 Mini; `CBv2MTPConfig.logprobSpeculation`),
+which the SDK honours only on a `.rectangularExact` target under exact acceptance: each
+committed token's logprob and top logprobs are gathered from the verify window's raw
+logits, which on that target equal a one-token decode step's, so they are drafter-off's
+bit for bit; `DARKBLOOM_MTP_LOGPROB_ROWS=0` keeps them target-only. Repetition penalty,
+bias, token constraints and logprobs on other builds retain their ordinary-decode
+exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).

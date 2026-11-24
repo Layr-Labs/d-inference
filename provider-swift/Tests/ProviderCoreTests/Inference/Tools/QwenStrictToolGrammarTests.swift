@@ -258,6 +258,14 @@ struct QwenStrictToolGrammarTests {
             + #""none":{"type":"string","\#(marker)":false},"#
             + #""list":{"type":"array","items":{"type":"string","\#(marker)":true}}},"#
             + #""required":["any"],"additionalProperties":false}}}]"#
+        if choice != nil {
+            // A forced choice compiles the declared tools, where a marked node
+            // compiles only as exactly `{type: string, <marker>: true}`
+            // (`ToolConstraintSchema`, unchanged here): an annotated or `false`
+            // marker is refused before any argument reading, as before.
+            #expect(throws: (any Error).self) { try F.prepared(F.body(tools: tools, choice: choice)) }
+            return
+        }
         let (request, base) = try F.prepared(F.body(tools: tools, choice: choice))
         let prepared = base.withDeclaredTools(base.declaredTools, modelType: "qwen3_5")
         guard case .object(let parameters)? = prepared.argumentTools?.first?.function.parameters,

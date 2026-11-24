@@ -21,6 +21,7 @@ import CoreGraphics
 import CoreImage
 import Foundation
 import ImageIO
+import Jinja
 import MLXLMCommon
 import MLXLMServer
 import MLXVLM
@@ -351,12 +352,12 @@ public enum MediaIngest {
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
         var chatMessages: [Chat.Message] = []
-        let retainToolMedia = preserveTemplateFields && modelType == "diffusion_gemma"
-        // Media outside user messages: every message keeps its media and its
-        // template fields, and the chat template places it, as the reference
-        // server does. A template that raises on it, or leaves it no
-        // placeholder, refuses the request (`EngineV2VisionPrefill.prepare`).
-        // Without such media nothing below changes.
+        let inklingParts = Inkling2PromptContract.applies(modelType: modelType)
+        // The native Inkling and diffusion Gemma templates keep tool-result media
+        // even on the legacy user-media path.
+        let retainToolMedia = preserveTemplateFields && (modelType == "diffusion_gemma" || inklingParts)
+        // When enabled, the template places each role's media. Vision prefill
+        // refuses requests whose template rejects media or omits its placeholder.
         let everyRole = keepNonUserMedia && hasNonUserMedia(request)
         var totalPixels = 0
         var totalVideoPixels = 0
@@ -397,9 +398,9 @@ public enum MediaIngest {
             // remains owned by UserInput, never rendered as URLs/base64 text.
             let generator = Qwen3VLMessageGenerator()
             let messages = try zip(request.messages, chatMessages).map { original, decoded in
-                // The every-role path takes each message's own template fields,
-                // as the reference server passes them (no reasoning split).
-                var message = preserveTemplateFields
+                // Inkling preserves strings and reasoning fields exactly as its text
+                // path does. Other native templates use the Qwen message generator.
+                var message = preserveTemplateFields && !inklingParts
                     ? generator.generate(messages: [decoded])[0] : original.templateMessageDict()
                 if original.role == .user || (retainToolMedia && original.role == .tool) || everyRole,
                     case .parts(let parts) = original.content {
@@ -412,12 +413,31 @@ public enum MediaIngest {
                         case .unsupported: return nil
                         }
                     }
+                } else if inklingParts, let parts = Inkling2PromptContract.textParts(of: original) {
+                    // Inkling renders every role's parts as blocks, as its
+                    // text requests do; system and assistant messages carry
+                    // no media (`EngineV2VisionPrefill.validateInkling2ImageRoles`).
+                    message["content"] = parts
                 }
                 return message
             }
-            var input = UserInput(messages: messages,
+            // A family trained on Transformers' rendering takes earlier calls'
+            // arguments and its tool declarations as sent, as its text
+            // requests do (`TemplateJSONOrder`).
+            let callerJSON = TemplateJSONOrder.rendersCallerArguments(modelType: modelType)
+            let rendered = callerJSON ? TemplateJSONOrder.orderingToolCalls(in: messages, request: request) : messages
+            var renderedTools = tools
+            var renderedContext = additionalContext
+            if callerJSON, let tools,
+                let declared = TemplateJSONOrder.declaredTools(tools, evidence: templateControls.templateJSON) {
+                var context = additionalContext ?? [:]
+                context["tools"] = Jinja.Value.array(declared)
+                renderedTools = nil
+                renderedContext = context
+            }
+            var input = UserInput(messages: rendered,
                 images: chatMessages.flatMap(\.images), videos: chatMessages.flatMap(\.videos),
-                tools: tools, additionalContext: additionalContext)
+                tools: renderedTools, additionalContext: renderedContext)
             input.processing.maxPixels = imagePixelTarget
             return input
         }
@@ -611,12 +631,21 @@ public enum MediaIngest {
     /// image sequence to its own copy of these caps (darkbloom-platform
     /// `EIGENINFERENCE_IMAGE_SEQUENCE_MODELS`, 16 for every build until a release
     /// carrying these values is on the fleet); raise it there once it is.
+    /// Inkling 2 Mini (`Inkling2ModelIdentity.servedModelIDs`) takes 64, not
+    /// below its peers elsewhere, which publish no per-request image limit. It
+    /// needs no image budget: it does not pool, but has one visual token per
+    /// 40x40 px of the image as sent (a side above 4,096 px is scaled down), so the
+    /// per-request 384 MP (`maxRequestImagePixels`) and per-image 100 MP
+    /// (`maxImagePixels`) caps bound a request's visual tokens to about 240K
+    /// (plus padding to the 40 px grid), and the prompt must still fit the
+    /// context. The coordinator does not condense its image sequences.
     static let modelMaxImagesPerRequest: [String: Int] = [
         "gemma-4-26b-qat-4bit": 24,
         "Qwen3.5-9B": 64,
         "qwen3.5-35b-a3b": 64,
         "qwen3.6-35b-a3b-vl-mtp-mxfp8": 64,
         "EigenLabs/Qwen3.8-27B-4bit-mtp": 64,
+        "thinkingmachines/Inkling-2-Mini": 64,
     ]
 
     /// The image cap for one request to `model`: the

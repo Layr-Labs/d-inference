@@ -1,5 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 import Foundation
+import ProviderCoreFoundation
 
 extension PrefixCachePolicy {
     /// Unset uses the model SSD default; an affirmative value opts in.
@@ -40,6 +41,7 @@ extension PrefixCachePolicy {
             || isMiMoDefaultModel(modelId)
             || isGLM5NextDefaultModel(modelId)
             || modelId == NemotronSuperServingPolicy.modelID
+            || Inkling2ModelIdentity.isServedModelID(modelId)
         switch modelId {
         case "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
             "EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b-qat-4bit", "gpt-oss-20b":

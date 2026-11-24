@@ -462,9 +462,14 @@ final class PrefillTestClock: @unchecked Sendable {
         for continuation in woken { continuation.resume() }
     }
 
-    /// Whether `condition` holds within 2 s of real time, polled.
+    /// Whether `condition` holds within 30 s of real time, polled. The bound only
+    /// matters when the condition never holds: a true condition returns at once.
+    /// It is wide because the CI watchdog samples every test process for about a
+    /// second each (`scripts/run-provider-test-watchdog.py`) once the suite has
+    /// run 900 s, which can pause an asynchronous step, such as a one-second
+    /// retry, past a few seconds of real time.
     func eventually(_ condition: @Sendable (PrefillTestClock) -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(30)
         while !condition(self) {
             guard ContinuousClock.now < deadline else { return false }
             try? await Task.sleep(for: .milliseconds(5))

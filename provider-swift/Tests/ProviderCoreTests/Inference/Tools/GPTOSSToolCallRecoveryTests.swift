@@ -135,7 +135,9 @@ struct GPTOSSToolCallRecoveryTests {
     }
 
     @Test func onlyAnAutoGPTOSSRequestWithToolsTakesIt() throws {
-        let tools = [Self.giftTool]
+        // A schema a forced choice also serves (`required` refuses `anyOf`).
+        let tools = [#"{"type":"function","function":{"name":"ping","parameters":{"type":"object","#
+            + #""properties":{"n":{"type":"integer"}},"required":["n"]}}}"#]
         #expect(GPTOSSToolCallRecovery.make(modelType: "gpt_oss", format: .harmony,
             prepared: try Self.prepared(tools), loopExit: nil) != nil)
         #expect(GPTOSSToolCallRecovery.make(modelType: "gpt_oss", format: .harmony,

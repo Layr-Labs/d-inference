@@ -110,3 +110,15 @@ public enum MTPRepetitionPenaltyRows {
 public enum MTPStopStringRows {
     public static let environmentKey = "DARKBLOOM_MTP_STOP_STRING_ROWS"
 }
+
+/// On the builds in `SDKFeatureDefaults.logprobRowBuilds` (Inkling 2 Mini,
+/// whose verify windows are row-exact), rows that request logprobs
+/// speculate; each committed token's logprobs come from the verify window,
+/// the values a one-token decode step gives. The SDK takes this only with
+/// exact acceptance (`CBv2MTPConfig.effectiveLogprobSpeculation`). It reads
+/// the switch once per process (`CBv2MTPConfig.envLogprobSpeculation`); the
+/// LaunchAgent forwards it. `0`, `false`, `no` or `off` keeps such rows
+/// target-only.
+public enum MTPLogprobRows {
+    public static let environmentKey = "DARKBLOOM_MTP_LOGPROB_ROWS"
+}

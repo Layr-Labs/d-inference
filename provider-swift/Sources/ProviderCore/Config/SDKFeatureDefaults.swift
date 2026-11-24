@@ -77,6 +77,14 @@ public enum SDKFeatureDefaults {
     static let stopStringRowBuilds: Set<String> = Set([MTPAcceptancePolicy.gemmaQATModelID])
         .union(Inkling2ModelIdentity.servedModelIDs)
 
+    /// SDK logprob MTP rows: rows that request logprobs speculate on Inkling 2
+    /// Mini, whose verify windows are row-exact, so each committed token's
+    /// logprobs (taken from the verify window) equal drafter-off's bit for
+    /// bit. The SDK applies it only under exact acceptance on a
+    /// `.rectangularExact` target. The SDK's process kill switch
+    /// `DARKBLOOM_MTP_LOGPROB_ROWS=0` still wins. Exact served ids.
+    static let logprobRowBuilds: Set<String> = Inkling2ModelIdentity.servedModelIDs
+
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper, .mimoV26]
 
@@ -148,7 +156,8 @@ public enum SDKFeatureDefaults {
         nativeGrammarBuilds: Set<String> = nativeGrammarMTPBuilds,
         penaltyBuilds: Set<String> = penaltyRowBuilds,
         repetitionPenaltyBuilds: Set<String> = repetitionPenaltyRowBuilds,
-        stopStringBuilds: Set<String> = stopStringRowBuilds
+        stopStringBuilds: Set<String> = stopStringRowBuilds,
+        logprobBuilds: Set<String> = logprobRowBuilds
     ) -> [String] {
         func unset(_ key: String) -> Bool {
             followsDefault(key, in: environment, injected: [])
@@ -186,7 +195,24 @@ public enum SDKFeatureDefaults {
                 on.append(MTPStopStringRows.environmentKey)
             }
         }
+        // Same kill-switch-only shape (`CBv2MTPConfig.effectiveLogprobSpeculation`).
+        if logprobBuilds.contains(modelId) {
+            config.logprobSpeculation = true
+            if CBv2MTPConfig.envLogprobSpeculation { on.append(MTPLogprobRows.environmentKey) }
+        }
         return on
+    }
+
+    /// Whether logprob rows draft under `config` as the round driver runs it
+    /// beside a drafter that requires `drafterMode`, with the mode and
+    /// acceptance that decide it, for the load log.
+    static func logprobRowsSummary(
+        _ config: CBv2MTPConfig, drafterMode: CBv2MTPVerificationMode?
+    ) -> String {
+        let running = config.requiring(drafterMode)
+        let acceptance = running.acceptance == .exact ? "exact" : "typical"
+        return (running.effectiveLogprobSpeculation ? "on" : "off")
+            + " (verification \(running.verificationMode.rawValue), acceptance \(acceptance))"
     }
 
     /// The keys to set for `environment`: every listed key it leaves unset or
@@ -252,7 +278,8 @@ public enum SDKFeatureDefaults {
                 penaltyBuilds: CBv2MTPConfig.envPenaltySpeculation ? penaltyRowBuilds : [],
                 repetitionPenaltyBuilds: CBv2MTPConfig.envRepetitionPenaltySpeculation
                     ? repetitionPenaltyRowBuilds : [],
-                stopStringBuilds: CBv2MTPConfig.envStopStringSpeculation ? stopStringRowBuilds : [])
+                stopStringBuilds: CBv2MTPConfig.envStopStringSpeculation ? stopStringRowBuilds : [],
+                logprobBuilds: CBv2MTPConfig.envLogprobSpeculation ? logprobRowBuilds : [])
     }
 
     static func summary(environment: [String: String], injected: Set<String>,
@@ -260,7 +287,8 @@ public enum SDKFeatureDefaults {
                         nativeGrammarBuilds: Set<String> = [],
                         penaltyBuilds: Set<String> = [],
                         repetitionPenaltyBuilds: Set<String> = [],
-                        stopStringBuilds: Set<String> = []) -> String? {
+                        stopStringBuilds: Set<String> = [],
+                        logprobBuilds: Set<String> = []) -> String? {
         var on = injected.sorted().map { key in
             key == NativeReasoningBudget.environmentKey
                 ? "\(key) (\(reasoningBudgetFamilies.map { "\($0)" }.sorted().joined(separator: ", ")))" : key
@@ -281,6 +309,9 @@ public enum SDKFeatureDefaults {
         if !stopStringBuilds.isEmpty {
             on.append(
                 "\(MTPStopStringRows.environmentKey) (\(stopStringBuilds.sorted().joined(separator: ", ")))")
+        }
+        if !logprobBuilds.isEmpty {
+            on.append("\(MTPLogprobRows.environmentKey) (\(logprobBuilds.sorted().joined(separator: ", ")))")
         }
         return on.isEmpty ? nil : "SDK feature defaults on: \(on.joined(separator: "; "))"
     }

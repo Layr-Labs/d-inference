@@ -339,6 +339,15 @@ enum EngineV2SlotFactory {
         if !sdkDefaults.isEmpty, mtpConfig.enabled {
             logInfo("engine_v2: \(modelId) SDK feature defaults on: \(sdkDefaults.joined(separator: ", "))")
         }
+        if mtpConfig.logprobSpeculation, mtpConfig.enabled {
+            // As the round driver runs it: the drafter's required mode replaces
+            // the declared one, and the SDK takes the opt-in only on an exact
+            // verify path (`CBv2MTPConfig.effectiveLogprobSpeculation`).
+            logInfo(
+                "engine_v2: \(modelId) MTP logprob rows: "
+                    + SDKFeatureDefaults.logprobRowsSummary(
+                        mtpConfig, drafterMode: assistantHandle?.drafter?.requiredVerificationMode))
+        }
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)

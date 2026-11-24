@@ -639,6 +639,10 @@ public enum LaunchAgent: Sendable {
         MTPStopStringRows.environmentKey,
         Inkling2MTPProfilePolicy.maxDraftKey,
         Inkling2MTPProfilePolicy.coupledKey,
+        // SDK-read (`CBv2MTPConfig.envLogprobSpeculation`, once per process): rows
+        // that request logprobs speculate on the builds that opt in; `0`, `false`,
+        // `no` or `off` keeps them target-only.
+        MTPLogprobRows.environmentKey,
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",

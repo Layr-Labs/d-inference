@@ -541,7 +541,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 modelType: modelType,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
                 glm5PairPostValidation: glm5PairPostValidation)
-            policy.declaredTools = templateControls.declaredTools
+            policy = policy.withDeclaredTools(templateControls.declaredTools, modelType: modelType)
             // The coordinator path serves every request as a stream; the body
             // says whether the client streams (`StrictToolCallPolicy`).
             policy.clientStreams = templateControls.clientStreams ?? (request.stream == true)
@@ -873,7 +873,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let loopGuard = GenerationLoopGuardPolicy.resolve(
                         modelType: modelType, request: visionRequest, prepared: prepared, tokenConstraint: nil,
                         exitThinking: exitThinking)
-                    let stopStringScope = ReasoningStopScope.scope(
+                    let stopStringScope = Inkling2PromptContract.stopStringScope(
+                        modelType: modelType, prepared: prepared) ?? ReasoningStopScope.scope(
                         reasoningParser: visionRequest.reasoningParser,
                         reasoningPrefix: reasoningPrefix,
                         parsesToolCalls: toolHandler != nil)
@@ -934,7 +935,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         // The continuation's output starts after the end of
                         // thinking, so stop strings apply from its first token
                         // (inside the answer, when the exit itself opened it).
-                        let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
+                        let continuationStopScope = exitThinking.answerStopScope
+                            ?? Inkling2PromptContract.stopStringScope(modelType: modelType, prepared: prepared)
+                            ?? ReasoningStopScope.scope(
                             reasoningParser: visionRequest.reasoningParser, reasoningPrefix: nil,
                             parsesToolCalls: toolHandler != nil)
                         let spliced = LoopExitThinkingContinuation.splice(
@@ -1062,6 +1065,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
+
+        let requestId = "req-\(UUID().uuidString.prefix(12))"
+        // Rendering and tokenizing count against the serving width: a full
+        // Mac refuses before that work, and submission takes the share over.
+        let preparation: PromptPreparationShare?
+        do {
+            preparation = try await engineV2Bridge?.acquirePromptPreparation(
+                requestID: requestId, firstContentDeadline: firstContentDeadline)
+        } catch {
+            await releaseBox.fire()
+            throw error
+        }
+        defer { preparation?.end() }
 
         let promptTokens: [Int]
         let prepTiming: ProviderPromptContractPipeline.PrepTiming
@@ -1245,11 +1261,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
             exitThinking: exitThinking)
-        let stopStringScope = ReasoningStopScope.scope(
+        let stopStringScope = Inkling2PromptContract.stopStringScope(
+            modelType: modelType, prepared: prepared) ?? ReasoningStopScope.scope(
             reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix,
             parsesToolCalls: toolHandler != nil)
-
-        let requestId = "req-\(UUID().uuidString.prefix(12))"
 
         // ONE ENGINE (v0.7.5): every production slot — ProviderLoop AND
         // the standalone server — carries a v2 bridge; the tokenized
@@ -1336,7 +1351,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // The continuation's output starts after the end of thinking, so
             // stop strings apply from its first token, whatever the prompt opened
             // (inside the answer, when the exit itself opened it).
-            let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
+            let continuationStopScope = exitThinking.answerStopScope
+                ?? Inkling2PromptContract.stopStringScope(modelType: modelType, prepared: prepared)
+                ?? ReasoningStopScope.scope(
                 reasoningParser: request.reasoningParser, reasoningPrefix: nil, parsesToolCalls: toolHandler != nil)
             // A usage signal belongs to one engine request: the continuation
             // has its own, and the stop that ended the answer is the request's.

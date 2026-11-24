@@ -15,6 +15,10 @@ struct EngineRateObservation: Sendable {
     let aggregate: Bool
     /// Decode only: the decode-step shape the request was measured at.
     var decodeShape = CBv2DecodeRateShape(batchRows: 1)
+    /// Decode only: false for a completed request that generated fewer than
+    /// `EngineV2Bridge.minimumPublishedDecodeTokens` tokens. Such a sample
+    /// still feeds every estimate except the published rate.
+    var setsPublishedDecode = true
 }
 
 extension EngineV2Bridge {
@@ -56,6 +60,9 @@ extension EngineV2Bridge {
                 ewmaInitialized = false
             }
             updateDecodeTpsEwma(value.tps, shape: value.decodeShape)
+            if calibration || value.setsPublishedDecode {
+                updatePublishedDecodeTps(value.tps, at: value.at, restart: calibration)
+            }
         }
         // The prompt-size bucket keeps a slower short sample; the published
         // isolated rate, which routing prices this Mac from, leaves it out and

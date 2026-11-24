@@ -380,11 +380,19 @@ public actor EngineV2Bridge {
     var prefillEvidenceRecovery = PrefillEvidenceRecovery()
     var modelCalibration = ModelCalibrationState()
     let calibrationPosturePermitsWork: @Sendable () -> Bool
+    /// Low Power Mode and the thermal state, read when admission and the
+    /// reported width ask (`EngineV2Bridge+ServiceAllowance`).
+    let servingPosture: @Sendable () -> (lowPowerMode: Bool, thermalState: ProcessInfo.ThermalState)
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// The published decode rate (`updatePublishedDecodeTps`) and the newest
+    /// sample behind it.
+    var publishedDecodeTps: Double = 0
+    var publishedDecodeInitialized = false
+    var publishedDecodeAt: ContinuousClock.Instant?
     /// Decode step of the requests behind `observedDecodeTpsEwma`, smoothed
     /// and reset with it. Deadline admission uses it to charge decode per
     /// batch step instead of per row.
@@ -500,6 +508,9 @@ public actor EngineV2Bridge {
         calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
+        servingPosture: @escaping @Sendable () -> (lowPowerMode: Bool, thermalState: ProcessInfo.ThermalState) = {
+            (ProcessInfo.processInfo.isLowPowerModeEnabled, ProcessInfo.processInfo.thermalState)
+        },
         admissionFixes: Bool? = nil,
         refusalProbe: Bool? = nil,
         nativePrefillEvidence: Bool? = nil,
@@ -519,6 +530,7 @@ public actor EngineV2Bridge {
         self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
+        self.servingPosture = servingPosture
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
         self.refusalProbe = refusalProbe ?? DeadlineRefusalProbe.enabled
         self.nativePrefillEvidence = nativePrefillEvidence ?? NativePrefillEvidence.enabled

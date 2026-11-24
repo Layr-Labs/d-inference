@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import ProviderCoreFoundation
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -47,20 +48,24 @@ public enum SDKFeatureDefaults {
 
     /// SDK penalty-aware MTP verification: rows with a presence/frequency
     /// penalty speculate with exact acceptance on the catalog Qwen 3.5/3.6
-    /// builds (card default presence 1.5) and the catalog Gemma 4 26B QAT
-    /// build (requests that send a penalty). The SDK's process kill switch
-    /// `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
+    /// builds (card default presence 1.5), the catalog Gemma 4 26B QAT
+    /// build and the served Inkling 2 Mini identities (requests that send a
+    /// penalty). Repetition penalty rows stay target-only on every build. The
+    /// SDK's process kill switch `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
     /// Exact catalog ids (case-sensitive, like `qwen35CardModelTypes`).
     static let penaltyRowBuilds: Set<String> = Set(
         [EngineV2SamplingDefaults.qwen35NineBModelID, MTPAcceptancePolicy.gemmaQATModelID]
-    ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs)
+    ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs).union(Inkling2ModelIdentity.servedModelIDs)
 
     /// SDK stop-string MTP rows: rows with `stop` strings speculate on the
-    /// catalog Gemma 4 26B QAT build; the round's finalize confirms committed
-    /// tokens one at a time and ends the row at the first match (ordinary
-    /// decode semantics). The SDK's process kill switch
-    /// `DARKBLOOM_MTP_STOP_STRING_ROWS=0` still wins. Exact catalog ids.
-    static let stopStringRowBuilds: Set<String> = [MTPAcceptancePolicy.gemmaQATModelID]
+    /// catalog Gemma 4 26B QAT build and the served Inkling 2 Mini identities;
+    /// the round's finalize confirms committed tokens one at a time through
+    /// the row's detokenizer (Inkling's answer-channel stop scope included)
+    /// and ends the row at the first match (ordinary decode semantics). The
+    /// SDK's process kill switch `DARKBLOOM_MTP_STOP_STRING_ROWS=0` still
+    /// wins. Exact catalog ids.
+    static let stopStringRowBuilds: Set<String> = Set([MTPAcceptancePolicy.gemmaQATModelID])
+        .union(Inkling2ModelIdentity.servedModelIDs)
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper, .mimoV26]

@@ -107,7 +107,9 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     func enablesMTP(
         forModelType modelType: String?,
         embeddedArtifactDeclared: Bool,
-        modelID: String? = nil
+        modelID: String? = nil,
+        // Declared only so the new tests compile on the base; not read here.
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
         switch self {
         case .on:

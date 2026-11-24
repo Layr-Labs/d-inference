@@ -588,3 +588,50 @@ struct MTPSupportedModelsTests {
         #expect(split.unsupported.map(\.id) == ["gemma-4-26b-assistant-4bit"])
     }
 }
+
+// MARK: - Inkling 2 Mini drafter default
+
+@Suite("Inkling 2 Mini drafter default")
+struct Inkling2DrafterDefaultTests {
+    private static let key = "DARKBLOOM_CBV2_MTP"
+
+    @Test("auto serves Inkling 2 Mini without its drafter; an explicit DARKBLOOM_CBV2_MTP on-word or mtp_mode on turns it on")
+    func inklingDrafterIsOptIn() {
+        let inkling = "inkling2_loop"
+        for environment in [[:], [Self.key: ""], [Self.key: " "], [Self.key: "auto"], [Self.key: "2"]] {
+            #expect(!MTPMode.auto.enablesMTP(
+                forModelType: inkling, embeddedArtifactDeclared: true, environment: environment),
+                "\(environment)")
+        }
+        for on in ["1", "true", " ON ", "yes"] {
+            #expect(MTPMode.auto.enablesMTP(
+                forModelType: inkling, embeddedArtifactDeclared: true, environment: [Self.key: on]), "\(on)")
+        }
+        for off in ["0", "false", "no", "off"] {
+            #expect(!MTPMode.auto.enablesMTP(
+                forModelType: inkling, embeddedArtifactDeclared: true, environment: [Self.key: off]), "\(off)")
+        }
+        // The override never invents a drafter the checkpoint doesn't declare.
+        #expect(!MTPMode.auto.enablesMTP(
+            forModelType: inkling, embeddedArtifactDeclared: false, environment: [Self.key: "1"]))
+        #expect(MTPMode.on.enablesMTP(forModelType: inkling, embeddedArtifactDeclared: true, environment: [:]))
+        #expect(!MTPMode.off.enablesMTP(
+            forModelType: inkling, embeddedArtifactDeclared: true, environment: [Self.key: "1"]))
+    }
+
+    @Test("every other family keeps its auto default, with or without the variable")
+    func otherFamiliesUnchanged() {
+        for environment in [[:], [Self.key: "1"]] as [[String: String]] {
+            for modelType in ["qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "mimo_v2", "glm5_next"] {
+                #expect(MTPMode.auto.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: true, environment: environment),
+                    "\(modelType) \(environment)")
+            }
+            for modelType in ["nemotron_h", "gpt_oss", "gemma4_text"] {
+                #expect(!MTPMode.auto.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: true, environment: environment),
+                    "\(modelType) \(environment)")
+            }
+        }
+    }
+}

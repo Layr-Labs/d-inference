@@ -5385,7 +5385,7 @@ as it is, or passes the request's body on unchanged.
 | Nemotron 3.5 Super | `medium_effort`, and the template's default depth | `minimal`, `low` and `medium` set `medium_effort`; `high`, `xhigh` and `max` keep the default | `ReasoningEffort.nemotronSuperMediumEffort` (`NemotronSuperPromptContract.controls(body:)`) |
 | MiMo V2.6, Gemma 4 (`gemma4`, `gemma4_text`, `gemma4_vision`), DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks (Gemma 4's template defaults thinking off) | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`; `ReasoningEffortPolicy.effortSetsThinkingSwitch` in `templateAdditionalContext`; `DiffusionGemmaReasoningControl`) |
 | Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (on) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
-| GPT-OSS | Harmony's `low`, `medium` (its default) and `high`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `high`. OpenRouter's traffic is capped at `medium` by the coordinator's service cap (darkbloom-platform#721, #703's rule), which must be live before any Mac runs this table (below) | `ReasoningEffort.harmonyLevel`, `ReasoningEffortPolicy.templateEffort` |
+| GPT-OSS | Harmony's `low`, `medium` (its default) and `high`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `high`, for every caller: the coordinator passes every effort as sent, OpenRouter's included (darkbloom-platform#721, below) | `ReasoningEffort.harmonyLevel`, `ReasoningEffortPolicy.templateEffort` |
 | Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
 
 An effort that is none of the names is refused on any model that reasons,
@@ -5444,12 +5444,11 @@ version, so while a provider and the sidecar render different levels, during a
 staggered rollout, those requests' cache receipts mismatch and their cache
 affinity is quarantined; serving continues.
 
-No Mac may run these levels before the coordinator's OpenRouter GPT-OSS cap
-(darkbloom-platform#721) is live: until then, OpenRouter's GPT-OSS `high` would
-render `high`, which #703 capped at `medium` to avoid upstream timeouts. So a
-provider release with them is tagged without being published to auto-update,
-snapshotted into #721, and published only once #721 is deployed, each step on
-the owner's go.
+The coordinator doesn't cap GPT-OSS's effort. #703 capped OpenRouter's
+GPT-OSS `high` at `medium` to avoid upstream timeouts, and an early version of
+darkbloom-platform#721 moved that cap to the coordinator. The merged #721
+removed it: every caller's effort, OpenRouter's included, reaches the provider
+as sent, so OpenRouter's GPT-OSS `high`, `xhigh` and `max` render `high`.
 
 ### Strict tool-call grammar
 

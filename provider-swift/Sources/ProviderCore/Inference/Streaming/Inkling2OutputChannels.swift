@@ -150,7 +150,7 @@ struct Inkling2OutputChannels {
     /// Some reasoning text was published.
     private(set) var hasReasoning = false
 
-    init(limits: Limits = Limits(), callsAreText: Bool = false) {
+    init(limits: Limits = Limits(), callsAreText: Bool = false, readsCallOpeningAnswer: Bool = false) {
         self.limits = limits
         self.callsAreText = callsAreText
     }

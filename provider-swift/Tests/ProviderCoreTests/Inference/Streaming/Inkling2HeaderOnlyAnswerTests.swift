@@ -92,13 +92,58 @@ struct Inkling2HeaderOnlyAnswerTests {
         ]
         for (output, answer) in cases {
             for width in [1, 4096] {
-                let characters = Array(output)
-                let chunks = stride(from: 0, to: characters.count, by: width).map {
-                    String(characters[$0..<min($0 + width, characters.count)])
-                }
-                let (outcome, lexer) = Self.lexed(chunks, callsAreText: true)
+                let (outcome, lexer) = Self.lexed(Self.chunked(output, width: width), callsAreText: true)
                 #expect(outcome.content == answer, "\(output) width \(width)")
                 #expect(outcome.calls.isEmpty && lexer.toolFailures.isEmpty)
+            }
+        }
+    }
+
+    static func chunked(_ output: String, width: Int) -> [String] {
+        let characters = Array(output)
+        return stride(from: 0, to: characters.count, by: width).map {
+            String(characters[$0..<min($0 + width, characters.count)])
+        }
+    }
+
+    /// Once a header-only answer goes on as text (past the name bound, or
+    /// after a `<` that opens no marker), the next control marker ends it and
+    /// is read as a marker: a later message is its own, a thought stays
+    /// reasoning, and no marker or its prefix is ever answer text.
+    @Test func answerGoingOnEndsAtTheNextMarker() {
+        let m = "<|message_model|>"
+        let long = String(repeating: "x", count: 300)
+        let cases: [(output: String, content: String, reasoning: String)] = [
+            (m + long + m + "<|content_text|>more<|end_message|>", long + "more", ""),
+            (m + long + m + "<|content_thinking|>secret<|end_message|>", long, "secret"),
+            (m + long + "<|content_text|>more<|end_message|>", long + "more", ""),
+            (m + "a<b" + m + "<|content_thinking|>t<|end_message|>" + m + "<|content_text|>c<|end_message|>", "a<bc", "t"),
+            (m + "a<b<|content_invoke_tool_json|>{}<|end_message|>", "a<b{}", ""),
+            (m + "a<b<|message_user|>ignored", "a<b", ""),
+            (m + long + "<|end_mess", long, ""),
+        ]
+        for (output, content, reasoning) in cases {
+            for width in [1, 3, 4096] {
+                let (outcome, lexer) = Self.lexed(Self.chunked(output, width: width), callsAreText: true)
+                #expect(outcome.content == content, "\(output.prefix(40))… width \(width)")
+                #expect(outcome.reasoning == reasoning, "\(output.prefix(40))… width \(width)")
+                #expect(!outcome.content.contains("<|") && !outcome.content.contains("|>"))
+                #expect(outcome.calls.isEmpty && lexer.toolFailures.isEmpty)
+            }
+        }
+    }
+
+    /// The name bound never splits a UTF-8 character: a character that
+    /// straddles byte 256 stays whole in the answer.
+    @Test(arguments: ["é", "€", "😀"])
+    func characterAcrossTheNameBoundStaysWhole(character: String) {
+        for pad in 254...256 {
+            let answer = String(repeating: "x", count: pad) + character + "yz"
+            for width in [1, 4096] {
+                let (outcome, _) = Self.lexed(
+                    Self.chunked("<|message_model|>" + answer + "<|end_message|>", width: width), callsAreText: true)
+                #expect(outcome.content == answer, "pad \(pad) width \(width)")
+                #expect(!outcome.content.contains("\u{FFFD}"))
             }
         }
     }

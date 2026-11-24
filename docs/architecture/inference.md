@@ -3058,8 +3058,9 @@ still priced for deadline admission. Before that first sample, a deadline
 request beside decoding rows is priced at the slowest delivered cadence among
 requests decoding on the slot now (tokens after the first emission over the
 time since the first token, once a request has 8 such tokens;
-`EngineV2Bridge.liveDecodeCadence`), charged per row; with no such request the
-decode rate stays unavailable and the request is refused as before. None of
+`EngineV2Bridge.liveDecodeCadence`), charged per row; with no such request, or
+with `DARKBLOOM_TTFT_ADMISSION_FIXES=0`, the decode rate stays unavailable and
+the request is refused as before. None of
 this reaches the heartbeat. Deadline admission otherwise charges the measured
 step shape. The projection also mirrors the
 live MTP plan's depth gates

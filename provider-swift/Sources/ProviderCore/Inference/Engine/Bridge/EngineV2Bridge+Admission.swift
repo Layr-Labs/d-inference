@@ -125,7 +125,7 @@ extension EngineV2Bridge {
         let decode = DeadlineAdmissionFixes.decodeCharge(
             perRequestRate: perRequestRate,
             measuredStep: observedDecodeStep, enabled: admissionFixes, calibrated: calibration != nil,
-            liveRate: perRequestRate == nil && calibration == nil ? liveDecodeCadence() : nil)
+            liveRate: admissionFixes && perRequestRate == nil && calibration == nil ? liveDecodeCadence() : nil)
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,

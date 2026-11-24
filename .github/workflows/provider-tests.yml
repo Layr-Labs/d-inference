@@ -447,6 +447,21 @@ jobs:
         run: |
           python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"
           python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-prefix-fixtures" --asymmetric
+      # The suite list this shard's audit checks its selections against
+      # (Check this shard's selections against the suite list), read from the
+      # products while the tests run, at a lower priority than the tests. It
+      # skips SwiftPM's lock and plans in memory as the test processes do
+      # (scripts/run-provider-tests.sh), and it moves the job's
+      # LLVM_PROFILE_FILE (Collect provider coverage profiles) to this step's
+      # directory, so its profiles stay out of the shard's merge.
+      - name: List the provider suites beside the tests
+        id: suite-list
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        run: |
+          python3 ../scripts/ci-background-step.py start "$RUNNER_TEMP/provider-suite-list" \
+            nice -n 10 bash -c 'env LLVM_PROFILE_FILE="$0/%p-%m.profraw" swift test list --skip-build --ignore-lock --disable-build-manifest-caching > "$1"' \
+            "$RUNNER_TEMP/provider-suite-list" "$RUNNER_TEMP/provider-tests.txt"
       - name: Run Swift tests
         id: provider-unit-tests
         if: ${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
@@ -545,15 +560,22 @@ jobs:
       # The full-suite audit, split by job: this shard's selections each ran
       # exactly their plan, and the last shard checks that all plans cover
       # `swift test list` once (scripts/provider-test-shards.py audit-job).
+      # The list is the one read beside the tests; a list that did not start
+      # fails the audit at once rather than waiting for it.
       - name: Check this shard's selections against the suite list
         if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
         working-directory: provider-swift
         env:
           PROVIDER_TEST_PROCESSES: '3'
           SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          SUITE_LIST_OUTCOME: ${{ steps.suite-list.outcome }}
         run: |
           set -euo pipefail
-          swift test list --skip-build > "$RUNNER_TEMP/provider-tests.txt"
+          if [ "$SUITE_LIST_OUTCOME" != success ]; then
+            echo "::error::The suite list did not start (List the provider suites beside the tests: $SUITE_LIST_OUTCOME)"
+            exit 1
+          fi
+          python3 ../scripts/ci-background-step.py wait "$RUNNER_TEMP/provider-suite-list"
           python3 ../scripts/provider-test-shards.py audit-job "$RUNNER_TEMP/provider-tests.txt" \
             "$RUNNER_TEMP/provider-unit-shard" "$SHARD"
       # Report-only, this shard's processes only (scripts/report-provider-coverage.sh).

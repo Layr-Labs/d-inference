@@ -93,8 +93,27 @@ COVERAGE_STEPS = ("Collect provider coverage profiles", "Merge shard coverage pr
 GATES_COVERAGE_STEPS = ("Collect provider coverage profiles", "Merge coverage profiles")
 # Every provider test job reports the coverage of its own processes with one script.
 COVERAGE_REPORT = ROOT / "scripts/report-provider-coverage.sh"
-# Each shard's own audit and coverage report (test_only_the_provider_lane_collects_and_reports_coverage).
-SHARD_CHECK_STEPS = ("Check this shard's selections against the suite list", "Report provider coverage")
+# Each shard's own audit, the suite list it reads, and its coverage report
+# (test_only_the_provider_lane_collects_and_reports_coverage).
+SUITE_LIST_STEP = "List the provider suites beside the tests"
+SHARD_CHECK_STEPS = (SUITE_LIST_STEP, "Check this shard's selections against the suite list", "Report provider coverage")
+# The suite list, read beside the tests (the test processes' flags) at a lower
+# priority, with its coverage profile outside the shard's profiles.
+SUITE_LIST_COMMAND = ('python3 ../scripts/ci-background-step.py start "$RUNNER_TEMP/provider-suite-list" \\\n'
+                      "  nice -n 10 bash -c 'env LLVM_PROFILE_FILE=\"$0/%p-%m.profraw\" swift test list --skip-build "
+                      "--ignore-lock --disable-build-manifest-caching > \"$1\"' \\\n"
+                      '  "$RUNNER_TEMP/provider-suite-list" "$RUNNER_TEMP/provider-tests.txt"')
+# The audit: a list that never started fails at once, then it waits for the list.
+SUITE_LIST_WAIT = 'python3 ../scripts/ci-background-step.py wait "$RUNNER_TEMP/provider-suite-list"'
+AUDIT_COMMAND = ("set -euo pipefail\n"
+                 'if [ "$SUITE_LIST_OUTCOME" != success ]; then\n'
+                 '  echo "::error::The suite list did not start (List the provider suites beside the tests: '
+                 '$SUITE_LIST_OUTCOME)"\n'
+                 "  exit 1\n"
+                 "fi\n"
+                 + SUITE_LIST_WAIT + "\n"
+                 'python3 ../scripts/provider-test-shards.py audit-job "$RUNNER_TEMP/provider-tests.txt" \\\n'
+                 '  "$RUNNER_TEMP/provider-unit-shard" "$SHARD"')
 SHARD_UPLOAD = "Upload shard counts, timings and coverage"
 LANES = {
     "test-provider": "provider",
@@ -566,8 +585,24 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for index in (audit, report):
             self.assertEqual(field(steps[index], "if"), skipped_tests)
             self.assertNotIn("continue-on-error:", steps[index])
-        self.assertIn("swift test list --skip-build", steps[audit])
-        self.assertIn('provider-test-shards.py audit-job "$RUNNER_TEMP/provider-tests.txt"', steps[audit])
+        # The list is read beside the tests, right before them and on their
+        # condition; the audit waits for it and fails at once if it never
+        # started, so a missing list cannot skip or stall the audit.
+        suite_list = names.index(SUITE_LIST_STEP)
+        self.assertEqual(suite_list, swift_tests - 1)
+        self.assertEqual(field(steps[suite_list], "id"), "suite-list")
+        self.assertEqual(field(steps[suite_list], "if"), PROVIDER_MIMO_READY)
+        self.assertEqual(field(steps[suite_list], "working-directory"), "provider-swift")
+        self.assertEqual(run_command(steps[suite_list]), SUITE_LIST_COMMAND)
+        self.assertNotIn("continue-on-error:", steps[suite_list])
+        # The test processes' flags (scripts/run-provider-tests.sh), so no
+        # process of the shard meets another on .build's lock or database.
+        shared_flags = re.search(r"(?m)^    shared_build_flags=\((.+)\)$",
+                                 (ROOT / "scripts/run-provider-tests.sh").read_text()).group(1)
+        self.assertEqual(shared_flags, "--ignore-lock --disable-build-manifest-caching")
+        self.assertIn(f"swift test list --skip-build {shared_flags} > ", SUITE_LIST_COMMAND)
+        self.assertEqual(field(steps[audit], "SUITE_LIST_OUTCOME", indent=10), "${{ steps.suite-list.outcome }}")
+        self.assertEqual(run_command(steps[audit]), AUDIT_COMMAND)
         self.assertEqual(field(steps[audit], "SHARD", indent=10), "${{ matrix.shard }}/${{ strategy.job-total }}")
         self.assertEqual(field(steps[audit], "PROVIDER_TEST_PROCESSES", indent=10), f"'{PROVIDER_PROCESSES}'")
         self.assertEqual(run_command(steps[report]), '../scripts/report-provider-coverage.sh '

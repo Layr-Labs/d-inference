@@ -144,6 +144,25 @@ extension EngineV2Bridge {
             overcommit: takesStoppedRowPlace) ?? true
     }
 
+    /// The serving share a text prompt holds while it is rendered and
+    /// tokenized, under the owner ID its submission's allowance takes over
+    /// (`WholeMacServiceBudget.acquirePreparation`). A full Mac refuses as
+    /// capacity, as at submission. Nil: no shared budget, or the owner's
+    /// request, which waits for room at submission (`OwnerMemoryWait`).
+    func acquirePromptPreparation(requestID: String,
+        firstContentDeadline: FirstContentDeadline?) throws -> PromptPreparationShare? {
+        guard let serviceBudget, OwnerMemoryWait.current == nil
+            || !OwnerMemoryWait.servesOwnerRequest(firstContentDeadline: firstContentDeadline) else { return nil }
+        let ownerID = serviceOwnerPrefix + ":" + requestID
+        guard serviceBudget.acquirePreparation(ownerID: ownerID,
+            concurrency: currentPerformanceProfile?.wholeMacConcurrency
+                ?? ServingPerformanceProfiles.legacyWholeMacConcurrency,
+            overcommit: EngineAdmissionPriority.current > 0) else {
+            throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(Self.serviceAllowanceExhausted)
+        }
+        return PromptPreparationShare(budget: serviceBudget, ownerID: ownerID)
+    }
+
     /// Call only at refused pre-submit cleanup or completed engine retirement.
     /// The stream's terminal alone does not prove device resources retired.
     func releaseServiceAllowance(requestID: String) {
@@ -159,4 +178,13 @@ extension EngineV2Bridge {
         }
         serviceBudget?.release(ownerID: serviceOwnerPrefix + ":" + requestID)
     }
+}
+
+/// A prompt preparation's serving share (`EngineV2Bridge.acquirePromptPreparation`).
+/// `end` drops it unless the submission's allowance already took it over.
+struct PromptPreparationShare: Sendable {
+    let budget: WholeMacServiceBudget
+    let ownerID: String
+
+    func end() { budget.releasePreparation(ownerID: ownerID) }
 }

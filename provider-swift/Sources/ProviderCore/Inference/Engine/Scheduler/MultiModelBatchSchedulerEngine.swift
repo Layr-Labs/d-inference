@@ -1490,7 +1490,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             inklingStreamsCalls: Inkling2PromptContract.applies(modelType: modelType)
                 && ToolStreamPreparation.streamsInklingCalls(request: request, prepared: prepared),
             harmonyCallRecovery: GPTOSSToolCallRecovery.make(modelType: modelType, format: toolHandler?.format,
-                prepared: prepared, loopExit: loopGuard == nil ? nil : exitThinking?.record)
+                prepared: prepared, loopExit: loopGuard == nil ? nil : exitThinking?.record,
+                enabled: GPTOSSToolCallRecovery.enabled)
         )
     }
 
@@ -2020,8 +2021,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     router.responseStarted = true
                 }
                 func emit(_ event: MLXServerGenerationEvent) {
-                    guard callRecovery != nil else { return send(event) }
-                    for routed in callRecovery!.route(event) { send(routed) }
+                    for routed in callRecovery?.route(event) ?? [event] { send(routed) }
                 }
                 startedAt = Date()
 

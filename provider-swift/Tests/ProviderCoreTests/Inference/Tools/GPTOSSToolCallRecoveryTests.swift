@@ -149,6 +149,20 @@ struct GPTOSSToolCallRecoveryTests {
         #expect(GPTOSSToolCallRecovery.environmentKey == "DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY")
     }
 
+    @Test("`DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY` off turns it off; it reaches the launchd daemon")
+    func theSwitchReachesTheDaemon() {
+        let key = GPTOSSToolCallRecovery.environmentKey
+        for value in ["0", "off", "false", "no", " OFF "] {
+            #expect(!GPTOSSToolCallRecovery.isEnabled(environment: [key: value]), "\(value)")
+        }
+        for value in ["", "1", "on", "true"] {
+            #expect(GPTOSSToolCallRecovery.isEnabled(environment: [key: value]), "\(value)")
+        }
+        #expect(GPTOSSToolCallRecovery.isEnabled(environment: [:]))
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+    }
+
     // MARK: - A complete call frame ending an open analysis
 
     static let analysis = "<|channel|>analysis<|message|>The user wants us to call the list_products tool again. "

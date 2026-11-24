@@ -30,7 +30,11 @@ import MLXLMServer
 /// `0`, `off`, `false` or `no` turns it off. Read once per process.
 struct GPTOSSToolCallRecovery: Sendable {
     static let environmentKey = "DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY"
-    static let enabled = !ToolOutputLeniencySwitch.isOff(ProcessInfo.processInfo.environment[environmentKey])
+    static let enabled = isEnabled(environment: ProcessInfo.processInfo.environment)
+
+    static func isEnabled(environment: [String: String]) -> Bool {
+        !ToolOutputLeniencySwitch.isOff(environment[environmentKey])
+    }
 
     /// The most visible text kept for the analysis check: a frame is a header
     /// and one argument object.
@@ -55,7 +59,7 @@ struct GPTOSSToolCallRecovery: Sendable {
     /// Harmony call parser, `auto` with declared tools.
     static func make(
         modelType: String?, format: ToolCallFormat?, prepared: ToolChoicePromptPolicy.Prepared,
-        loopExit: GenerationLoopExitRecord?, enabled: Bool = enabled
+        loopExit: GenerationLoopExitRecord?, enabled: Bool = true
     ) -> GPTOSSToolCallRecovery? {
         guard enabled, modelType == "gpt_oss", format == .harmony, prepared.mode == .auto,
               !prepared.allowedToolNames.isEmpty, prepared.tools?.isEmpty == false else { return nil }

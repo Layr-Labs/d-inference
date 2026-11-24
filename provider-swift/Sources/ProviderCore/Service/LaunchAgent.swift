@@ -514,6 +514,10 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
+    /// `DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY`: a whole declared GPT-OSS call
+    /// written as the answer or inside the analysis is returned as a call by
+    /// default (`GPTOSSToolCallRecovery`); `0`, `off`, `false` or `no` returns
+    /// it as generated.
     /// `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR`: GPT-OSS `auto` calls follow a
     /// declared name and that function's schema in the sampler by default; an
     /// off word restores calls as generated.
@@ -607,6 +611,7 @@ public enum LaunchAgent: Sendable {
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedGPTOSSToolCallsEnvironmentKey,
+        GPTOSSToolCallRecovery.environmentKey,
         ToolStreamPreparation.streamNativeToolCallsEnvironmentKey,
         ToolStreamPreparation.streamGLMToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,

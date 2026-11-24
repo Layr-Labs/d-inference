@@ -724,6 +724,38 @@ struct ClusterServiceRestartingStopTests {
     /// instead of being refused until the slot passes. A re-plan put off by another command that holds the lock keeps
     /// its slot: the pair still runs, and re-plans stay at most one per 10 minutes. The trigger as the service calls it
     /// at each part's end.
+    /// A memory re-plan adopts a new split, whose setups carry no cluster approval (as after an update's re-plan). This
+    /// run's approval check had already happened, so without a fresh one the pair served on its local API only, "not
+    /// offered … no cluster approval is attached", until its service restarted (a DevNet pair, 2026-11-24). After a
+    /// re-plan that served, the next check is the run's first again and due now, so it asks the coordinator; one that
+    /// failed leaves the check as it was.
+    @Test(arguments: [true, false])
+    func aMemoryReplanThatServesAsksForTheApprovalAgain(_ serves: Bool) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            try Self.confirmedLeader(service, macs)
+            let model = ClusterApprovalMacs.model, later = Date().addingTimeInterval(3_600)
+            // This run's first check happened (the coordinator was asked); the next one is an hour away.
+            service.lock.withLock { service.approvalChecked = true; service.nextApprovalCheck = later }
+            let offered = ClusterOnboardingModelChoice(title: model, lines: ["fixture plan"], blocker: nil, modelID: model)
+            let lines = ClusterApprovalRecorder<String>()
+            service.memoryReplan = .init(reachMembers: { .success([]) }, planModels: { .success([offered]) },
+                adopt: { _ in .success([]) },
+                serve: { serves ? .success([]) : .failure(.init("the other Mac's part was not started yet: fixture")) },
+                restoreStart: { service.restoreStart() })
+            service.replanForMemory(model: model) { lines.append($0) }
+            let (checked, next) = service.lock.withLock { (service.approvalChecked, service.nextApprovalCheck) }
+            if serves {
+                #expect(!checked && next == .distantPast, "the next approval check is not due at once: \(lines.values)")
+                // The check of a pair that serves without an approval asks the coordinator only as the run's first.
+                #expect(ClusterApprovalCheck.asks(first: !checked, serving: true, scope: .publicServing, offered: false,
+                                                  setAside: false))
+            } else {
+                #expect(checked && next == later, "a re-plan that did not serve changed the approval check: \(lines.values)")
+            }
+        }
+    }
+
     @Test(arguments: ["the owner stopped the pair", "another command held the lock"])
     func aSkippedMemoryReplanGivesItsSlotBackOnlyForAnOwnersStop(_ skipped: String) throws {
         let (macs, service) = try leader()

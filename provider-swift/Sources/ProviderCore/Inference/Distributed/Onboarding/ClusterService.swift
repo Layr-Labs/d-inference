@@ -176,7 +176,7 @@ public final class ClusterService: @unchecked Sendable {
     // for a busy command lock or the other Mac not answering, doesn't count), and again every minute while the pair is
     // offered or serves locally with its approval set aside (`checkApproval`); a test moves the next check instead of
     // waiting for it.
-    private var approvalChecked = false
+    var approvalChecked = false
     private var approvalInFlight = false
     var nextApprovalCheck = Date.distantPast
     private var approvalWatch = ClusterApprovalCheck.Watch()
@@ -772,7 +772,12 @@ public final class ClusterService: @unchecked Sendable {
         if case .failure(let failure) = steps.adopt(index) { return restored(failure.lines) }
         if case .failure(let failure) = steps.serve() { return restored(failure.lines) }
         let after = try? context.savedConfiguration().reference.get()?.sha256
-        lock.withLock { sameSplitReplans = before == after ? sameSplitReplans + 1 : 0 }
+        // The adopted setups carry no cluster approval, as after an update's re-plan: the next check is this run's first
+        // again, so it asks the coordinator and the same model approval attaches, without a restart of the service.
+        lock.withLock {
+            sameSplitReplans = before == after ? sameSplitReplans + 1 : 0
+            approvalChecked = false; nextApprovalCheck = .distantPast
+        }
         // `localAdopt` stops the serving parts and plans once more when their memory is back, so the split adopted
         // need not be `choices[index]` (planned while they ran): it is said from the setup the start recorded.
         let deployment = (try? store.readRecord())?.leadership?.deployment

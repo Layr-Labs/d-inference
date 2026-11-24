@@ -85,6 +85,11 @@ preload.
 - Each pair member logs one `darkbloom-pair-owner-timeline-v1` line per session: from the cancel of the previous session and the stop of its owner to the new prepare, the prepare, the commit, the owner's launch and the worker's first readiness. A `darkbloom-pair-session-heartbeat-v1` line follows each heartbeat a change of the session's report sends.
 - All durations come from the uptime clock. The lines change no behaviour and carry no key, credential or request.
 
+### A two-Mac pair offers itself again after a memory re-plan, and `darkbloom restart` clears a run's leftover device record
+
+- When a Mac's memory no longer held its share of the model, the pair planned a new split and served it, but only on its local API: the new setup carried no cluster approval, and nothing asked for it again until the cluster service restarted ("not offered to Darkbloom … no cluster approval is attached"). The pair now asks the coordinator again right after such a re-plan, so the same model approval attaches and the pair is offered again.
+- `darkbloom restart` could refuse to start the pair again after a clean stop, saying "a device record from a run is still open" and "files from a run's start are still there", while `darkbloom start` went on at once. Its check of what is left running now clears such a leftover the way a part's start does: only when no process of that run is still alive. A record whose owner still runs is kept, and the restart still waits for it.
+
 ### `cluster stop --service`: a leading Mac the other Mac doesn't answer stops its own service
 
 - On a leading Mac whose cluster service restarted, a command that acts as the leader first waits for the service to confirm that this Mac leads. The wait was a fixed 40 s. It now also covers the confirmation window the service publishes, up to 80 s.

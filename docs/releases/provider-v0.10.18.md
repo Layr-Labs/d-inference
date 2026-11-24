@@ -18,6 +18,9 @@ Bug fixes, performance and security posture improvements. Update with `darkbloom
 - Sampling at temperatures above 0 no longer occasionally picks a token the model rates as practically impossible. It
   mostly affected requests that sample from the full vocabulary (GPT-OSS by default; other models when a client sets
   `top_p` 1 and `top_k` 0).
+- On a two-Mac pair, `darkbloom stop` and `darkbloom restart` now clear a leftover device record from a run that has
+  already ended, instead of reporting it as still running or refusing to start again; a record whose run is still alive
+  is kept.
 
 ## For operators: turning a change off
 

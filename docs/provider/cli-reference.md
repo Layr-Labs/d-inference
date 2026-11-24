@@ -4395,6 +4395,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_QWEN38_PREFILL_CHUNK` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`qwen38PrefillChunkKey`); `0` restores the 512-token chunk for Qwen3.8-27B |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
+| `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` | `provider-swift/Sources/ProviderCore/Inference/Performance/DecodeRateIdleAge.swift` (`DecodeRateIdleAge.environmentKey`); `1800` by default, `0` publishes an idle slot's last decode rate however old |
 | `DARKBLOOM_TTFT_REFUSAL_PROBE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe.environmentKey`); `0` turns the refusal streak's idle probe off |
 | `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`NativePrefillEvidence.environmentKey`); `0` restores GLM's and MiMo's previous prefill estimate |
 | `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |

@@ -229,7 +229,11 @@ extension EngineV2Bridge {
             activeTokens: Int64(snapshot.activeTokens),
             maxTokensPotential: maxTokensPotential,
             maxConcurrency: UInt32(clamping: servingConcurrency),
-            observedDecodeTps: observedDecodeTpsEwma,
+            // A stale stacked rate is not this idle Mac's speed (`DecodeRateIdleAge`).
+            observedDecodeTps: DecodeRateIdleAge.published(ewma: observedDecodeTpsEwma,
+                newestSampleAge: performanceMeasurements.observationAge("decode", now: now),
+                idle: snapshot.activeRequests == 0 && snapshot.waitingRequests == 0,
+                maximum: DecodeRateIdleAge.configured),
             // Engine-measured cold-prefill EWMA published as soon as prompt
             // computation completes. Explicit metadata carries age and count.
             observedPrefillTps: observedPrefillTpsEwma,

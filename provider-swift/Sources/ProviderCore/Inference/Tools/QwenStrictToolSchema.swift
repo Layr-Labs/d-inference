@@ -50,8 +50,9 @@ struct QwenStrictToolSchema: Sendable {
     let tools: [Tool]
 
     /// `declared`: the caller's declarations as sent, which `strict` calls are
-    /// validated against. `rendered`: the same tools after ingress
-    /// normalization, which the call parser reads. `markers`: spellings no
+    /// validated against. `rendered`: the same tools as the call parser reads
+    /// them (`Prepared.argumentTools`, else after ingress normalization).
+    /// `markers`: spellings no
     /// value may contain. `lenient` (every `auto` call of a family whose calls
     /// are returned as generated): a tool whose schema the subset cannot hold
     /// still has its name, its parameter names and its required parameters
@@ -259,11 +260,26 @@ struct QwenStrictToolSchema: Sendable {
         let kind: Kind
         /// `null` (also `none`, `nil`) is read as JSON null.
         let acceptsNull: Bool
+        /// For a `.text` reading: the schema under which some texts read as
+        /// JSON literals (`QwenParserLiteralReading`), else nil. The grammar
+        /// still holds such a parameter as text: the parser returns only a
+        /// literal the declaration admits (`null` for an optional string), so
+        /// every text the grammar admits still parses to a valid argument.
+        var literalSchema: [String: MLXLMCommon.JSONValue]? = nil
+
+        /// The literal the parser reads `text` as, when it does not keep it.
+        func literal(_ text: String) -> MLXLMCommon.JSONValue? {
+            literalSchema.flatMap { QwenParserLiteralReading.literal(text, schema: $0) }
+        }
     }
 
     static func parserConversion(_ schema: MLXLMCommon.JSONValue?) -> ParserConversion {
-        let text = ParserConversion(kind: .text, acceptsNull: false)
-        guard case .object(let object)? = schema, object["type"] != .string("string"),
+        var text = ParserConversion(kind: .text, acceptsNull: false)
+        if case .object(let object)? = schema, QwenParserLiteralReading.admitsLiteralType(object) {
+            text.literalSchema = object
+        }
+        guard case .object(let object)? = schema,
+              object["type"] != .string("string") || QwenParserLiteralReading.rendersSiblingType(object),
               let types = declaredTypes(object, depth: 0) else { return text }
         var concrete = types.subtracting(["null"])
         if concrete.contains("number") { concrete.remove("integer") }
@@ -285,7 +301,8 @@ struct QwenStrictToolSchema: Sendable {
             return nil
         }
         var result: Set<String>?
-        if let raw = schema["type"] {
+        let hinted = QwenParserLiteralReading.rendersSiblingType(schema)
+        if !hinted, let raw = schema["type"] {
             let names: [String]
             switch raw {
             case .string(let name):
@@ -320,27 +337,11 @@ struct QwenStrictToolSchema: Sendable {
             }
             result = result.map { $0.intersection(combined) } ?? combined
         }
+        if hinted, schema["nullable"] != .bool(true) { result?.remove("null") }
         return result
     }
 
-    private static func canonicalType(_ name: String) -> String? {
-        let type = name.lowercased()
-        switch type {
-        case "string", "str", "text", "varchar", "char", "enum": return "string"
-        case "integer", "int", "uint", "long", "short", "unsigned": return "integer"
-        case "number", "float": return "number"
-        case "boolean", "bool", "binary": return "boolean"
-        case "object", "dict": return "object"
-        case "array", "arr", "list": return "array"
-        case "null": return "null"
-        default:
-            if ["int", "uint", "long", "short", "unsigned"].contains(where: type.hasPrefix) { return "integer" }
-            if type.hasPrefix("num") || type.hasPrefix("float") { return "number" }
-            if type.hasPrefix("dict") { return "object" }
-            if type.hasPrefix("list") { return "array" }
-            return nil
-        }
-    }
+    private static func canonicalType(_ name: String) -> String? { QwenParserLiteralReading.canonicalType(name) }
 
     // MARK: - `$ref`
 

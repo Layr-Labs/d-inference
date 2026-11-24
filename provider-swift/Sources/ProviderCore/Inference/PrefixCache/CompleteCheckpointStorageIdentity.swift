@@ -10,6 +10,12 @@ struct CompleteCheckpointStorageIdentity: Sendable {
         case recurrentFull
         case historicalAttention([CBv2LayerKind])
         case glm5Next([CBv2LayerKind])
+        /// Paged sliding-window and full attention beside recurrent state
+        /// (Inkling 2): the historical window export of every attention slot
+        /// followed by every slot's convolution/recurrent state, and with an
+        /// assistant its own exact prefix history (the SDK's
+        /// `pagedHistoricalRecurrent` layouts). Native rows only.
+        case historicalRecurrent([CBv2LayerKind])
     }
 
     let backendLayout: String
@@ -18,7 +24,8 @@ struct CompleteCheckpointStorageIdentity: Sendable {
 
     /// `assistantHistory`: a paged recurrent checkpoint also carries an
     /// exact-history assistant's tensors, so a lossy profile selects the
-    /// distinct MTP layout.
+    /// distinct MTP layout; a historical recurrent checkpoint carries its
+    /// assistant's history under the MTP layout.
     init?(kind: EngineV2KVBackendKind, layerDTypes: [DType], pagedConfig: PagedKVPoolConfig?,
           target: Target = .recurrentFull, checkpointQuantization: PagedKVQuantizationConfig? = nil,
           assistantHistory: Bool = false) {
@@ -38,7 +45,7 @@ struct CompleteCheckpointStorageIdentity: Sendable {
         case .contiguous:
             guard pagedConfig == nil else { return nil }
             switch target {
-            case .glm5Next:
+            case .glm5Next, .historicalRecurrent:
                 return nil
             case .recurrentFull:
                 backendLayout = checkpointQuantization == nil
@@ -91,6 +98,17 @@ struct CompleteCheckpointStorageIdentity: Sendable {
                     : (pagedConfig.quantization == nil
                         ? CBv2CompleteCheckpointManifest.pagedLayout
                         : CBv2CompleteCheckpointManifest.quantizedPagedLayout)
+            case .historicalRecurrent(let kinds):
+                // The SDK codec takes exact native rows only: no lossy
+                // profile, no packed pool, symmetric heads, no shared K/V.
+                guard checkpointQuantization == nil, pagedConfig.quantization == nil,
+                    kinds.allSatisfy({ $0.headDim == $0.valueHeadDim && $0.sharesKVWithLayer == nil }),
+                    let layers = try? CBv2CheckpointAttentionLayer.resolve(layerKinds: kinds, dtypes: layerDTypes)
+                else { return nil }
+                backendLayout = assistantHistory
+                    ? CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentMTPLayout
+                    : CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout
+                Self.appendAttentionFields(layers, includeValueHeadDimension: false, to: &fields)
             case .historicalAttention(let kinds):
                 let asymmetric = kinds.contains { $0.headDim != $0.valueHeadDim }
                 guard !asymmetric || pagedConfig.gatheredAttention?.admissionMode == .stepOwned(.pinnedMetal),

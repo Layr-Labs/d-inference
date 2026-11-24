@@ -93,6 +93,7 @@ import MLX
 import MLXLMCommon
 import MLXLMServer
 import MLXVLM
+import ProviderCoreFoundation
 
 /// Coarse media shape of a request, for telemetry tagging only (rides the
 /// `media_kind` field). Never carries media content.
@@ -185,7 +186,8 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
         case .noProcessedMedia:
             return "engine_v2 media prefill: processor produced no image or video pixels"
         case .mediaRoleNotRendered:
-            return "engine_v2 media prefill: the chat template did not render media in its message role"
+            return
+                "engine_v2 media prefill: the chat template did not render media in its message role"
         case .emptyVisionFeatures(let kind):
             return "engine_v2 media prefill: vision tower returned no \(kind.rawValue) features"
         case .misalignedDeepstack(let index):
@@ -284,8 +286,12 @@ public enum EngineV2VisionPrefill {
             self.spans = spans
             // Unknown mixed kinds cannot create a cache identity. Keep old
             // constructor callers source-compatible without inventing order.
-            self.spanKinds = spanKinds ?? (mediaKind == .mixed ? [] : Array(
-                repeating: mediaKind == .image ? .image : .video, count: spans.count))
+            self.spanKinds =
+                spanKinds
+                ?? (mediaKind == .mixed
+                    ? []
+                    : Array(
+                        repeating: mediaKind == .image ? .image : .video, count: spans.count))
             self.embeddings = embeddings
             self.deepstackEmbeddings = deepstackEmbeddings
             self.attention = attention
@@ -428,7 +434,13 @@ public enum EngineV2VisionPrefill {
         let nativeToolModelType: String? = await container.perform { ctx in
             if ctx.model is MLXVLM.Qwen4Exp { return "qwen4_exp" }
             if ctx.model is MLXVLM.PrismHadamardQwen35 { return "prism_hadamard_qwen35" }
+            // Inkling 2 renders content parts in message order (text before
+            // images where the caller put it there), as its reference does.
+            if ctx.model is MLXVLM.Inkling2VLM { return Inkling2ModelIdentity.modelType }
             return nil
+        }
+        if nativeToolModelType == Inkling2ModelIdentity.modelType {
+            try validateInkling2ImageRoles(request)
         }
         let nativeToolMessages = nativeToolModelType != nil
         // Media in a system, assistant or tool message is kept and placed by
@@ -525,7 +537,8 @@ public enum EngineV2VisionPrefill {
 
     /// Qwen's processor finding a different number of vision placeholders
     /// than media (`QwenVL.replacePaddingTokens`, before any tower work).
-    static let qwenPlaceholderCountMismatch = "Number of placeholder tokens does not match number of frames"
+    static let qwenPlaceholderCountMismatch =
+        "Number of placeholder tokens does not match number of frames"
 
     /// Whether the processor refused a request with media outside user
     /// messages because the template did not place that media: the template's
@@ -538,7 +551,8 @@ public enum EngineV2VisionPrefill {
         }
         guard classifyInferenceErrorReason(error) == .jinjaTemplate else { return false }
         let described = String(describing: error) + "\n" + error.localizedDescription
-        return described.contains("cannot contain images") || described.contains("cannot contain videos")
+        return described.contains("cannot contain images")
+            || described.contains("cannot contain videos")
     }
 
     /// The image placeholder token of a loaded Gemma 4 or Qwen wrapper.
@@ -588,6 +602,10 @@ public enum EngineV2VisionPrefill {
             throw EngineV2VisionPrefillError.unsupportedMedia(
                 qwen3VLUnsupportedVideoDetail)
         }
+        if let wrapper = ctx.model as? MLXVLM.Inkling2VLM {
+            try validateInkling2Media(
+                servesVision: wrapper.servesVision, videoCount: userInput.videos.count)
+        }
         try Task.checkCancellation()
         let lmInput: LMInput
         do {
@@ -605,11 +623,18 @@ public enum EngineV2VisionPrefill {
         let promptTokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
         // Media outside user messages: every image must have its placeholder
         // before any tower work (Gemma 4's processor does not count them).
-        if placementCheck, lmInput.image != nil, let imageId = imagePlaceholderTokenId(of: ctx.model),
-            placeholderRuns(in: promptTokens, of: imageId) != userInput.images.count {
+        if placementCheck, lmInput.image != nil,
+            let imageId = imagePlaceholderTokenId(of: ctx.model),
+            placeholderRuns(in: promptTokens, of: imageId) != userInput.images.count
+        {
             throw EngineV2VisionPrefillError.mediaRoleNotRendered
         }
 
+        if let wrapper = ctx.model as? MLXVLM.Inkling2VLM {
+            return try buildInkling2Submission(
+                wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens, mlxErrors: mlxErrors
+            )
+        }
         if let wrapper = ctx.model as? MLXVLM.Qwen3VL {
             return try buildQwen3VLSubmission(
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
@@ -627,6 +652,85 @@ public enum EngineV2VisionPrefill {
         return try buildGemmaSubmission(
             wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
             mlxErrors: mlxErrors)
+    }
+
+    static let inkling2UnsupportedVideoDetail =
+        "Inkling 2 takes still images only; video input is not supported"
+
+    /// Inkling 2 serves images with its own tower and never video: a request
+    /// with video, or with media for a checkpoint without the tower, is
+    /// refused before any decode or tower work, never silently dropped.
+    static func validateInkling2Media(servesVision: Bool, videoCount: Int) throws {
+        guard servesVision else {
+            throw EngineV2VisionPrefillError.unsupportedMedia(
+                MLXVLM.Inkling2VLM.mediaRejectedMessage)
+        }
+        guard videoCount == 0 else {
+            throw EngineV2VisionPrefillError.unsupportedMedia(inkling2UnsupportedVideoDetail)
+        }
+    }
+
+    static let inkling2ImageRoleDetail =
+        "Inkling 2 takes images in user and tool messages only"
+
+    /// Inkling 2's template raises on an image in an assistant or system
+    /// message, so such a request is refused before any decode, never
+    /// rendered without the image. User and tool-result images both run
+    /// through the tower (`MediaIngest.buildUserInput`, `retainToolMedia`).
+    static func validateInkling2ImageRoles(_ request: OpenAIChatCompletionRequest) throws {
+        for message in request.messages where message.role == .assistant || message.role == .system
+        {
+            guard case .parts(let parts) = message.content else { continue }
+            if parts.contains(where: {
+                if case .imageURL = $0 { return true } else { return false }
+            }) {
+                if MediaIngest.everyRoleEnabled {
+                    throw EngineV2VisionPrefillError.mediaRoleNotRendered
+                }
+                throw EngineV2VisionPrefillError.unsupportedMedia(inkling2ImageRoleDetail)
+            }
+        }
+    }
+
+    /// Inkling 2: each image's merged tower rows replace its placeholder run
+    /// (token 200054) as ordinary causal tokens at scalar positions; no
+    /// position state, no span mask. One image runs through the tower at a
+    /// time (`perImageVisionFeatures`).
+    private static func buildInkling2Submission(
+        wrapper: MLXVLM.Inkling2VLM,
+        lmInput: LMInput,
+        promptTokens: [Int],
+        mlxErrors: MLX.ErrorBox
+    ) throws -> PreparedSubmission {
+        guard lmInput.video == nil else {
+            throw EngineV2VisionPrefillError.unsupportedMedia(inkling2UnsupportedVideoDetail)
+        }
+        guard let image = lmInput.image else {
+            throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
+        }
+        let features = try wrapper.perImageVisionFeatures(
+            pixels: image.pixels, frames: image.frames)
+        guard !features.isEmpty else {
+            throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
+        }
+        let carved = try carveSpans(
+            tokens: promptTokens,
+            imagePlaceholderId: wrapper.imagePlaceholderTokenId,
+            imageSpanLengths: features.map { $0.dim(1) },
+            videoPlaceholderId: nil,
+            videoSpanLengths: [])
+        // Materialize the tower output on the request's task, not on the
+        // engine's step thread.
+        eval(features)
+        try throwIfMLXFaulted(mlxErrors)
+        return PreparedSubmission(
+            promptTokens: promptTokens,
+            spans: carved.map(\.span),
+            embeddings: features,
+            spanKinds: carved.map(\.kind),
+            attention: .causal,
+            positionState: nil,
+            mediaKind: .image)
     }
 
     static let qwen3VLUnsupportedVideoDetail =
@@ -783,7 +887,6 @@ public enum EngineV2VisionPrefill {
             mediaKind: lmInput.video == nil
                 ? .image : (lmInput.image == nil ? .video : .mixed))
     }
-
 
     /// Gemma 4: bidirectional span masks, no position state, and a SigLIP
     /// tower whose own seam already forwards one image (or one sampled video
@@ -1112,7 +1215,9 @@ public enum EngineV2VisionPrefill {
         if let readerFailure = error as? VideoReaderFailure {
             return readerFailure.isTransient
                 ? nil
-                : .multimodalRejected("multimodal_rejected: the \(readerFailure.medium.rawValue) could not be decoded")
+                : .multimodalRejected(
+                    "multimodal_rejected: the \(readerFailure.medium.rawValue) could not be decoded"
+                )
         }
         if let visionError = error as? EngineV2VisionPrefillError {
             switch visionError {
@@ -1135,10 +1240,12 @@ public enum EngineV2VisionPrefill {
                 "multimodal_rejected: the model's processor cannot resize this media "
                     + "(a side below its minimum, an aspect ratio above its limit or no frame)")
         case .noVideoTrackFound, .videoNotDecodable:
-            return .multimodalRejected("multimodal_rejected: the video has no decodable video track")
+            return .multimodalRejected(
+                "multimodal_rejected: the video has no decodable video track")
         case .imageRequired, .singleImageAllowed, .singleVideoAllowed, .singleMediaTypeAllowed:
             return .multimodalRejected(
-                "multimodal_rejected: the model's processor does not take this number or mix of media")
+                "multimodal_rejected: the model's processor does not take this number or mix of media"
+            )
         case .maskRequired, .processing:
             // Processor configuration or internal agreement, not the media.
             return nil
@@ -1173,9 +1280,10 @@ public struct EngineV2VisionPlumbing: Sendable {
     let emitTelemetry: @Sendable (TelemetryEvent) -> Void
 
     init(
-        prepare: @escaping @Sendable (
-            ModelContainer, OpenAIChatCompletionRequest, ChatTemplateControls
-        )
+        prepare:
+            @escaping @Sendable (
+                ModelContainer, OpenAIChatCompletionRequest, ChatTemplateControls
+            )
             async throws -> EngineV2VisionPrefill.PreparedSubmission,
         emitTelemetry: @escaping @Sendable (TelemetryEvent) -> Void
     ) {

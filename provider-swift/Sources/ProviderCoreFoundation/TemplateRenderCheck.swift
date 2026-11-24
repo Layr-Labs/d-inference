@@ -109,7 +109,8 @@ public enum TemplateRenderCheck {
 
         let includeMultimodal = configDeclaresVision(at: snapshotDir, modelID: modelID)
         let modelType = configModelType(at: snapshotDir)
-        let fixtures = canonicalFixtures(includeMultimodal: includeMultimodal)
+        let fixtures = canonicalFixtures(includeMultimodal: includeMultimodal,
+            includeVideo: includeMultimodal && configDeclaresVideo(at: snapshotDir, modelID: modelID))
         let specialTokens = specialTokenContext(at: snapshotDir)
 
         for source in sources {
@@ -120,7 +121,7 @@ public enum TemplateRenderCheck {
                 template = try Template(
                     HFTemplateFilters.bindingFilters(
                         in: NemotronTemplateFilters.bindingFilters(
-                            in: normalizeSwiftJinjaTemplate(source), modelType: modelType),
+                            in: normalizeSwiftJinjaTemplate(renderingToolArgumentNulls(source)), modelType: modelType),
                         modelType: modelType),
                     with: .init(lstripBlocks: true, trimBlocks: true))
             } catch {
@@ -151,6 +152,16 @@ public enum TemplateRenderCheck {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return false }
         return ModelMediaPolicy.advertisesMedia(json, modelID: modelID)
+    }
+
+    /// Video fixtures only for a media model that takes video: a still-image
+    /// family's template refuses a video part, as its runtime does.
+    static func configDeclaresVideo(at snapshotDir: URL, modelID: String? = nil) -> Bool {
+        let configURL = snapshotDir.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return false }
+        return ModelMediaPolicy.advertisesVideo(json, modelID: modelID)
     }
 
     static func configModelType(at snapshotDir: URL) -> String? {
@@ -220,7 +231,7 @@ public enum TemplateRenderCheck {
         // faithful to "renders here == renders at request time".
         context["messages"] = .array(
             try fixture.messages.map { message in
-                try Value(any: sanitizeForJinja(stripHarmonyFramingFromAssistantMessage(message)))
+                try Value(any: sanitizeMessageForJinja(stripHarmonyFramingFromAssistantMessage(message)))
             })
         context["add_generation_prompt"] = .boolean(true)
         if let tools = fixture.tools {
@@ -249,7 +260,7 @@ public enum TemplateRenderCheck {
 
     /// The canonical fixture set. Multimodal (content-parts) fixtures are
     /// included only for vision models — see `renderOK(at:)`.
-    static func canonicalFixtures(includeMultimodal: Bool) -> [Fixture] {
+    static func canonicalFixtures(includeMultimodal: Bool, includeVideo: Bool? = nil) -> [Fixture] {
         var fixtures: [Fixture] = [
             plainChatFixture,
             assistantChannelTagsFixture,
@@ -259,7 +270,7 @@ public enum TemplateRenderCheck {
         ]
         if includeMultimodal {
             fixtures.append(imagePartsFixture)
-            fixtures.append(videoPartsFixture)
+            if includeVideo ?? true { fixtures.append(videoPartsFixture) }
         }
         return fixtures
     }

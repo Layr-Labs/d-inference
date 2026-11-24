@@ -52,18 +52,19 @@ struct StatusResidencyTests {
             let now = Date().timeIntervalSince1970
             let expiresAtMs = Int64((now + 3_630) * 1_000)
             print("== EXPIRY \(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(expiresAtMs) / 1_000)))")
-            try sandbox.writeState(Self.reportedState(now: now, adoptedHoldExpiresAtMs: expiresAtMs), adding: [
+            try await sandbox.whileStateIsKeptCurrent(Self.reportedState(now: now, adoptedHoldExpiresAtMs: expiresAtMs), adding: [
                 "serving_selection": [Self.gemmaID, Self.superID],
                 "eviction_exclusions": [[
                     "model": Self.glmID, "resident_gb": 149.5, "reasons": ["autopilot_hold"],
                     "hold_expires_at_ms": expiresAtMs, "adopted_by_autopilot": true,
                 ]],
-            ])
-            print("== STATUS")
-            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
-            print("== AUTOPILOT")
-            try await runCLICommand(Autopilot.Status.self, ["autopilot", "status", "--config", sandbox.config.path])
-            print("== END")
+            ]) {
+                print("== STATUS")
+                try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+                print("== AUTOPILOT")
+                try await runCLICommand(Autopilot.Status.self, ["autopilot", "status", "--config", sandbox.config.path])
+                print("== END")
+            }
         }
         let output = decodedText(result.standardOutputContent)
         let expiry = try #require(output.components(separatedBy: "== EXPIRY ").dropFirst().first?
@@ -95,15 +96,16 @@ struct StatusResidencyTests {
             let sandbox = try CLICommandSandbox.enter(enabledModels: [Self.superID, Self.gemmaID], autoRestart: false)
             defer { sandbox.remove() }
             let now = Date().timeIntervalSince1970
-            try sandbox.writeState(Self.reportedState(now: now, adoptedHoldExpiresAtMs: nil), adding: [
+            try await sandbox.whileStateIsKeptCurrent(Self.reportedState(now: now, adoptedHoldExpiresAtMs: nil), adding: [
                 "serving_selection": [Self.gemmaID, Self.glmID, Self.superID],
                 "eviction_exclusions": [[String: Any]](),
-            ])
-            print("== STATUS")
-            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
-            print("== AUTOPILOT")
-            try await runCLICommand(Autopilot.Status.self, ["autopilot", "status", "--config", sandbox.config.path])
-            print("== END")
+            ]) {
+                print("== STATUS")
+                try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+                print("== AUTOPILOT")
+                try await runCLICommand(Autopilot.Status.self, ["autopilot", "status", "--config", sandbox.config.path])
+                print("== END")
+            }
         }
         let output = decodedText(result.standardOutputContent)
         let status = try #require(outputSection(output, from: "== STATUS", to: "== AUTOPILOT"))
@@ -211,5 +213,33 @@ extension CLICommandSandbox {
         var object = try #require(JSONSerialization.jsonObject(with: encoder.encode(state)) as? [String: Any])
         object.merge(extra) { _, new in new }
         try JSONSerialization.data(withJSONObject: object).write(to: stateFile, options: .atomic)
+    }
+
+    /// Runs `commands` while `state` and `extra` stay current, as a running daemon keeps its state: written now and
+    /// again every second, each time stamped with that write's time. A state written once ages while the commands run,
+    /// and past the stale bar (10 s at the sandbox's 5 s heartbeat) `status` rightly withholds the live fields these
+    /// tests check. No write is in progress or follows once this returns.
+    func whileStateIsKeptCurrent(
+        _ state: DaemonState, adding extra: [String: Any], run commands: () async throws -> Void
+    ) async throws {
+        try writeState(state, adding: extra)
+        let extraJSON = try JSONSerialization.data(withJSONObject: extra)
+        let writer = Task { [self] in
+            guard let extraKeys = try JSONSerialization.jsonObject(with: extraJSON) as? [String: Any] else {
+                throw CocoaError(.coderReadCorrupt)
+            }
+            var current = state
+            while true {
+                try await Task.sleep(for: .seconds(1))
+                current.writtenAt = Date().timeIntervalSince1970
+                try writeState(current, adding: extraKeys)
+            }
+        }
+        var commandFailure: (any Error)?
+        do { try await commands() } catch { commandFailure = error }
+        writer.cancel()
+        let writes = await writer.result
+        if let commandFailure { throw commandFailure }
+        if case .failure(let error) = writes, !(error is CancellationError) { throw error }
     }
 }

@@ -1,3 +1,4 @@
+import MLXLLM
 import MLXLMCommon
 import ProviderCoreFoundation
 import Testing
@@ -37,18 +38,53 @@ struct MTPLogprobRowsSwitchTests {
         }
     }
 
-    /// The SDK takes the opt-in only on a target whose verify logits equal
-    /// one-token decode's, under exact acceptance: Inkling's drafter
-    /// requires `.rectangularExact`, and typical acceptance keeps logprob
-    /// rows target-only.
-    @Test func theOptInNeedsExactAcceptance() {
-        var config = CBv2MTPConfig(enabled: true, verificationMode: .rectangularExact)
+    /// Inkling's configuration as `EngineV2SlotFactory` builds it (the
+    /// drafter's shipped profile: adaptive depth, declared `.rectangular`;
+    /// the acceptance `MTPAcceptancePolicy` resolves with nothing
+    /// configured; then the per-build defaults), run as the round driver
+    /// runs it beside the loaded drafter (`.rectangularExact`): the opt-in
+    /// takes effect, at every draft cap.
+    @Test func theOptInTakesEffectOnInklingsServingConfig() {
+        let id = Inkling2ModelIdentity.upstreamModelID
+        for cap in [7, 4, 1] {
+            var config = Inkling2DSparkDrafter.defaultMTPConfig(maxDraftTokens: cap)
+            config.acceptance = MTPAcceptancePolicy.resolve(
+                global: nil, byModel: [:], modelID: id
+            ).acceptance
+            SDKFeatureDefaults.applyMTPDefaults(
+                to: &config, modelId: id, environment: [:], processEnvironment: [:])
+            #expect(config.verificationMode == .rectangular)
+            let running = config.requiring(Inkling2DSparkDrafter.servingVerificationMode)
+            #expect(running.verificationMode == .rectangularExact)
+            #expect(running.acceptance == .exact)
+            #expect(
+                running.effectiveLogprobSpeculation == CBv2MTPConfig.envLogprobSpeculation,
+                "cap \(cap)")
+            #expect(
+                SDKFeatureDefaults.logprobRowsSummary(
+                    config, drafterMode: Inkling2DSparkDrafter.servingVerificationMode)
+                    == (CBv2MTPConfig.envLogprobSpeculation ? "on" : "off")
+                    + " (verification rectangular_exact, acceptance exact)")
+        }
+    }
+
+    /// The SDK takes the opt-in only on an exact verify path under exact
+    /// acceptance: typical acceptance, or a target that verifies
+    /// `.rectangular`, keeps logprob rows target-only.
+    @Test func theOptInNeedsAnExactVerifyPath() {
+        var config = Inkling2DSparkDrafter.defaultMTPConfig()
         SDKFeatureDefaults.applyMTPDefaults(
             to: &config, modelId: Inkling2ModelIdentity.upstreamModelID, environment: [:],
             processEnvironment: [:])
-        #expect(config.effectiveLogprobSpeculation == CBv2MTPConfig.envLogprobSpeculation)
+        #expect(!config.requiring(nil).effectiveLogprobSpeculation)
         config.acceptance = .typical(delta: 0.2)
-        #expect(!config.effectiveLogprobSpeculation)
+        #expect(
+            !config.requiring(Inkling2DSparkDrafter.servingVerificationMode)
+                .effectiveLogprobSpeculation)
+        #expect(
+            SDKFeatureDefaults.logprobRowsSummary(
+                config, drafterMode: Inkling2DSparkDrafter.servingVerificationMode)
+                == "off (verification rectangular_exact, acceptance typical)")
     }
 
     @Test func startupSummaryNamesTheBuild() {

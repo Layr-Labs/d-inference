@@ -181,6 +181,18 @@ public enum SDKFeatureDefaults {
         return on
     }
 
+    /// Whether logprob rows draft under `config` as the round driver runs it
+    /// beside a drafter that requires `drafterMode`, with the mode and
+    /// acceptance that decide it, for the load log.
+    static func logprobRowsSummary(
+        _ config: CBv2MTPConfig, drafterMode: CBv2MTPVerificationMode?
+    ) -> String {
+        let running = config.requiring(drafterMode)
+        let acceptance = running.acceptance == .exact ? "exact" : "typical"
+        return (running.effectiveLogprobSpeculation ? "on" : "off")
+            + " (verification \(running.verificationMode.rawValue), acceptance \(acceptance))"
+    }
+
     /// The keys to set for `environment`: every listed key it leaves unset or
     /// empty (an empty value is what the LaunchAgent drops, so it means unset).
     public static func projection(

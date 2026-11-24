@@ -30,6 +30,22 @@ struct Inkling2ContextWindowTests {
         #expect(Inkling2ModelIdentity.servedContextTokens == 524_288)
     }
 
+    /// The window is Inkling 2's alone: every other served architecture parses
+    /// its own declared context, unchanged.
+    @Test(arguments: ["flint", "gemma4", "gemma4_text", "glm5_next", "gpt_oss", "mimo_v2", "nemotron_h",
+                      "nemotron_h_omni", "prism_hadamard_qwen35", "qwen3_5", "qwen3_5_moe", "qwen3_vl_moe",
+                      "qwen4_exp", "inkling2"])
+    func otherArchitecturesKeepTheirContext(modelType: String) throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("inkling-window-\(modelType)-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let config: [String: Any] = ["model_type": modelType, "max_position_embeddings": 1_048_576,
+                                     "hidden_size": 4_096, "num_hidden_layers": 32,
+                                     "num_attention_heads": 32, "num_key_value_heads": 8]
+        try JSONSerialization.data(withJSONObject: config).write(to: url)
+        #expect(KVEstimation.parseModelArchitecture(at: url).maxContextLength == 1_048_576)
+    }
+
     @Test(arguments: [
         // (prompt, max_tokens asked): the engine is asked for exactly that output
         (40_000, 4_096),

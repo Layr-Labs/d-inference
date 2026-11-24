@@ -121,7 +121,7 @@ public enum TemplateRenderCheck {
                 template = try Template(
                     HFTemplateFilters.bindingFilters(
                         in: NemotronTemplateFilters.bindingFilters(
-                            in: normalizeSwiftJinjaTemplate(source), modelType: modelType),
+                            in: normalizeSwiftJinjaTemplate(renderingToolArgumentNulls(source)), modelType: modelType),
                         modelType: modelType),
                     with: .init(lstripBlocks: true, trimBlocks: true))
             } catch {
@@ -231,7 +231,7 @@ public enum TemplateRenderCheck {
         // faithful to "renders here == renders at request time".
         context["messages"] = .array(
             try fixture.messages.map { message in
-                try Value(any: sanitizeForJinja(stripHarmonyFramingFromAssistantMessage(message)))
+                try Value(any: sanitizeMessageForJinja(stripHarmonyFramingFromAssistantMessage(message)))
             })
         context["add_generation_prompt"] = .boolean(true)
         if let tools = fixture.tools {

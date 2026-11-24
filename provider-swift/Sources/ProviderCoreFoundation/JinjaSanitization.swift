@@ -34,13 +34,15 @@
 // Optionals are unwrapped to their payload. Chat templates read optional
 // fields defensively (`if key is defined` / `.get(key)` / `| default(…)`),
 // so a *missing* key renders identically to an explicit JSON `null` while
-// sidestepping the bridge crash. Every NON-null leaf is returned verbatim
-// — the exact same value and dynamic type (`__NSCFBoolean`, `__NSCFNumber`,
+// sidestepping the bridge crash. The exception is an earlier tool call's
+// `arguments`, where a null is data, not an absent field: there nulls become
+// Jinja `null` (`sanitizeMessageForJinja`). Every NON-null leaf is returned
+// verbatim — the exact same value and dynamic type (`__NSCFBoolean`, `__NSCFNumber`,
 // native `Int`, …) — so Jinja renders surviving data byte-for-byte as
 // before; array element order is preserved.
 //
-// Placement: this module is intentionally dependency-free (Foundation
-// only) and lives in ProviderCoreFoundation — the lower, Linux-buildable
+// Placement: this module depends only on Foundation and swift-jinja, and
+// lives in ProviderCoreFoundation — the lower, Linux-buildable
 // target — so that BOTH the runtime chat-template chokepoints in
 // `ProviderCore/Inference` AND the scan-time render self-check
 // (`TemplateRenderCheck`, same target) share ONE implementation. Keeping
@@ -49,6 +51,7 @@
 // guard, so the sanitizer must not be duplicated across the two layers.
 
 import Foundation
+import Jinja
 
 /// Recursively strip Jinja-unrepresentable null / `Optional` leaves from an
 /// arbitrary value tree.
@@ -112,6 +115,85 @@ public func sanitizeForJinja(_ value: Any?) -> Any? {
     // therefore Jinja's rendering of it — is identical to the un-sanitized
     // path.
     return value
+}
+
+/// `sanitizeForJinja`, but every JSON null (`NSNull`, `JSONNull`, a boxed
+/// `Optional.none`) becomes Jinja's `null` instead of being dropped, so a
+/// container keeps its keys and elements. Used where a null is data the model
+/// must see: an earlier tool call's arguments (`sanitizeMessageForJinja`).
+/// Tool parameter schemas keep the drop policy.
+public func sanitizeForJinjaKeepingNulls(_ value: Any?) -> Any {
+    guard let value else { return Value.null }
+    let leafType = type(of: value)
+    if leafType == String.self || leafType == Int.self || leafType == Double.self
+        || leafType == Bool.self || leafType is NSNumber.Type || leafType is NSString.Type
+    {
+        return value
+    }
+    if value is Value { return value }
+    let mirror = Mirror(reflecting: value)
+    if mirror.displayStyle == .optional {
+        guard let wrapped = mirror.children.first else { return Value.null }
+        return sanitizeForJinjaKeepingNulls(wrapped.value)
+    }
+    if value is NSNull || isJSONNullSentinel(value) { return Value.null }
+    if let dictionary = value as? [String: Any] {
+        return dictionary.mapValues { sanitizeForJinjaKeepingNulls($0) }
+    }
+    if let array = value as? [Any] {
+        return array.map { sanitizeForJinjaKeepingNulls($0) }
+    }
+    return value
+}
+
+/// Sanitize one chat-template message: null leaves are dropped as
+/// `sanitizeForJinja` does, except inside each assistant tool call's decoded
+/// `function.arguments`, where they stay Jinja `null`. Dropping them there
+/// rewrote the call the model is shown (`{"deadline":null}` rendered as an
+/// empty argument list), so a request asking the model to repeat or continue
+/// from that call got a different call back.
+public func sanitizeMessageForJinja(_ message: Any?) -> Any? {
+    guard var dictionary = message as? [String: Any],
+        let calls = dictionary["tool_calls"] as? [Any]
+    else { return sanitizeForJinja(message) }
+    dictionary.removeValue(forKey: "tool_calls")
+    guard var sanitized = sanitizeForJinja(dictionary) as? [String: Any] else {
+        return sanitizeForJinja(message)
+    }
+    sanitized["tool_calls"] = calls.compactMap { call -> Any? in
+        guard var callMap = call as? [String: Any],
+            var function = callMap["function"] as? [String: Any],
+            let arguments = function.removeValue(forKey: "arguments"),
+            arguments is [String: Any] || arguments is [Any]
+        else { return sanitizeForJinja(call) }
+        callMap["function"] = function
+        guard var sanitizedCall = sanitizeForJinja(callMap) as? [String: Any] else { return nil }
+        var sanitizedFunction = sanitizedCall["function"] as? [String: Any] ?? [:]
+        sanitizedFunction["arguments"] = sanitizeForJinjaKeepingNulls(arguments)
+        sanitizedCall["function"] = sanitizedFunction
+        return sanitizedCall
+    }
+    return sanitized
+}
+
+/// Whether a tool call's raw `arguments` string decodes, as the chat-template
+/// path decodes it (a JSON object, `JSONSerialization`), to an object holding a
+/// null at any depth. Those are the arguments `sanitizeMessageForJinja` now
+/// renders with their nulls, where the shared prompt contract (normalization
+/// v9) renders them without, so a request carrying one is served without the
+/// coordinator's prompt cache.
+public func toolCallArgumentsCarryNull(_ arguments: String) -> Bool {
+    guard let data = arguments.data(using: .utf8),
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    else { return false }
+    return containsJSONNull(object)
+}
+
+private func containsJSONNull(_ value: Any) -> Bool {
+    if value is NSNull { return true }
+    if let dictionary = value as? [String: Any] { return dictionary.values.contains(where: containsJSONNull) }
+    if let array = value as? [Any] { return array.contains(where: containsJSONNull) }
+    return false
 }
 
 /// Detect MLXLMServer's `private struct JSONNull` sentinel (emitted by

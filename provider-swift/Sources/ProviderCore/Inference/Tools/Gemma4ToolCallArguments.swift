@@ -16,12 +16,13 @@
 //   • arguments missing / empty (or whitespace-only) → `{}` (renders an
 //     empty argument list);
 //   • arguments a String → parse as JSON; a JSON OBJECT replaces the string
-//     (null leaves re-stripped — the raw string bypassed the earlier
-//     sanitize pass);
+//     (null leaves converted to Jinja `null`, as the earlier message-level
+//     pass does for decoded arguments);
 //   • parse failure or JSON non-object (array / scalar / null) → throw
 //     `invalidToolPayload` (deterministic 400) instead of rendering garbage.
 
 import Foundation
+import ProviderCoreFoundation
 
 enum Gemma4ToolCallArguments {
 
@@ -65,10 +66,10 @@ enum Gemma4ToolCallArguments {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "tool_calls[].function.arguments must be a JSON object")
             }
-            // The raw string bypassed the earlier message-level null strip;
-            // re-sanitize so a `{"a":null}` payload cannot re-introduce an
-            // NSNull leaf the Jinja value bridge throws on.
-            return sanitizeJinjaObject(object)
+            // The raw string skipped the earlier message-level pass; convert
+            // its nulls the same way, to Jinja `null` (the bridge throws on
+            // NSNull, and dropping them would show the model a different call).
+            return sanitizeForJinjaKeepingNulls(object) as? [String: any Sendable] ?? [:]
         }
         // A non-string non-mapping shape (array / number / bool) is not an
         // OpenAI arguments payload.

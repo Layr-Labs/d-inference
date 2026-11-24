@@ -48,24 +48,49 @@ struct ProductionPromptParityTests {
             let modelType = model.modelType ?? detectedModelType
             #expect(modelType != nil, "production prompt artifact must identify its model type")
             #expect(!model.cases.isEmpty)
+            var historyNullCases: [String] = []
             for fixture in model.cases {
                 let providerBody = try JSONSerialization.data(
                     withJSONObject: fixture.providerBody.foundationObject())
                 // Exercise the actual service entry point before tokenization: it can
                 // inject response-format instructions into the engine request.
+                func tokens(_ body: Data) async throws -> [Int] {
+                    let request = try ProviderLoop.decodeOpenAIRequest(body)
+                    let engine = PromptPreparationCaptureEngine()
+                    let frames = try await MLXOpenAIService(engine: engine)
+                        .streamChatCompletionFrames(request: request)
+                    for try await _ in frames {}
+                    let generationRequest = try #require(await engine.request)
+                    return try ProviderPromptContractPipeline.tokenize(
+                        prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
+                        request: generationRequest,
+                        tokenizer: tokenizer,
+                        modelType: modelType,
+                        templateControls: ProviderLoop.extractChatTemplateControls(from: body)
+                            .resolvingPromptDate())
+                }
+                // Provider-rendered and uncacheable: an earlier tool call's null
+                // arguments render here as `null`, while this contract
+                // (normalization v9) drops them. Such a body is served without the
+                // prompt cache, so no receipt names its prompt; the vectors stay
+                // the contract for the same body with those nulls dropped.
                 let request = try ProviderLoop.decodeOpenAIRequest(providerBody)
-                let engine = PromptPreparationCaptureEngine()
-                let frames = try await MLXOpenAIService(engine: engine)
-                    .streamChatCompletionFrames(request: request)
-                for try await _ in frames {}
-                let generationRequest = try #require(await engine.request)
-                let actual = try ProviderPromptContractPipeline.tokenize(
-                    prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
-                    request: generationRequest,
-                    tokenizer: tokenizer,
-                    modelType: modelType,
-                    templateControls: ProviderLoop.extractChatTemplateControls(from: providerBody)
-                        .resolvingPromptDate())
+                let historyNull = ToolCallHistoryNullCache.carriesNull(request)
+                    && ToolCallHistoryNullCache.rendersThroughSharedSanitizer(
+                        modelType: modelType, managedSuper: false)
+                let contractBody = historyNull ? try Self.droppingHistoryArgumentNulls(providerBody) : providerBody
+                if historyNull {
+                    historyNullCases.append(fixture.id)
+                    let served = ToolCallHistoryNullCache.servingContext(
+                        RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
+                        for: request, modelType: modelType, managedSuper: false)
+                    #expect(served.servedCold && served.context.receiptNonce == nil && !served.context.cacheEnabled,
+                            "\(model.modelID)/\(fixture.id): a history null must be served without the prompt cache")
+                    let rendered = try await tokens(providerBody)
+                    #expect(rendered != fixture.tokenIDs,
+                            "\(model.modelID)/\(fixture.id): the history null no longer changes the prompt")
+                }
+                let actual = try await tokens(contractBody)
                 let difference = firstDifference(actual, fixture.tokenIDs).map { index in
                     let actualToken = actual.indices.contains(index)
                         ? "\(actual[index]) \(tokenizer.convertIdToToken(actual[index]) ?? "<unknown>")"
@@ -87,6 +112,8 @@ struct ProductionPromptParityTests {
                     #expect(first != otherScope.chainHashes(tokens: actual, maxBlocks: 1).first)
                 }
             }
+            #expect(historyNullCases.count < model.cases.count,
+                    "\(model.modelID): only bodies with a history null are provider-rendered")
         }
     }
 
@@ -192,6 +219,40 @@ struct ProductionPromptParityTests {
 }
 
 extension ProductionPromptParityTests {
+    /// `body` with every null removed from earlier tool calls' arguments the
+    /// way the v9 sanitizer removed it (object members dropped, array elements
+    /// compacted): the prompt the vectors were made for.
+    private static func droppingHistoryArgumentNulls(_ body: Data) throws -> Data {
+        guard var object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let messages = object["messages"] as? [Any]
+        else { return body }
+        object["messages"] = try messages.map { message -> Any in
+            guard var message = message as? [String: Any], let calls = message["tool_calls"] as? [Any] else {
+                return message
+            }
+            message["tool_calls"] = try calls.map { call -> Any in
+                guard var call = call as? [String: Any], var function = call["function"] as? [String: Any],
+                      let raw = function["arguments"] as? String,
+                      let arguments = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any]
+                else { return call }
+                function["arguments"] = String(
+                    decoding: try JSONSerialization.data(withJSONObject: droppingNulls(arguments)), as: UTF8.self)
+                call["function"] = function
+                return call
+            }
+            return message
+        }
+        return try JSONSerialization.data(withJSONObject: object)
+    }
+
+    private static func droppingNulls(_ value: Any) -> Any {
+        if let dictionary = value as? [String: Any] {
+            return dictionary.filter { !($0.value is NSNull) }.mapValues(droppingNulls)
+        }
+        if let array = value as? [Any] { return array.filter { !($0 is NSNull) }.map(droppingNulls) }
+        return value
+    }
+
     /// `tokens` with `token` inserted at `index` (at the end when past it).
     private static func inserting(_ token: Int, into tokens: [Int], at index: Int) -> [Int] {
         var result = tokens

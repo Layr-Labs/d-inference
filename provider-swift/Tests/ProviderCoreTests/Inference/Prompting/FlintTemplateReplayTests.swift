@@ -190,10 +190,12 @@ struct FlintTemplateReplayTests {
         // this does not assert which template another model serves.
         let prompt = try render(request(), modelType: modelType)
         let frame = try between("<tool_call>capture", "</tool_call>", in: prompt)
-        #expect(frame.components(separatedBy: "<arg_key>").count - 1 == 3)
-        #expect(!frame.contains("<arg_key>nullable</arg_key>"))
-        #expect(try json(argument("positions", in: frame)) == json("[1,2]"))
-        #expect(try json(argument("nested", in: frame)) == json(#"{"items":[1,2]}"#))
+        // Nulls in an earlier call's arguments are kept as the call was made;
+        // the parameter schema below still drops them.
+        #expect(frame.components(separatedBy: "<arg_key>").count - 1 == 4)
+        #expect(try json(argument("nullable", in: frame)) == json("null"))
+        #expect(try json(argument("positions", in: frame)) == json("[null,1,null,2,null]"))
+        #expect(try json(argument("nested", in: frame)) == json(#"{"leaf":null,"items":[1,null,2]}"#))
         #expect(try Data(argument("raw", in: frame).utf8) == Data(" \t[null, 雪]\n ".utf8))
         let sanitizedSchema = try json(#"""
             {

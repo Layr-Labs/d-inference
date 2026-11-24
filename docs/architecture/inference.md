@@ -5148,6 +5148,22 @@ and the coordinator can refuse to route
 (`provider-swift/Sources/ProviderCoreFoundation/TemplateRenderCheck.swift`,
 `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift`).
 
+swift-jinja cannot take a JSON null, so the shared message sanitizer drops
+null leaves before rendering, with one exception: an earlier tool call's
+decoded `arguments` keep each null as Jinja `null`, at its key or array
+position, because dropping it shows the model a different call than the one it
+made (`sanitizeMessageForJinja`; Gemma 4's string-argument path does the same,
+`Gemma4ToolCallArguments`). Templates that print a plain argument value with
+swift-jinja's string rendering gain a branch that writes `null`: Gemma 4's
+`format_argument` macro and the Qwen 3.5 / Nemotron 3.5 Lightning XML parameter
+value (`renderingToolArgumentNulls`, applied by the serving tokenizer and the
+render check only, not the managed Nemotron Super contract). Templates that
+write arguments with `tojson` print the null as they already did. Tool
+parameter schemas keep the drop policy. GLM-5.3, MiMo and Flint build their own
+history and already kept these nulls. Such a request still plans and counts
+under normalization v9, which drops them, so it is served without the
+coordinator's prompt cache ([prefix cache](prefix-cache.md)).
+
 A template `raise_exception` at request time is classified `jinja_template`
 and returned as HTTP 500, the provider-fault class, so a caller control that
 a template is known to reject must be resolved before rendering. The

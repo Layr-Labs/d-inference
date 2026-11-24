@@ -14,6 +14,13 @@ downloads published artifacts and verifies them. Discovery is not full weight
 hashing: retain fast startup scans and on-demand verification. Broken templates
 must be reported rather than silently repaired.
 
+The template render check run at discovery (`TemplateRenderCheck.renderOK`)
+compiles and feeds each template exactly as the serving tokenizer does: the
+same tool-argument null rewrites (`renderingToolArgumentNulls`), normalization
+and message sanitizer (`sanitizeMessageForJinja`), so "renders at discovery"
+stays "renders at request time". Neither changes the prompt contract ID, which
+hashes the artifact files and the declared normalization version.
+
 Foreground downloads (`darkbloom models download` and the `darkbloom start`
 picker) show one progress line for the whole model, never a line per file:
 `ManifestDownloadProgress` sums each file's bytes on disk and

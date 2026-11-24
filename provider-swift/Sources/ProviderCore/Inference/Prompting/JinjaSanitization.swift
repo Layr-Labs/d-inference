@@ -42,13 +42,16 @@ func sanitizeJinjaObject(
 
 /// Sanitize a chat-template `messages` array: strip raw Harmony channel tags
 /// from assistant string fields, then drop null / `Optional` leaves from each
-/// message dictionary (e.g. a `null` value inside an assistant tool call's
-/// decoded `arguments`). Behavior-preserving for messages that carry neither
-/// null leaves nor Harmony channel framing.
+/// message dictionary, except inside an assistant tool call's decoded
+/// `arguments`, where a null stays Jinja `null` (`sanitizeMessageForJinja`).
+/// Behavior-preserving for messages that carry neither null leaves nor
+/// Harmony channel framing.
 func sanitizeJinjaMessages(
     _ messages: [[String: any Sendable]]
 ) -> [[String: any Sendable]] {
-    messages.map { sanitizeJinjaObject(stripHarmonyFramingFromMessage($0)) }
+    messages.map {
+        sanitizeMessageForJinja(stripHarmonyFramingFromMessage($0)) as? [String: any Sendable] ?? [:]
+    }
 }
 
 /// Strip raw Harmony channel framing from assistant string fields before the

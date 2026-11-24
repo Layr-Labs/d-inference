@@ -50,8 +50,9 @@ struct QwenStrictToolSchema: Sendable {
     let tools: [Tool]
 
     /// `declared`: the caller's declarations as sent, which `strict` calls are
-    /// validated against. `rendered`: the same tools after ingress
-    /// normalization, which the call parser reads. `markers`: spellings no
+    /// validated against. `rendered`: the same tools as the call parser reads
+    /// them (`Prepared.argumentTools`, else after ingress normalization).
+    /// `markers`: spellings no
     /// value may contain. `lenient` (every `auto` call of a family whose calls
     /// are returned as generated): a tool whose schema the subset cannot hold
     /// still has its name, its parameter names and its required parameters

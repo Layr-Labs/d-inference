@@ -541,7 +541,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 modelType: modelType,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
                 glm5PairPostValidation: glm5PairPostValidation)
-            policy.declaredTools = templateControls.declaredTools
+            policy = policy.withDeclaredTools(templateControls.declaredTools, modelType: modelType)
             // The coordinator path serves every request as a stream; the body
             // says whether the client streams (`StrictToolCallPolicy`).
             policy.clientStreams = templateControls.clientStreams ?? (request.stream == true)

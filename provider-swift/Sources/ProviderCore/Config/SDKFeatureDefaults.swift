@@ -167,6 +167,16 @@ public enum SDKFeatureDefaults {
         return on
     }
 
+    /// Red control: the load-log helper only (no build list reads the opt-in).
+    static func logprobRowsSummary(
+        _ config: CBv2MTPConfig, drafterMode: CBv2MTPVerificationMode?
+    ) -> String {
+        let running = config.requiring(drafterMode)
+        let acceptance = running.acceptance == .exact ? "exact" : "typical"
+        return (running.effectiveLogprobSpeculation ? "on" : "off")
+            + " (verification \(running.verificationMode.rawValue), acceptance \(acceptance))"
+    }
+
     /// The keys to set for `environment`: every listed key it leaves unset or
     /// empty (an empty value is what the LaunchAgent drops, so it means unset).
     public static func projection(

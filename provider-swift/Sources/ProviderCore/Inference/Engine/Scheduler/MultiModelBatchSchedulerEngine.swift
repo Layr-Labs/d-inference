@@ -1958,6 +1958,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         inklingStreamsCalls: Bool = false,
         harmonyCallRecovery: GPTOSSToolCallRecovery? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        // Read where the stream starts, inside the coordinator path's scope.
+        let withheldReasoningHeartbeat = InklingWithheldReasoningHeartbeat.enabled
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
         let forward: @Sendable (AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
@@ -1989,7 +1991,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     absorbStrayThinkClose: absorbStrayThinkClose,
                     withholdReasoning: withholdReasoning, streamedCalls: prepared,
                     streamsGLMCalls: streamsGLMCalls,
-                    nativeInklingChannels: nativeInklingChannels, inklingStreamsCalls: inklingStreamsCalls)
+                    nativeInklingChannels: nativeInklingChannels, inklingStreamsCalls: inklingStreamsCalls,
+                    withheldReasoningHeartbeat: withheldReasoningHeartbeat)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.

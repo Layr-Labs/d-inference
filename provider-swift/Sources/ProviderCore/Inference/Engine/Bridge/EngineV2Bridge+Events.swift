@@ -60,6 +60,38 @@ extension EngineV2Bridge {
             pendingCancellationIDs.remove(id)
             pendingProfiles.removeValue(forKey: id)
         }
+        resumeRequestReleaseWaitersIfReleased()
+    }
+
+    /// No request is admitted, pending or still being released by its pump.
+    var requestsReleased: Bool { active.isEmpty && pendingSubmissionIDs.isEmpty && pumpTasks.isEmpty }
+
+    /// Waits until no request holds this slot, at most `requestReleaseWaitBound`;
+    /// true when it was released. A request's stream can end before its pump
+    /// releases its service charge (a native retirement), and calibration starts
+    /// only on an idle Mac, so the startup self-test waits for this before the
+    /// driver schedules calibration.
+    func awaitRequestsReleased() async -> Bool {
+        if requestsReleased { return true }
+        let id = UUID(), bound = requestReleaseWaitBound
+        return await withCheckedContinuation { continuation in
+            requestReleaseWaiters[id] = continuation
+            Task { [weak self] in
+                try? await Task.sleep(for: bound)
+                await self?.resumeRequestReleaseWaiter(id, released: false)
+            }
+        }
+    }
+
+    private func resumeRequestReleaseWaiter(_ id: UUID, released: Bool) {
+        requestReleaseWaiters.removeValue(forKey: id)?.resume(returning: released)
+    }
+
+    private func resumeRequestReleaseWaitersIfReleased() {
+        guard requestsReleased, !requestReleaseWaiters.isEmpty else { return }
+        let waiters = requestReleaseWaiters
+        requestReleaseWaiters.removeAll()
+        for waiter in waiters.values { waiter.resume(returning: true) }
     }
 
     private func pump(
@@ -238,6 +270,12 @@ extension EngineV2Bridge {
                 noteRetirementAfterTerminal(requestId: id, held: terminalAt.duration(to: .now))
             }
         }
+        #if DEBUG
+        if let hook = _testBeforeServiceRelease {
+            _testBeforeServiceRelease = nil
+            await hook()
+        }
+        #endif
         releaseServiceAllowance(requestID: id)
         // Every exit releases only the resources owned by this submission.
         // Staging completion is an idempotent backstop for lookup misses.

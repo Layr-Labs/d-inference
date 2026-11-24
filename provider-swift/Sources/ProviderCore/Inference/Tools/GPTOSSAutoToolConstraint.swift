@@ -103,12 +103,68 @@ enum GPTOSSAutoToolGrammar {
         let byName = Dictionary(declared.map { ($0.function.name, $0) }, uniquingKeysWith: { first, _ in first })
         return rendered.map { tool in
             guard let declaration = byName[tool.function.name], !holdsReference(tool) else { return nil }
-            let resolved = resolvingRefs(declaration)
+            let resolved = withoutRenderHintTypes(resolvingRefs(declaration))
             if let exact = try? ToolConstraintSchemaCompiler.compile(tools: [resolved], mode: .auto).first {
                 return exact
             }
             return widens ? widenedArguments(resolved) : nil
         }
+    }
+
+    /// The declaration with each `type` that only names a render hint
+    /// removed: the type the ingress repair writes beside a union naming one
+    /// of its branches, a mixed `enum`, a `not` of that type or an
+    /// `if`/`then`/`else` typed otherwise
+    /// (`QwenParserLiteralReading.rendersSiblingType`, the rule the call
+    /// parser and the strict check already read). Compiled as a hard type it
+    /// held a union's arguments to its first branch (`"-4200"` for `-4200`).
+    /// Every other node, and a declaration without such a type, is returned
+    /// unchanged.
+    static func withoutRenderHintTypes(_ tool: OpenAITool) -> OpenAITool {
+        guard let parameters = tool.function.parameters else { return tool }
+        let unhinted = withoutRenderHintTypes(parameters, depth: 0)
+        guard unhinted != parameters else { return tool }
+        var copy = tool
+        copy.function.parameters = unhinted
+        return copy
+    }
+
+    /// A hinted node marked `nullable` admits null whatever its type, as the
+    /// strict check reads it; without the type, its union or `enum` must carry
+    /// null itself so the grammar admits it too.
+    private static func admittingNull(_ object: inout [String: MLXLMCommon.JSONValue]) {
+        for key in ["anyOf", "oneOf"] {
+            guard case .array(var branches)? = object[key] else { continue }
+            if !branches.contains(where: isNullBranch) {
+                branches.append(.object(["type": .string("null")]))
+                object[key] = .array(branches)
+            }
+        }
+        if case .array(var members)? = object["enum"], !members.contains(.null) {
+            members.append(.null)
+            object["enum"] = .array(members)
+        }
+    }
+
+    private static func withoutRenderHintTypes(_ schema: MLXLMCommon.JSONValue, depth: Int) -> MLXLMCommon.JSONValue {
+        guard depth <= ToolConstraintSchemaCompiler.maxDepth, case .object(var object) = schema else { return schema }
+        if QwenParserLiteralReading.rendersSiblingType(object) {
+            object.removeValue(forKey: "type")
+            if object["nullable"] == .bool(true) { admittingNull(&object) }
+        }
+        for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+            guard case .array(let branches)? = object[key] else { continue }
+            object[key] = .array(branches.map { withoutRenderHintTypes($0, depth: depth + 1) })
+        }
+        for key in ["properties", "patternProperties", "$defs", "definitions"] {
+            guard case .object(let entries)? = object[key] else { continue }
+            object[key] = .object(entries.mapValues { withoutRenderHintTypes($0, depth: depth + 1) })
+        }
+        for key in ["items", "additionalProperties", "not", "if", "then", "else"] {
+            guard case .object? = object[key] else { continue }
+            object[key] = withoutRenderHintTypes(object[key]!, depth: depth + 1)
+        }
+        return .object(object)
     }
 
     /// A schema outside the subset as written, in the shapes agent clients

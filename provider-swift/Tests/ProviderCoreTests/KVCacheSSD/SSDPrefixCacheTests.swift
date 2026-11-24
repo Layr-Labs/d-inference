@@ -90,6 +90,7 @@ private func makeCache(
     clock: ClockBox,
     blockSize: Int = fixtureBlockSize,
     ttlSeconds: Int64 = 900,
+    ttlMode: SSDPrefixCachePolicy.TTLMode = .sliding,
     adoptionBound: Int = 0,
     minEffectiveTokens: Int = fixtureBlockSize,
     maxStageBytes: Int = 1 << 30,
@@ -112,6 +113,7 @@ private func makeCache(
         epochStore: epochStore,
         root: dir,
         ttlSeconds: ttlSeconds,
+        ttlMode: ttlMode,
         minEffectiveTokens: minEffectiveTokens,
         maxStageBytes: maxStageBytes,
         maxStageMillis: 1_000_000,
@@ -1083,7 +1085,53 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(!(await cache.stage(requestID: "r-cold", promptTokens: cold + [9], cacheScope: "")).staged)
     }
 
-    @Test("attention TTL characterization: read eligibility changes only after the expiry sweep",
+    @Test("TTL fixed: a hit leaves an entry's age at its write, so it expires with an untouched one")
+    func fixedTTLIgnoresHits() async throws {
+        let dir = try tempDir("ttl-fixed")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clock = ClockBox(10_000)
+        let cache = makeCache(dir: dir, kek: SymmetricKey(size: .bits256), clock: clock, ttlSeconds: 900,
+                              ttlMode: .fixed)
+        defer { cache.close() }
+
+        let hot = Array(0 ..< tokenCount)
+        donateFixture(cache, tokens: hot, seed: 1.0)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+        let written = try dbk3Files(under: dir).map {
+            try #require($0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        }
+
+        // A hit and a re-donation 600 s later refresh neither the index nor a file.
+        clock.advance(600)
+        #expect((await cache.stage(requestID: "r-hot", promptTokens: hot + [7], cacheScope: "")).staged)
+        cache.completeStaging(requestID: "r-hot")
+        donateFixture(cache, tokens: hot + Array(100 ..< 108), seed: 1.0)
+        await cache.waitForWritesForTesting()
+        let reused = try dbk3Files(under: dir).filter { url in
+            written.contains(try #require(url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate))
+        }
+        #expect(reused.count == 8, "the first eight blocks keep their write times")
+
+        // 301 s more: 901 s after the write, the hit entry is gone as an untouched one would be.
+        clock.advance(301)
+        cache.sweepExpiredEntries()
+        #expect(!(await cache.stage(requestID: "r-hot2", promptTokens: hot + [8], cacheScope: "")).staged)
+    }
+
+    @Test("TTL mode: unset or sliding slides; fixed and any other value fix the TTL at the write")
+    func ttlModeParses() {
+        let key = SSDPrefixCachePolicy.ttlModeEnvironmentFlag
+        #expect(key == "DARKBLOOM_SSD_KV_TTL_MODE")
+        #expect(SSDPrefixCachePolicy.ttlMode(environment: [:]) == .sliding)
+        #expect(SSDPrefixCachePolicy.ttlMode(environment: [key: ""]) == .sliding)
+        #expect(SSDPrefixCachePolicy.ttlMode(environment: [key: " Sliding "]) == .sliding)
+        for value in ["fixed", "FIXED", "slide", "0", "off"] {
+            #expect(SSDPrefixCachePolicy.ttlMode(environment: [key: value]) == .fixed, "\(value)")
+        }
+    }
+
+    @Test("attention TTL: a block past its TTL is not staged, whether or not the expiry sweep ran",
           arguments: [899, 900, 901], [false, true])
     func ttlStageBeforeSweepCharacterization(age: Int, sweepFirst: Bool) async throws {
         try await Device.withDefaultDevice(.cpu) {
@@ -1115,11 +1163,11 @@ struct SSDPrefixCacheLifecycleTests {
                 let expired = age >= 900
                 #expect(cache.index.expired(now: clock.now, ttlSeconds: 900).count == (expired ? 8 : 0))
                 if sweepFirst { cache.sweepExpiredEntries() }
-                let expectedStage = !expired || !sweepFirst
+                let expectedStage = !expired
                 let prompt = tokens + [999]
                 let result = await cache.stage(requestID: "idle-boundary", promptTokens: prompt, cacheScope: "")
-                // Characterize the existing sweep-enforced contract. This is
-                // not a proposed strict read-time cutoff or an expected-red fix.
+                // The stage plan counts only blocks within their TTL, so the
+                // cutoff holds before the sweep removes them.
                 #expect(result.staged == expectedStage)
                 if expectedStage {
                     let matched: Int = try {
@@ -1144,8 +1192,9 @@ struct SSDPrefixCacheLifecycleTests {
                     }
                 } else {
                     #expect(result.disposition == .missAbsent)
-                    #expect(cache.index.count == 0)
-                    #expect(dbk3Files(under: dir).isEmpty)
+                    // Only the sweep removes them; the refused stage leaves them alone.
+                    #expect(cache.index.count == (sweepFirst ? 0 : 8))
+                    #expect(dbk3Files(under: dir).count == (sweepFirst ? 0 : 8))
                 }
                 cache.completeStaging(requestID: "idle-boundary")
                 #expect(cache.bytesInUse == 0)
@@ -4673,5 +4722,44 @@ struct SSDWindowSidecarTests {
         // phase: it must stay well inside the stage deadline.
         #expect(warm < Double(SSDPrefixCachePolicy.defaultMaxStageMillis))
         #expect(cold < Double(SSDPrefixCachePolicy.defaultMaxStageMillis))
+    }
+}
+
+// The counters are process-wide: every test that reads them runs in one serialized suite.
+extension MemoryOnlySSDTierTests {
+    @Test("a memory-only receipt never adopts, stages or donates on the attention tier")
+    func memoryOnlyReceiptIsRefused() async throws {
+        let dir = try tempDir("memory-only")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clock = ClockBox(10_000)
+        let cache = makeCache(dir: dir, kek: SymmetricKey(size: .bits256), clock: clock)
+        defer { cache.close() }
+        let tokens = Array(0 ..< 64)
+        // A peer's blocks on disk and staged in RAM, under the same (unscoped) salt.
+        cache.donate(tokens: tokens, snapshots: fixtureSnapshots(tokenCount: tokens.count),
+                     layerKinds: fixtureLayerKinds, cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+        #expect((await cache.stage(requestID: CBv2RequestID(5), promptTokens: tokens + [1], cacheScope: "")).staged)
+        let before = dbk3Files(under: dir).count
+        let counters = RequestCachePolicyCounters.shared.snapshot
+
+        let marked = CBv2RequestID(5 | MemoryOnlyReceipt.bit)
+        #expect(cache.lookup(requestID: marked, tokens: tokens + [1], layerKinds: fixtureLayerKinds, cacheSalt: nil) == nil)
+        cache.donate(requestID: marked, tokens: Array(500 ..< 564),
+                     snapshots: fixtureSnapshots(tokenCount: 64, seed: 3), layerKinds: fixtureLayerKinds, cacheSalt: nil)
+        cache.donate(requestID: marked, tokens: Array(600 ..< 664),
+                     snapshots: fixtureSnapshots(tokenCount: 64, seed: 4),
+                     slidingSnapshots: [nil, nil], layerKinds: fixtureLayerKinds, cacheSalt: nil)
+        let staged = await cache.stage(requestID: marked, promptTokens: Array(500 ..< 565), cacheScope: "")
+        await cache.waitForWritesForTesting()
+        let after = RequestCachePolicyCounters.shared.snapshot
+
+        #expect(staged.disposition == .skippedPolicy)
+        #expect(dbk3Files(under: dir).count == before, "nothing was written for the memory-only receipt")
+        #expect(after.ssdRefusals - counters.ssdRefusals == 3)
+        // `stage` is a bridge-only path: reaching it counts as a touch, refused there.
+        #expect(after.ssdTierTouches - counters.ssdTierTouches == 1)
+        cache.completeStaging(requestID: CBv2RequestID(5))
     }
 }

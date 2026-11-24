@@ -505,12 +505,23 @@ public enum LaunchAgent: Sendable {
     /// presence penalty by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
     /// text by default; exact `0` restores the 500.
+    /// `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT`: an Inkling 2 call frame in the
+    /// answer to an `auto` request that declares no tools is text by default;
+    /// exact `0` restores its refusal.
+    /// `DARKBLOOM_INKLING_MTP_MAX_DRAFT`: Inkling 2's most drafts per MTP round
+    /// (1 to 7, default 7); tokens are unaffected.
+    /// `DARKBLOOM_INKLING_MTP_COUPLED`: Inkling 2's coupled drafting (off by
+    /// default; `1` turns it on, `0` off); tokens are unaffected.
     /// `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING` (SDK-read, `GrammarOnlyToolParsing`):
     /// the GLM, Gemma and MiMo parsers return calls that break only their
     /// schema; `0`, `off`, `false` or `no` restores their refusals.
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
+    /// `DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY`: a whole declared GPT-OSS call
+    /// written as the answer or inside the analysis is returned as a call by
+    /// default (`GPTOSSToolCallRecovery`); `0`, `off`, `false` or `no` returns
+    /// it as generated.
     /// `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR`: GPT-OSS `auto` calls follow a
     /// declared name and that function's schema in the sampler by default; an
     /// off word restores calls as generated.
@@ -541,6 +552,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GLM_SHARED_GRANT_WAIT`: a GLM request that fits GLM alone waits
     /// for its share beside other loaded models by default; `0`, `false`, `no` or
     /// `off` refuses it at once, as 0.10.17 did.
+    /// `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS`: an idle slot stops publishing
+    /// a decode rate older than this (1,800 s by default); `0`, `false`, `no` or
+    /// `off` publishes the last rate however old, as 0.10.17 did.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -564,6 +578,8 @@ public enum LaunchAgent: Sendable {
         SSDPrefixCachePolicy.incrementalCheckpointsFlag,
         SSDPrefixCachePolicy.parallelStageFlag,
         SSDPrefixCachePolicy.terminalBeforePublicationFlag,
+        SSDPrefixCachePolicy.ttlModeEnvironmentFlag,
+        RequestCachePolicy.localServingEnvironmentKey,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GemmaJSONAnswerPolicy.environmentKey,
@@ -571,6 +587,7 @@ public enum LaunchAgent: Sendable {
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
+        PromptTokenCachePolicy.ttlEnvironmentKey,
         QwenStrictToolGrammar.environmentKey,
         QwenStrictToolGrammar.allToolsEnvironmentKey,
         QwenStrictToolGrammar.nemotronEnvironmentKey,
@@ -601,6 +618,7 @@ public enum LaunchAgent: Sendable {
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedGPTOSSToolCallsEnvironmentKey,
+        GPTOSSToolCallRecovery.environmentKey,
         ToolStreamPreparation.streamNativeToolCallsEnvironmentKey,
         ToolStreamPreparation.streamGLMToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
@@ -613,16 +631,27 @@ public enum LaunchAgent: Sendable {
         MTPAutomaticVerificationPolicy.gemmaLoneRowEnvironmentKey,
         MTPAutomaticVerificationPolicy.gemmaTwoDraftsEnvironmentKey,
         MTPAutomaticVerificationPolicy.gemmaM5UltraLoneRowEnvironmentKey,
+        MTPAutomaticVerificationPolicy.gemmaMaxDraftPromptTokensEnvironmentKey,
         EngineV2KVQuantizationPolicy.gemmaNativeRowsBeforeAssistantEnvironmentKey,
         "DARKBLOOM_QWEN35_DECODE_COMMAND_BUFFERS",
         // SDK-read (`CBv2MTPConfig.envPenaltySpeculation`, once per process): rows
         // with a presence/frequency penalty speculate with exact acceptance;
         // `0`, `false`, `no` or `off` keeps them target-only (0.10.15).
         MTPPenaltyRows.environmentKey,
+        // SDK-read (`CBv2MTPConfig.envRepetitionPenaltySpeculation`, once per process):
+        // rows with a repetition penalty speculate with exact acceptance on the builds
+        // that opt in; `0`, `false`, `no` or `off` keeps them target-only.
+        MTPRepetitionPenaltyRows.environmentKey,
         // SDK-read (`CBv2MTPConfig.envStopStringSpeculation`, once per process): rows
         // with `stop` strings speculate on the builds that opt in; `0`, `false`, `no`
         // or `off` keeps them target-only.
         MTPStopStringRows.environmentKey,
+        Inkling2MTPProfilePolicy.maxDraftKey,
+        Inkling2MTPProfilePolicy.coupledKey,
+        // SDK-read (`CBv2MTPConfig.envLogprobSpeculation`, once per process): rows
+        // that request logprobs speculate on the builds that opt in; `0`, `false`,
+        // `no` or `off` keeps them target-only.
+        MTPLogprobRows.environmentKey,
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
@@ -635,6 +664,7 @@ public enum LaunchAgent: Sendable {
         GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
+        Inkling2OutputChannels.undeclaredCallTextEnvironmentKey,
         GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
         GPTOSSAutoToolGrammar.environmentKey,
@@ -648,12 +678,15 @@ public enum LaunchAgent: Sendable {
         OwnerMemoryWait.environmentName,
         OwnerMemoryWait.firstTokenWaitEnvironmentName,
         OwnerMemoryWait.sharedGrantWaitEnvironmentName,
+        DecodeRateIdleAge.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [
         "DARKBLOOM_DRAIN_TIMEOUT_SECONDS",
         "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_PREFIX_CACHE_MEMORY",
+        MemoryOnlyPrefixCachePolicy.modeEnvironmentKey,
+        MemoryOnlyPrefixCachePolicy.maximumMegabytesEnvironmentKey,
         "DARKBLOOM_PREFIX_CACHE_DISK_GB",
         "DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",

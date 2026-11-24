@@ -352,6 +352,10 @@ public actor EngineV2Bridge {
     /// bridge-side limit would just shadow the engine's admission with a
     /// second constant to keep in sync.
     var pumpTasks: [String: Task<Void, Never>] = [:]
+    /// Callers waiting until no request holds this slot (`awaitRequestsReleased`).
+    var requestReleaseWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    /// How long `awaitRequestsReleased` waits at most.
+    var requestReleaseWaitBound: Duration = ModelCalibrationPolicy.shapeWarmupSettle
     /// How often a request watched while it has no first token looks whether it still waits in the engine's queue
     /// (`EngineV2Bridge+QueueState.swift`): the owner's request under me first (`EngineV2Bridge+OwnerWait.swift`), and
     /// a local request whose head is held (`EngineV2Bridge+HeadHold.swift`), whose looks start 1 ms apart and grow to
@@ -380,11 +384,22 @@ public actor EngineV2Bridge {
     var prefillEvidenceRecovery = PrefillEvidenceRecovery()
     var modelCalibration = ModelCalibrationState()
     let calibrationPosturePermitsWork: @Sendable () -> Bool
+    /// Low Power Mode and the thermal state, read when admission and the
+    /// reported width ask (`EngineV2Bridge+ServiceAllowance`).
+    let servingPosture: @Sendable () -> (lowPowerMode: Bool, thermalState: ProcessInfo.ThermalState)
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// A counted sample (calibration, or `minimumPublishedDecodeTokens` or
+    /// more) has moved `observedDecodeTpsEwma` since it last restarted.
+    var decodeEwmaCounted = false
+    /// The published decode rate (`updatePublishedDecodeTps`) and the newest
+    /// sample behind it.
+    var publishedDecodeTps: Double = 0
+    var publishedDecodeInitialized = false
+    var publishedDecodeAt: ContinuousClock.Instant?
     /// Decode step of the requests behind `observedDecodeTpsEwma`, smoothed
     /// and reset with it. Deadline admission uses it to charge decode per
     /// batch step instead of per row.
@@ -500,6 +515,9 @@ public actor EngineV2Bridge {
         calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
+        servingPosture: @escaping @Sendable () -> (lowPowerMode: Bool, thermalState: ProcessInfo.ThermalState) = {
+            (ProcessInfo.processInfo.isLowPowerModeEnabled, ProcessInfo.processInfo.thermalState)
+        },
         admissionFixes: Bool? = nil,
         refusalProbe: Bool? = nil,
         nativePrefillEvidence: Bool? = nil,
@@ -519,6 +537,7 @@ public actor EngineV2Bridge {
         self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
+        self.servingPosture = servingPosture
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
         self.refusalProbe = refusalProbe ?? DeadlineRefusalProbe.enabled
         self.nativePrefillEvidence = nativePrefillEvidence ?? NativePrefillEvidence.enabled
@@ -675,6 +694,17 @@ public actor EngineV2Bridge {
     /// can finish in one batched step, which a re-armed one-shot gate can miss.
     var _testPersistentBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
     var _testOnCancelledSettlementWait: (@Sendable () -> Void)?
+    /// One-shot, awaited after a request's stream ended and before its pump
+    /// releases its service charge.
+    var _testBeforeServiceRelease: (@Sendable () async -> Void)?
+
+    func _testInstallBeforeServiceRelease(_ hook: @escaping @Sendable () async -> Void) {
+        _testBeforeServiceRelease = hook
+    }
+
+    func _testRequestReleaseWaiterCount() -> Int { requestReleaseWaiters.count }
+
+    func _testSetRequestReleaseWaitBound(_ bound: Duration) { requestReleaseWaitBound = bound }
 
     func _testInstallPersistentTerminalGate(_ gate: (@Sendable (CBv2Usage) async -> Void)?) {
         _testPersistentBeforeNativeTerminal = gate

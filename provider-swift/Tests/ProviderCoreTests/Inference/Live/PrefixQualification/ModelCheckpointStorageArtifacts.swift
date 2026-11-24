@@ -36,7 +36,7 @@ struct ModelCheckpointStorageArtifact: Codable, Sendable {
                 maximumPlaintextBytes: SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(environment: environment),
                 requireEOF: true, validateMetadata: { _ in },
                 consumeChunk: { index, bytes in if index == 0 { manifestData = bytes } })
-            let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(#require(manifestData))
+            let manifest = try SSDHybridCheckpointEnvelope.inspectStoredManifestForTesting(#require(manifestData))
             try #require(manifest.identity.modelAggregateHash == fixture.specification.expectedWeightHash)
             try #require(manifest.backendLayout == fixture.session.checkpointBackendLayout)
             let encodedBytes = try manifest.validateStructure()

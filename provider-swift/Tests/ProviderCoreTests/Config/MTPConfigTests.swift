@@ -151,6 +151,92 @@ struct MTPConfigKeyTests {
             modelID: gemma, chipName: "Apple M5 Ultra", twoDrafts: true) == (enabled ? [2, 0] : [2, 2, 0]))
     }
 
+    /// Under the two-draft policy on M5 Ultra, a Gemma QAT prompt longer than
+    /// 16,384 tokens decodes without drafts; `DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS`
+    /// moves the limit or, with `0`, removes it. No other chip, model or
+    /// policy gets a limit, whatever the setting.
+    @Test func gemmaQATLongPromptsOnM5UltraDecodeWithoutDrafts() {
+        typealias Limit = MTPAutomaticVerificationPolicy.GemmaDraftPromptLimit
+        let gemma = MTPAcceptancePolicy.gemmaQATModelID
+        func limit(
+            _ chip: String, _ setting: Limit, model: String? = MTPAcceptancePolicy.gemmaQATModelID,
+            twoDrafts: Bool = true, benchmark: Bool = false, onByDefault: Bool = true
+        ) -> Int? {
+            MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
+                modelID: model, chipName: chip, hasBenchmarkVerificationOverride: benchmark,
+                twoDrafts: twoDrafts, limit: setting, onByDefault: onByDefault)
+        }
+        #expect(MTPAutomaticVerificationPolicy.gemmaM5UltraMaxDraftPromptTokens == 16384)
+        #expect(limit("Apple M5 Ultra", .chipDefault) == 16384)
+        #expect(limit("Apple M5 Ultra", .tokens(8192)) == 8192)
+        #expect(limit("Apple M5 Ultra", .off) == nil)
+        for setting in [Limit.chipDefault, .off, .tokens(2048)] {
+            // The two-draft switch off, the benchmark override and other models.
+            #expect(limit("Apple M5 Ultra", setting, twoDrafts: false) == nil)
+            #expect(limit("Apple M5 Ultra", setting, benchmark: true) == nil)
+            for model in ["gemma-4-26b", "gemma-4-26b-8bit", "qwen3.6-35b-a3b-vl-mtp-mxfp8", nil]
+                as [String?]
+            {
+                #expect(limit("Apple M5 Ultra", setting, model: model) == nil)
+            }
+            // Every other chip, the other two-draft chips included.
+            for chip in ["Apple M5 Max", "Apple M3 Ultra", "Apple M5 Pro", "Apple M5", "Apple M4 Max",
+                "Apple M4 Ultra", "Apple M2 Ultra", "Apple M1 Max", "Unknown"]
+            {
+                #expect(limit(chip, setting) == nil, "\(chip)")
+            }
+        }
+        // A call without the setting follows the read-once process value.
+        #expect(MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
+            modelID: gemma, chipName: "Apple M5 Ultra", twoDrafts: true)
+            == limit(
+                "Apple M5 Ultra", MTPAutomaticVerificationPolicy.gemmaDraftPromptLimit,
+                onByDefault: MTPAutomaticVerificationPolicy.gemmaPromptLimitOnByDefault))
+    }
+
+    /// The build default can be switched off in one line
+    /// (`gemmaPromptLimitOnByDefault`). Off, an unset setting gives no limit,
+    /// so the engine runs as it did before the limit existed; an explicit
+    /// positive setting still applies it, and `0` stays off.
+    @Test func gemmaPromptLimitDefaultCanBeSwitchedOff() {
+        func limit(_ setting: MTPAutomaticVerificationPolicy.GemmaDraftPromptLimit, _ onByDefault: Bool) -> Int? {
+            MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
+                modelID: MTPAcceptancePolicy.gemmaQATModelID, chipName: "Apple M5 Ultra",
+                twoDrafts: true, limit: setting, onByDefault: onByDefault)
+        }
+        #expect(MTPAutomaticVerificationPolicy.gemmaPromptLimitOnByDefault)
+        #expect(limit(.chipDefault, true) == 16384)
+        #expect(limit(.chipDefault, false) == nil)
+        #expect(limit(.tokens(8192), false) == 8192)
+        #expect(limit(.off, true) == nil)
+        #expect(limit(.off, false) == nil)
+        for chip in ["Apple M5 Max", "Apple M3 Ultra", "Unknown"] {
+            #expect(MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
+                modelID: MTPAcceptancePolicy.gemmaQATModelID, chipName: chip, twoDrafts: true,
+                limit: .chipDefault, onByDefault: true) == nil, "\(chip)")
+        }
+    }
+
+    @Test func gemmaDraftPromptLimitParsesTheEnvironment() {
+        typealias Limit = MTPAutomaticVerificationPolicy.GemmaDraftPromptLimit
+        for raw in [nil, "", " ", "abc", "-5", "4096.5", "1e4"] as [String?] {
+            #expect(Limit(raw) == .chipDefault, "\(raw ?? "nil")")
+        }
+        for raw in ["0", " 0 ", "OFF", "off", "false", "No"] {
+            #expect(Limit(raw) == .off, "\(raw)")
+        }
+        #expect(Limit("8192") == .tokens(8192))
+        #expect(Limit(" 2048 ") == .tokens(2048))
+    }
+
+    @Test func gemmaDraftPromptLimitRollbackIsForwarded() {
+        let key = MTPAutomaticVerificationPolicy.gemmaMaxDraftPromptTokensEnvironmentKey
+        #expect(key == "DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS")
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
+    }
+
     @Test func gemmaM5UltraLoneRowRollbackIsForwarded() {
         let key = MTPAutomaticVerificationPolicy.gemmaM5UltraLoneRowEnvironmentKey
         #expect(key == "DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW")

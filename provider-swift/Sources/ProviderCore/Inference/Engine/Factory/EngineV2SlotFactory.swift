@@ -309,12 +309,33 @@ enum EngineV2SlotFactory {
                 hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil),
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
-            acceptance: mtpAcceptance.acceptance)
+            acceptance: mtpAcceptance.acceptance,
+            maxDraftPromptTokens: MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
+                modelID: modelId,
+                hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil))
+        if assistantHandle != nil, let limit = mtpConfig.maxDraftPromptTokens {
+            logInfo("engine_v2: \(modelId) MTP drafts only for prompts of at most \(limit) tokens")
+        }
         if assistantHandle?.drafter is Inkling2DSparkDrafter {
             // The drafter's own engine profile: up to 7 drafts, up to 8
             // speculating rows, adaptive depth down to plain decode. The
-            // operator's acceptance setting still applies.
-            mtpConfig = Inkling2DSparkDrafter.defaultMTPConfig()
+            // operator's acceptance setting still applies,
+            // DARKBLOOM_INKLING_MTP_MAX_DRAFT may lower the cap and
+            // DARKBLOOM_INKLING_MTP_COUPLED sets coupled drafting.
+            let maxDraft = Inkling2MTPProfilePolicy.maxDraftTokens(environment: environment)
+            if let unrecognized = maxDraft.unrecognized {
+                logWarning(
+                    "engine_v2: unrecognized \(Inkling2MTPProfilePolicy.maxDraftKey) value "
+                        + "\"\(unrecognized)\" for \(modelId) — using \(maxDraft.tokens)")
+            } else if maxDraft.tokens != Inkling2MTPProfilePolicy.defaultMaxDraftTokens {
+                logInfo("engine_v2: \(modelId) MTP max draft tokens \(maxDraft.tokens)")
+            }
+            let coupled = Inkling2MTPProfilePolicy.coupledProposals(
+                modelID: modelId, environment: environment)
+            if coupled {
+                logInfo("engine_v2: \(modelId) MTP coupled drafting on")
+            }
+            mtpConfig = Inkling2MTPProfilePolicy.engineConfig(maxDraft: maxDraft, coupled: coupled)
             mtpConfig.acceptance = mtpAcceptance.acceptance
         }
         // Per-build SDK switches this release turns on where they were measured;
@@ -323,6 +344,15 @@ enum EngineV2SlotFactory {
             to: &mtpConfig, modelId: modelId, environment: environment)
         if !sdkDefaults.isEmpty, mtpConfig.enabled {
             logInfo("engine_v2: \(modelId) SDK feature defaults on: \(sdkDefaults.joined(separator: ", "))")
+        }
+        if mtpConfig.logprobSpeculation, mtpConfig.enabled {
+            // As the round driver runs it: the drafter's required mode replaces
+            // the declared one, and the SDK takes the opt-in only on an exact
+            // verify path (`CBv2MTPConfig.effectiveLogprobSpeculation`).
+            logInfo(
+                "engine_v2: \(modelId) MTP logprob rows: "
+                    + SDKFeatureDefaults.logprobRowsSummary(
+                        mtpConfig, drafterMode: assistantHandle?.drafter?.requiredVerificationMode))
         }
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(

@@ -10,7 +10,7 @@ extension EngineV2Bridge {
         now: ContinuousClock.Instant = .now, allowQualifiedPosture: Bool? = nil
     ) -> CBv2FirstContentCalibration? {
         guard let profile = currentDeadlineProfile(
-                allowQualifiedPosture: allowQualifiedPosture ?? ServingPerformanceProfiles.postureAllowsExpansion), profile.isValid,
+                allowQualifiedPosture: allowQualifiedPosture ?? postureAllowsExpansion), profile.isValid,
             profile.deadlineCalibration.isValid,
             let identity = promptWorkIdentity,
             identity.promptContractID == profile.deadlineCalibration.promptContractId,

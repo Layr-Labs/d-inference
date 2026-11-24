@@ -547,6 +547,12 @@ extension ProviderLoop {
         guard frameCount > 0 else {
             throw InferenceError.generationFailed("startup self-test produced no output frames")
         }
-        return clock.now - start
+        let elapsed = clock.now - start
+        // The stream can end before the bridge releases the request's service
+        // charge, and calibration (scheduled when the driver finishes) starts
+        // only on an idle Mac: without this wait it waited for the next
+        // capacity tick.
+        _ = await slotEngineV2.awaitRequestsReleased()
+        return elapsed
     }
 }

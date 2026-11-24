@@ -178,7 +178,8 @@ extension ProviderLoop {
                 modelType: modelType, templateControls: templateControls).count) ?? 0
         }
         let messages = prepared.messages.map { $0.templateMessageDict() }
-        let toolSpecs = prepared.tools?.map { $0.toolSpec() }
+        let toolSpecs = GPTOSSToolSchemaRender.renderedTools(prepared.tools, declared: templateControls.declaredTools,
+            modelId: request.model, modelType: modelType)?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType,
             hasMedia: MediaIngest.hasMedia(request),
@@ -190,7 +191,8 @@ extension ProviderLoop {
             modelId: request.model, modelType: modelType)
         guard let ids = try? tokenizer.inner.applyChatTemplate(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
-            tools: ChatTemplateFixes.normalizeTools(toolSpecs, context: fixContext),
+            tools: ChatTemplateFixes.normalizeTools(
+                toolSpecs, context: fixContext, declared: templateControls.declaredTools),
             additionalContext: additionalContext
         ) else { return 0 }
         return ids.count
@@ -256,6 +258,8 @@ struct InboundChatExtensions {
     /// The coordinator's sealed copy of the attempt's prefix-cache identity;
     /// it applies only with the frame's matching receipt nonce.
     private(set) var sealedPrefixCache: SealedPrefixCacheMetadata?
+    /// The sealed member's `cache_policy`, whatever its nonce or scope.
+    private(set) var cachePolicy: RequestCachePolicy = .default
 
     init(from data: Data) {
         struct Whole: Decodable {
@@ -284,6 +288,8 @@ struct InboundChatExtensions {
         if bias != nil || seed != nil {
             samplingOverrides = EngineV2SamplingOverrides(logitBias: bias, seed: seed)
         }
-        sealedPrefixCache = (try? SealedPrefixCacheMetadata.BodyProbe(from: decoder))?.value
+        let cacheProbe = try? SealedPrefixCacheMetadata.BodyProbe(from: decoder)
+        sealedPrefixCache = cacheProbe?.value
+        cachePolicy = cacheProbe?.cachePolicy ?? .default
     }
 }

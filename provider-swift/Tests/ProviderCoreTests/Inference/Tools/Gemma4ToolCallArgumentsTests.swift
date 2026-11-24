@@ -1,4 +1,5 @@
 import Foundation
+import Jinja
 import Testing
 
 @testable import ProviderCore
@@ -65,13 +66,13 @@ struct Gemma4ToolCallArgumentsTests {
         #expect((args?["depth"] as? Int) == 2)
     }
 
-    /// A null INSIDE the parsed object is re-stripped (the raw string bypassed
-    /// the earlier sanitize pass; an NSNull leaf would crash the Jinja bridge).
-    @Test func nullLeavesInsideParsedObjectAreStripped() throws {
+    /// A null INSIDE the parsed object becomes Jinja `null` (an NSNull leaf
+    /// would crash the Jinja bridge; dropping it would change the call).
+    @Test func nullLeavesInsideParsedObjectBecomeJinjaNull() throws {
         let args = try normalizedArguments(
-            assistantCall(arguments: #"{"keep":1,"drop":null}"#))
+            assistantCall(arguments: #"{"keep":1,"null":null}"#))
         #expect(args?["keep"] as? Int == 1)
-        #expect(args?["drop"] == nil)
+        #expect(args?["null"] as? Jinja.Value == .null)
     }
 
     // MARK: - Deterministic 400s

@@ -873,7 +873,9 @@ before the retry deadline plus acceptance at the deadline despite fresh rates.
 `ProviderLoopCalibrationTests` runs registration against loopback and exercises
 normal and timed-out startup preloads. It checks eager scheduling after the
 self-test, before the first capacity tick, while retaining a blocked-posture
-case. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
+case. `calibrationStartsWhenTheSelfTestIsReleased` holds the self-test's pump
+after its stream ended and checks that calibration still starts once it is
+released. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
 cannot suppress the unfinished bootstrap.
 The loop suite also checks serial calibration across three resident engines
 without another capacity tick, stops that chain for foreground work or draining
@@ -1549,6 +1551,13 @@ its `README.md`). `TemplateRenderStackTests` renders that template, and
 `Gemma4ServedTemplateRenderTests` the served Gemma 4 macros, with a tool schema
 nested 64 levels deep, the most a request may carry, on the render stack
 (`TemplateRenderStack`) in the debug test build.
+
+The same directory holds `tool-schema-corpus.json`, the distinct tool
+`parameters` of a realistic tool-call schema corpus (descriptions and titles
+reduced to `d`). `GPTOSSToolSchemaRenderTests` renders each through that
+template as the ingress repair forwards it and requires a byte-identical
+prompt and an unchanged cache context, and renders each as written without a
+template failure (`GPTOSSToolSchemaRender`).
 
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never

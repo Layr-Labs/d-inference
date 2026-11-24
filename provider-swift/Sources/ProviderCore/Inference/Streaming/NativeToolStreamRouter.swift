@@ -131,6 +131,8 @@ struct NativeToolStreamRouter {
                 tools: tools,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 absorbStrayThinkClose: absorbStrayThinkClose,
+                // Nemotron 3.5 drafts calls after an early `</think>`, then closes again.
+                holdsFramesAfterThought: handler?.format == .nemotron,
                 promotesTrailingCalls: promotesTrailingReasoningCalls)
         }
     }

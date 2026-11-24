@@ -263,8 +263,14 @@ shard 1 becomes the last provider job in about 10 of the 35 rounds.
 Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
 `PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)
 against its own build; a parity failure fails that shard and the
-`Provider Tests` gate. The last shard also runs the isolated processes, after
-its selections finish, one at a time.
+`Provider Tests` gate. Their pinned artifacts need no build: shard 1 restores
+its verified download cache and starts the same downloader in the background,
+once per parity step, before it waits for the products. Each parity step waits
+for its own download and runs only if it succeeded. They still check every
+artifact against its pin and download any that is missing
+([CI caching](build.md#ci-caching)). The
+last shard also runs the isolated processes, after its selections finish, one
+at a time.
 
 The checks that run once beside the suite run in a job of their own,
 `Provider Gates` (`test-provider-gates`), which starts beside the build as the

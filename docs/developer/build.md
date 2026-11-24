@@ -1050,6 +1050,18 @@ The prompt fixture downloads are 104 MB before compression (87 MB for the 7 v1
 contracts, which share their tokenizers, and 17 MB for Nemotron); the MiMo
 audio codec entry is 1,575 MiB compressed.
 
+Only provider shard 1 saves the prompt fixture entry, so it reaches few hosts.
+On the 110 green pull-request runs of 2026-11-23 and 2026-11-24 the key never
+changed and shard 1 restored it 28 times; the other 82 downloaded all 32 files
+inside Prompt Parity, after the tests, in 12 to 317 s (median 24 s). Shard 1
+now restores the entry before its products and, while the build runs, starts
+`scripts/prepare-prompt-fixtures.py` in the background
+(`scripts/ci-background-step.py`) once for each parity step's manifest
+directory. Each parity step waits for its own download and runs only if it
+succeeded; a failed download fails the job at that wait, with the downloader's
+output. The parity steps then read the downloads from the cache, with every
+byte checked against its pin as before.
+
 | Cache | Path | Key; restore prefixes | Saved by, on pushes to `master` and `dev` |
 |---|---|---|---|
 | Git objects | `.git` | `git-v1-<os>-<YYYY-MM-DD>`; `git-v1-<os>-<YYYY-MM>-`, then `git-v1-<os>-` | every job that checks out |
@@ -1059,7 +1071,7 @@ audio codec entry is 1,575 MiB compressed.
 | Metal library | `/private/tmp/dinf-ci/metallib-cache` | `metallib-key`, exact only | each build lane |
 | MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard and Provider Gates |
 | MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | Provider Gates |
-| Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256 | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
+| Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256; restored and filled before the products | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | `cluster-metadata-release-v2-<base>-<pins>-<commit>`; `...-<base>-<pins>-`, then `...-<base>-` (not on CI (master)) | `cluster-release-checks` |
 
 The Swift test build has three nested restore tiers. `swift-prefix` binds the

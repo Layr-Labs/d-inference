@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-24
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2287,7 +2287,17 @@ the [qualification procedure](../developer/serving-performance-qualification.md)
 is required before any width above 8 or model-specific chunk policy activates.
 Qualified engines share one whole-Mac service allowance and retain physical KV,
 architecture and explicit operator caps. A reservation is released only after
-engine retirement, not when a caller merely requests cancellation. Atomic
+engine retirement, not when a caller merely requests cancellation. A text
+request holds one serving share of that allowance from before its prompt is
+rendered and tokenized (`EngineV2Bridge.acquirePromptPreparation`,
+`WholeMacServiceBudget.acquirePreparation`): a full Mac refuses it as capacity
+before that work, prompts being prepared count against the width, and
+submission takes the share over in place as the request's allowance, so it
+cannot be lost between preparation and admission. A share not taken over is
+returned when preparation ends. The owner's local requests, which wait for room
+at submission, take no preparation share. Preparation shares count only toward
+admission; reported usage, deadline work and calibration evidence start at
+submission, as before. Atomic
 deadline admission passes its retirement acknowledgement to the event pump;
 an early terminal returns to the caller while the service and KV reservations
 remain owned until that acknowledgement completes. With
@@ -3277,7 +3287,7 @@ retire a cancelled lane within 30 s, which withdraws the pair's capacity.
 | Target | Drafter | Activation |
 |---|---|---|
 | Qwen3.5 family (`qwen3_5`, `qwen3_5_moe`) | Embedded head (`Qwen35InlineMTPAssistant`, request-stateful) | `mtp_mode = "auto"` (default) when the checkpoint declares the embedded artifact |
-| Nemotron 3.5 Lightning (`nemotron_h`) | Embedded head (`NemotronH35MTPAssistant`, request-stateful) | Explicit `mtp_mode = "on"` only: the MTP artifact must retain the embedded module and declare it, and the non-MTP artifact remains target-only. Under `auto` it serves plain decode, which commits every 100 operations with no input-size bound (`NemotronH35DecodeCommandBuffers`). The head speculates for one row only (`maximumSpeculativeBatch` 1) and charges about 45 KB of head state per context token, so beside it a second request halved decode and the slot's token budget was about an eighth of its KV. Plain decode keeps the same outputs for a single request at temperature 0, and its complete checkpoints keep the native rows they stored beside the head. On an M3 Ultra the gain is largest with several rows at once; at one row and the artifact's default temperature 1.0 it stays about even, text the head predicted very well runs up to about 30% slower, and a row decoding beside a long prefill runs at about half the head's rate |
+| Nemotron 3.5 Lightning (`nemotron_h`) | Embedded head (`NemotronH35MTPAssistant`, request-stateful) | Explicit `mtp_mode = "on"` only: the MTP artifact must retain the embedded module and declare it, and the non-MTP artifact remains target-only. Under `auto` it serves plain decode, which commits every 100 operations with no input-size bound (`NemotronH35DecodeCommandBuffers`). The head speculates for one row only (`maximumSpeculativeBatch` 1) and charges about 45 KB of head state per context token, so beside it a second request halved decode and the slot's token budget was about an eighth of its KV. Plain decode keeps the same outputs for a single request at temperature 0, and its complete checkpoints keep the native rows they stored beside the head. On an M3 Ultra the gain is largest with several rows at once; at one row and the artifact's default temperature 1.0 it stays about even, text the head predicted very well runs up to about 30% slower, and a row decoding beside a long prefill runs at about half the head's rate The head's private paged pool is granted what the pool's segments charge for its row (`PagedKVPool.segmentedRowReservationBytes`); before, its first step failed with `capacityExhausted` from 165,849 tokens of prompt plus output, in bands, and at every length from 176,121. |
 | Gemma 4 | Separate assistant checkpoint (`Gemma4AssistantDraftModel`, stateless) | Defaults to `auto` for exact `gemma-4-26b-qat-4bit`; other Gemma IDs require `on`. `SpecDecArtifactFunnel` resolves the catalog-declared `spec_dec` artifact, with `mtp_drafter_path` as a directory override |
 
 The shared `MTPMode.enablesMTP` policy receives the exact model ID from both

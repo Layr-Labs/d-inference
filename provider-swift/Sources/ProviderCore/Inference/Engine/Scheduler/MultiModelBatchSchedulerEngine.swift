@@ -1066,6 +1066,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
 
+        let requestId = "req-\(UUID().uuidString.prefix(12))"
+        // Rendering and tokenizing count against the serving width: a full
+        // Mac refuses before that work, and submission takes the share over.
+        let preparation: PromptPreparationShare?
+        do {
+            preparation = try await engineV2Bridge?.acquirePromptPreparation(
+                requestID: requestId, firstContentDeadline: firstContentDeadline)
+        } catch {
+            await releaseBox.fire()
+            throw error
+        }
+        defer { preparation?.end() }
+
         let promptTokens: [Int]
         let prepTiming: ProviderPromptContractPipeline.PrepTiming
         do {
@@ -1252,8 +1265,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             modelType: modelType, prepared: prepared) ?? ReasoningStopScope.scope(
             reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix,
             parsesToolCalls: toolHandler != nil)
-
-        let requestId = "req-\(UUID().uuidString.prefix(12))"
 
         // ONE ENGINE (v0.7.5): every production slot — ProviderLoop AND
         // the standalone server — carries a v2 bridge; the tokenized

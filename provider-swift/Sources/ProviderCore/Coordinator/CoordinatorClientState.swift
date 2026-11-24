@@ -46,6 +46,9 @@ public final class AtomicProviderStats: Sendable {
     // The same for a Gemma tool union rendered as its typed member
     // (`GemmaToolUnionTypeCache`).
     private let _promptCacheSkippedToolUnionType = ManagedAtomic<UInt64>(0)
+    // The same for a GPT-OSS tool declaration rendered as written
+    // (`GPTOSSToolSchemaCache`).
+    private let _promptCacheSkippedToolRawSchema = ManagedAtomic<UInt64>(0)
 
     public init() {}
 
@@ -182,6 +185,12 @@ public final class AtomicProviderStats: Sendable {
 
     public func incrementPromptCacheSkippedToolUnionType() {
         _promptCacheSkippedToolUnionType.add(1)
+    }
+
+    public var promptCacheSkippedToolRawSchema: UInt64 { _promptCacheSkippedToolRawSchema.load() }
+
+    public func incrementPromptCacheSkippedToolRawSchema() {
+        _promptCacheSkippedToolRawSchema.add(1)
     }
 
     public func incrementGenerationErrorsAfterOutput() {

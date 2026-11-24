@@ -724,12 +724,18 @@ extension ProviderLoop {
             stats.incrementPromptCacheSkippedToolCallNull()
             logger.info(.promptCacheSkippedToolCallNull)
         }
-        let (remoteCache, unionTypeServedCold) = GemmaToolUnionTypeCache.servingContext(
+        let (unionTypeContext, unionTypeServedCold) = GemmaToolUnionTypeCache.servingContext(
             historyNullContext, for: chatRequest, modelType: modelType,
             declared: templateControls.declaredTools)
         if unionTypeServedCold {
             stats.incrementPromptCacheSkippedToolUnionType()
             logger.info(.promptCacheSkippedToolUnionType)
+        }
+        let (remoteCache, rawToolSchemaServedCold) = GPTOSSToolSchemaCache.servingContext(
+            unionTypeContext, for: chatRequest, declared: templateControls.declaredTools, modelType: modelType)
+        if rawToolSchemaServedCold {
+            stats.incrementPromptCacheSkippedToolRawSchema()
+            logger.info(.promptCacheSkippedToolRawSchema)
         }
         // Cache identity is coordinator-authored: the sealed copy bound to this
         // attempt's receipt nonce, else the frame's scope. Never trust

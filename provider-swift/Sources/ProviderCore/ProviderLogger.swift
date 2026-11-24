@@ -220,6 +220,7 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     // Prompt cache (`ToolCallHistoryNullCache`).
     case promptCacheSkippedToolCallNull = "Prompt cache skipped: an earlier tool call has a null argument; served cold"
     case promptCacheSkippedToolUnionType = "Prompt cache skipped: a tool parameter renders a different type; served cold"
+    case promptCacheSkippedToolRawSchema = "Prompt cache skipped: a GPT-OSS tool schema renders as written; served cold"
 
     // Memory accounting.
     case superVideoChargesHeldPastDrainWait =

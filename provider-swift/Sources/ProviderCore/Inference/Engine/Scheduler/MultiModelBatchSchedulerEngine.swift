@@ -2511,14 +2511,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             try MiMoV26TemplateFix.validateRequest(chat)
         }
         let messages = request.messages.map { $0.templateMessageDict() }
-        let tools = request.tools?.map { $0.toolSpec() }
+        // The body's tools are its declarations, unrepaired: GPT-OSS renders
+        // them as its served prompt does (`GPTOSSToolSchemaRender`).
+        let tools = GPTOSSToolSchemaRender.servedTools(request.tools,
+            modelId: request.model, modelType: resolved.modelType)?.map { $0.toolSpec() }
         // Drop JSON `null` / `Optional` leaves the Jinja bridge
         // can't convert before rendering (mirrors `streamChatCompletion`).
         let fixContext = ChatTemplateFixContext(
             modelId: request.model, modelType: resolved.modelType)
         let tokens = try resolved.tokenizer.inner.applyChatTemplate(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
-            tools: ChatTemplateFixes.normalizeTools(tools, context: fixContext),
+            tools: ChatTemplateFixes.normalizeTools(tools, context: fixContext, declared: request.tools),
             additionalContext: nil
         )
         return TokenizeResponse(tokens: tokens)

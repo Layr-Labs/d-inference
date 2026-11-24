@@ -5192,6 +5192,23 @@ path that renders a coordinator request: serving, prompt recount and the
 diffusion media path. Such a request is also
 served without the coordinator's prompt cache ([prefix cache](prefix-cache.md)).
 
+GPT-OSS's Harmony template renders a schema as written: a `type` list as
+`a | b`, a `oneOf` as the union of its members and a node without a type as
+`any`. GPT-OSS therefore renders each tool's parameters from the body's own
+declaration (`ChatTemplateControls.declaredTools`) through the same repair
+with its invented types left out: a type is written only where the node
+states one (a single concrete member beside `null`, a union whose typed
+members share one type, `enum` / `const` values, structure or assertions of
+one family); a positional boolean becomes `{}`
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSToolSchemaRender.swift`,
+`ToolSchemaNormalization.repairedParameters`). A tool whose declaration the
+repair would not change keeps its prepared tool, so a body whose tools arrive
+already repaired renders byte-identically. The prompt-token floor renders the
+same tools. The auto tool grammar already compiles each call's arguments from
+the declarations, so `{}` stays free and a union admits each member. Such a
+coordinator request is served without the prompt cache
+([prefix cache](prefix-cache.md)).
+
 A template `raise_exception` at request time is classified `jinja_template`
 and returned as HTTP 500, the provider-fault class, so a caller control that
 a template is known to reject must be resolved before rendering. The

@@ -35,8 +35,39 @@ public enum Inkling2MTPProfilePolicy {
         return MaxDraft(tokens: min(max(value, 1), defaultMaxDraftTokens), unrecognized: nil)
     }
 
-    /// Inkling's engine profile with the operator's cap.
-    public static func engineConfig(maxDraft: MaxDraft) -> CBv2MTPConfig {
-        Inkling2DSparkDrafter.defaultMTPConfig(maxDraftTokens: maxDraft.tokens)
+    /// `DARKBLOOM_INKLING_MTP_COUPLED`: coupled drafting
+    /// (`CBv2MTPConfig.coupledProposals`) for the served Inkling 2 identities.
+    /// A sampled row under exact acceptance proposes the keyed race its verify
+    /// draw runs instead of the draft's argmax; output is unchanged, only
+    /// acceptance can move.
+    public static let coupledKey = "DARKBLOOM_INKLING_MTP_COUPLED"
+    /// The default when the switch is unset. Changes only on measured data.
+    public static let coupledByDefault = false
+
+    /// On for `1`, `true`, `yes` or `on`; off for `0`, `false`, `no` or `off`
+    /// (trimmed, any letter case); unset or anything else keeps the default.
+    /// Never on for an identity outside `Inkling2ModelIdentity.servedModelIDs`.
+    public static func coupledProposals(
+        modelID: String, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard Inkling2ModelIdentity.isServedModelID(modelID) else { return false }
+        let raw = environment[coupledKey]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch raw {
+        case "1", "true", "yes", "on": return true
+        case "0", "false", "no", "off": return false
+        default: return coupledByDefault
+        }
+    }
+
+    /// Inkling's engine profile with the operator's cap and coupling, through
+    /// the drafter's own profile (`Inkling2DSparkDrafter.defaultMTPConfig`).
+    public static func engineConfig(
+        maxDraft: MaxDraft, coupled: Bool = false, adaptive: Bool = true,
+        maxSpeculativeRows: Int = 8
+    ) -> CBv2MTPConfig {
+        Inkling2DSparkDrafter.defaultMTPConfig(
+            maxDraftTokens: maxDraft.tokens, adaptive: adaptive,
+            maxSpeculativeRows: maxSpeculativeRows, coupledProposals: coupled)
     }
 }

@@ -846,6 +846,47 @@ func vlmImageCapPerModel() {
     #expect(MediaIngest.imageCap(forModel: "vlm", environment: [key: "many"]) == 16)
 }
 
+/// Inkling 2 Mini takes 64 images without an image budget: it does not pool,
+/// and the per-request pixel cap bounds its visual tokens. Only its exact served
+/// ids; the operator's override still wins, and the 65th image is refused as an
+/// oversized-media client fault (400, not retried).
+@Test("Inkling 2 Mini takes 64 images and refuses the 65th")
+func inkling2ImageCap() async throws {
+    let key = "DARKBLOOM_MAX_IMAGES_PER_REQUEST"
+    #expect(!Inkling2ModelIdentity.servedModelIDs.isEmpty)
+    for model in Inkling2ModelIdentity.servedModelIDs {
+        #expect(MediaIngest.imageCap(forModel: model, environment: [:]) == 64)
+        #expect(MediaIngest.imageBudget(forModel: model) == nil)
+        #expect(MediaIngest.imageCap(forModel: model, environment: [key: "8"]) == 8)
+        #expect(MediaIngest.imageCap(forModel: model, environment: [key: "0"]) == 64)
+    }
+    for model in ["thinkingmachines/inkling-2-mini", "Inkling-2-Mini", "inkling2_loop"] {
+        #expect(MediaIngest.imageCap(forModel: model, environment: [:]) == 16)
+    }
+    func request(images: Int) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(
+            model: Inkling2ModelIdentity.upstreamModelID,
+            messages: [
+                .init(role: .user, content: .parts(
+                    [.text("Describe each page.")]
+                        + (0 ..< images).map { _ in OpenAIContentPart.imageURL(tinyPNGDataURI) }))
+            ])
+    }
+    let input = try await MediaIngest.buildUserInput(from: request(images: 64))
+    #expect(input.images.count == 64)
+    do {
+        _ = try await MediaIngest.buildUserInput(from: request(images: 65))
+        Issue.record("expected the 65th image to be refused")
+    } catch let error as MediaIngest.MediaError {
+        guard case .mediaTooLarge(let detail) = error else {
+            Issue.record("expected .mediaTooLarge, got \(error)")
+            return
+        }
+        #expect(detail == "request has 65 images; cap is 64")
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+    }
+}
+
 /// The vision prefill builds its input without an explicit cap
 /// (`EngineV2VisionPrefill.prepare`), so the request's model decides it.
 @Test("a Qwen build takes 64 images and refuses the 65th; Gemma 24; another model refuses its 17th")

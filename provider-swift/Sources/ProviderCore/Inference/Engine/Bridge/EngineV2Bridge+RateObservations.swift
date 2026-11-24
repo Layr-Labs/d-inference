@@ -17,7 +17,9 @@ struct EngineRateObservation: Sendable {
     var decodeShape = CBv2DecodeRateShape(batchRows: 1)
     /// Decode only: false for a completed request that generated fewer than
     /// `EngineV2Bridge.minimumPublishedDecodeTokens` tokens. Such a sample
-    /// still feeds every estimate except the published rate.
+    /// never moves the published rate, and moves the deadline decode rate only
+    /// while no counted sample has moved it since it last restarted; it feeds
+    /// the performance measurements and their age as before.
     var setsPublishedDecode = true
 }
 
@@ -58,8 +60,15 @@ extension EngineV2Bridge {
         if isDecode && value.aggregate {
             if calibration || performanceMeasurements.rateExpiration("decode").map({ value.at > $0 }) == true {
                 ewmaInitialized = false
+                decodeEwmaCounted = false
             }
-            updateDecodeTpsEwma(value.tps, shape: value.decodeShape)
+            // Short replies move the deadline rate as before until a counted
+            // sample has; from then on only counted samples move it.
+            let counted = calibration || value.setsPublishedDecode
+            if counted || !decodeEwmaCounted {
+                updateDecodeTpsEwma(value.tps, shape: value.decodeShape)
+                decodeEwmaCounted = decodeEwmaCounted || counted
+            }
             if calibration || value.setsPublishedDecode {
                 updatePublishedDecodeTps(value.tps, at: value.at, restart: calibration)
             }

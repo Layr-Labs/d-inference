@@ -19,3 +19,11 @@ public final class ProviderSignalHandler: @unchecked Sendable {
 
     deinit { for source in sources { source.cancel() } }
 }
+
+/// Red control: declared so the new tests compile. The base's handler doesn't
+/// use it, and every signal drains.
+struct ProviderStopSignalState {
+    enum Action: Equatable { case drain, exitNow }
+    static let interruptedStatus: Int32 = 128 + SIGINT
+    mutating func receive(_ signo: Int32) -> Action { .drain }
+}

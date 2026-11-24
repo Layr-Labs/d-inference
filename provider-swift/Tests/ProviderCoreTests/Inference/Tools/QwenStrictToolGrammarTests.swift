@@ -454,6 +454,12 @@ struct QwenStrictToolGrammarTests {
             for (text, converted) in probes {
                 let frame = "<tool_call>\n<function=f>\n<parameter=v>\n\(text)\n</parameter>\n</function>\n</tool_call>"
                 let value = try #require(parser.parse(content: frame, tools: [tool.toolSpec()])?.function.arguments["v"])
+                if let literal = conversion.literal(text) {
+                    // A text the parser reads as a JSON literal (SDK #535).
+                    #expect(conversion.kind == .text, "\(raw) reading \(text)")
+                    #expect(value == literal, "\(raw) reading \(text): \(value)")
+                    continue
+                }
                 let expected: Bool
                 switch (conversion.kind, text) {
                 case (_, "null") where conversion.kind != .text: expected = conversion.acceptsNull

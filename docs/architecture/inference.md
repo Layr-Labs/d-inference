@@ -3061,11 +3061,23 @@ only on a request that generated at least 32 tokens
 `completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same
 EWMA and restart rule over those samples): one short reply measures mostly its
 first steps or tail and could pull a Mac measuring 80–100 tok/s down to about
-11. A shorter request still feeds the deadline decode rate, the rate's age and
-`performance_measurements`, as before, so a slot that serves only short
-replies is still priced for deadline admission and never ages out while
-serving; it publishes no rate until a longer one. Deadline admission is
-unchanged: it charges the measured step shape. The projection also mirrors the
+11. A shorter request still feeds the rate's age and `performance_measurements`,
+as before, so a slot that serves only short replies never ages out while
+serving; it publishes no rate until a longer one. The deadline decode rate
+(`observedDecodeTpsEwma` and its measured step) follows the same 32-token rule
+once a counted request (32 tokens or more, or calibration) has moved it since
+it last restarted (`decodeEwmaCounted`, reset with it on calibration or when
+the decode evidence expired). Until then every completed request moves it as
+before, so a slot that serves only short replies keeps a rate that follows them
+and is still priced for deadline admission. Before that first sample, a deadline
+request beside decoding rows is priced at the slowest delivered cadence among
+requests decoding on the slot now (tokens after the first emission over the
+time since the first token, once a request has 8 such tokens;
+`EngineV2Bridge.liveDecodeCadence`), charged per row; with no such request, or
+with `DARKBLOOM_TTFT_ADMISSION_FIXES=0`, the decode rate stays unavailable and
+the request is refused as before. None of
+this reaches the heartbeat. Deadline admission otherwise charges the measured
+step shape. The projection also mirrors the
 live MTP plan's depth gates
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift`,
 `CBv2MTPRoundDriver.speculationDepthCeiling`): a step with more decode rows

@@ -392,6 +392,9 @@ public actor EngineV2Bridge {
     var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// A counted sample (calibration, or `minimumPublishedDecodeTokens` or
+    /// more) has moved `observedDecodeTpsEwma` since it last restarted.
+    var decodeEwmaCounted = false
     /// The published decode rate (`updatePublishedDecodeTps`) and the newest
     /// sample behind it.
     var publishedDecodeTps: Double = 0

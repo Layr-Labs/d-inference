@@ -25,6 +25,7 @@ public func normalizeSwiftJinjaTemplate(_ template: String) -> String {
         of: #"\{\s+\{%-"#,
         with: "{{ '{' -}}{%-",
         options: .regularExpression)
+    result = renderingToolArgumentNulls(result)
     guard result.contains("strftime_now") else { return result }
 
     // Interpreter.interpret recreates its root environment and overwrites
@@ -43,4 +44,33 @@ public func normalizeSwiftJinjaTemplate(_ template: String) -> String {
     result = result.replacingOccurrences(
         of: #"^\s+(?=\{[{%]-)"#, with: "", options: .regularExpression)
     return preamble + result
+}
+
+/// Blocks of served templates that print a tool-call argument with swift-jinja's
+/// plain value rendering, which writes `null` as an empty string (Python's
+/// Jinja writes `None`). Earlier tool calls keep their JSON nulls as Jinja
+/// `null` (`sanitizeMessageForJinja`), so each block gains a branch that
+/// writes `null`, the literal the matching output parser reads back as JSON
+/// null. A template without a null leaf renders exactly as before.
+///
+/// - Gemma 4's `format_argument` macro (call arguments and `enum` lists).
+/// - The Qwen 3.5 / 3.6 and Nemotron 3.5 XML parameter value.
+let toolArgumentNullRewrites: [(old: String, new: String)] = [
+    (
+        "{%- macro format_argument(argument, escape_keys=True) -%}\n    {%- if argument is string -%}",
+        "{%- macro format_argument(argument, escape_keys=True) -%}\n    {%- if argument is none -%}\n        {{- 'null' -}}\n    {%- elif argument is string -%}"
+    ),
+    (
+        "if args_value is mapping or (args_value is sequence and args_value is not string) else args_value | string %}",
+        "if args_value is mapping or (args_value is sequence and args_value is not string) else ('null' if args_value is none else args_value | string) %}"
+    ),
+]
+
+func renderingToolArgumentNulls(_ template: String) -> String {
+    var result = template
+    // Red control: the previous templates (no null branch).
+    for rewrite in toolArgumentNullRewrites.prefix(0) where result.contains(rewrite.old) {
+        result = result.replacingOccurrences(of: rewrite.old, with: rewrite.new)
+    }
+    return result
 }

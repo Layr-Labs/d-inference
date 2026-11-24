@@ -89,7 +89,7 @@ struct EngineMeasurementOrderingTests {
         let bridge = EngineV2Bridge(engine: engine, modelId: "gpt-oss-20b",
             tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [], admissionFixes: true)
         let request = ChatCompletionRequest(model: "gpt-oss-20b",
-            messages: [.init(role: "user", content: "hi")], max_tokens: 32)
+            messages: [.init(role: "user", content: "hi")], max_tokens: 256)
         let first = await bridge.submitTokenized(promptTokens: Array(repeating: 7, count: 200),
             request: request, requestId: "older-engine-observation")
         let firstConsumer = Task { for await _ in first {} }
@@ -114,16 +114,16 @@ struct EngineMeasurementOrderingTests {
         // Both requests are actually submitted before their observation stamps.
         // The scripted engine holds A's terminal while B finishes and is consumed.
         try await Task.sleep(for: .milliseconds(110))
-        let older = completedUsage(tokens: 11)
+        let older = completedUsage(tokens: 101)
         try await Task.sleep(for: .milliseconds(20))
-        let newer = completedUsage(tokens: 21)
+        let newer = completedUsage(tokens: 201)
         #expect(newer.timing.lastTokenUptimeNanos > older.timing.lastTokenUptimeNanos)
         continuations[1].yield(.finished(reason: .stop, usage: newer))
         continuations[1].finish()
         await secondConsumer.value
         let newestExpiration = try #require(await bridge.performanceMeasurements.rateExpiration("decode"))
         let before = await bridge.backendSlotCapacity()
-        #expect(before.performanceMeasurements?.decode?.tokensPerSecond == 200)
+        #expect(before.performanceMeasurements?.decode?.tokensPerSecond == 2_000)
         #expect(before.telemetry?.generationRequestsTotal == 1)
 
         continuations[0].yield(.finished(reason: .stop, usage: older))
@@ -132,10 +132,10 @@ struct EngineMeasurementOrderingTests {
         let after = await bridge.backendSlotCapacity()
         #expect(await bridge.performanceMeasurements.rateExpiration("decode") == newestExpiration)
         #expect(after.performanceMeasurements?.decode?.sampleCount == 2)
-        #expect(after.performanceMeasurements?.decode?.tokensPerSecond == 170)
-        #expect(after.observedDecodeTps == 170)
+        #expect(after.performanceMeasurements?.decode?.tokensPerSecond == 1_700)
+        #expect(after.observedDecodeTps == 1_700)
         #expect(after.telemetry?.generationRequestsTotal == 2)
-        #expect(after.telemetry?.generatedTokensTotal == 32)
+        #expect(after.telemetry?.generatedTokensTotal == 302)
         await bridge.shutdown()
     }
 }

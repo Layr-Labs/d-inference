@@ -768,7 +768,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         let decodeRequest = ChatCompletionRequest(
             model: "gpt-oss-20b",
             messages: [ChatMessage(role: "user", content: "hi")],
-            max_tokens: 3)
+            max_tokens: 33)
         let decodeStream = await bridge.submitTokenized(
             promptTokens: promptTokens,
             request: decodeRequest,
@@ -779,13 +779,13 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         try await Task.sleep(for: .milliseconds(20))
         decodeContinuation.yield(
             .delta(text: "bc", tokens: [12, 13], logprobs: nil))
-        var decodeUsage = CBv2Usage(promptTokens: promptTokens.count, completionTokens: 3)
+        var decodeUsage = CBv2Usage(promptTokens: promptTokens.count, completionTokens: 33)
         var engineTiming = CBv2RequestTiming()
         engineTiming.firstTokenNanos = 10_000_000
         engineTiming.finishedNanos = 30_000_000
         engineTiming.lastTokenNanos = 30_000_000
         engineTiming.lastTokenUptimeNanos = DispatchTime.now().uptimeNanoseconds
-        engineTiming.decodeSteps = 2
+        engineTiming.decodeSteps = 32
         decodeUsage.timing = engineTiming
         decodeContinuation.yield(.finished(reason: .stop, usage: decodeUsage))
         decodeContinuation.finish()

@@ -129,6 +129,30 @@ final class MiMoV26PromptContractTests: XCTestCase {
         let request = try ProviderLoop.decodeOpenAIRequest(Data(fixture.request_json.utf8))
         let oldMessages = try ChatTemplateFixes.normalizeMessages(request.messages.map { $0.templateMessageDict() }, context: .init(modelType: "llama"))
         let oldIDs = try tokenizer.applyChatTemplate(messages: oldMessages, tools: nil, additionalContext: nil)
-        XCTAssertNotEqual(oldIDs, fixture.token_ids, "MiMo must not inherit another family's null removal")
+        // This fixture's nulls are all inside an earlier call's arguments. The
+        // shared sanitizer used to drop them, so the other family's render
+        // differed; it now keeps them as MiMo always has, and the renders agree.
+        XCTAssertEqual(oldIDs, fixture.token_ids, "another family's history-call nulls must render as MiMo's do")
+        // Outside call arguments the shared sanitizer still drops nulls (here a
+        // tool parameter schema's `default`). The same schema without the null
+        // renders identically for both families, so the null alone makes the
+        // other family's render differ from MiMo's, which keeps it.
+        func schemaIDs(_ modelType: String, schemaDefault value: MLXLMCommon.JSONValue?) throws -> [Int] {
+            var unit: [String: MLXLMCommon.JSONValue] = ["type": .string("string")]
+            if let value { unit["default"] = value }
+            let tool = OpenAITool(function: .init(name: "f", parameters: .object([
+                "type": .string("object"), "properties": .object(["unit": .object(unit)]),
+            ])))
+            let messages = [OpenAIChatMessage(role: .user, content: .text("hello")).templateMessageDict()]
+            let context = ChatTemplateFixContext(modelType: modelType)
+            return try tokenizer.applyChatTemplate(
+                messages: ChatTemplateFixes.normalizeMessages(messages, context: context),
+                tools: ChatTemplateFixes.normalizeTools([tool.toolSpec()], context: context),
+                additionalContext: nil)
+        }
+        XCTAssertEqual(try schemaIDs("llama", schemaDefault: nil), try schemaIDs("mimo_v2", schemaDefault: nil),
+                       "without a null the two families must render this schema alike")
+        XCTAssertNotEqual(try schemaIDs("llama", schemaDefault: .null), try schemaIDs("mimo_v2", schemaDefault: .null),
+                          "MiMo must not inherit another family's null removal")
     }
 }

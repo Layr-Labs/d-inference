@@ -396,7 +396,10 @@ extension ProviderLoop {
             return
         }
         let chatRequest = inbound.request
-        let remoteCache = frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
+        // The coordinator's plan. It selects the template controls below; the
+        // cache context the request is served with is settled once the slot's
+        // model type is known (`ToolCallHistoryNullCache`).
+        let plannedCache = frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
         profile.mark(.parsed)
 
         // A member serves only its pair's model, and only while that slot is
@@ -445,13 +448,8 @@ extension ProviderLoop {
         // the coordinator's prompt cache renders the prompt of its plan, in
         // the Gemma 4 prompt contract the coordinator planned and counted it with.
         let templateControls = inbound.extensions.templateControls.servingCoordinatorRequest(
-            planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil,
+            planned: plannedCache.scope != nil || plannedCache.receiptNonce != nil,
             gemmaPromptContract: gemmaPromptContract)
-        // Cache identity is coordinator-authored: the sealed copy bound to this
-        // attempt's receipt nonce, else the frame's scope. Never trust
-        // caller-controlled prompt_cache_key/user for remote cache partitioning.
-        // Without a scope, requests still serve, but with caching disabled.
-        let cacheScope = remoteCache.scope ?? ""
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
         // honored by the EngineV2 path (see EngineV2Logprobs.swift).
@@ -719,6 +717,18 @@ extension ProviderLoop {
             rejectInvalidRequest(refusal)
             return
         }
+        let (remoteCache, historyNullServedCold) = ToolCallHistoryNullCache.servingContext(
+            plannedCache, for: chatRequest, modelType: modelType,
+            managedSuper: slot.modelContainer.nemotronSuper != nil)
+        if historyNullServedCold {
+            stats.incrementPromptCacheSkippedToolCallNull()
+            logger.info(.promptCacheSkippedToolCallNull)
+        }
+        // Cache identity is coordinator-authored: the sealed copy bound to this
+        // attempt's receipt nonce, else the frame's scope. Never trust
+        // caller-controlled prompt_cache_key/user for remote cache partitioning.
+        // Without a scope, requests still serve, but with caching disabled.
+        let cacheScope = remoteCache.scope ?? ""
         let slotContainer = slot.container
         let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM

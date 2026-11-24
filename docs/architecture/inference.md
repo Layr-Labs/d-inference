@@ -2728,6 +2728,25 @@ cannot advertise a successor's prompt. Ready anchors describe actual input
 checkpoints, and billing retains the engine's actual matched/saved token counts
 (`EngineV2Bridge+PrefixCache.swift`, `ResidentPrefixCacheEvidence.swift`).
 
+### A request's cache policy
+
+A coordinator request's sealed `cache_policy`
+([protocol](../reference/protocol-messages.md#sealed-cache-policy)) reaches the
+bridge with the scope (`ProviderLoop.handleInferenceRequest`, the scheduler
+engine and the Nemotron Super owner pass it on), and
+`PrefixCacheSubmissionPolicy` decides there what it changes
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+CachePolicy.swift`).
+A `memory_only` request runs with `prefixCacheEnabled` off, on one Mac and on a
+pair alike: the engine then makes no prefix lookup, capture or donation, the
+bridge stages nothing and registers no SSD ready receipt or donation demand,
+the scheduler skips the prompt-token piece cache, and a pair's ranks get
+`ClusterWorkerPrefixCache.disabled`. Its receipt, were its cache on, would be
+minted in the memory-only range, which every SSD store refuses
+(`MemoryOnlyReceipt`). Its answer and usage are otherwise those of an
+uncached request. The local API serves its requests under
+`DARKBLOOM_LOCAL_CACHE_POLICY` instead ([local
+API](../provider/direct-mode.md#cache-policy-of-local-requests)).
+
 ### `CBv2RequestTiming`
 
 Stamped by the engine thread only; instants are nanoseconds from the enqueue
@@ -3054,8 +3073,12 @@ measured
 `0` restores publishing the last rate however old). The heartbeat also sends
 the published rate's own age, `observed_decode_tps_age_ms`: the time since the
 newest sample that moved it, which a short reply does not reset
-(`DecodeRateIdleAge.publishedAgeMilliseconds`); it changes nothing the provider
-decides. The published rate moves
+(`DecodeRateIdleAge.publishedAgeMilliseconds`). While the connected
+coordinator's latest `trust_status` lists `decode_rate_age_decay` in
+`coordinator_features`, the coordinator decays a stale rate by that age itself,
+and the provider stops omitting an idle slot's rate
+(`DecodeRateIdleAge.effectiveMaximum`); without it, and after a disconnect, the
+heartbeat is unchanged. The published rate moves
 only on a request that generated at least 32 tokens
 (`EngineV2Bridge.minimumPublishedDecodeTokens`, the coordinator's
 `completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same
@@ -7317,6 +7340,33 @@ ceremony, which stores a new record set for the current key
 answers it, so it offers **Start over** (or **Pair again** when its
 own key changed too).
 
+Before a member removes a pair cache it saves the selected root, volume UUID
+and, when available, root inode in its private pending-reclaim record. One
+rename publishes a synced, single-link marker. A retry rechecks the marker
+and syncs its directory before removing files. If unpair began with the pinned
+volume detached, the first root confirmed at that path on the original volume
+is bound by inode before cleanup. This identifies the first root observed on
+return, not a directory that could not be observed while detached. A retry
+does not act on a subsequently substituted directory or volume. A missing
+pinned volume or an unverifiable lease leaves cleanup unresolved; shared
+staging stays in place. A marker that cannot be used (an earlier format,
+malformed, extra links or unsafe metadata) authorizes no removal and leaves a
+retry unresolved; the next unpair replaces it, in one rename, with its own
+intent for the current selection (a second `.cluster-*.tmp` link that an
+earlier version's interrupted publication left is removed first). So does a
+marker the next unpair cannot read because of an I/O error: an earlier
+selection's pending cleanup is then dropped, and its files fall under the limit
+for previously selected disks. While an
+earlier unpair's cleanup waits for its original cache selection, a later
+unpair on that Mac does not remove the current selection's pair cache; those
+files follow ordinary TTL cleanup. A plan that lost its `in-use` file gets a
+new one only while the member holds the cache root exclusively, so no rank is
+starting there. An idle plan moves to
+an inode-qualified `.retiring-…` name before its lock file goes. A later reclaim
+can finish removing that identified empty directory after interruption without
+treating a missing `in-use` in an ordinary plan as permission to delete it
+(`ClusterMemberCacheControl.Store`, `ClusterPrefixPlanReclaim`).
+
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
 (`ClusterOnboardingDriver.pairAgain`, `startOver`, `otherMacSilentLine`, `member`, `pairScreen`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
@@ -11262,9 +11312,9 @@ types them ([fields](../reference/configuration.md#cluster-runtime-facts),
    ([Qwen27 resident assistant](#qwen27-tensor-parallel-resident-assistant));
    without one the digest is the five-field formula as before.
 4. Every model carries a pair-serving grant when the build qualifies it. A
-   pair member reports only hardware capabilities
-   (`DistributedServingEligibility.memberCapabilities`: `apple_m5` on an M5,
-   never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
+   pair member reports its hardware capabilities and `cache_policy_v1`
+   (`DistributedServingEligibility.memberRegistrationCapabilities`: `apple_m5`
+   on an M5, never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
    pair without a grant to the model's single-Mac requirements
    ([`providerMeetsServingRequirementsLocked`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/registry/cluster_pair_serving_grant.go)),
    so no pair of GLM-5.3-Flash or Qwen3.8-27B forms without one. For a

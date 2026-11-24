@@ -19,6 +19,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         let maxStageMillis: Int
         let minEffectiveTokens: Int
         let ttlSeconds: Int64
+        var ttlMode: SSDPrefixCachePolicy.TTLMode = .sliding
         let strictFsync: Bool
         let nowSeconds: @Sendable () -> Int64
         let diskBudgetBytes: @Sendable () -> Int
@@ -147,6 +148,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     private func takeStage(
         requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int, native: Bool
     ) -> SSDCheckpointStage? {
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID) else { return nil }
         let staged = lock.withLock {
             stageReservations.removeValue(forKey: requestID)
             return stages.removeValue(forKey: requestID)

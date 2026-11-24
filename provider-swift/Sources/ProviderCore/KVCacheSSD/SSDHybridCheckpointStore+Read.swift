@@ -49,7 +49,8 @@ extension SSDHybridCheckpointStore {
         reserveReadScratch: @Sendable () throws -> CBv2CompleteCheckpointIOLease,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> CBv2CompleteCheckpointImportPlan
     ) async -> SSDPrefixCacheStageResult {
-        guard config.backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout else {
+        guard !MemoryOnlyReceipt.refusesTierAccess(requestID),
+            config.backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout else {
             return .init(disposition: .skippedPolicy, stageMs: 0, chainHashes: [], blockSize: PrefixCachePolicy.blockSize)
         }
         return await stageTransfer(requestID: requestID, request: request, reserveReadScratch: reserveReadScratch,
@@ -61,6 +62,9 @@ extension SSDHybridCheckpointStore {
         reserveReadScratch: @Sendable () throws -> CBv2CompleteCheckpointIOLease,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> CBv2NativeBlockCheckpointImportPlan
     ) async -> SSDPrefixCacheStageResult {
+        guard !MemoryOnlyReceipt.refusesTierAccess(requestID) else {
+            return .init(disposition: .skippedPolicy, stageMs: 0, chainHashes: [], blockSize: PrefixCachePolicy.blockSize)
+        }
         let boundNativeMedia = request.hybridPrefixIdentity != nil && request.multimodal.map {
             !$0.spans.isEmpty && $0.attention == .bidirectionalSpans
                 && $0.positionState == nil && $0.deepstackEmbeddings == nil

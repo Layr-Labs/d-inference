@@ -54,6 +54,13 @@ extension SSDHybridCheckpointStore {
         _ source: CBv2CompleteCheckpointExport, requestID: CBv2RequestID?,
         tokens: [Int], cacheSalt: String?, completion: @escaping @Sendable ([Int]) -> Void
     ) {
+        // A memory-only request's capture is released unwritten; it is not a
+        // donation opportunity, so it settles no outcome.
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID) else {
+            source.close()
+            completion([])
+            return
+        }
         let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
         guard !isClosed else {
             source.close()
@@ -86,13 +93,13 @@ extension SSDHybridCheckpointStore {
         // The preparation helper has dropped temporary encoded/hash buffers.
         // Only an accepted job's envelope may now retain provider-owned Data.
         switch preparation {
-        case .refused(let outcome):
+        case .refused, .withheld:
             source.close()
             if let hostReservation {
                 hostReservation.closeAfterDroppingBuffers()
                 statsBox.update { $0.writeHostBytesInUse -= Int(hostReservation.bytes) }
             }
-            settlement.settle(outcome)
+            if case .refused(let outcome) = preparation { settlement.settle(outcome) }
             completion([])
         case .ready(let job):
             if !pipeline.submit(job) {
@@ -104,6 +111,8 @@ extension SSDHybridCheckpointStore {
     private enum WritePreparation {
         case ready(WriteJob)
         case refused(PrefixCacheDonationOutcome)
+        /// A memory-only request past the entry gate; nothing is written.
+        case withheld
     }
 
     private func prepareWriteJob(
@@ -112,6 +121,7 @@ extension SSDHybridCheckpointStore {
         settlement: PrefixCacheDonationSettlement,
         completion: @escaping @Sendable ([Int]) -> Void
     ) -> WritePreparation {
+        guard !MemoryOnlyReceipt.refusesTierAccess(requestID) else { return .withheld }
         guard !isClosed else { return .refused(.cacheClosed) }
         guard hasSafeRoot else { return .refused(.unsafeCacheRoot) }
         let manifest = source.manifest
@@ -130,7 +140,8 @@ extension SSDHybridCheckpointStore {
         let envelope: SSDHybridCheckpointEnvelope
         do {
             envelope = try deltaEnvelope(requestID: requestID, manifest: manifest)
-                ?? SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: config.maxReadBytes)
+                ?? SSDHybridCheckpointEnvelope(
+                    manifest: manifest, lookupKeys: lookupKeys, maximumPlaintextBytes: config.maxReadBytes)
         } catch SSDHybridCheckpointEnvelope.EncodingError.sizeExceeded {
             return .refused(.stageSizeExceeded)
         } catch {
@@ -156,7 +167,8 @@ extension SSDHybridCheckpointStore {
         let localRepeat = writeDemand.observe(short, now: config.nowSeconds())
         let demand = donationWritePolicy(requestID: requestID, localRepeat: localRepeat,
                                         checkpointPosition: manifest.position)
-        if !index.contains(tag16: short) {
+        // An entry past its TTL is written again, so it is admitted as new.
+        if index.freshFileBytes(tag16: short, now: config.nowSeconds(), ttlSeconds: config.ttlSeconds) == nil {
             // Demand gate first: a fleet-novel checkpoint is skipped before any
             // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
             // The tag was recorded above, so a local second sighting qualifies.
@@ -191,14 +203,22 @@ extension SSDHybridCheckpointStore {
 
     /// A request that consumed a restore shares its rows byte for byte, so it
     /// extends the restored file, or the chain's root once the chain is full.
+    /// Every link must be within its TTL. Under a fixed TTL a child is reused
+    /// only until its oldest link expires, so a chain with less than half a
+    /// TTL left gets a full checkpoint instead.
     private func deltaEnvelope(requestID: CBv2RequestID?, manifest: CBv2CompleteCheckpointManifest)
         -> SSDHybridCheckpointEnvelope? {
         guard config.incrementalCheckpoints, let requestID,
             let restored = lock.withLock({ restoredCheckpoints[requestID] }), restored.consumed else { return nil }
+        let ttl = config.ttlSeconds
+        let parentTTL = config.ttlMode.refreshesOnHit || ttl <= 0 ? ttl : max(1, ttl - ttl / 2)
+        let now = config.nowSeconds()
         for parent in restored.files {
-            guard let chain = index.chain(tag16: parent.tag16), chain.tags.count < SSDCheckpointDeltaLayout.maximumChainFiles,
+            guard let chain = index.chain(tag16: parent.tag16, now: now, ttlSeconds: parentTTL),
+                chain.tags.count < SSDCheckpointDeltaLayout.maximumChainFiles,
                 let envelope = try? SSDHybridCheckpointEnvelope(
-                    manifest: manifest, maximumPlaintextBytes: config.maxReadBytes, parent: parent),
+                    manifest: manifest, lookupKeys: lookupKeys, maximumPlaintextBytes: config.maxReadBytes,
+                    parent: parent),
                 chain.bytes + envelope.plaintextBytes <= config.maxReadBytes else { continue }
             return envelope
         }
@@ -254,7 +274,15 @@ extension SSDHybridCheckpointStore {
             tag: job.tag, identity: identity, createdAt: config.nowSeconds(), backendLayout: config.backendLayout)
         var authenticatingExistingFile = false
         do {
-            let alreadyDurable = index.contains(tag16: short)
+            // A delta is written only on a parent chain still within its TTL.
+            if let parent = envelope.parent,
+                index.chain(tag16: parent.tag16, now: config.nowSeconds(), ttlSeconds: config.ttlSeconds) == nil
+            {
+                result.outcome = .cacheEntryEvicted; return
+            }
+            // An entry past its TTL is not reused, so it is written again.
+            let alreadyDurable = index.freshFileBytes(
+                tag16: short, now: config.nowSeconds(), ttlSeconds: config.ttlSeconds) != nil
             if alreadyDurable, job.authenticatedFile?.matches(url: url) == true {
                 // This submission already authenticated all bytes during its
                 // stage. Identity and epoch remain unchanged; no second read.
@@ -284,9 +312,11 @@ extension SSDHybridCheckpointStore {
                         if index == 0 { return envelope.manifestBytes }
                         let segment = envelope.segments[index - 1]
                         self.statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, segment.bytes) }
-                        return try job.source.readSegment(
-                            tensorIndex: segment.tensor, byteOffset: envelope.completeOffset(of: segment),
-                            maximumBytes: segment.bytes)
+                        let offset = envelope.completeOffset(of: segment)
+                        return try SSDHybridCheckpointEnvelope.storedSegment(
+                            try job.source.readSegment(
+                                tensorIndex: segment.tensor, byteOffset: offset, maximumBytes: segment.bytes),
+                            manifest: job.source.manifest, tensor: segment.tensor, offset: offset)
                     })
                 lock.withLock { beforeWriteIndexForTesting }?(url, false)
                 guard !isClosed else { result.outcome = .cacheClosed; return }
@@ -308,8 +338,12 @@ extension SSDHybridCheckpointStore {
                     return true
                 }
                 guard indexed else { result.outcome = .cacheEntryEvicted; return }
-                // Keep parents as recent as their children.
-                index.touch(tags16: index.chain(tag16: short)?.tags ?? [], now: config.nowSeconds())
+                // Keep parents as recent as their children; a fixed TTL keeps
+                // each file's write time, and a child outliving its parent
+                // is never a candidate.
+                if config.ttlMode.refreshesOnHit {
+                    index.touch(tags16: index.chain(tag16: short)?.tags ?? [], now: config.nowSeconds())
+                }
                 statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
                 if envelope.parent != nil { statsBox.update { $0.deltaFilesWritten += 1 } }
             }

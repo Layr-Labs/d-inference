@@ -31,7 +31,8 @@ struct CompleteCheckpointFixtureScanTests {
             ],
             backendLayout: CBv2CompleteCheckpointManifest.pagedLayout)
         let storeReadBytes = 16 << 20
-        let envelope = try SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: storeReadBytes)
+        let envelope = try SSDHybridCheckpointEnvelope(
+            manifest: manifest, lookupKeys: SSDLookupKeys(kek: key), maximumPlaintextBytes: storeReadBytes)
         let tag = Data(SHA256.hash(data: Data("fixture-scan".utf8)))
         // The file the store writes for this manifest (`SSDHybridCheckpointStore+Write.swift`), its tensors zero.
         _ = try SSDBlockStore.writeStreaming(
@@ -52,7 +53,7 @@ struct CompleteCheckpointFixtureScanTests {
 
         let scan = CompleteCheckpointFixtureScan(root: root, key: key, defaultReadBytes: defaultReadBytes)
         scan.storeMade(maxReadBytes: storeReadBytes)
-        let files = try scan.files()
+        let files = try scan.files(prefixOf: manifest.prefixTokens)
         #expect(files.map(\.manifest.position) == [512])
         #expect(files.first?.manifest == manifest)
     }

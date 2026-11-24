@@ -13,6 +13,7 @@ FIXTURES = TESTS / "Fixtures/Protocol"
 # Digests captured from the original shared fixtures before platform removal.
 SHA256 = {
     "calibrated_capacity_wire_fixture": "c73d1be2972540dbe48e8cc5b3871a15f44dcbafb4f8c51f6ee27e88b01c2e41",
+    "coordinator_features_wire": "aaefb0b56ac4c16415cbcfea86c61625fa9c0d0c97e6db76ff8eeceba9bb7021",
     "calibrated_deadline_decisions": "079a387c50070d2742e95dee1c6a8115ba49d10934eacc219574adb8c4ac6650",
     "deadline_coverage_confidence": "3a96307ff7cdb2e3949c039313549d1f2e0142b8f49fc2d23b20882704d760eb",
     "deadline_unbounded_reasons": "547b9cdf473f19d120e9f2e5db5dd47d3211796f8b1b85d685c7dce748aa1d4c",
@@ -30,6 +31,7 @@ LOADERS = {
     "Inference/Performance/Deadline/DeadlineCoverageConfidenceTests.swift": ["deadline_coverage_confidence"],
     "Inference/Performance/Deadline/DeadlineDecisionFixtureTests.swift": ["calibrated_deadline_decisions"],
     "Inference/Memory/ProcessMemoryTelemetryTests.swift": ["process_memory_wire"],
+    "Inference/Performance/CoordinatorDecodeRateDecayTests.swift": ["coordinator_features_wire"],
 }
 
 

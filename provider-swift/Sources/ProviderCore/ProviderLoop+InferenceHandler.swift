@@ -200,6 +200,7 @@ extension ProviderLoop {
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
         gemmaPromptContract: Int? = nil,
+        frameCachePolicy: RequestCachePolicy = .default,
         send: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
     ) async {
@@ -400,6 +401,10 @@ extension ProviderLoop {
         // cache context the request is served with is settled once the slot's
         // model type is known (`ToolCallHistoryNullCache`).
         let plannedCache = frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
+        // Unlike the scope, the policy needs no matching nonce (it can only
+        // narrow), and a plaintext frame hint narrows it further.
+        let cachePolicy = inbound.extensions.cachePolicy.narrowed(by: frameCachePolicy)
+        RequestCachePolicyCounters.shared.recordRequest(cachePolicy)
         profile.mark(.parsed)
 
         // A member serves only its pair's model, and only while that slot is
@@ -760,7 +765,8 @@ extension ProviderLoop {
                 requestID: requestId,
                 nonce: nonce,
                 send: send,
-                readyBoundaryMode: cacheReceiptBoundaryMode)
+                readyBoundaryMode: cacheReceiptBoundaryMode,
+                durable: cachePolicy.permitsSSDTier)
         {
             receiptCallbacks = (callbacks.lookup, callbacks.ready)
             lookupReceiptFinalizer.configureV2(
@@ -993,8 +999,8 @@ extension ProviderLoop {
                 providerEngine = superOwner.chatEngine(body: decryptedData,
                     hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
                     trustsSchemaMetadata: true, logprobs: logprobsChannel, usageSignal: v2UsageSignal,
-                    donationDemand: remoteCache.donationDemand, firstContentDeadline: firstContentDeadline,
-                    cancelCause: { token.endCause })
+                    donationDemand: remoteCache.donationDemand, cachePolicy: cachePolicy,
+                    firstContentDeadline: firstContentDeadline, cancelCause: { token.endCause })
             } else {
                 providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
@@ -1012,6 +1018,7 @@ extension ProviderLoop {
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 donationDemand: remoteCache.donationDemand,
+                cachePolicy: cachePolicy,
                 engineV2Logprobs: logprobsSpec.map {
                     EngineV2LogprobsPlumbing(topLogprobs: $0.topLogprobs, relay: logprobsChannel)
                 },

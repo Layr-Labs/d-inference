@@ -17,7 +17,8 @@ import Foundation
 ///   disk and deletes what it kept before under the root.
 /// - Budgets: `..._MAX_RECORDS` (records per rank, 64), `..._MAX_GB` (bytes per
 ///   rank, 16), `..._TTL_SECONDS` (sliding, 1,800 maximum and default, as the
-///   product's SSD tier), `..._STRIDE` (grid of persisted frontiers, 2,048
+///   product's SSD tier), `..._TTL_MODE` (`fixed`: a use never restarts the
+///   TTL, as `DARKBLOOM_SSD_KV_TTL_MODE` on the product's tier), `..._STRIDE` (grid of persisted frontiers, 2,048
 ///   tokens), `..._MIN_TOKENS` (shortest prompt worth a record, 1,024),
 ///   `..._MAX_WRITE_GB_PER_DAY` (750, the product's endurance cap),
 ///   `..._MIN_FREE_GB` (writes stop below this much free space, 20).
@@ -49,6 +50,14 @@ public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
     public var recordLimit = 64
     public var byteBudget = 16 * 1_073_741_824
     public var ttlSeconds = QwenStagePrefixDiskConfiguration.maximumTTLSeconds
+    /// Whether a restore or a reuse restarts a record's TTL (`..._TTL_MODE`:
+    /// `sliding`, the default, or anything else, which fixes it at the write).
+    public var refreshesOnUse = true
+    /// How often a running rank looks for records past their TTL to remove,
+    /// as the single-Mac tier's whole-root maintenance (60 s). Reuse already
+    /// stopped at the TTL; a pass removes only what nothing pins, so removal
+    /// has no deadline. 0 turns the sweep off (tests).
+    public var expirySweepSeconds: Double = 60
     public var strideTokens = 2048
     public var minimumTokens = 1024
     public var maximumWriteBytesPerDay = 750 * 1_000_000_000
@@ -87,6 +96,10 @@ public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
         if let n = integer("MAX_GB", 1...16_384) { value.byteBudget = n * 1_073_741_824 }
         // The TTL can only be shortened, as the product's.
         if let n = integer("TTL_SECONDS", 1...maximumTTLSeconds) { value.ttlSeconds = n }
+        if let mode = environment["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_MODE"]?.trimmingCharacters(in: .whitespaces).lowercased(),
+           !mode.isEmpty {
+            value.refreshesOnUse = mode == "sliding"
+        }
         if let n = integer("STRIDE", 1...1_048_576) { value.strideTokens = n }
         if let n = integer("MIN_TOKENS", 1...1_048_576) { value.minimumTokens = n }
         if let n = integer("MAX_WRITE_GB_PER_DAY", 0...1_000_000) {

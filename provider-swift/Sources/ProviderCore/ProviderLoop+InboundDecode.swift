@@ -178,7 +178,8 @@ extension ProviderLoop {
                 modelType: modelType, templateControls: templateControls).count) ?? 0
         }
         let messages = prepared.messages.map { $0.templateMessageDict() }
-        let toolSpecs = prepared.tools?.map { $0.toolSpec() }
+        let toolSpecs = GPTOSSToolSchemaRender.renderedTools(prepared.tools, declared: templateControls.declaredTools,
+            modelId: request.model, modelType: modelType)?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType,
             hasMedia: MediaIngest.hasMedia(request),

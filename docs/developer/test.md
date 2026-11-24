@@ -264,10 +264,11 @@ Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prom
 `PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)
 against its own build; a parity failure fails that shard and the
 `Provider Tests` gate. Their pinned artifacts need no build: shard 1 restores
-its verified download cache and starts the same downloader in the background
-before it waits for the products, and the parity steps wait for that download
-and run only if it succeeded. They still check every artifact against its pin
-and download any that is missing ([CI caching](build.md#ci-caching)). The
+its verified download cache and starts the same downloader in the background,
+once per parity step, before it waits for the products. Each parity step waits
+for its own download and runs only if it succeeded. They still check every
+artifact against its pin and download any that is missing
+([CI caching](build.md#ci-caching)). The
 last shard also runs the isolated processes, after its selections finish, one
 at a time.
 

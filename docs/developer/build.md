@@ -1054,11 +1054,13 @@ Only provider shard 1 saves the prompt fixture entry, so it reaches few hosts.
 On the 110 green pull-request runs of 2026-11-23 and 2026-11-24 the key never
 changed and shard 1 restored it 28 times; the other 82 downloaded all 32 files
 inside Prompt Parity, after the tests, in 12 to 317 s (median 24 s). Shard 1
-now restores the entry before its products and runs
-`scripts/prepare-prompt-fixtures.py` on both manifest directories in the
-background (`scripts/ci-background-step.py`), while the build runs. The parity
-steps wait for it, fail with it, and read the downloads from the cache, with
-every byte checked against its pin as before.
+now restores the entry before its products and, while the build runs, starts
+`scripts/prepare-prompt-fixtures.py` in the background
+(`scripts/ci-background-step.py`) once for each parity step's manifest
+directory. Each parity step waits for its own download and runs only if it
+succeeded; a failed download fails the job at that wait, with the downloader's
+output. The parity steps then read the downloads from the cache, with every
+byte checked against its pin as before.
 
 | Cache | Path | Key; restore prefixes | Saved by, on pushes to `master` and `dev` |
 |---|---|---|---|

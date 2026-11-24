@@ -413,8 +413,8 @@ jobs:
       # entry lacks while the build runs, in the background, with the
       # interpreter the products step selects for the later steps. Only this
       # shard saves the entry, so few Macs hold it: in 82 of 110 green pull
-      # requests on 2026-11-23 and 24, Prompt Parity downloaded all of it
-      # after the tests, in 12 to 317 s (docs/developer/build.md#ci-caching).
+      # request runs on 2026-11-23 and 2026-11-24, Prompt Parity downloaded all
+      # of it after the tests, in 12 to 317 s (docs/developer/build.md#ci-caching).
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: ${{ !cancelled() && matrix.shard == 1 }}
         with:
@@ -426,26 +426,27 @@ jobs:
         with:
           path: /private/tmp/dinf-ci/prompt-fixture-cache
           key: prompt-fixtures-v1-${{ hashFiles('fixtures/prompt-contract/v1/manifests/*.json', 'fixtures/prompt-contract/nemotron/manifests/*.json') }}
-      # The same downloader, manifests and cache as the parity scripts; it
-      # stores only verified bytes, and its output is printed by the wait below.
+      # One download per parity step, with the downloader, manifests and cache
+      # of its script; each stores only verified bytes. Each parity step waits
+      # for its own, which prints the output, so either step still runs and
+      # fails on its own. The paths are physical, as the downloader requires.
       - name: Start the pinned prompt fixture downloads
         id: prompt-fixture-downloads
         if: ${{ !cancelled() && matrix.shard == 1 }}
         env:
           PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
         run: |
-          python3 scripts/ci-background-step.py start "$RUNNER_TEMP/prompt-fixture-downloads" bash -c '
-            set -euo pipefail
-            root=$(pwd -P)
-            mkdir "$RUNNER_TEMP/prompt-fixture-prefetch"
-            work=$(cd "$RUNNER_TEMP/prompt-fixture-prefetch" && pwd -P)
-            for contracts in v1 nemotron; do
+          root=$(pwd -P)
+          work=$(cd "$RUNNER_TEMP" && pwd -P)/prompt-fixture-prefetch
+          mkdir "$work"
+          for contracts in v1 nemotron; do
+            python3 scripts/ci-background-step.py start "$RUNNER_TEMP/prompt-fixture-downloads/$contracts" \
               python3 scripts/prepare-prompt-fixtures.py \
-                --manifest-source-directory "$root/fixtures/prompt-contract/$contracts/manifests" \
-                --cdn-url "${PROMPT_PARITY_CDN_URL:-https://models.darkbloom.ai}" \
-                --artifact-root "$work/$contracts/artifacts" --manifest-directory "$work/$contracts/manifests" \
-                --download-cache "$PROMPT_PARITY_DOWNLOAD_CACHE"
-            done'
+              --manifest-source-directory "$root/fixtures/prompt-contract/$contracts/manifests" \
+              --cdn-url "${PROMPT_PARITY_CDN_URL:-https://models.darkbloom.ai}" \
+              --artifact-root "$work/$contracts/artifacts" --manifest-directory "$work/$contracts/manifests" \
+              --download-cache "$PROMPT_PARITY_DOWNLOAD_CACHE"
+          done
       - name: Download provider test products
         id: test-products
         uses: ./.github/actions/provider-ci-products
@@ -519,12 +520,12 @@ jobs:
             ${{ runner.temp }}/provider-unit-shard/slot-*.out
           if-no-files-found: warn
           retention-days: 7
-      # A failed download fails here, with the downloader's output, and the
-      # parity steps then do not run, as when their own download failed.
-      - name: Wait for the pinned prompt fixture downloads
-        id: prompt-fixture-downloads-done
+      # A failed or stalled download fails its wait, with the downloader's
+      # output, and its parity step then does not run (nor download again).
+      - name: Wait for the pinned v1 prompt fixture downloads
+        id: prompt-fixture-downloads-v1
         if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.prompt-fixture-downloads.outcome == 'success' }}
-        run: python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/prompt-fixture-downloads"
+        run: python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/prompt-fixture-downloads/v1"
       # Prompt Parity runs once, in shard 1 (the shard of selection
       # PARITY_SHARD), against the provider products. A failure fails the shard,
       # and with it the Provider Tests gate. The summary checks each run's
@@ -532,7 +533,7 @@ jobs:
       # xUnit report and stdout (NESTED_SUITE_REPORT, scripts/run-nested-suite.sh).
       - name: Verify public prompt golden vectors
         id: prompt-parity
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.prompt-fixture-downloads-done.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.prompt-fixture-downloads-v1.outcome == 'success' }}
         env:
           PROMPT_PARITY_SKIP_BUILD: '1'
           PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
@@ -543,9 +544,13 @@ jobs:
           NESTED_SUITE_REPORT="$report/parity-prompt" ./scripts/verify-prompt-parity.sh
           python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
             "$report/parity-prompt-swift-testing.xml" "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
+      - name: Wait for the pinned Nemotron prompt fixture downloads
+        id: prompt-fixture-downloads-nemotron
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.prompt-fixture-downloads.outcome == 'success' }}
+        run: python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/prompt-fixture-downloads/nemotron"
       - name: Verify pinned Nemotron prompts and numeric cache plans
         id: nemotron-parity
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.prompt-fixture-downloads-done.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.prompt-fixture-downloads-nemotron.outcome == 'success' }}
         env:
           PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
         run: |

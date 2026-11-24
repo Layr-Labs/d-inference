@@ -217,6 +217,11 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case refusalMissingUserQuery = "Inference failure: invalid request (missing user query)"
     case refusalMediaRoleNotRendered = "Inference failure: invalid request (media role not rendered)"
 
+    // Prompt cache (`ToolCallHistoryNullCache`).
+    case promptCacheSkippedToolCallNull = "Prompt cache skipped: an earlier tool call has a null argument; served cold"
+    case promptCacheSkippedToolUnionType = "Prompt cache skipped: a tool parameter renders a different type; served cold"
+    case promptCacheSkippedToolRawSchema = "Prompt cache skipped: a GPT-OSS tool schema renders as written; served cold"
+
     // Memory accounting.
     case superVideoChargesHeldPastDrainWait =
         "Super video frame read outlasted its drain wait; its memory charge returns when the read ends"

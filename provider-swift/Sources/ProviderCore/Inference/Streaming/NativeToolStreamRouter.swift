@@ -120,7 +120,8 @@ struct NativeToolStreamRouter {
             // never a refusal (422 `undeclared_name`, or 500 unparsed).
             // Client stops follow (`Inkling2PromptContract.stopStringScope`).
             inklingParser = Inkling2OutputChannels(
-                callsAreText: inklingUndeclaredCallsAreText && autoToolChoice && tools?.isEmpty != false)
+                callsAreText: inklingUndeclaredCallsAreText && autoToolChoice && tools?.isEmpty != false,
+                readsCallOpeningAnswer: tools?.isEmpty == false)
         } else if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {

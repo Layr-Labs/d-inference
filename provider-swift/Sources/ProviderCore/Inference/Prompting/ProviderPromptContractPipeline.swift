@@ -192,7 +192,8 @@ enum ProviderPromptContractPipeline {
             }
             return value
         }
-        let tools = prepared.tools?.map { $0.toolSpec() }
+        let tools = GPTOSSToolSchemaRender.renderedTools(prepared.tools, declared: templateControls.declaredTools,
+            modelId: request.model, modelType: modelType)?.map { $0.toolSpec() }
         let context = ChatTemplateFixContext(
             modelId: request.model,
             modelType: modelType)
@@ -209,7 +210,7 @@ enum ProviderPromptContractPipeline {
         }
         return try NormalizedInput(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: context),
-            tools: ChatTemplateFixes.normalizeTools(tools, context: context),
+            tools: ChatTemplateFixes.normalizeTools(tools, context: context, declared: templateControls.declaredTools),
             additionalContext: additionalContext)
     }
 }

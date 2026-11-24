@@ -60,6 +60,47 @@ struct ProviderLoopCalibrationTests {
         try? FileManager.default.removeItem(at: fixture.directory)
     }
 
+    @Test("calibration starts as soon as the startup self-test's request is released, not at the next capacity tick",
+        .timeLimit(.minutes(1)))
+    func calibrationStartsWhenTheSelfTestIsReleased() async throws {
+        let id = ServeLoopFixture.modelId
+        let info = ModelInfo(id: id, modelType: "gemma4", parameters: nil,
+            quantization: "4bit", sizeBytes: 1, estimatedMemoryGb: 0.01)
+        let fixture = try await ServeLoopFixture.make(models: [info], backend: BackendSettings(
+            preloadModels: [id], startupPreloadTimeoutSecs: 600, startupSelftest: true))
+        let gate = RecoveryStepGate()
+        defer { gate.release() }
+        let bridge = try await installCalibrationSlot(fixture, gate: gate, afterSelfTest: true)
+        await fixture.loop.removeModelSlotForTesting(modelId: id)
+        _ = await fixture.runtime.unregister(modelId: id)
+        await fixture.loop.setStartupPreloadLoadOverrideForTesting { _ in
+            await fixture.runtime.register(modelId: id, bridge: bridge)
+            await fixture.loop.installModelSlotForTesting(modelId: id,
+                container: cancelledPrefixContainer(tokenizer: CancelledPrefixTokenizer(prompt: [1, 2, 3])),
+                tokenizer: TokenizerHandle(ModelCalibrationTokenizer()), engineV2: bridge)
+        }
+        // The self-test's stream has ended, but its pump still holds the request's service charge.
+        let held = CalibrationReleaseHold()
+        await bridge._testSetRequestReleaseWaitBound(.seconds(600))
+        await bridge._testInstallBeforeServiceRelease { await held.wait() }
+        let preload = Task { await fixture.loop.runStartupPreloadGateForTesting() }
+        await held.waitForEntry()
+        // Either the self-test waits for the release, or the driver has already finished without it.
+        while await bridge._testRequestReleaseWaiterCount() == 0,
+            await fixture.loop.startupPreloadTaskRunningForTesting() {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        await held.open()
+        #expect(await preload.value == .warm)
+        #expect(await bridge.hasScheduledCalibration(), "the driver scheduled calibration once the self-test was released")
+        gate.release()
+        _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
+        await fixture.mock.shutdown()
+        await fixture.bridge.shutdown()
+        await bridge.shutdown()
+        try? FileManager.default.removeItem(at: fixture.directory)
+    }
+
     @Test("all resident slots calibrate serially without waiting for a capacity tick")
     func residentSlotsChainAfterRetirement() async throws {
         let fixture = try await ServeLoopFixture.make(heartbeatIntervalSecs: 3_600)
@@ -295,6 +336,19 @@ struct ProviderLoopCalibrationTests {
             tokenizer: TokenizerHandle(tokenizer), engineV2: bridge)
         return bridge
     }
+}
+
+private actor CalibrationReleaseHold {
+    private var entered = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var opened = false
+    func wait() async {
+        entered = true
+        guard !opened else { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+    func open() { opened = true; waiter?.resume(); waiter = nil }
+    func waitForEntry() async { while !entered { await Task.yield() } }
 }
 
 private final class CalibrationWaitFlag: @unchecked Sendable {

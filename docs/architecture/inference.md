@@ -2338,7 +2338,11 @@ Work accounting, resource ownership and the health-check result are unchanged;
 overlapping customer requests remain independently measurable.
 
 Completed startup preloads and the pre-registration path schedule calibration
-without waiting for the first capacity tick. Ordinary model loads also schedule
+without waiting for the first capacity tick. The health check returns only once
+the bridge has released its request (`EngineV2Bridge.awaitRequestsReleased`, at
+most 2 s): a native engine's stream ends before its pump releases the request's
+service charge, and calibration starts only on an idle Mac, so the driver could
+otherwise find the Mac busy and leave calibration to the next tick. Ordinary model loads also schedule
 it after construction releases its device-work receipt. Capacity ticks retry
 when loading, foreground work or device posture initially prevents calibration.
 An uncancelled calibration retirement schedules the next eligible resident

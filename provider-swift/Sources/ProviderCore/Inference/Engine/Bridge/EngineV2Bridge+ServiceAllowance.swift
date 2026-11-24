@@ -18,8 +18,16 @@ extension EngineV2Bridge {
         deadlinePostureMonitoring = DeadlinePostureMonitor.shared.acquire()
     }
 
+    /// `ServingPerformanceProfiles.postureAllowsExpansion` (nominal, Low Power
+    /// Mode off) at the bridge's `servingPosture`.
+    var postureAllowsExpansion: Bool {
+        let posture = servingPosture()
+        return ServingPerformanceProfiles.postureAllowsExpansion(
+            lowPowerMode: posture.lowPowerMode, thermalState: posture.thermalState)
+    }
+
     var currentPerformanceProfile: ServingPerformanceProfile? {
-        currentPerformanceProfile(allowExpansion: ServingPerformanceProfiles.postureAllowsExpansion)
+        currentPerformanceProfile(allowExpansion: postureAllowsExpansion)
     }
 
     func currentPerformanceProfile(allowExpansion: Bool) -> ServingPerformanceProfile? {
@@ -27,7 +35,7 @@ extension EngineV2Bridge {
     }
 
     var currentDeadlineProfile: DeadlinePerformanceProfile? {
-        guard let profile = currentDeadlineProfile(allowQualifiedPosture: ServingPerformanceProfiles.postureAllowsExpansion),
+        guard let profile = currentDeadlineProfile(allowQualifiedPosture: postureAllowsExpansion),
             serviceBudget?.deadlineEligibleForAdvertisement(profile.applicability) == true else { return nil }
         return profile
     }
@@ -44,9 +52,12 @@ extension EngineV2Bridge {
     /// (`postureAllowsExpansion`); the automatic width holds at fair too
     /// (`postureAllowsAutomaticWidth`).
     var widthPostureAllowsExpansion: Bool {
-        performanceProfile == nil
-            ? ServingPerformanceProfiles.postureAllowsAutomaticWidth
-            : ServingPerformanceProfiles.postureAllowsExpansion
+        let posture = servingPosture()
+        return performanceProfile == nil
+            ? ServingPerformanceProfiles.postureAllowsAutomaticWidth(
+                lowPowerMode: posture.lowPowerMode, thermalState: posture.thermalState)
+            : ServingPerformanceProfiles.postureAllowsExpansion(
+                lowPowerMode: posture.lowPowerMode, thermalState: posture.thermalState)
     }
 
     /// Reviewed profiles and any width above the unqualified width (the
@@ -75,7 +86,7 @@ extension EngineV2Bridge {
         recoverPrefillEvidence: Bool = false,
         allowExpansion: Bool? = nil,
         takesStoppedRowPlace: Bool = false) -> Bool {
-        let expansionAllowed = allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion
+        let expansionAllowed = allowExpansion ?? postureAllowsExpansion
         // An explicit `allowExpansion` decides both; by default the width
         // follows its own posture (fair keeps the automatic width).
         let widthExpansionAllowed = allowExpansion ?? widthPostureAllowsExpansion

@@ -12,17 +12,22 @@ The [native block adapter](native-block-inference.md) reuses this bridge boundar
 for committed diffusion output and explicit native-container slot ownership.
 
 CBv2 samples a nonzero-temperature row with an exponential race: the token with
-the largest `probability / e`, where `e = -log1p(-u)` for a keyed Float32
-uniform draw `u`, and a zero draw counts as 2⁻³³ (the middle of the 32-bit
-generator's zero bucket). The plain `-log(1 - u)` loses draws below about
+the largest `probability / e`, where `e = max(-log1p(-max(u, 2⁻³³)), 2⁻³³)` for
+a keyed Float32 uniform draw `u`: a zero draw counts as 2⁻³³ (the middle of the
+32-bit generator's zero bucket). The plain `-log(1 - u)` loses draws below about
 3·10⁻⁸: Float32 rounds `1 - u` to one, so the noise rounds to zero, a floor of
 10⁻²⁰ replaces it, and a token of almost no probability wins the race.
-`log1p` keeps those draws. Ordinary decoding, MTP verification and coupled MTP
-proposals share this transform and the per-request keys, so a verify position
-draws exactly what ordinary decoding would. Seeded sampled output is repeatable
+`log1p` keeps those draws. With an accurate `log1p` the outer 2⁻³³ floor never
+binds (`-log1p(-v) ≥ v`), so it changes no bits; it keeps the noise positive if
+the Metal fast-math `log` behind MLX's `log1p` rounds a small draw's noise to
+zero, which would otherwise give an infinite or NaN score. Ordinary decoding,
+MTP verification and coupled MTP proposals share this transform and the
+per-request keys, so a verify position draws exactly what ordinary decoding
+would. Seeded sampled output is repeatable
 for one build, GPU and set of logits. Greedy decoding (temperature 0) is an
 argmax and never draws noise.
-Source: `SamplerV2.exponentialNoise(vocab:key:)` in
+Source: `SamplerV2.exponentialNoise(fromUniform:)`, called by
+`SamplerV2.exponentialNoise(vocab:key:)`, in
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift`.
 
 Standalone and cluster chat HTTP use the same scalar-stop normalization,
@@ -4441,9 +4446,13 @@ rewrites at most 100,000 schema nodes per request
 becomes a two-key map, so a few MiB of them rewrote into tens of MiB of JSON
 and hundreds of MiB of objects before the request was decoded. Past the budget
 the body is decoded as sent, as one above `maxNormalizationBytes` (4 MiB)
-already is
+already is. Gemma 4's prompt step applies the same repair again
+(`Gemma4ToolSchemaEnforcement`, through `injectDefaultTypes`) under its own
+100,000-node budget, shared by the request's tools, so it leaves a schema past
+the budget as sent too; its render invariants still apply
 (`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/Gemma4ToolSchemaEnforcement.swift`,
 `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
 
 On the local API, tool schemas with `$ref` are resolved before that repair
@@ -5137,6 +5146,20 @@ template sorts the keys), read from every body that declares tools; arguments
 that are not a JSON object render as before
 (`TemplateJSONOrder.callerArgumentModelTypes`).
 
+When an Inkling 2 Mini `auto` request declares no tools, its prompt has no
+`tool_declare`, so no call can be valid. A call frame the model writes anyway,
+for example because the conversation describes a tool in text, is answer text:
+`<|content_invoke_tool_json|>` opens a content body, as `invoke_tool_text`
+does, and the client gets the frame's JSON body as content with no
+`tool_calls`. Client stop strings apply everywhere but the thought for such a
+request, since the model's usual stop scope covers only `<|content_text|>`.
+Requests that declare tools, and `required`, named or `none` tool choices,
+still validate every frame. `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0`
+restores the refusal (422, or 500 for a frame that does not parse).
+Source: `Inkling2OutputChannels` (`callsAreText`) and
+`Inkling2PromptContract.stopStringScope` in
+`provider-swift/Sources/ProviderCore/Inference/`.
+
 The `string` filter of those templates is renamed at load and bound to
 swift-jinja's, so every other request renders the same bytes as before.
 `DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns the rendering off. Gemma 4 sorts in
@@ -5468,14 +5491,17 @@ requests 1 %), so `auto` requests, which return calls as generated, are left as 
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
   `maxImagesPerRequest` 16 (per model through `imageCap(forModel:)`: 64 for the
-  four Qwen3VL-family builds, 24 for Gemma 4 26B; `DARKBLOOM_MAX_IMAGES_PER_REQUEST`
-  sets one cap for every model),
+  four Qwen3VL-family builds and for Inkling 2 Mini, 24 for Gemma 4 26B;
+  `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
   `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
   `decodeOverheadFactor = 4`. Past 16 images a Qwen build's request shares an
   image budget of 16 x 1,048,576 px among its images (`modelImageBudget`,
   `imagePixelTarget`; never below 262,144 px an image): `buildUserInput` sets
   `UserInput.Processing.maxPixels` to the share, and the processor sizes each
   image to it in its one resize, so the request has at most 16,384 visual tokens.
+  Inkling 2 Mini has no image budget: it takes one visual token per 40x40 px of
+  the image as sent (a side above 4,096 px is scaled down), so the 384 Mpx
+  request cap bounds its 64 images to about 240K visual tokens.
   The pixel caps still count source pixels.
 - **Inline video formats.** `MediaIngest.decodeVideo` decides by the bytes,
   not the `data:` media type: MP4 or QuickTime bytes are opened under any
@@ -5709,9 +5735,9 @@ flowchart LR
 | Boundary | Implemented contract | Source |
 |---|---|---|
 | Entry point | Dedicated native factory and managed benchmark; generic TokenIterator is refused | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26ModelFactory.swift` (`MiMoV26FactoryError.nativeCBv2Required`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkLoading.swift` (`loadNativeMiMoBenchmarkSession`) |
-| MTP | Embedded heads requested by default under `auto`, subject to real native inventory/owner/budget validation; explicit `off` or process kill switch disables them. Serial-target verification remains default; rectangular stays a separate unqualified experiment | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`) |
+| MTP | Embedded heads requested by default under `auto`, subject to real native inventory/owner/budget validation; explicit `off` or process kill switch disables them. Exact rectangular verification is the default; `DARKBLOOM_MIMO_RECTANGULAR_VERIFY=0` selects serial target ([configuration](../reference/configuration.md#native-mimo-v26-candidate)) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`) |
 | Media | Explicit decoded visual/audio profiles bind the real processor/codec, load generation and reservation; media requests stay target-only even when a text assistant is installed | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26LoadedModel.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift` |
-| Prefix | [Exact MiMo identities default to SSD reuse](prefix-cache.md#mimo-complete-state); text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
+| Prefix | [Exact MiMo identities default to SSD reuse](prefix-cache.md#mimo-complete-state); sampled and greedy text requests both write checkpoints (the head records history for requests that cannot speculate); text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
 | Native paging / generic fast paths | Separate opt-in target-only or explicit serial-MTP paging binds the actual asymmetric pool, bank and process owner. Authenticated text-prefix composition restores target pages and assistant state before publication; rectangular verification and paged media remain refused. Generic prefix reuse, compiled decode and packed-prefill flags remain disabled | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26NativePagedProducer.swift` (`makeNativePagedExecutionResources`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`makeNativeMiMoBundle`) |
 | Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider budgets fixed workspace for all configured concurrent requests, target rings, the watermark and minimum KV allowance before choosing a larger solo-text stripe. Unaffordable candidates retain a narrower or ungrouped profile; actual request charges and explicit overrides remain intact. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillMemoryBudget.swift`; [SDK policy](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
 | Public availability | Exact `mimo_v2` is admitted by the ordinary allowlist; normal callers select bounded visual/audio policies through MiMoV26OrdinaryServingPolicy. This does not create a catalog entry or qualify all endpoints | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
@@ -6439,6 +6465,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | `token_budget_exhausted: duplicate request ID` | Request id already live on the bridge | `EngineV2Bridge+Submission.swift` |
 | `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations; thrown before any stream exists (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` |
 | `token_budget_exhausted: …` from engine admission | On one Mac, a request the engine's own admission can never hold (a paged slot's only memory gate, `EngineV2.requireRequestCanEverFit`); thrown before any stream exists, so a streamed local request gets 503 (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` (`submitTokenized`) |
+| `capacityExhausted(needed: …, available: …)` from the engine (503 `capacity`, `token_budget_exhausted`) | A request's paged pages could not be reserved when its step was built, for example a drafter's private pool; retryable capacity, never an untyped generation failure | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngineError.swift` (`fromSchedulerMessage`) |
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
 | Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s. On this Mac's API a streamed request's head waits for its admission (`holdHeadUntilAdmitted`), so a queued request that waits out the admission lease gets the memory 503 before any SSE header, as does one a paged pool keeps full through its requeues; one that isn't streamed gets the same words | `EngineLoopV2.swift`; `EngineV2Bridge+Events.swift`; `EngineV2Bridge+HeadHold.swift` |
 | `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |

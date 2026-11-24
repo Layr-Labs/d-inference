@@ -217,7 +217,10 @@ The planner fills the selections longest suite first onto the least loaded
 one, where each selection starts loaded with its shard's fixed work: the parallel process
 after selection 1, Prompt Parity in shard 1 and the isolated processes in the
 last shard (`*_EXTRA_SECONDS` in `scripts/provider-test-shards.py`, measured on
-CI).
+CI). Before its products, each shard restores the verified MiMo metadata
+downloads and starts their pinned preparation in the background; it waits for
+it before its tests, and a failed preparation fails the shard at that wait
+([CI caching](build.md#ci-caching)).
 The processes share one build, so each runs `swift test --skip-build` with
 `--ignore-lock` (SwiftPM's workspace lock on `.build` would run them one after
 another) and `--disable-build-manifest-caching`. Without that flag, SwiftPM's
@@ -284,8 +287,9 @@ reopened-thought conformance switches, the desktop control API with isolated
 local state, the native MiMo startup, memory admission, media admission,
 complete-prefix, retained-fault and lifecycle drain gates, the MiMo audio gate
 when its inputs changed, and the atomic installer tests, each in processes of
-its own. It prepares the MiMo fixtures the shards prepare, so each gate runs
-in the environment it had in the last shard, and reports its own coverage.
+its own. It prepares the MiMo fixtures the shards prepare, the same way, so
+each gate runs in the environment it had in the last shard, and reports its
+own coverage.
 The gates used to run after the last shard's selections; on Darkbloom's 4
 vCPUs that shard then ended about 100 s after the others (run 44771184962).
 Provider Gates runs no selection, so it has no audit of its own: each gate
@@ -759,7 +763,8 @@ inputs from the repository root in fresh directories:
 - `scripts/prepare-mimo-image-http-fixtures.py` downloads hash-pinned metadata
   and creates deterministic PNGs for actual HTTP image ingress. Both ordinary
   provider CI and SDK release qualification prepare these before the full suite;
-  GitHub applies the emitted environment variables to the following test step.
+  provider CI's wait step adds the emitted environment variables to the job's
+  environment before the tests.
 
 ```bash
 FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-test-fixtures.XXXXXX")"

@@ -1062,6 +1062,24 @@ succeeded; a failed download fails the job at that wait, with the downloader's
 output. The parity steps then read the downloads from the cache, with every
 byte checked against its pin as before.
 
+Every provider shard and Provider Gates save the MiMo metadata entry on the
+pushes that run them, but a Mac still serves only what it saved: on the same
+110 runs the preparation found no entry in 246 of the 550 shard jobs and 51 of
+the 110 Provider Gates jobs, and downloaded the pinned metadata after the
+products, in 4 to 99 s (median 7 s). Each of these jobs now restores the entry
+before its products and, while the build runs, starts the preparation's three
+commands (`scripts/test-prepare-mimo-image-http-fixtures.py`,
+`scripts/prepare-mimo-prompt-fixtures.py` and
+`scripts/prepare-mimo-image-http-fixtures.py`, unchanged and in that order)
+as one background command. The runner reads a step's `$GITHUB_ENV` only when
+the step ends, so the two scripts write the variables they set to a file in
+that command's directory; the wait step stands where the preparation stood,
+prints its output and adds the file to the job's environment. A failed
+preparation fails the job at that wait, where it failed the preparation step
+before, and, as before, a shard then skips its Swift tests (shard 1 also its
+public prompt golden vectors). The save step still saves only after the wait
+succeeded.
+
 | Cache | Path | Key; restore prefixes | Saved by, on pushes to `master` and `dev` |
 |---|---|---|---|
 | Git objects | `.git` | `git-v1-<os>-<YYYY-MM-DD>`; `git-v1-<os>-<YYYY-MM>-`, then `git-v1-<os>-` | every job that checks out |
@@ -1069,9 +1087,9 @@ byte checked against its pin as before.
 | SwiftPM repositories | `/private/tmp/dinf-ci/swiftpm-repositories`, which `~/Library/Caches/org.swift.swiftpm/repositories` links to | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
 | Swift test build | each lane's `.build` directory | `swift-key` (`swift-prefix` and the commit), or on a Darkbloom host `swift-prefix` and `day-<YYYY-MM-DD>`; `swift-prefix`, then `swift-loose-prefix`, then `swift-mlx-prefix`, from `scripts/provider-ci-cache.py` | each build lane |
 | Metal library | `/private/tmp/dinf-ci/metallib-cache` | `metallib-key`, exact only | each build lane |
-| MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard and Provider Gates |
+| MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256; restored before the products and filled while the build runs | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard and Provider Gates |
 | MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | Provider Gates |
-| Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256; restored and filled before the products | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
+| Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256; restored before the products and filled while the build runs | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | `cluster-metadata-release-v2-<base>-<pins>-<commit>`; `...-<base>-<pins>-`, then `...-<base>-` (not on CI (master)) | `cluster-release-checks` |
 
 The Swift test build has three nested restore tiers. `swift-prefix` binds the

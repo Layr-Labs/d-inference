@@ -404,21 +404,48 @@ jobs:
           key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Start the resource sampler
         run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      # The pinned downloads below need no test products, so each shard
+      # restores the MiMo metadata (and shard 1 Prompt Parity's artifacts) and
+      # downloads what its entry lacks while the build runs, in the background,
+      # with the interpreter the products step selects for the later steps
+      # (docs/developer/build.md#ci-caching).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: ${{ !cancelled() }}
+        with:
+          python-version: '3.12.10'
+      # The pinned MiMo metadata downloads, named by their SHA-256; each
+      # script uses an entry only if its bytes still have the pinned digest.
+      # A Mac holds only the entries it saved, so in 246 of 550 shard jobs of
+      # the 110 green pull request runs on 2026-11-23 and 2026-11-24 the
+      # preparation downloaded them after the products, in 4 to 99 s.
+      - name: Restore verified MiMo metadata downloads
+        id: mimo-metadata-cache
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /private/tmp/dinf-ci/mimo-metadata-cache
+          key: mimo-metadata-v1-${{ hashFiles('scripts/prepare-mimo-prompt-fixtures.py', 'scripts/prepare-mimo-audio-fixtures.py') }}
+      # The preparation's three commands, in their order, in one background
+      # command. The runner reads a step's $GITHUB_ENV only when the step ends,
+      # so the two scripts write their variables to a file of the command's
+      # own, which its wait adds to the job's environment.
+      - name: Start the pinned MiMo metadata downloads
+        id: mimo-metadata-downloads
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/ci-background-step.py start "$RUNNER_TEMP/mimo-metadata-downloads" bash -e -c '
+            python3 scripts/test-prepare-mimo-image-http-fixtures.py
+            python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$1" --cache /private/tmp/dinf-ci/mimo-metadata-cache
+            python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$1" --cache /private/tmp/dinf-ci/mimo-metadata-cache
+          ' mimo-metadata "$RUNNER_TEMP/mimo-metadata-downloads/github-env"
       # The prompt artifacts both parity steps download (tokenizers, templates
       # and configs), one file per pinned SHA-256
       # (scripts/verified_download_cache.py). The key hashes the manifests that
       # pin them; prepare-prompt-fixtures.py uses an entry only if its bytes
-      # still have the pinned size and digest, and downloads any other. They
-      # need no test products, so shard 1 restores them and downloads what the
-      # entry lacks while the build runs, in the background, with the
-      # interpreter the products step selects for the later steps. Only this
-      # shard saves the entry, so few Macs hold it: in 82 of 110 green pull
+      # still have the pinned size and digest, and downloads any other. Only
+      # shard 1 saves the entry, so few Macs hold it: in 82 of 110 green pull
       # request runs on 2026-11-23 and 2026-11-24, Prompt Parity downloaded all
-      # of it after the tests, in 12 to 317 s (docs/developer/build.md#ci-caching).
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        if: ${{ !cancelled() && matrix.shard == 1 }}
-        with:
-          python-version: '3.12.10'
+      # of it after the tests, in 12 to 317 s.
       - name: Restore verified prompt fixture downloads
         id: prompt-fixture-cache
         if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && matrix.shard == 1 }}
@@ -462,22 +489,15 @@ jobs:
           mkdir -p "$profiles"
           echo "PROVIDER_COVERAGE_DIR=$profiles" >> "$GITHUB_ENV"
           echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"
-      # The pinned metadata downloads, named by their SHA-256; each script
-      # uses an entry only if its bytes still have the pinned digest.
-      - name: Restore verified MiMo metadata downloads
-        id: mimo-metadata-cache
-        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && steps.test-products.outcome == 'success' }}
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: /private/tmp/dinf-ci/mimo-metadata-cache
-          key: mimo-metadata-v1-${{ hashFiles('scripts/prepare-mimo-prompt-fixtures.py', 'scripts/prepare-mimo-audio-fixtures.py') }}
-      - name: Prepare pinned public MiMo metadata and original corpus
+      # The Swift tests (and shard 1's public prompt golden vectors) read the
+      # MiMo metadata from here on. A failed or stalled preparation fails this
+      # wait, with its output, and they then do not run (nor download again).
+      - name: Wait for the pinned MiMo metadata downloads
         id: mimo-prompt-fixtures
-        if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-metadata-downloads.outcome == 'success' }}
         run: |
-          python3 scripts/test-prepare-mimo-image-http-fixtures.py
-          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
-          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
+          python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/mimo-metadata-downloads"
+          cat "$RUNNER_TEMP/mimo-metadata-downloads/github-env" >> "$GITHUB_ENV"
       - name: Save verified MiMo metadata downloads
         if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && env.SAVE_CACHES == 'true' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-metadata-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -740,15 +760,34 @@ jobs:
           key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Start the resource sampler
         run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
-      # The 1.87 GB codec is fetched only when the audio gate's inputs changed
-      # (scripts/ci-component-paths.py MIMO_AUDIO) and on master pushes. It
-      # needs no test products, so it is fetched while the build runs: after
-      # the products it took 21 to 137 s (runs 44914459288, 44912466550). The
-      # interpreter is the one the products step selects for the later steps.
+      # The MiMo metadata and the audio codec need no test products, so they
+      # are fetched while the build runs, with the interpreter the products
+      # step selects for the later steps.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        if: ${{ !cancelled() && inputs.mimo_audio == 'true' }}
+        if: ${{ !cancelled() }}
         with:
           python-version: '3.12.10'
+      # The MiMo metadata as in test-provider: restored, then prepared in the
+      # background, and waited for where the preparation stood.
+      - name: Restore verified MiMo metadata downloads
+        id: mimo-metadata-cache
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /private/tmp/dinf-ci/mimo-metadata-cache
+          key: mimo-metadata-v1-${{ hashFiles('scripts/prepare-mimo-prompt-fixtures.py', 'scripts/prepare-mimo-audio-fixtures.py') }}
+      - name: Start the pinned MiMo metadata downloads
+        id: mimo-metadata-downloads
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/ci-background-step.py start "$RUNNER_TEMP/mimo-metadata-downloads" bash -e -c '
+            python3 scripts/test-prepare-mimo-image-http-fixtures.py
+            python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$1" --cache /private/tmp/dinf-ci/mimo-metadata-cache
+            python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$1" --cache /private/tmp/dinf-ci/mimo-metadata-cache
+          ' mimo-metadata "$RUNNER_TEMP/mimo-metadata-downloads/github-env"
+      # The 1.87 GB codec is fetched only when the audio gate's inputs changed
+      # (scripts/ci-component-paths.py MIMO_AUDIO) and on master pushes: after
+      # the products it took 21 to 137 s (runs 44914459288, 44912466550).
       - name: Restore pinned MiMo audio codec
         if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && inputs.mimo_audio == 'true' }}
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
@@ -787,22 +826,12 @@ jobs:
         run: python3 scripts/test-stage-swiftpm-resource-bundles.py
       - name: Test that the provider reads MDM enrollment only unprivileged
         run: python3 scripts/test-provider-profiles-unprivileged.py
-      # The pinned metadata downloads, named by their SHA-256; each script
-      # uses an entry only if its bytes still have the pinned digest.
-      - name: Restore verified MiMo metadata downloads
-        id: mimo-metadata-cache
-        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && steps.test-products.outcome == 'success' }}
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: /private/tmp/dinf-ci/mimo-metadata-cache
-          key: mimo-metadata-v1-${{ hashFiles('scripts/prepare-mimo-prompt-fixtures.py', 'scripts/prepare-mimo-audio-fixtures.py') }}
-      - name: Prepare pinned public MiMo metadata and original corpus
+      - name: Wait for the pinned MiMo metadata downloads
         id: mimo-prompt-fixtures
-        if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-metadata-downloads.outcome == 'success' }}
         run: |
-          python3 scripts/test-prepare-mimo-image-http-fixtures.py
-          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
-          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
+          python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/mimo-metadata-downloads"
+          cat "$RUNNER_TEMP/mimo-metadata-downloads/github-env" >> "$GITHUB_ENV"
       - name: Save verified MiMo metadata downloads
         if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && env.SAVE_CACHES == 'true' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-metadata-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0

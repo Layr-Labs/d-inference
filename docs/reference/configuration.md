@@ -43,11 +43,14 @@ process and explicitly reviewed artifacts; publication and full-model numerical
 or throughput qualification remain separate gates.
 
 Inkling 2 Mini (`inkling2_loop`) declares its DSpark drafter in `config.json`
-(`mtp_config`) beside the checkpoint as `mtp.safetensors`; `[backend] mtp_mode =
-"auto"` (the default) requests it as an embedded assistant
-(`MTPMode.automaticEmbeddedModelTypes`, `SpecDecArtifactFunnel.isInlineTarget`),
-and `SpecDecStore.inspectInlineArtifact` bounds and pins its header. `"off"` or
-`DARKBLOOM_CBV2_MTP=0` serves the target alone; image rows never draft.
+(`mtp_config`) beside the checkpoint as `mtp.safetensors`. `[backend] mtp_mode =
+"auto"` (the default) serves the target alone: with the drafter on, sampled GPQA
+answers looped and ran to their length on 0.10.18 candidates. An explicit
+`DARKBLOOM_CBV2_MTP` on-word (`1`, `true`, `yes` or `on`) or `mtp_mode = "on"`
+requests it as an embedded assistant (`MTPMode.optInEmbeddedModelTypes`,
+`SpecDecArtifactFunnel.isInlineTarget`), and `SpecDecStore.inspectInlineArtifact`
+bounds and pins its header. `"off"` or `DARKBLOOM_CBV2_MTP=0` keeps it off; image
+rows never draft.
 
 GLM serves only through its embedded-MTP engine with a native operation owner;
 target-only GLM has no checked completion receipt. MTP is therefore on for GLM
@@ -599,7 +602,7 @@ and rollback are defined in the [provider configuration reference](../provider/c
 | `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` | affirmative | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Restores the legacy per-request timeout. |
 | `DARKBLOOM_GEMMA_JSON_ANSWERS` | `off`, `0`, `false`, `no` disable (trimmed, case-insensitive) | on | `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPolicy.swift` (`GemmaJSONAnswerPolicy.enabled`) | Gemma 4 answers to a JSON `response_format` are sampled under the request's JSON grammar after a free thought ([constrained Gemma 4 JSON answers](../architecture/inference.md#constrained-gemma-4-json-answers)); off restores prompt-only answers. Read once at launch. Forwarded by LaunchAgent. |
 | `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2` | `off`, `0`, `false`, `no` disable (trimmed, case-insensitive) | on | `provider-swift/Sources/ProviderCore/Inference/Prompting/GemmaPromptContract.swift` (`GemmaPromptContract.enabled`) | The provider registers `gemma_prompt_contract: 2` and renders [Gemma 4 prompt contract 2](../architecture/inference.md#gemma-4-prompt-contracts) for a coordinator request that asks for it; off stops advertising it and renders contract 1 (0.10.12's) everywhere. Requests that do not ask render contract 1 either way. Read once at launch. Forwarded by LaunchAgent. |
-| `DARKBLOOM_CBV2_MTP` | negative disables | unset (beta flag decides) | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift`; `provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift` | Kill switch for MTP speculation; beats the `provider.toml` beta flag. See [`../provider/beta-features.md`](../provider/beta-features.md). |
+| `DARKBLOOM_CBV2_MTP` | negative disables; for Inkling 2 Mini an on-word (`1`, `true`, `yes`, `on`) enables | unset (beta flag decides) | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift`; `provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift`; `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.environmentOptsIn`) | Kill switch for MTP speculation; beats the `provider.toml` beta flag. Under `mtp_mode = "auto"` Inkling 2 Mini's DSpark drafter is off unless it is set to an on-word. See [`../provider/beta-features.md`](../provider/beta-features.md). |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | integer | policy default | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift` | Tighten-only cap on rectangular MTP verification tokens. |
 | `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS` | boolean | on | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift` (`gemmaTwoDraftsEnabled`, `gemmaTwoDrafts(chipName:m5UltraLoneRow:)`) | On when unset, empty or `1`/`true`/`yes`/`on` (trimmed, any case): `gemma-4-26b-qat-4bit` drafts two tokens a round at fixed depth on M5 Ultra, M3 Ultra and M5 Max while one row decodes (table `[2, 0]`, envelope 3; two or more rows decode without drafts); other chips keep the lone-row policy. Any other value (e.g. `0`) restores the lone-row policy everywhere. Read once from the process environment; the LaunchAgent forwards non-empty values. |
 | `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW` | boolean | on | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift` (`gemmaM5UltraLoneRowEnabled`) | On when unset, empty or `1`/`true`/`yes`/`on` (trimmed, any case): on M5 Ultra, `gemma-4-26b-qat-4bit` drafts two tokens a round only while one row decodes (table `[2, 0]`, envelope 3). Any other value (e.g. `0`) restores M5 Ultra's earlier table, one or two decode rows drafting two (`[2, 2, 0]`, envelope 6); other chips are unchanged. Applies only while `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS` is on. Read once from the process environment; the LaunchAgent forwards non-empty values. |

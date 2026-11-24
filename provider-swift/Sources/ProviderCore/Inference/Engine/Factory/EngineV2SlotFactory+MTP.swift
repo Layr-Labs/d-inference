@@ -64,7 +64,8 @@ extension EngineV2SlotFactory {
             return try EngineV2Factory.directServingModel(model: snapshot.model, isVLM: isVLM)
         }
         guard isVLM else { return snapshot.model }
-        if snapshot.model is MLXVLM.Qwen4Exp || snapshot.model is MLXVLM.PrismHadamardQwen35 {
+        if snapshot.model is MLXVLM.Qwen4Exp || snapshot.model is MLXVLM.PrismHadamardQwen35
+            || snapshot.model is MLXVLM.Inkling2VLM {
             return try EngineV2Factory.directServingModel(model: snapshot.model, isVLM: true)
         }
         if snapshot.model is MLXVLM.Gemma4 || snapshot.model is MLXVLM.Qwen3VL {

@@ -58,6 +58,8 @@ enum SSDHybridCheckpointStoreFactory {
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentMTPLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.contiguousAsymmetricLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.contiguousAsymmetricMTPLayout

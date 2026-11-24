@@ -33,6 +33,7 @@ enum ProviderPromptContractPipeline {
     ) -> Bool {
         FlintRequestPolicy.withholdsReasoning(request, controls: controls, modelType: modelType)
             || GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType)
+            || Inkling2PromptContract.withholdsReasoning(request, controls: controls, modelType: modelType)
     }
     static func tokenizeProviderBody(
         _ body: Data,
@@ -168,9 +169,13 @@ enum ProviderPromptContractPipeline {
         }
         let gemmaParts = !preserveMiMoMediaParts && GemmaPromptContract.rendersParts(
             request, modelType: modelType, controls: templateControls)
+        let inklingParts = !preserveMiMoMediaParts && Inkling2PromptContract.applies(modelType: modelType)
         let messages = prepared.messages.map { message in
             var value = message.templateMessageDict()
             if gemmaParts, let parts = GemmaPromptContract.textParts(of: message) {
+                value["content"] = parts
+            }
+            if inklingParts, let parts = Inkling2PromptContract.textParts(of: message) {
                 value["content"] = parts
             }
             if preserveMiMoMediaParts, case .parts(let parts) = message.content {

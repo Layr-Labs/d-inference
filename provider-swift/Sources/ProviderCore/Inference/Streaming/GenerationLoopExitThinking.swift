@@ -103,7 +103,8 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// that asked for logprobs (the forced tokens have none), a pair's request.
 /// Nemotron 3.5 Super (`nemotron_h_omni`) has the marker and is off by default
 /// until its A/B; it takes its owner's own route (`NemotronSuperLocalBinding`),
-/// which continues the answer the same way.
+/// which continues the answer the same way. Inkling 2 Mini (`inkling2_loop`)
+/// has its markers (`inklingThought`) and is off by default until its A/B too.
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
@@ -137,7 +138,17 @@ enum GenerationLoopExitThinkingPolicy {
         "qwen3_5_moe": qwenThink,
         // Super's template writes `reasoning + "</think>" + content`: nothing around the marker.
         "nemotron_h_omni": .init(open: "<think>", close: "</think>"),
+        "inkling2_loop": inklingThought,
     ]
+
+    /// Inkling 2's thought message (`<|content_thinking|>` … `<|end_message|>`).
+    /// The exit ends that message and opens an answer message, as the model
+    /// writes after its own thought; both openers are control tokens fed as
+    /// themselves. The output lexer (`Inkling2OutputChannels`) reads the
+    /// continuation as the answer.
+    static let inklingThought = Markers(
+        open: "<|content_thinking|>", close: "<|end_message|>", after: "<|message_model|><|content_text|>",
+        controls: ["<|message_model|>", "<|content_text|>"])
 
     /// GPT-OSS's Harmony analysis message (`<|channel|>analysis<|message|>` …
     /// `<|end|>`). The exit ends that message and starts the next assistant

@@ -15,7 +15,8 @@ extension EngineV2Factory {
         // original text tower is selected by the adapter without dropping vision.
         if model is GLM5NextModel || model is GLM5NextProtectedModel { return model }
         guard isVLM else { return model }
-        if model is MLXVLM.Qwen3VL || model is MLXVLM.Qwen4Exp || model is MLXVLM.PrismHadamardQwen35 { return model }
+        if model is MLXVLM.Qwen3VL || model is MLXVLM.Qwen4Exp || model is MLXVLM.PrismHadamardQwen35
+            || model is MLXVLM.Inkling2VLM { return model }
         guard let gemma4 = model as? MLXVLM.Gemma4 else {
             throw EngineV2ProductionError.unsupportedModel(
                 String(describing: type(of: model)))
@@ -106,6 +107,17 @@ extension EngineV2Factory {
                 layerKinds = qwen.cbv2LayerKinds
                 modelCapabilities = qwen.cbv2Capabilities
                 newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
+            case let inkling as MLXVLM.Inkling2VLM:
+                // The VLM wrapper forwards every CBv2 conformance of its tower.
+                layerKinds = inkling.cbv2LayerKinds
+                modelCapabilities = inkling.cbv2Capabilities
+                newCaches = { make in try inkling.newCacheV2(makeLayerCache: make) }
+            case let inkling as Inkling2Model:
+                // One slot per layer application of the looped tower: 8 full,
+                // 40 sliding-1024, each with its short-convolution state.
+                layerKinds = inkling.cbv2LayerKinds
+                modelCapabilities = inkling.cbv2Capabilities
+                newCaches = { make in try inkling.newCacheV2(makeLayerCache: make) }
             default:
                 return nil
             }

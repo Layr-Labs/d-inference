@@ -4262,6 +4262,10 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 `DARKBLOOM_MTP_STOP_STRING_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Gemma 4 26B QAT build and Inkling 2 Mini, rows with `stop` strings speculate by default and stop at the first match exactly as without speculation; `0` (or `false`, `no`, `off`) keeps them target-only. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
+### MTP logprob-row switch
+
+`DARKBLOOM_MTP_LOGPROB_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On Inkling 2 Mini, rows that request `logprobs` / `top_logprobs` speculate by default (with exact acceptance only), and every token's logprob and top logprobs are the values the same request gets without speculation; `0` (or `false`, `no`, `off`) keeps them target-only. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+
 ## LaunchAgent environment passthrough
 
 `DARKBLOOM_NATIVE_REASONING_BUDGET` is forwarded to the service when the operator

@@ -5161,7 +5161,11 @@ When an Inkling 2 Mini `auto` request declares no tools, its prompt has no
 for example because the conversation describes a tool in text, is answer text:
 `<|content_invoke_tool_json|>` opens a content body, as `invoke_tool_text`
 does, and the client gets the frame's JSON body as content with no
-`tool_calls`. Client stop strings apply everywhere but the thought for such a
+`tool_calls`. A header-only message, where the model writes its answer as a
+message header with no content kind (`<|message_model|>get_weather(city:
+Paris)<|end_message|>`), is answer text too: its header text is the content,
+where other requests drop it as text outside every message. A header never
+holds `<`, so no control token reaches the answer. Client stop strings apply everywhere but the thought for such a
 request, since the model's usual stop scope covers only `<|content_text|>`.
 Requests that declare tools, and `required`, named or `none` tool choices,
 still validate every frame. `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0`

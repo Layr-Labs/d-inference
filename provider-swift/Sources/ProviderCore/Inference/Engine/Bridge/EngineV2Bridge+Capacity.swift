@@ -230,7 +230,7 @@ extension EngineV2Bridge {
             maxTokensPotential: maxTokensPotential,
             maxConcurrency: UInt32(clamping: servingConcurrency),
             // A stale stacked rate is not this idle Mac's speed (`DecodeRateIdleAge`).
-            observedDecodeTps: DecodeRateIdleAge.published(ewma: observedDecodeTpsEwma,
+            observedDecodeTps: DecodeRateIdleAge.published(ewma: publishedDecodeTps,
                 newestSampleAge: performanceMeasurements.observationAge("decode", now: now),
                 idle: snapshot.activeRequests == 0 && snapshot.waitingRequests == 0,
                 maximum: DecodeRateIdleAge.configured),

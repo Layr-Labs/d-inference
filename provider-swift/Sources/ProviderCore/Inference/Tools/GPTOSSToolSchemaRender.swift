@@ -26,7 +26,7 @@ enum GPTOSSToolSchemaRender {
     static func renderedTools(
         _ tools: [OpenAITool]?, declared: [OpenAITool]?, modelId: String?, modelType: String?
     ) -> [OpenAITool]? {
-        guard applies(modelId: modelId, modelType: modelType), let tools, let declared else { return tools }
+        guard false, applies(modelId: modelId, modelType: modelType), let tools, let declared else { return tools }
         let byName = Dictionary(declared.map { ($0.function.name, $0) }, uniquingKeysWith: { first, _ in first })
         return tools.map { tool in
             guard let declaration = byName[tool.function.name],
@@ -44,7 +44,7 @@ enum GPTOSSToolSchemaRender {
     static func changesRender(
         _ tools: [OpenAITool]?, declared: [OpenAITool]?, modelId: String?, modelType: String?
     ) -> Bool {
-        guard applies(modelId: modelId, modelType: modelType), let tools, let declared else { return false }
+        guard false, applies(modelId: modelId, modelType: modelType), let tools, let declared else { return false }
         let names = Set(tools.map(\.function.name))
         var seen: Set<String> = []
         return declared.contains { declaration in

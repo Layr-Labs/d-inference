@@ -678,7 +678,7 @@ public final class ClusterService: @unchecked Sendable {
             // A save of the cluster approval that this journal refused (its save's own recovery refused then) is tried
             // again: the next approval check asks once more, and the status no longer says to run `cluster recover`.
             if ClusterJournalAutoRecover.refusedByJournal((try? store.readRecord())?.approvalNote) {
-                _ = try? store.updateRecord { $0.approvalNote = ClusterJournalAutoRecover.clearedSaveNote }
+                _ = try? store.updateRecord { $0.approvalNote = ClusterJournalAutoRecover.clearedSaveNote; $0.approvalRefused = nil }
                 lock.withLock { approvalChecked = false; nextApprovalCheck = .distantPast }
             }
         default:
@@ -1666,7 +1666,7 @@ public final class ClusterService: @unchecked Sendable {
                 },
                 sendToPeer: send)
             try? self.store.updateRecord { stored in
-                if let note = result.note { stored.approvalNote = note }
+                if let note = result.note { stored.approvalNote = note; stored.approvalRefused = result.refused }
                 // The approval set aside is kept while the pair serves locally and dropped once one is saved again.
                 if result.changed, let setAside = ClusterApprovalCheck.setAside(by: step, worker: decided.worker,
                                                                                 now: Date().timeIntervalSince1970) {
@@ -2531,7 +2531,9 @@ public final class ClusterService: @unchecked Sendable {
                 : "the cluster approval \(saved.configuration.nativeMember?.clusterApproval?.id ?? "") expired: saved this Mac's setup without it; "
                     + "the pair serves on the leader's local API"
             say(line)
-            if !localOnly, saved.configuration.role == .leader { try? store.updateRecord { $0.approvalNote = line } }
+            if !localOnly, saved.configuration.role == .leader {
+                try? store.updateRecord { $0.approvalNote = line; $0.approvalRefused = nil }
+            }
         } catch {
             say("could not save this Mac's setup without its cluster approval yet: \(ClusterApprovalSync.refusal(error))")
             lock.withLock {

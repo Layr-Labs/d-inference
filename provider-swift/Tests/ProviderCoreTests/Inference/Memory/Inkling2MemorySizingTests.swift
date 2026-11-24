@@ -36,12 +36,12 @@ struct Inkling2MemorySizingTests {
         }
     }
 
-    /// The slot is sized and served for the checkpoint's context, 1,048,576
-    /// tokens of prompt plus output: no window below it.
-    @Test func theServedWindowIsTheCheckpointContext() throws {
+    /// The slot is sized and served for 524,288 tokens of prompt plus output,
+    /// half the checkpoint's 1,048,576.
+    @Test func theServedWindowIsHalfTheCheckpointContext() throws {
         let url = try #require(Bundle.module.url(
             forResource: "config.json", withExtension: nil, subdirectory: "Fixtures/Inkling2"))
-        #expect(KVEstimation.parseModelArchitecture(at: url).maxContextLength == 1_048_576)
+        #expect(KVEstimation.parseModelArchitecture(at: url).maxContextLength == 524_288)
     }
 
     @Test func fortyEightGigabytesHoldEightStreamsAt32K() throws {

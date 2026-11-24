@@ -4,9 +4,10 @@ import Testing
 @testable import ProviderCore
 
 /// Only a request that generated at least 32 tokens moves the published decode
-/// rate (`observed_decode_tps`). A shorter one still feeds the deadline decode
-/// rate and the rate's age. Completed requests run through a scripted engine;
-/// no model or GPU is involved.
+/// rate (`observed_decode_tps`) and, once such a request has moved it, the
+/// deadline decode rate. A shorter one still feeds the rate's age, and moves the
+/// deadline rate until then. Completed requests run through a scripted engine; no model
+/// or GPU is involved.
 @Suite("Decode rate sample length")
 struct DecodeRateSampleLengthTests {
     private func makeBridge() -> (EngineV2Bridge, PrefillScriptEngine) {
@@ -64,18 +65,65 @@ struct DecodeRateSampleLengthTests {
         await bridge.shutdown()
     }
 
-    @Test("a short request leaves the published rate unchanged while the deadline rate updates as before")
-    func shortRequestMovesOnlyTheDeadlineRate() async throws {
-        let alpha = 0.3
+    @Test("a short request after a counted one moves neither the published nor the deadline rate")
+    func shortRequestMovesNeitherRate() async throws {
         let (bridge, engine) = makeBridge()
         try await serve(bridge, engine, tokens: 101, id: "long")
         #expect(await bridge.backendSlotCapacity().observedDecodeTps == 1_000)
         let expiration = try #require(await bridge.performanceMeasurements.rateExpiration("decode"))
         try await serve(bridge, engine, tokens: 11, id: "short")
         #expect(await bridge.backendSlotCapacity().observedDecodeTps == 1_000)
-        #expect(await bridge.observedDecodeTpsEwma == alpha * 100 + (1 - alpha) * 1_000)
+        #expect(await bridge.observedDecodeTpsEwma == 1_000)
+        #expect(await bridge.observedDecodeStep.tokensPerSecond == 1_000)
+        // The rate's age still refreshes.
         let refreshed = try #require(await bridge.performanceMeasurements.rateExpiration("decode"))
         #expect(refreshed >= expiration)
+        await bridge.shutdown()
+    }
+
+    @Test("a short-only slot's deadline rate follows its short replies, as before")
+    func shortOnlySlotDeadlineRateFollowsShortReplies() async throws {
+        let alpha = 0.3
+        let (bridge, engine) = makeBridge()
+        try await serve(bridge, engine, tokens: 11, id: "short-first")
+        #expect(await bridge.observedDecodeTpsEwma == 100)
+        try await serve(bridge, engine, tokens: 5, id: "short-second")
+        let second = alpha * 40 + (1 - alpha) * 100
+        #expect(await bridge.observedDecodeTpsEwma == second)
+        try await serve(bridge, engine, tokens: 3, id: "short-third")
+        #expect(await bridge.observedDecodeTpsEwma == alpha * 20 + (1 - alpha) * second)
+        await bridge.shutdown()
+    }
+
+    // It expected a later short reply to leave a rate set by a short one, which
+    // froze a short-only slot's rate at its first reply; only a counted reply
+    // stops short ones moving it.
+    @Test("a short reply starts the deadline rate; once a counted reply has moved it, short ones leave it")
+    func firstShortReplyStartsTheDeadlineRate() async throws {
+        let alpha = 0.3
+        let (bridge, engine) = makeBridge()
+        try await serve(bridge, engine, tokens: 11, id: "short-first")
+        #expect(await bridge.observedDecodeTpsEwma == 100)
+        try await serve(bridge, engine, tokens: 33, id: "counted")
+        let counted = alpha * 320 + (1 - alpha) * 100
+        #expect(await bridge.observedDecodeTpsEwma == counted)
+        try await serve(bridge, engine, tokens: 5, id: "short-after")
+        #expect(await bridge.observedDecodeTpsEwma == counted)
+        await bridge.shutdown()
+    }
+
+    @Test("after the decode evidence expires a short reply starts the deadline rate again")
+    func shortReplyRestartsAnExpiredDeadlineRate() async {
+        let (bridge, _) = makeBridge()
+        let now = ContinuousClock.now
+        await bridge.applyRateObservation(EngineRateObservation(phase: "decode", tps: 80, prompt: 200,
+            context: 300, cache: "cold", overlap: .init(), at: now - .seconds(300), postureEpoch: nil,
+            aggregate: true), requestID: "old-long", calibration: false)
+        #expect(await bridge.observedDecodeTpsEwma == 80)
+        await bridge.applyRateObservation(EngineRateObservation(phase: "decode", tps: 20, prompt: 200,
+            context: 300, cache: "cold", overlap: .init(), at: now, postureEpoch: nil,
+            aggregate: true, setsPublishedDecode: false), requestID: "short", calibration: false)
+        #expect(await bridge.observedDecodeTpsEwma == 20)
         await bridge.shutdown()
     }
 

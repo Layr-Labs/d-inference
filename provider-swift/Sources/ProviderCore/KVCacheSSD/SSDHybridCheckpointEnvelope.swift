@@ -11,8 +11,8 @@ private typealias ManifestJSON = JSONValue
 /// exact checkpoint position and tensor layout stay in encrypted chunk 0.
 ///
 /// No token ID is stored (format 2). Chunk 0 holds the manifest with its
-/// prefix tokens (`prefixTokens`, or the diffusion layout's
-/// `packedPrefixTokens`) replaced by `prefixDigest`, a keyed digest of the
+/// prefix tokens (`prefixTokens`, or `packedPrefixTokens` for the diffusion
+/// layout and long prefixes) replaced by `prefixDigest`, a keyed digest of the
 /// prefix (`SSDLookupKeys.checkpointPrefixDigest`). An `assistantTokens`
 /// tensor, which holds the prefix's last tokens, is stored as zeros. A reader
 /// rebuilds both from the request's own prompt once the digest matches it.
@@ -168,10 +168,15 @@ struct SSDHybridCheckpointEnvelope {
             self.position = Int(position)
         }
 
-        /// The manifest with `prefix` in the layout's token member.
+        /// The manifest with `prefix` in the token member its encoding uses:
+        /// packed for the diffusion layout and for any prefix longer than
+        /// `packedPrefixTokenThreshold`, as MLXLMCommon's (internal)
+        /// `packsPrefixTokens` decides; its decoder refuses the other form.
         func manifest(prefix: [Int]) throws -> CBv2CompleteCheckpointManifest {
             var members = self.members
-            if layout == CBv2CompleteCheckpointManifest.diffusionBlockLayout {
+            if layout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
+                || position > CBv2CompleteCheckpointManifest.packedPrefixTokenThreshold
+            {
                 members.append(("packedPrefixTokens", try PackedTokens.json(prefix)))
             } else {
                 members.append(("prefixTokens", .array(prefix.map { .int(Int64($0)) })))
@@ -258,8 +263,8 @@ struct SSDHybridCheckpointEnvelope {
         return Data(SHA256.hash(data: data)).hexString
     }
 
-    /// The diffusion layout's canonical little-endian bit packing of the
-    /// prefix: the narrowest width that holds the largest token. A copy of
+    /// The canonical little-endian bit packing of a packed prefix: the
+    /// narrowest width that holds the largest token. A copy of
     /// MLXLMCommon's internal `CBv2NativeBlockPackedTokens` encoder, whose
     /// decoder refuses any other packing.
     private enum PackedTokens {

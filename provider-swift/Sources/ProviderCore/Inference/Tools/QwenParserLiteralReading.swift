@@ -5,9 +5,9 @@ import MLXLMCommon
 
 /// Red control: the call parser's literal reading is not modelled yet.
 enum QwenParserLiteralReading {
-    static func literal(_ text: String, schema: [String: JSONValue]) -> JSONValue? { nil }
+    static func literal(_ text: String, schema: [String: MLXLMCommon.JSONValue]) -> MLXLMCommon.JSONValue? { nil }
 
-    static func admitsLiteralType(_ schema: [String: JSONValue]) -> Bool { false }
+    static func admitsLiteralType(_ schema: [String: MLXLMCommon.JSONValue]) -> Bool { false }
 
     static func canonicalType(_ name: String) -> String? {
         let type = name.lowercased()

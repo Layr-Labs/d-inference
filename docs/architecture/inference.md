@@ -3464,7 +3464,17 @@ M5 Ultra, M3 Ultra and M5 Max only a lone row drafts (per-row table
 Two or more rows get depth 0 and run ordinary chained decode.
 `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` restores M5 Ultra's earlier table: one
 or two rows draft (`[2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at most), and the
-deadline projection again charges three rows depth 1, more than they run. Width-3
+deadline projection again charges three rows depth 1, more than they run. On M5
+Ultra a request whose prompt holds more than 16,384 tokens does not draft while it
+decodes alone (`MTPAutomaticVerificationPolicy.maxDraftPromptTokens(modelID:chipName:)`,
+passed to `CBv2MTPConfig.maxDraftPromptTokens`): a plan whose speculation-eligible
+decode rows all have prompts over the limit runs at depth 0, as ordinary chained
+decode, while a plan with any row under the limit keeps the table's depth, so a
+long-prompt row never stops another row from drafting. With M5 Ultra's `[2, 0]`
+table two or more rows run at depth 0 anyway, so the limit changes only a
+long-prompt row decoding alone, where two-draft rounds cost more than they gain.
+`DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS=0` removes the limit; a positive integer
+moves it. Width-3
 verification below 64 expert assignments (`[1, 3]`, and `[2, 3]` under that
 switch), outside the batch-decode and
 prompt projection scopes, takes Gemma's compiled feed-forward trace, with the

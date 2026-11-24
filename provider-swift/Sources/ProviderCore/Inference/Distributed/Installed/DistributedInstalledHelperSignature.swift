@@ -67,6 +67,21 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
 
     static let current: Self = own()
 
+    /// Red control stand-in: keeps the first answer, whatever it is (the behaviour of `current` above).
+    final class Kept: @unchecked Sendable {
+        private let lock = NSLock()
+        private var kept: DistributedInstalledHelperSignature?
+
+        func value(_ read: () -> DistributedInstalledHelperSignature) -> DistributedInstalledHelperSignature {
+            lock.lock()
+            defer { lock.unlock() }
+            if let kept { return kept }
+            let answer = read()
+            kept = answer
+            return answer
+        }
+    }
+
     /// `SignedReleaseIdentity.teamID`: release and DevNet builds.
     static let releaseTeam = "SLDQ2GJ6TL"
 

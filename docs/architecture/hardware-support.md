@@ -960,7 +960,9 @@ memory concurrency and the coordinator's per-model quality cap. The automatic
 width stays at 8 at nominal or fair thermal state with Low Power Mode off.
 Low Power Mode, a serious or critical thermal state, or an unknown state returns
 the bridge to the configured width (`EngineV2Bridge.widthPostureAllowsExpansion`).
-A reviewed profile's expanded width requires nominal thermal state. Explicit `engine_v2_max_concurrent`
+A reviewed profile's expanded width requires nominal thermal state. The bridge
+reads Low Power Mode and the thermal state from `ProcessInfo` whenever admission
+or the reported width asks (`EngineV2Bridge.servingPosture`, which tests replace). Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
 
 The [prompt geometry](inference.md#prompt-geometry) likewise changes no KV

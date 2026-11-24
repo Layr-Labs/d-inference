@@ -109,7 +109,7 @@ public enum MTPAutomaticVerificationPolicy {
         ProcessInfo.processInfo.environment[gemmaMaxDraftPromptTokensEnvironmentKey])
     /// On a quiet M5 Ultra a lone row's two-draft rounds lose to plain decode
     /// above this prompt length.
-    static let gemmaM5UltraMaxDraftPromptTokens = 4096
+    static let gemmaM5UltraMaxDraftPromptTokens = 16384
 
     /// The prompt-length limit for drafting for `modelID` on this chip, or nil
     /// for no limit.

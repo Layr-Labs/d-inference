@@ -3420,7 +3420,7 @@ Two or more rows get depth 0 and run ordinary chained decode.
 `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` restores M5 Ultra's earlier table: one
 or two rows draft (`[2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at most), and the
 deadline projection again charges three rows depth 1, more than they run. On M5
-Ultra a request whose prompt holds more than 4,096 tokens does not draft at all
+Ultra a request whose prompt holds more than 16,384 tokens does not draft at all
 (`MTPAutomaticVerificationPolicy.maxDraftPromptTokens(modelID:chipName:)`, passed
 to `CBv2MTPConfig.maxDraftPromptTokens`): it is target-only for its whole lifetime,
 as a reasoning-budget request is, and decodes as ordinary chained rows. A lone

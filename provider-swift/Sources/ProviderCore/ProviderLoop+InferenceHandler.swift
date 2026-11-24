@@ -200,6 +200,7 @@ extension ProviderLoop {
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
         gemmaPromptContract: Int? = nil,
+        frameCachePolicy: RequestCachePolicy = .default,
         send: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
     ) async {
@@ -400,6 +401,10 @@ extension ProviderLoop {
         // cache context the request is served with is settled once the slot's
         // model type is known (`ToolCallHistoryNullCache`).
         let plannedCache = frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
+        // Unlike the scope, the policy needs no matching nonce (it can only
+        // narrow), and a plaintext frame hint narrows it further.
+        let cachePolicy = inbound.extensions.cachePolicy.narrowed(by: frameCachePolicy)
+        RequestCachePolicyCounters.shared.recordRequest(cachePolicy)
         profile.mark(.parsed)
 
         // A member serves only its pair's model, and only while that slot is
@@ -760,7 +765,8 @@ extension ProviderLoop {
                 requestID: requestId,
                 nonce: nonce,
                 send: send,
-                readyBoundaryMode: cacheReceiptBoundaryMode)
+                readyBoundaryMode: cacheReceiptBoundaryMode,
+                durable: cachePolicy.permitsSSDTier)
         {
             receiptCallbacks = (callbacks.lookup, callbacks.ready)
             lookupReceiptFinalizer.configureV2(
@@ -993,8 +999,8 @@ extension ProviderLoop {
                 providerEngine = superOwner.chatEngine(body: decryptedData,
                     hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
                     trustsSchemaMetadata: true, logprobs: logprobsChannel, usageSignal: v2UsageSignal,
-                    donationDemand: remoteCache.donationDemand, firstContentDeadline: firstContentDeadline,
-                    cancelCause: { token.endCause })
+                    donationDemand: remoteCache.donationDemand, cachePolicy: cachePolicy,
+                    firstContentDeadline: firstContentDeadline, cancelCause: { token.endCause })
             } else {
                 providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
@@ -1012,6 +1018,7 @@ extension ProviderLoop {
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 donationDemand: remoteCache.donationDemand,
+                cachePolicy: cachePolicy,
                 engineV2Logprobs: logprobsSpec.map {
                     EngineV2LogprobsPlumbing(topLogprobs: $0.topLogprobs, relay: logprobsChannel)
                 },
@@ -1075,7 +1082,9 @@ extension ProviderLoop {
                 // owner's request can tell whether the engine has admitted this
                 // one (`giveWayToOwner`).
                 frames = try await MeFirstDarkbloomRequest.$id.withValue(requestId) {
-                    try await service.streamChatCompletionFrames(request: streamingRequest)
+                    try await InklingWithheldReasoningHeartbeat.$enabled.withValue(true) {
+                        try await service.streamChatCompletionFrames(request: streamingRequest)
+                    }
                 }
                 if rejectExpiredDeadline() { return }
             } catch {
@@ -1267,7 +1276,23 @@ extension ProviderLoop {
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
             do {
-                for try await frame in frames {
+                var sentWithheldReasoningHeartbeat = false
+                for try await streamed in frames {
+                    // Inkling 2's one empty answer delta while it withholds its
+                    // reasoning (`InklingWithheldReasoningHeartbeat`).
+                    // It is output the coordinator commits to, so it claims
+                    // output first (me first), as a first content frame does.
+                    var frame = streamed
+                    if !sentWithheldReasoningHeartbeat,
+                        let heartbeat = InklingWithheldReasoningHeartbeat.frame(rewriting: streamed)
+                    {
+                        guard token.claimOutput() else {
+                            endAfterGivingWay(framesEmitted, bytesEmitted)
+                            return
+                        }
+                        frame = heartbeat
+                        sentWithheldReasoningHeartbeat = true
+                    }
                     // The iterator suspension is the final pre-content await.
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,

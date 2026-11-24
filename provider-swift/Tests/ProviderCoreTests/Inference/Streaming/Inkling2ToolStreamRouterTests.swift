@@ -111,6 +111,29 @@ struct Inkling2ToolStreamRouterTests {
         }
     }
 
+    /// A call written as an answer message after a native call is the second
+    /// call, held to the end or streamed when its frame closes.
+    @Test func callWrittenAsAnAnswerMessageAfterANativeCallIsTheNextCall() throws {
+        let wrapped = #"<|message_model|><|content_text|>write_file<|content_invoke_tool_json|>{"name":"write_file","args":{"path":"a.txt","content":"hi"}}<|end_message|>"#
+        let output = Self.thought + Self.call + wrapped
+        for width in [1, 3, 4096] {
+            let (_, prepared) = try Self.prepared(clientStreams: false)
+            var held = Self.router(prepared, streams: false)
+            let routed = Routed(try Self.feed(&held, output, width: width))
+            #expect(routed.content.isEmpty)
+            let finished = try held.finishCompleteCalls(truncated: false)
+            #expect(finished.calls.map(\.function.name) == ["get_weather", "write_file"], "\(width)")
+            #expect(finished.calls.last?.function.arguments == ["path": .string("a.txt"), "content": .string("hi")])
+
+            let (_, streamedPrepared) = try Self.prepared()
+            var streamed = Self.router(streamedPrepared, streams: true)
+            let events = Routed(try Self.feed(&streamed, output, width: width))
+            #expect(events.content.isEmpty)
+            #expect(try streamed.finishToolCalls(truncated: false).isEmpty)
+            #expect(streamed.completedToolCalls.map(\.function.name) == ["get_weather", "write_file"], "\(width)")
+        }
+    }
+
     /// To a client that streams, each call leaves complete when its frame closes.
     @Test func callsLeaveWhenTheirFrameCloses() throws {
         let (request, prepared) = try Self.prepared()

@@ -11,7 +11,7 @@ import MLXLMCommon
 /// any write budget (`SSDCheckpointDemand.admitsWrite`).
 extension SSDHybridCheckpointStore {
     func registerDonationDemand(_ demand: SSDCheckpointDonationDemand, requestID: CBv2RequestID) {
-        guard !isClosed else { return }
+        guard !MemoryOnlyReceipt.refusesTierAccess(requestID), !isClosed else { return }
         donationDemandHints.register(demand, requestID: requestID)
     }
 

@@ -109,7 +109,8 @@ func makeLocalInferenceApplication(
     modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil,
     prefillTicker: LocalPrefillTicker? = .standard,
     memoryWaitLimit: Duration? = OwnerMemoryWait.limit(),
-    firstTokenWait: Bool = OwnerMemoryWait.waitsForFirstToken()
+    firstTokenWait: Bool = OwnerMemoryWait.waitsForFirstToken(),
+    localCachePolicy: RequestCachePolicy = .localServing()
 ) -> LocalInferenceApplication {
     // The router of `routedResponder` below: after auth (a bad local key never
     // reaches it) and outside CORS (this Mac's engine errors arrive as statuses
@@ -157,7 +158,8 @@ func makeLocalInferenceApplication(
             templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope,
             modelTypeProvider: modelTypeProvider,
-            seedsContentForUnknownPromptTail: true
+            seedsContentForUnknownPromptTail: true,
+            cachePolicy: localCachePolicy
         )
         engine.ownerMemoryWait = ownerMemoryWait
         return MLXOpenAIService(
@@ -172,7 +174,7 @@ func makeLocalInferenceApplication(
             acquire: acquire, tokenizerProvider: tokenizerProvider, availableModels: availableModels,
             defaultMaxTokens: defaultMaxTokens, templateControls: controls,
             nativeLocalCacheScope: nativeCacheScope, modelTypeProvider: modelTypeProvider,
-            seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs)
+            seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs, cachePolicy: localCachePolicy)
         engine.ownerMemoryWait = ownerMemoryWait
         return MLXOpenAIService(engine: engine, responseStore: responseStore, metrics: metrics)
     }
@@ -241,7 +243,8 @@ func makeLocalInferenceApplication(
         prefillTicker: prefillTicker,
         serviceForRawChat: { body, request, logprobs in
             if let service = nemotronSuperImageHTTP?.service(body: body, request: request,
-                responseStore: responseStore, metrics: metrics, logprobs: logprobs) { return service }
+                responseStore: responseStore, metrics: metrics, logprobs: logprobs,
+                cachePolicy: localCachePolicy) { return service }
             return managedSuperEngine?(body, request, logprobs).map {
                 MLXOpenAIService(engine: $0, responseStore: responseStore, metrics: metrics)
             }

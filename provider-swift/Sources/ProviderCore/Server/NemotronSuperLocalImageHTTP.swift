@@ -73,10 +73,11 @@ struct NemotronSuperLocalImageHTTP: Sendable {
 
     func service(body: Data, request: OpenAIChatCompletionRequest,
                  responseStore: InMemoryResponseStore, metrics: ServerMetrics,
-                 logprobs: EngineV2LogprobsChannel? = nil) -> MLXOpenAIService? {
+                 logprobs: EngineV2LogprobsChannel? = nil,
+                 cachePolicy: RequestCachePolicy = .default) -> MLXOpenAIService? {
         guard request.model == owner.modelID else { return nil }
         return MLXOpenAIService(engine: engine(body: body, hasMedia: MediaIngest.hasMedia(request),
-                                               logprobs: logprobs),
+                                               logprobs: logprobs, cachePolicy: cachePolicy),
             responseStore: responseStore, metrics: metrics)
     }
 
@@ -99,12 +100,14 @@ struct NemotronSuperLocalImageHTTP: Sendable {
                 logprobs: EngineV2LogprobsChannel? = nil,
                 usageSignal: EngineV2RequestUsageSignal? = nil,
                 donationDemand: SSDCheckpointDonationDemand? = nil,
+                cachePolicy: RequestCachePolicy = .default,
                 firstContentDeadline: FirstContentDeadline? = nil,
                 cancelCause: (@Sendable () -> InferenceEarlyEndCause?)? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
                                cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
                                logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand,
+                               cachePolicy: cachePolicy,
                                firstContentDeadline: firstContentDeadline, cancelCause: cancelCause,
                                stackedMediaWait: stackedMediaWait, toolGrammar: toolGrammar)
     }
@@ -130,6 +133,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let usageSignal: EngineV2RequestUsageSignal?
     /// The coordinator's repeat hint for a text request's durable checkpoint write.
     let donationDemand: SSDCheckpointDonationDemand?
+    /// The sealed cache policy for a text request's prefix reuse.
+    let cachePolicy: RequestCachePolicy
     /// The coordinator's first-content deadline; nil for a local request.
     let firstContentDeadline: FirstContentDeadline?
     /// Why the request was cancelled, if it was; nil without a cancellation token.
@@ -213,10 +218,10 @@ private struct SuperHTTPEngine: MLXServerEngine {
             case .image(let images):
                 // The same plan as text: its tools, tool choice and response
                 // format reach the media prompt, and `output` validates the answer.
-                let template = self.template, cacheScope = self.cacheScope
+                let template = self.template, cacheScope = self.cacheScope, cachePolicy = self.cachePolicy
                 execute = { onEvent in
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,
-                                                cacheScope: cacheScope, logprobs: logprobs,
+                                                cacheScope: cacheScope, cachePolicy: cachePolicy, logprobs: logprobs,
                                                 stackedUntil: stackedUntil,
                                                 admitPrompt: { try owner.admitFirstContent(progress, kind: $0, promptTokens: $1) },
                                                 laneWaited: { owner.noteMediaLaneWait(progress) },
@@ -230,7 +235,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 try owner.admitFirstContent(progress, kind: .text, promptTokens: tokens.count)
                 let translated = plan.bridgeRequest
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
-                let donationDemand = self.donationDemand
+                let donationDemand = self.donationDemand, cachePolicy = self.cachePolicy
                 let tokenConstraint = toolConstraint(tokens)
                 let loopGuard = plan.loopGuard(
                     exitThinking: plan.exitThinking(promptTokens: tokens, tokenizer: tokenizer.inner),
@@ -239,8 +244,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
                                           cacheScope: cacheScope, logprobs: logprobs, usageSignal: usageSignal,
-                                          donationDemand: donationDemand, loopGuard: loopGuard,
-                                          tokenConstraint: tokenConstraint, onEvent: onEvent)
+                                          donationDemand: donationDemand, cachePolicy: cachePolicy,
+                                          loopGuard: loopGuard, tokenConstraint: tokenConstraint, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }

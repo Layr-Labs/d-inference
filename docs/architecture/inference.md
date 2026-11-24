@@ -2602,6 +2602,10 @@ mismatch, or when the served template rejects a prompt the cache rendered. Reuse
 never crosses a cache scope; `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the
 unchanged path
 ([configuration](../reference/configuration.md#prompt-preparation-and-admission)).
+A piece unused for `DARKBLOOM_TTFT_PROMPT_CACHE_TTL_SECONDS` (30 minutes by
+default) is never returned again, and a sweep at least once a minute removes it,
+also on an idle Mac. Reuse restarts its TTL; `0` keeps pieces until they are
+displaced (`PromptPieceTokenStore`).
 
 Decoded text keeps the spacing the tokens spell, unless the tokenizer config sets
 `clean_up_tokenization_spaces` to true. swift-transformers reads an absent key as
@@ -2727,6 +2731,32 @@ correlates checkpoint callbacks to that receipt so delayed donor callbacks
 cannot advertise a successor's prompt. Ready anchors describe actual input
 checkpoints, and billing retains the engine's actual matched/saved token counts
 (`EngineV2Bridge+PrefixCache.swift`, `ResidentPrefixCacheEvidence.swift`).
+
+### A request's cache policy
+
+A coordinator request's sealed `cache_policy`
+([protocol](../reference/protocol-messages.md#sealed-cache-policy)) reaches the
+bridge with the scope (`ProviderLoop.handleInferenceRequest`, the scheduler
+engine and the Nemotron Super owner pass it on), and
+`PrefixCacheSubmissionPolicy` decides there what it changes
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+CachePolicy.swift`).
+A `memory_only` text request on a single-Mac slot with a RAM-only tier keeps
+its prefix cache. Its receipt is minted in the memory-only range
+(`MemoryOnlyReceipt`), the bridge stages from the slot's
+`MemoryOnlyCheckpointTier`, and the SSD store hands the engine's take and
+donation for that receipt to the tier
+([RAM-only tier](prefix-cache.md#ram-only-tier-for-memory_only-requests)).
+Everywhere else (media, a pair, a slot without the tier or with a tier
+budget of 0) it runs with `prefixCacheEnabled` off: the engine then makes no
+prefix lookup, capture or donation, and a pair's ranks get
+`ClusterWorkerPrefixCache.disabled`. In both
+cases the bridge stages nothing from the SSD tier and registers no SSD ready
+receipt or donation demand, the scheduler skips the prompt-token piece cache,
+and no SSD read, write or index path accepts the receipt. Its answer and usage
+are otherwise those of an uncached request, or of a cache hit with tier
+`memory`. The local API serves its requests under
+`DARKBLOOM_LOCAL_CACHE_POLICY` instead ([local
+API](../provider/direct-mode.md#cache-policy-of-local-requests)).
 
 ### `CBv2RequestTiming`
 
@@ -3054,8 +3084,12 @@ measured
 `0` restores publishing the last rate however old). The heartbeat also sends
 the published rate's own age, `observed_decode_tps_age_ms`: the time since the
 newest sample that moved it, which a short reply does not reset
-(`DecodeRateIdleAge.publishedAgeMilliseconds`); it changes nothing the provider
-decides. The published rate moves
+(`DecodeRateIdleAge.publishedAgeMilliseconds`). While the connected
+coordinator's latest `trust_status` lists `decode_rate_age_decay` in
+`coordinator_features`, the coordinator decays a stale rate by that age itself,
+and the provider stops omitting an idle slot's rate
+(`DecodeRateIdleAge.effectiveMaximum`); without it, and after a disconnect, the
+heartbeat is unchanged. The published rate moves
 only on a request that generated at least 32 tokens
 (`EngineV2Bridge.minimumPublishedDecodeTokens`, the coordinator's
 `completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same
@@ -3464,7 +3498,17 @@ M5 Ultra, M3 Ultra and M5 Max only a lone row drafts (per-row table
 Two or more rows get depth 0 and run ordinary chained decode.
 `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` restores M5 Ultra's earlier table: one
 or two rows draft (`[2, 2, 0]`, envelope 6, a `[2, 3]` rectangle at most), and the
-deadline projection again charges three rows depth 1, more than they run. Width-3
+deadline projection again charges three rows depth 1, more than they run. On M5
+Ultra a request whose prompt holds more than 16,384 tokens does not draft while it
+decodes alone (`MTPAutomaticVerificationPolicy.maxDraftPromptTokens(modelID:chipName:)`,
+passed to `CBv2MTPConfig.maxDraftPromptTokens`): a plan whose speculation-eligible
+decode rows all have prompts over the limit runs at depth 0, as ordinary chained
+decode, while a plan with any row under the limit keeps the table's depth, so a
+long-prompt row never stops another row from drafting. With M5 Ultra's `[2, 0]`
+table two or more rows run at depth 0 anyway, so the limit changes only a
+long-prompt row decoding alone, where two-draft rounds cost more than they gain.
+`DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS=0` removes the limit; a positive integer
+moves it. Width-3
 verification below 64 expert assignments (`[1, 3]`, and `[2, 3]` under that
 switch), outside the batch-decode and
 prompt projection scopes, takes Gemma's compiled feed-forward trace, with the
@@ -3508,8 +3552,20 @@ the served Inkling 2 Mini, whose answer-channel stop scope the row's detokenizer
 token through the row's detokenizer and ends the row at the first match, rolling back
 the rest: given the committed tokens, stop matching, scope, truncation and the finish
 reason follow ordinary decode; `DARKBLOOM_MTP_STOP_STRING_ROWS=0` keeps
-them target-only. Repetition penalty, bias, logprobs and token constraints retain their
-ordinary-decode exclusions. Explicit offline serial
+them target-only. Since 0.10.18 rows with a repetition penalty speculate on the builds in
+`SDKFeatureDefaults.repetitionPenaltyRowBuilds` (the same builds;
+`CBv2MTPConfig.repetitionPenaltySpeculation`): each verify position's window is the last
+`repetitionContextSize` tokens of prompt, confirmed output and the drafts before it, penalized
+with `LogitsPipelineV2.process`'s ops before presence/frequency, and such rows accept exactly
+(`CBv2DefaultSampler.applyWindowRepetition`); `DARKBLOOM_MTP_REPETITION_PENALTY_ROWS=0` keeps
+them target-only. Rows that request logprobs speculate on the builds in
+`SDKFeatureDefaults.logprobRowBuilds` (Inkling 2 Mini; `CBv2MTPConfig.logprobSpeculation`),
+which the SDK honours only on a `.rectangularExact` target under exact acceptance: each
+committed token's logprob and top logprobs are gathered from the verify window's raw
+logits, which on that target equal a one-token decode step's, so they are drafter-off's
+bit for bit; `DARKBLOOM_MTP_LOGPROB_ROWS=0` keeps them target-only. Bias, token
+constraints and logprobs on other builds retain their ordinary-decode exclusions.
+Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
@@ -3530,6 +3586,13 @@ change with the all-model default are GLM-5.3-Flash (`glm5_next`) and Qwen 4
 was already exact. Greedy rows accept exactly under either rule.
 Exact keeps the model's output distribution; its tokens are not bit-identical
 to MTP off, since verify windows round differently.
+Inkling 2 Mini replaces the generic depth with its drafter's own profile
+(`Inkling2DSparkDrafter.defaultMTPConfig`: up to 7 drafts, adaptive), and
+`DARKBLOOM_INKLING_MTP_MAX_DRAFT` (1 to 7) lowers that cap, and
+`DARKBLOOM_INKLING_MTP_COUPLED=1` turns on coupled drafting (off by default:
+sampled rows under exact acceptance propose their verify draw's keyed race;
+tokens are unchanged); the acceptance setting still applies (`Inkling2MTPProfilePolicy` in
+`provider-swift/Sources/ProviderCore/Inference/MTP/Inkling2MTPProfilePolicy.swift`).
 Under typical acceptance a draft is kept when the sampler-filtered target row
 gives it probability above `min(1, 0.2 * exp(-H))`, `H` the row's entropy in
 nats; the first rejected position and the bonus position still commit the keyed
@@ -3622,7 +3685,7 @@ disabled for this hybrid model.
 
 On the Qwen 3.5/3.6 (also Qwen3.8-27B, which uses the same embedded head),
 Nemotron Super and native Qwen4 assistants (not the embedded Nemotron head
-above), a request the assistant cannot draft for still records its prompt
+above), and Inkling 2 Mini's DSpark drafter, a request the assistant cannot draft for still records its prompt
 history when its prompt can be cached
 ([prefix-cache invariant 9](prefix-cache.md#invariants)). That covers a token
 constraint, logprobs, `logit_bias`, a penalty or a `stop` string, so it
@@ -4893,6 +4956,16 @@ the call is constrained:
   byte vocabulary), and `<|call|>` is admitted only once the object is
   complete. The schema is compiled from the caller's declaration with local
   `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
+- Before compiling, a `type` that is only a render hint is dropped
+  (`GPTOSSAutoToolGrammar.withoutRenderHintTypes`, the rule
+  `QwenParserLiteralReading.rendersSiblingType` the call parser and the strict
+  check read): the type beside an `anyOf` / `oneOf` naming one of their
+  branches, a mixed `enum`, a `not` of that type or an `if`/`then`/`else` typed
+  otherwise; a node marked `nullable` then carries `null` in its union or
+  `enum`. A `not` of the render type was held to that type before; unions and
+  mixed enums beside it already compiled to free arguments. A declaration
+  without such a type is unchanged; forced choices compile the request's tools
+  as before.
 - A schema outside the compiled subset as written is widened
   (`GPTOSSAutoToolGrammar.widenedArguments`): the render type that ingress
   normalization writes beside a nullable `anyOf` (`type`, `nullable`, and an
@@ -5206,7 +5279,13 @@ Unions with more members, non-scalar members or an `enum` keep `STRING`, and
 other families keep the shared repair's render type. A property the caller
 declared without any type or schema keyword (`{}`) renders an empty type
 (`type:<|"|><|"|>`, the served template's rendering of a typeless property)
-instead of the injected `string` (invariant 8). Gemma's render reads the
+instead of the injected `string` (invariant 8). The same holds for a
+property that is only a local `$ref` to such a schema, for an
+`anyOf`/`oneOf`/`allOf` whose non-null members all accept any value (a `null`
+member still renders `nullable`), and for a typeless `enum` whose values have
+more than one JSON type, which the template would otherwise print under
+STRING. A tuple (`prefixItems` with `items` false or absent) renders no `items`
+block, as the template renders an array without a mapping `items`. Gemma's render reads the
 caller's declarations as sent (`ChatTemplateControls.declaredTools`) on every
 path that renders a coordinator request: serving, prompt recount and the
 diffusion media path. Such a request is also
@@ -7316,6 +7395,33 @@ ceremony, which stores a new record set for the current key
 `--forget` already does: while it holds the old pairing, this Mac no longer
 answers it, so it offers **Start over** (or **Pair again** when its
 own key changed too).
+
+Before a member removes a pair cache it saves the selected root, volume UUID
+and, when available, root inode in its private pending-reclaim record. One
+rename publishes a synced, single-link marker. A retry rechecks the marker
+and syncs its directory before removing files. If unpair began with the pinned
+volume detached, the first root confirmed at that path on the original volume
+is bound by inode before cleanup. This identifies the first root observed on
+return, not a directory that could not be observed while detached. A retry
+does not act on a subsequently substituted directory or volume. A missing
+pinned volume or an unverifiable lease leaves cleanup unresolved; shared
+staging stays in place. A marker that cannot be used (an earlier format,
+malformed, extra links or unsafe metadata) authorizes no removal and leaves a
+retry unresolved; the next unpair replaces it, in one rename, with its own
+intent for the current selection (a second `.cluster-*.tmp` link that an
+earlier version's interrupted publication left is removed first). So does a
+marker the next unpair cannot read because of an I/O error: an earlier
+selection's pending cleanup is then dropped, and its files fall under the limit
+for previously selected disks. While an
+earlier unpair's cleanup waits for its original cache selection, a later
+unpair on that Mac does not remove the current selection's pair cache; those
+files follow ordinary TTL cleanup. A plan that lost its `in-use` file gets a
+new one only while the member holds the cache root exclusively, so no rank is
+starting there. An idle plan moves to
+an inode-qualified `.retiring-…` name before its lock file goes. A later reclaim
+can finish removing that identified empty directory after interruption without
+treating a missing `in-use` in an ordinary plan as permission to delete it
+(`ClusterMemberCacheControl.Store`, `ClusterPrefixPlanReclaim`).
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift`
 (`ClusterOnboardingDriver.pairAgain`, `startOver`, `otherMacSilentLine`, `member`, `pairScreen`),
@@ -11262,9 +11368,9 @@ types them ([fields](../reference/configuration.md#cluster-runtime-facts),
    ([Qwen27 resident assistant](#qwen27-tensor-parallel-resident-assistant));
    without one the digest is the five-field formula as before.
 4. Every model carries a pair-serving grant when the build qualifies it. A
-   pair member reports only hardware capabilities
-   (`DistributedServingEligibility.memberCapabilities`: `apple_m5` on an M5,
-   never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
+   pair member reports its hardware capabilities and `cache_policy_v1`
+   (`DistributedServingEligibility.memberRegistrationCapabilities`: `apple_m5`
+   on an M5, never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
    pair without a grant to the model's single-Mac requirements
    ([`providerMeetsServingRequirementsLocked`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/registry/cluster_pair_serving_grant.go)),
    so no pair of GLM-5.3-Flash or Qwen3.8-27B forms without one. For a

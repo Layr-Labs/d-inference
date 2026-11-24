@@ -35,8 +35,14 @@
 //   8. A property the caller declared without a type or any other schema
 //      keyword (`{}`: any value) renders an empty type instead of the
 //      `string` the shared normalizer injected, as the served template renders
-//      a typeless property (`type:<|"|><|"|>`). This needs the declarations as
-//      sent; without them the injected type stays.
+//      a typeless property (`type:<|"|><|"|>`). The same holds behind a local
+//      `$ref`, for an `anyOf`/`oneOf`/`allOf` whose non-null members all accept
+//      any value, and for a typeless `enum` whose values have more than one
+//      JSON type (the template prints an enum only under STRING, which quoted
+//      its numbers). A tuple (`prefixItems` with `items` false or absent)
+//      renders no `items` block, as the template renders one without a
+//      mapping `items`, instead of the repair's STRING items. This needs the
+//      declarations as sent; without them the repair's render stays.
 //
 // Mirrors the per-model precedent of `GPTOSSHarmonyTemplateFix.normalizeTools`.
 
@@ -78,7 +84,8 @@ enum Gemma4ToolSchemaEnforcement {
                 let parameters = function["parameters"] as? [String: any Sendable],
                 let declaredRoot = declaredParameters[name]
             else { return output }
-            function["parameters"] = renderingDeclaredTypeless(parameters, declared: declaredRoot, changed: &changed)
+            function["parameters"] = renderingDeclaredTypeless(
+                parameters, declared: declaredRoot, root: declaredRoot, changed: &changed)
             output["function"] = function
             return output
         }
@@ -99,10 +106,90 @@ enum Gemma4ToolSchemaEnforcement {
         return !schemaKeywords.contains { mapping[$0] != nil }
     }
 
+    /// The node a declaration that is only a local `$ref` (plus annotations)
+    /// points to in `root`'s `$defs` or `definitions`, followed up to eight
+    /// hops; any other declaration is returned as is.
+    static func resolvingLocalReference(_ declared: Any?, root: [String: Any]) -> Any? {
+        var current = declared
+        for _ in 0..<8 {
+            guard let mapping = current as? [String: Any], let reference = mapping["$ref"] as? String,
+                mapping.keys.allSatisfy({ $0 == "$ref" || !schemaKeywords.contains($0) })
+            else { return current }
+            var target: Any?
+            for container in ["$defs", "definitions"] where reference.hasPrefix("#/\(container)/") {
+                let name = String(reference.dropFirst(container.count + 3))
+                target = (root[container] as? [String: Any])?[name]
+            }
+            guard let target else { return current }
+            current = target
+        }
+        return current
+    }
+
+    /// Invariant 8: whether a declared property accepts any value, directly
+    /// (`declaresAnyValue`), behind a local `$ref`, or as a combinator (and
+    /// nothing else) that does: an `anyOf` with a member that accepts any
+    /// value, or a `oneOf` / `allOf` whose members all do, a `{"type": "null"}`
+    /// member of `oneOf` aside (`nullable` carries it). The shared repair folds
+    /// such an `anyOf` (and an `allOf` of them) to `string`.
+    static func declaresUntypedValue(_ declared: Any?, root: [String: Any]) -> Bool {
+        let node = resolvingLocalReference(declared, root: root)
+        if declaresAnyValue(node) { return true }
+        guard let mapping = node as? [String: Any] else { return false }
+        let combinators = ["anyOf", "oneOf", "allOf"].filter { mapping[$0] != nil }
+        guard combinators.count == 1, let combinator = combinators.first,
+            let members = mapping[combinator] as? [Any],
+            mapping.keys.allSatisfy({ $0 == combinator || !schemaKeywords.contains($0) })
+        else { return false }
+        let resolved = members.map { resolvingLocalReference($0, root: root) }
+        if combinator == "anyOf" { return resolved.contains(where: declaresAnyValue) }
+        var acceptsAny = false
+        for member in resolved {
+            if combinator == "oneOf", let null = member as? [String: Any], null["type"] as? String == "null",
+                null.keys.allSatisfy({ $0 == "type" || !schemaKeywords.contains($0) })
+            {
+                continue
+            }
+            guard declaresAnyValue(member) else { return false }
+            acceptsAny = true
+        }
+        return acceptsAny
+    }
+
+    /// Invariant 8: whether a declared property is a typeless `enum` (and
+    /// nothing else) whose non-null values have more than one JSON type.
+    static func declaresMixedEnum(_ declared: Any?, root: [String: Any]) -> Bool {
+        guard let mapping = resolvingLocalReference(declared, root: root) as? [String: Any],
+            let values = mapping["enum"] as? [Any],
+            mapping.keys.allSatisfy({ $0 == "enum" || !schemaKeywords.contains($0) })
+        else { return false }
+        var kinds = Set<String>()
+        for value in values {
+            switch value {
+            case is Bool: kinds.insert("boolean")
+            case is Int, is Double: kinds.insert("number")
+            case is String: kinds.insert("string")
+            case is [Any]: kinds.insert("array")
+            case is [String: Any]: kinds.insert("object")
+            default: continue
+            }
+        }
+        return kinds.count >= 2
+    }
+
+    /// Invariant 8: whether a declared node is a tuple, `prefixItems` with
+    /// `items` false or absent.
+    static func declaresTuple(_ declared: [String: Any]) -> Bool {
+        guard declared["prefixItems"] != nil else { return false }
+        return declared["items"] == nil || declared["items"] as? Bool == false
+    }
+
     /// Invariant 8 over the nodes the template reaches through `properties`
-    /// and `items`, walking the caller's declaration alongside.
+    /// and `items`, walking the caller's declaration alongside. `root` is the
+    /// declared parameters schema local references resolve in.
     private static func renderingDeclaredTypeless(
-        _ node: [String: any Sendable], declared: [String: any Sendable], changed: inout Bool
+        _ node: [String: any Sendable], declared: [String: any Sendable], root: [String: any Sendable],
+        changed: inout Bool
     ) -> [String: any Sendable] {
         var output = node
         if var properties = output["properties"] as? [String: any Sendable],
@@ -110,13 +197,22 @@ enum Gemma4ToolSchemaEnforcement {
         {
             for (key, value) in properties {
                 guard var property = value as? [String: any Sendable] else { continue }
-                if declaresAnyValue(declaredProperties[key]) {
+                let declaredProperty = declaredProperties[key]
+                if declaresUntypedValue(declaredProperty, root: root)
+                    || declaresMixedEnum(declaredProperty, root: root)
+                {
                     if (property["type"] as? String)?.isEmpty == false {
                         property["type"] = ""
                         changed = true
                     }
-                } else if let declaredProperty = declaredProperties[key] as? [String: any Sendable] {
-                    property = renderingDeclaredTypeless(property, declared: declaredProperty, changed: &changed)
+                } else if let resolved = resolvingLocalReference(declaredProperty, root: root)
+                    as? [String: any Sendable]
+                {
+                    if declaresTuple(resolved), property["items"] != nil {
+                        property.removeValue(forKey: "items")
+                        changed = true
+                    }
+                    property = renderingDeclaredTypeless(property, declared: resolved, root: root, changed: &changed)
                 }
                 properties[key] = property
             }
@@ -125,7 +221,7 @@ enum Gemma4ToolSchemaEnforcement {
         if let items = output["items"] as? [String: any Sendable],
             let declaredItems = declared["items"] as? [String: any Sendable]
         {
-            output["items"] = renderingDeclaredTypeless(items, declared: declaredItems, changed: &changed)
+            output["items"] = renderingDeclaredTypeless(items, declared: declaredItems, root: root, changed: &changed)
         }
         return output
     }

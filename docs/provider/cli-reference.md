@@ -4254,9 +4254,17 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 `DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds (card default presence 1.5), Gemma 4 26B QAT and Inkling 2 Mini, rows with a presence or frequency penalty speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as before these builds opted in. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
+### MTP repetition-penalty-row switch
+
+`DARKBLOOM_MTP_REPETITION_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds, Gemma 4 26B QAT and Inkling 2 Mini, rows with a repetition penalty speculate with exact acceptance by default, so their output is the same as without speculation; `0` (or `false`, `no`, `off`) keeps them target-only, as before these builds opted in. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+
 ### MTP stop-string-row switch
 
 `DARKBLOOM_MTP_STOP_STRING_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Gemma 4 26B QAT build and Inkling 2 Mini, rows with `stop` strings speculate by default and stop at the first match exactly as without speculation; `0` (or `false`, `no`, `off`) keeps them target-only. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+
+### MTP logprob-row switch
+
+`DARKBLOOM_MTP_LOGPROB_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On Inkling 2 Mini, rows that request `logprobs` / `top_logprobs` speculate by default (with exact acceptance only), and every token's logprob and top logprobs are the values the same request gets without speculation; `0` (or `false`, `no`, `off`) keeps them target-only. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
 ## LaunchAgent environment passthrough
 
@@ -4389,6 +4397,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
 | `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS` | MTP verification policy: `0` returns `gemma-4-26b-qat-4bit` on M5 Ultra, M3 Ultra and M5 Max from two drafts per round to the one-draft lone-row policy (other chips already use it) |
 | `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW` | MTP verification policy (while the two-draft policy is on): `0` lets `gemma-4-26b-qat-4bit` on M5 Ultra draft two tokens at one or two decode rows again (table `[2, 2, 0]`; default: a lone row only) |
+| `DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS` | MTP verification policy (while the two-draft policy is on): on M5 Ultra a `gemma-4-26b-qat-4bit` decode step whose rows all have prompts over the limit (default 16384 tokens) runs without drafts, so a long-prompt row decoding alone decodes plain; `0` lets every prompt draft again, a positive integer moves the limit |
 | `DARKBLOOM_GEMMA_MTP_LONE_ROW` | MTP verification policy (where the two-draft policy is off or the chip has none): `0` lets `gemma-4-26b-qat-4bit` speculate at two to four decode rows again on M3–M5 (two on M1/M2; default: a lone row only) |
 | `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT` | Checkpoint layout (`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `gemmaNativeRowsBeforeAssistantEnabled`): `0` keeps `gemma-4-26b-qat-4bit`'s two assistant-access layers native only while the assistant is attached (the earlier rule), with MTP left on (default: native also while it is configured but not attached yet) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |

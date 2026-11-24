@@ -16,7 +16,8 @@ import Darwin
 /// measured in its ON state:
 ///
 /// - Per build: the slot factory turns `constraintSpansBuilds`,
-///   `grammarMTPBuilds`, `nativeGrammarMTPBuilds`, `penaltyRowBuilds` and `stopStringRowBuilds` on in that engine's
+///   `grammarMTPBuilds`, `nativeGrammarMTPBuilds`, `penaltyRowBuilds`, `repetitionPenaltyRowBuilds` and
+///   `stopStringRowBuilds` on in that engine's
 ///   `CBv2MTPConfig` (`applyMTPDefaults`); `NativeReasoningBudget.isEnabled(for:)` admits
 ///   budgets for `reasoningBudgetFamilies` only.
 /// - Process-wide (`onByDefault`, for what the SDK reads with no per-model
@@ -50,12 +51,21 @@ public enum SDKFeatureDefaults {
     /// penalty speculate with exact acceptance on the catalog Qwen 3.5/3.6
     /// builds (card default presence 1.5), the catalog Gemma 4 26B QAT
     /// build and the served Inkling 2 Mini identities (requests that send a
-    /// penalty). Repetition penalty rows stay target-only on every build. The
-    /// SDK's process kill switch `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
+    /// penalty). Repetition penalty rows follow `repetitionPenaltyRowBuilds`.
+    /// The SDK's process kill switch `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
     /// Exact catalog ids (case-sensitive, like `qwen35CardModelTypes`).
     static let penaltyRowBuilds: Set<String> = Set(
         [EngineV2SamplingDefaults.qwen35NineBModelID, MTPAcceptancePolicy.gemmaQATModelID]
     ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs).union(Inkling2ModelIdentity.servedModelIDs)
+
+    /// SDK repetition-penalty MTP rows: rows with `repetition_penalty != 1`
+    /// speculate with exact acceptance on the same builds as presence/frequency
+    /// rows (every one drafts with target-prefix acceptance). The verifier
+    /// penalizes each draft position over the last `repetitionContextSize`
+    /// tokens of prompt, confirmed output and the drafts before it, as ordinary
+    /// decode does. The SDK's process kill switch
+    /// `DARKBLOOM_MTP_REPETITION_PENALTY_ROWS=0` still wins. Exact catalog ids.
+    static let repetitionPenaltyRowBuilds: Set<String> = penaltyRowBuilds
 
     /// SDK stop-string MTP rows: rows with `stop` strings speculate on the
     /// catalog Gemma 4 26B QAT build and the served Inkling 2 Mini identities;
@@ -66,6 +76,14 @@ public enum SDKFeatureDefaults {
     /// wins. Exact catalog ids.
     static let stopStringRowBuilds: Set<String> = Set([MTPAcceptancePolicy.gemmaQATModelID])
         .union(Inkling2ModelIdentity.servedModelIDs)
+
+    /// SDK logprob MTP rows: rows that request logprobs speculate on Inkling 2
+    /// Mini, whose verify windows are row-exact, so each committed token's
+    /// logprobs (taken from the verify window) equal drafter-off's bit for
+    /// bit. The SDK applies it only under exact acceptance on a
+    /// `.rectangularExact` target. The SDK's process kill switch
+    /// `DARKBLOOM_MTP_LOGPROB_ROWS=0` still wins. Exact served ids.
+    static let logprobRowBuilds: Set<String> = Inkling2ModelIdentity.servedModelIDs
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper, .mimoV26]
@@ -137,7 +155,9 @@ public enum SDKFeatureDefaults {
         spansBuilds: Set<String> = constraintSpansBuilds, grammarBuilds: Set<String> = grammarMTPBuilds,
         nativeGrammarBuilds: Set<String> = nativeGrammarMTPBuilds,
         penaltyBuilds: Set<String> = penaltyRowBuilds,
-        stopStringBuilds: Set<String> = stopStringRowBuilds
+        repetitionPenaltyBuilds: Set<String> = repetitionPenaltyRowBuilds,
+        stopStringBuilds: Set<String> = stopStringRowBuilds,
+        logprobBuilds: Set<String> = logprobRowBuilds
     ) -> [String] {
         func unset(_ key: String) -> Bool {
             followsDefault(key, in: environment, injected: [])
@@ -161,6 +181,13 @@ public enum SDKFeatureDefaults {
             config.penaltySpeculation = true
             if CBv2MTPConfig.envPenaltySpeculation { on.append(MTPPenaltyRows.environmentKey) }
         }
+        // Same kill-switch-only shape (`CBv2MTPConfig.effectiveRepetitionPenaltySpeculation`).
+        if repetitionPenaltyBuilds.contains(modelId) {
+            config.repetitionPenaltySpeculation = true
+            if CBv2MTPConfig.envRepetitionPenaltySpeculation {
+                on.append(MTPRepetitionPenaltyRows.environmentKey)
+            }
+        }
         // Same kill-switch-only shape (`CBv2MTPConfig.effectiveStopStringSpeculation`).
         if stopStringBuilds.contains(modelId) {
             config.stopStringSpeculation = true
@@ -168,7 +195,24 @@ public enum SDKFeatureDefaults {
                 on.append(MTPStopStringRows.environmentKey)
             }
         }
+        // Same kill-switch-only shape (`CBv2MTPConfig.effectiveLogprobSpeculation`).
+        if logprobBuilds.contains(modelId) {
+            config.logprobSpeculation = true
+            if CBv2MTPConfig.envLogprobSpeculation { on.append(MTPLogprobRows.environmentKey) }
+        }
         return on
+    }
+
+    /// Whether logprob rows draft under `config` as the round driver runs it
+    /// beside a drafter that requires `drafterMode`, with the mode and
+    /// acceptance that decide it, for the load log.
+    static func logprobRowsSummary(
+        _ config: CBv2MTPConfig, drafterMode: CBv2MTPVerificationMode?
+    ) -> String {
+        let running = config.requiring(drafterMode)
+        let acceptance = running.acceptance == .exact ? "exact" : "typical"
+        return (running.effectiveLogprobSpeculation ? "on" : "off")
+            + " (verification \(running.verificationMode.rawValue), acceptance \(acceptance))"
     }
 
     /// The keys to set for `environment`: every listed key it leaves unset or
@@ -232,14 +276,19 @@ public enum SDKFeatureDefaults {
                 spansBuilds: constraintSpansBuilds, grammarBuilds: grammarMTPBuilds,
                 nativeGrammarBuilds: nativeGrammarMTPBuilds,
                 penaltyBuilds: CBv2MTPConfig.envPenaltySpeculation ? penaltyRowBuilds : [],
-                stopStringBuilds: CBv2MTPConfig.envStopStringSpeculation ? stopStringRowBuilds : [])
+                repetitionPenaltyBuilds: CBv2MTPConfig.envRepetitionPenaltySpeculation
+                    ? repetitionPenaltyRowBuilds : [],
+                stopStringBuilds: CBv2MTPConfig.envStopStringSpeculation ? stopStringRowBuilds : [],
+                logprobBuilds: CBv2MTPConfig.envLogprobSpeculation ? logprobRowBuilds : [])
     }
 
     static func summary(environment: [String: String], injected: Set<String>,
                         spansBuilds: Set<String>, grammarBuilds: Set<String>,
                         nativeGrammarBuilds: Set<String> = [],
                         penaltyBuilds: Set<String> = [],
-                        stopStringBuilds: Set<String> = []) -> String? {
+                        repetitionPenaltyBuilds: Set<String> = [],
+                        stopStringBuilds: Set<String> = [],
+                        logprobBuilds: Set<String> = []) -> String? {
         var on = injected.sorted().map { key in
             key == NativeReasoningBudget.environmentKey
                 ? "\(key) (\(reasoningBudgetFamilies.map { "\($0)" }.sorted().joined(separator: ", ")))" : key
@@ -253,9 +302,16 @@ public enum SDKFeatureDefaults {
         if !penaltyBuilds.isEmpty {
             on.append("\(MTPPenaltyRows.environmentKey) (\(penaltyBuilds.sorted().joined(separator: ", ")))")
         }
+        if !repetitionPenaltyBuilds.isEmpty {
+            on.append(
+                "\(MTPRepetitionPenaltyRows.environmentKey) (\(repetitionPenaltyBuilds.sorted().joined(separator: ", ")))")
+        }
         if !stopStringBuilds.isEmpty {
             on.append(
                 "\(MTPStopStringRows.environmentKey) (\(stopStringBuilds.sorted().joined(separator: ", ")))")
+        }
+        if !logprobBuilds.isEmpty {
+            on.append("\(MTPLogprobRows.environmentKey) (\(logprobBuilds.sorted().joined(separator: ", ")))")
         }
         return on.isEmpty ? nil : "SDK feature defaults on: \(on.joined(separator: "; "))"
     }

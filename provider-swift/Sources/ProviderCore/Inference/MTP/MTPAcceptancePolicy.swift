@@ -91,6 +91,17 @@ public enum MTPPenaltyRows {
     public static let environmentKey = "DARKBLOOM_MTP_PENALTY_ROWS"
 }
 
+/// On the builds in `SDKFeatureDefaults.repetitionPenaltyRowBuilds` (the
+/// catalog Qwen 3.5/3.6 builds, Gemma 4 26B QAT and Inkling 2 Mini), rows with
+/// a repetition penalty speculate: the engine re-derives the penalty over each
+/// verify position's window (prompt, confirmed output, earlier drafts), always
+/// with exact acceptance. The SDK reads the switch once per process
+/// (`CBv2MTPConfig.envRepetitionPenaltySpeculation`); the LaunchAgent forwards
+/// it. `0`, `false`, `no` or `off` keeps such rows target-only.
+public enum MTPRepetitionPenaltyRows {
+    public static let environmentKey = "DARKBLOOM_MTP_REPETITION_PENALTY_ROWS"
+}
+
 /// On the builds in `SDKFeatureDefaults.stopStringRowBuilds` (the catalog
 /// Gemma 4 26B QAT build and Inkling 2 Mini), rows with `stop` strings speculate; the round's
 /// finalize ends the row at the first match. The SDK reads the switch once
@@ -98,4 +109,16 @@ public enum MTPPenaltyRows {
 /// forwards it. `0`, `false`, `no` or `off` keeps such rows target-only.
 public enum MTPStopStringRows {
     public static let environmentKey = "DARKBLOOM_MTP_STOP_STRING_ROWS"
+}
+
+/// On the builds in `SDKFeatureDefaults.logprobRowBuilds` (Inkling 2 Mini,
+/// whose verify windows are row-exact), rows that request logprobs
+/// speculate; each committed token's logprobs come from the verify window,
+/// the values a one-token decode step gives. The SDK takes this only with
+/// exact acceptance (`CBv2MTPConfig.effectiveLogprobSpeculation`). It reads
+/// the switch once per process (`CBv2MTPConfig.envLogprobSpeculation`); the
+/// LaunchAgent forwards it. `0`, `false`, `no` or `off` keeps such rows
+/// target-only.
+public enum MTPLogprobRows {
+    public static let environmentKey = "DARKBLOOM_MTP_LOGPROB_ROWS"
 }

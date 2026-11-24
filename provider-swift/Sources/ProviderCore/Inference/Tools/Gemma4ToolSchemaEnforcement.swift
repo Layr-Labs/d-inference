@@ -26,6 +26,12 @@
 //   5. `required` members are coerced to strings (scalars stringified,
 //      composites dropped); a non-array `required` is removed.
 //   6. `description` values the template interpolates are coerced to strings.
+//   7. A property the shared normalizer typed `string` only because a union of
+//      `string` and exactly one other scalar type (integer, number, boolean)
+//      put `string` first renders as that other type: the template prints the
+//      single render type and never the union, and STRING made the model quote
+//      typed values ("-4200" for -4200). The union stays on the wire, so
+//      validation still accepts both branches.
 //
 // Mirrors the per-model precedent of `GPTOSSHarmonyTemplateFix.normalizeTools`.
 
@@ -36,15 +42,52 @@ enum Gemma4ToolSchemaEnforcement {
     static func normalizeToolSpecs(
         _ tools: [[String: any Sendable]]
     ) -> [[String: any Sendable]] {
+        normalizeToolSpecsReportingUnionType(tools).tools
+    }
+
+    /// `normalizeToolSpecs`, also reporting whether invariant 7 changed any
+    /// property's render type (the prompt then differs from one rendered
+    /// without it).
+    static func normalizeToolSpecsReportingUnionType(
+        _ tools: [[String: any Sendable]]
+    ) -> (tools: [[String: any Sendable]], changedUnionType: Bool) {
         // The inbound pass's node budget, so a request it left as sent is not
         // rewritten here instead.
         var budget = ToolSchemaNormalization.maxNormalizedNodes
-        return tools.map { normalizeToolSpec($0, budget: &budget) }
+        var changed = false
+        let normalized = tools.map { normalizeToolSpec($0, budget: &budget, changedUnionType: &changed) }
+        return (normalized, changed)
+    }
+
+    /// Invariant 7: the render type for a node typed `string` whose `anyOf` or
+    /// `oneOf` members are `string` and exactly one other scalar type (a
+    /// `null` member is skipped, as `nullable` carries it), else nil. A node
+    /// with `enum`, `const` or `allOf` keeps `string`.
+    static func stringFirstUnionRenderType(_ node: [String: any Sendable]) -> String? {
+        guard (node["type"] as? String)?.lowercased() == "string",
+            node["enum"] == nil, node["const"] == nil, node["allOf"] == nil
+        else { return nil }
+        let anyOf = node["anyOf"] as? [any Sendable]
+        let oneOf = node["oneOf"] as? [any Sendable]
+        guard (anyOf == nil) != (oneOf == nil), let members = anyOf ?? oneOf else { return nil }
+        var concrete: [String] = []
+        for member in members {
+            guard let type = ((member as? [String: any Sendable])?["type"] as? String)?.lowercased() else {
+                return nil
+            }
+            if type != "null", !concrete.contains(type) { concrete.append(type) }
+        }
+        guard concrete.count == 2, concrete.contains("string"),
+            let other = concrete.first(where: { $0 != "string" }),
+            ["integer", "number", "boolean"].contains(other)
+        else { return nil }
+        return other
     }
 
     private static func normalizeToolSpec(
         _ tool: [String: any Sendable],
-        budget: inout Int
+        budget: inout Int,
+        changedUnionType: inout Bool
     ) -> [String: any Sendable] {
         var output = tool
         guard var function = output["function"] as? [String: any Sendable] else {
@@ -55,7 +98,9 @@ enum Gemma4ToolSchemaEnforcement {
         function["name"] = stringValue(function["name"]) ?? ""
         function["description"] = stringValue(function["description"]) ?? ""
         if let parameters = function["parameters"] {
-            if let normalized = normalizeParametersValue(parameters, budget: &budget) {
+            if let normalized = normalizeParametersValue(
+                parameters, budget: &budget, changedUnionType: &changedUnionType)
+            {
                 function["parameters"] = normalized
             } else {
                 function.removeValue(forKey: "parameters")
@@ -72,7 +117,8 @@ enum Gemma4ToolSchemaEnforcement {
     /// treats empty mappings.
     private static func normalizeParametersValue(
         _ parameters: any Sendable,
-        budget: inout Int
+        budget: inout Int,
+        changedUnionType: inout Bool
     ) -> [String: any Sendable]? {
         guard let mapping = parameters as? [String: any Sendable] else { return nil }
         if mapping.isEmpty { return nil }
@@ -81,7 +127,7 @@ enum Gemma4ToolSchemaEnforcement {
         let injected =
             ToolSchemaNormalization.injectDefaultTypes(mapping, budget: &budget)
             as? [String: any Sendable] ?? mapping
-        var root = enforceSchemaNode(injected)
+        var root = enforceSchemaNode(injected, changedUnionType: &changedUnionType)
         // Invariant 3: the closing `}` of `parameters:{` is only emitted inside
         // the `params['type']` branch, and that branch upper-cases the value.
         if !(root["type"] is String) {
@@ -94,7 +140,8 @@ enum Gemma4ToolSchemaEnforcement {
     /// root or any nested schema the template can reach through `properties` /
     /// `items`).
     private static func enforceSchemaNode(
-        _ node: [String: any Sendable]
+        _ node: [String: any Sendable],
+        changedUnionType: inout Bool
     ) -> [String: any Sendable] {
         var output = node
 
@@ -107,7 +154,11 @@ enum Gemma4ToolSchemaEnforcement {
         // Invariant 2: every property value is a mapping with a String type.
         if let props = output["properties"] {
             if let mapping = props as? [String: any Sendable] {
-                output["properties"] = mapping.mapValues(enforcePropertyValue)
+                var properties = [String: any Sendable](minimumCapacity: mapping.count)
+                for (key, value) in mapping {
+                    properties[key] = enforcePropertyValue(value, changedUnionType: &changedUnionType)
+                }
+                output["properties"] = properties
             } else {
                 // A non-mapping `properties` fails the template's `is mapping`
                 // guard AND re-exposes the filter_keys fallback — replace with
@@ -137,7 +188,7 @@ enum Gemma4ToolSchemaEnforcement {
         // too. Non-mapping items are skipped by the template's `is mapping`
         // guard and stay as the shared normalizer left them.
         if let items = output["items"] as? [String: any Sendable] {
-            output["items"] = enforceSchemaNode(items)
+            output["items"] = enforceSchemaNode(items, changedUnionType: &changedUnionType)
         }
 
         return output
@@ -146,14 +197,20 @@ enum Gemma4ToolSchemaEnforcement {
     /// A property value the template iterates: must be a mapping with a String
     /// `type` (`value['type'] | upper` renders unconditionally).
     private static func enforcePropertyValue(
-        _ value: any Sendable
+        _ value: any Sendable,
+        changedUnionType: inout Bool
     ) -> any Sendable {
         guard let mapping = value as? [String: any Sendable] else {
             return ["type": "string"] as [String: any Sendable]
         }
-        var output = enforceSchemaNode(mapping)
+        var output = enforceSchemaNode(mapping, changedUnionType: &changedUnionType)
         if !(output["type"] is String) {
             output["type"] = inferredPropertyType(output)
+        }
+        // Invariant 7.
+        if let renderType = stringFirstUnionRenderType(output) {
+            output["type"] = renderType
+            changedUnionType = true
         }
         return output
     }

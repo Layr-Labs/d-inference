@@ -26,6 +26,7 @@ struct ProductionPromptParityTests {
 
         let artifactRoot = URL(fileURLWithPath: artifactRootPath, isDirectory: true)
         var historyNullCases: Set<String> = []
+        var toolUnionTypeCases: Set<String> = []
         for model in corpus.models {
             let modelDirectory = artifactRoot.appendingPathComponent(
                 model.promptContractID, isDirectory: true)
@@ -80,6 +81,9 @@ struct ProductionPromptParityTests {
                 let served = ToolCallHistoryNullCache.servingContext(
                     RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
                     for: request, modelType: modelType, managedSuper: false)
+                if GemmaToolUnionTypeCache.changesRender(request, modelType: modelType) {
+                    toolUnionTypeCases.insert(model.modelID + "/" + fixture.id)
+                }
                 let contractBody = served.servedCold ? try Self.v9HistoryArguments(providerBody) : providerBody
                 if served.servedCold {
                     historyNullCases.insert(model.modelID + "/" + fixture.id)
@@ -116,6 +120,10 @@ struct ProductionPromptParityTests {
         // Exactly the vector bodies whose earlier tool call carries a null.
         #expect(historyNullCases == Self.historyNullCases,
                 "provider-rendered cases changed: \(historyNullCases.symmetricDifference(Self.historyNullCases).sorted())")
+        // No vector body declares a Gemma tool union whose render type changed
+        // (GemmaToolUnionTypeCache), so every body stays exact for that rule.
+        #expect(toolUnionTypeCases == Self.toolUnionTypeCases,
+                "Gemma tool-union cases changed: \(toolUnionTypeCases.sorted())")
     }
 
     /// Gemma 4 prompt contracts on the served artifacts: a request that asks
@@ -227,6 +235,9 @@ extension ProductionPromptParityTests {
          "gpt-oss-20b", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"].flatMap { model in
             ["endpoint_messages_tool_turn", "gemma_tool_turn"].map { model + "/" + $0 }
         })
+
+    /// The vector bodies whose Gemma tool render type changed: none.
+    static let toolUnionTypeCases: Set<String> = []
 
     /// `body` with each earlier tool call's arguments object passed through the
     /// production drop policy (`sanitizeForJinja`, which the v9 contract applies

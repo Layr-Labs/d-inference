@@ -21,7 +21,7 @@ struct ChatTemplateFixContext: Sendable {
 enum ChatTemplateFixes {
     /// Share the native turn/tool input format without broadening Gemma's
     /// separate autoregressive grammar eligibility predicate.
-    private static func usesGemmaInputFormat(_ context: ChatTemplateFixContext) -> Bool {
+    static func usesGemmaInputFormat(_ context: ChatTemplateFixContext) -> Bool {
         context.modelType == "diffusion_gemma" || Gemma4TemplateFix.applies(to: context)
     }
 
@@ -83,6 +83,19 @@ enum ChatTemplateFixes {
             return Gemma4TemplateFix.normalizeTools(sanitized)
         }
         return sanitized
+    }
+
+    /// Whether `normalizeTools` gives these tools a Gemma render type that
+    /// differs from the shared normalizer's (`Gemma4ToolSchemaEnforcement`
+    /// invariant 7), on the same input path.
+    static func changesGemmaToolUnionType(
+        _ tools: [[String: any Sendable]]?,
+        context: ChatTemplateFixContext
+    ) -> Bool {
+        guard usesGemmaInputFormat(context),
+            let sanitized = sanitizeTools(normalizeToolMetadata(tools, context: context))
+        else { return false }
+        return Gemma4ToolSchemaEnforcement.normalizeToolSpecsReportingUnionType(sanitized).changedUnionType
     }
 
     /// Native media producers preserve their own message/schema representation,

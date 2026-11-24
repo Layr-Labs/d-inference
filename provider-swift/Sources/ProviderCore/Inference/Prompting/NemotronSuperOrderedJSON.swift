@@ -18,35 +18,49 @@ enum NemotronSuperOrderedJSON {
     }
 
     static func parse(_ data: Data) throws -> Value {
-        var parser = Parser(bytes: [UInt8](data))
-        parser.skipWhitespace()
-        let value = try parser.value(depth: 0)
-        parser.skipWhitespace()
-        guard parser.index == parser.bytes.count else { throw Failure.invalid }
-        return value
+        try data.withUnsafeBytes { bytes in
+            var parser = Parser(bytes: bytes)
+            parser.skipWhitespace()
+            let value = try parser.value(depth: 0)
+            parser.skipWhitespace()
+            guard parser.index == parser.bytes.count else { throw Failure.invalid }
+            return value
+        }
     }
 
     /// One member of a top-level object, parsed as by ``parse(_:)``; nil when
     /// absent, and a repeated key keeps its last value. Other members are only
     /// scanned for their extent, so their numbers and nesting are not held to
     /// this parser's limits: callers have already decoded the document.
+    /// The document is read in place, never copied: the other members cost
+    /// their top-level key and a bracket stack as deep as their nesting, so
+    /// a large body (inline media) costs one pass over its bytes.
     static func member(_ key: String, of data: Data) throws -> Value? {
-        var parser = Parser(bytes: [UInt8](data))
-        parser.skipWhitespace()
-        let value = try parser.member(key)
-        parser.skipWhitespace()
-        guard parser.index == parser.bytes.count else { throw Failure.invalid }
-        return value
+        try data.withUnsafeBytes { bytes in
+            var parser = Parser(bytes: bytes)
+            parser.skipWhitespace()
+            let value = try parser.member(key)
+            parser.skipWhitespace()
+            guard parser.index == parser.bytes.count else { throw Failure.invalid }
+            return value
+        }
     }
 
+    /// Reads bytes it does not own: it lives only inside `withUnsafeBytes`,
+    /// and every value it returns copies what it keeps.
     private struct Parser {
-        let bytes: [UInt8]
+        let bytes: UnsafeRawBufferPointer
         var index = 0
 
-        init(bytes: [UInt8]) { self.bytes = bytes }
+        init(bytes: UnsafeRawBufferPointer) { self.bytes = bytes }
 
         mutating func skipWhitespace() {
-            while index < bytes.count, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[index]) { index += 1 }
+            while index < bytes.count {
+                switch bytes[index] {
+                case 0x20, 0x09, 0x0A, 0x0D: index += 1
+                default: return
+                }
+            }
         }
 
         mutating func value(depth: Int) throws -> Value {

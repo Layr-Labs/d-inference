@@ -362,8 +362,11 @@ extension Cluster {
         /// `leaving`: this Mac is leaving its pair, so the command that leaves says what to do next on each Mac; the
         /// lines here only say what stopped (no "serve again" from the pair's stop, no "start it again", no "stop the
         /// other Mac's service too"). `stopped` nil: the other Mac wasn't asked (`localOnly`, or a pair not serving).
+        /// A leader whose claim wasn't confirmed while the other Mac doesn't answer (`unconfirmedLeaderAlone`) stops
+        /// its own service alone, as `--local-only` does, unless `stopsAlone` is off (`ClusterUnconfirmedLeadership`).
         static func finishStop(_ stopped: Result<[String], ClusterOnboardingFailure>?, localOnly: Bool = false,
                                forwarded: Bool = false, leaving: Bool = false,
+                               stopsAlone: Bool = ClusterUnconfirmedLeadership.stopsAlone(),
                                removeFromLogin: () throws -> [String]) throws -> ServiceOff {
             var lines: [String] = []
             var otherMac = OtherMac.notAsked
@@ -380,6 +383,9 @@ extension Cluster {
                     lines = ["This Mac stopped serving.",
                              unanswered + ", so it was not asked to stop (its cluster service may already be off)."]
                     otherMac = .unanswered(unanswered)
+                case .failure(let failure) where !forwarded && failure.unconfirmedLeaderAlone && stopsAlone:
+                    lines = ClusterUnconfirmedLeadership.stopAloneLines
+                    otherMac = .unanswered(ClusterUnconfirmedLeadership.otherMacUnanswered)
                 case .failure(let failure):
                     throw Failure(lines: failure.lines + (forwarded ? ClusterPairSummary.memberStopFailureLines(failure.lines) : []))
                 }

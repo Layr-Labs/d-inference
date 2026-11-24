@@ -160,6 +160,12 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         public var confirmed: Bool? = nil
         /// "waiting": seconds until this Mac serves alone (owner decision 6's absence grace).
         public var soloInSeconds: Int? = nil
+        /// While this Mac leads by a claim not yet confirmed: whole seconds until it counts as confirmed with no member
+        /// answering (`ClusterControlNode.secondsUntilConfirmed`); 0 once confirmed. Nil when it doesn't lead, and from
+        /// an older build.
+        public var confirmsInSeconds: Int? = nil
+        /// Whether the other Mac answered over the link within the lease's time-to-live. Nil from an older build.
+        public var otherAnswering: Bool? = nil
     }
 }
 

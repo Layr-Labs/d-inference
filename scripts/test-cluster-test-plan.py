@@ -44,11 +44,18 @@ class ClusterTestPlanTests(unittest.TestCase):
         cases.update({
             f"{module}.QwenTensorParallelBatchSessionTests/actualShardsBatchIndependentHistories()": "base-batch-session",
             f"{module}.QwenTensorParallelBatchSessionTests/Nested/plainCase()": "base-batch-session",
-            # The prefix tier tests of the suite, and only of that suite, run in their own process.
+            # The prefix tier tests of the suite, and only of that suite, each run in their own process.
             f"{module}.QwenTensorParallelBatchSessionTests/warmAttentionPrefixesPreserveMixedHistoriesAndRetirement()":
-                "base-batch-session-prefix-tiers",
+                "base-batch-session-warm-prefix-tier",
             f"{module}.QwenTensorParallelBatchSessionTests/ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand()":
-                "base-batch-session-prefix-tiers",
+                "base-batch-session-ssd-prefix-tier",
+            # So do its two history tests, together.
+            f"{module}.QwenTensorParallelBatchSessionTests/"
+            "actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives()": "base-batch-session-histories",
+            f"{module}.QwenTensorParallelBatchSessionTests/controlWordsInTheSelectionSumKeepTokensAndLogprobs()":
+                "base-batch-session-histories",
+            f"{module}.QwenTensorParallelBatchSessionTestsMore/controlWordsInTheSelectionSumKeepTokensAndLogprobs()":
+                "base",
             f"{module}.QwenTensorParallelBatchSessionTests/Nested/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
                 "base-batch-session",
             f"{module}.QwenTensorParallelBatchSessionTests/ssdAttentionPrefixesRestoreAfterTheTiersReopen()":
@@ -131,19 +138,24 @@ class ClusterTestPlanTests(unittest.TestCase):
         # process or on the same Mac (PR 1745 runs 41692814231, 41700931534).
         # Every base suite runs whole in one process, except two suites whose
         # slowest CPU tests run in processes of their own and their other
-        # tests in another: the batch-session suite (its prefix tier tests,
-        # and its partition test) and Gemma4TensorParallelTests (its split-sum
-        # oracle). The model-free Gemma, Qwen CPU and MiMo tensor-parallel
-        # suites and two sets of three suites run in processes of their own on
-        # shards 4 and 5, and every other base suite in `base`.
+        # tests in another: the batch-session suite (each of its two prefix
+        # tier tests, its two history tests, and its partition test) and
+        # Gemma4TensorParallelTests (its split-sum oracle). The model-free Gemma, Qwen CPU and MiMo tensor-parallel
+        # suites and two sets of three suites run in processes of their own,
+        # and every other base suite in `base`.
         base = [selection for selection in plan.SELECTIONS if selection.base]
         gemma_rest = tuple(suite for suite in plan.GEMMA_SUITES if suite not in (
             "Gemma4TensorParallelTests", "Gemma4TensorParallelRuntimeTests", "Gemma4TensorParallelPrefixTests",
             "Gemma4BatchDecodeTests"))
         self.assertEqual([(selection.name, selection.suites, selection.functions) for selection in base],
                          [("base-batch-session", ("QwenTensorParallelBatchSessionTests",), ()),
-                          ("base-batch-session-prefix-tiers", ("QwenTensorParallelBatchSessionTests",),
-                           plan.BATCH_SESSION_PREFIX_TIER_TESTS),
+                          ("base-batch-session-warm-prefix-tier", ("QwenTensorParallelBatchSessionTests",),
+                           ("warmAttentionPrefixesPreserveMixedHistoriesAndRetirement",)),
+                          ("base-batch-session-ssd-prefix-tier", ("QwenTensorParallelBatchSessionTests",),
+                           ("ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand",)),
+                          ("base-batch-session-histories", ("QwenTensorParallelBatchSessionTests",),
+                           ("actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives",
+                            "controlWordsInTheSelectionSumKeepTokensAndLogprobs")),
                           ("base", None, ()),
                           ("base-gemma-tensor-parallel-oracle", ("Gemma4TensorParallelTests",),
                            ("tensorParallelRanksEqualTheSplitSumOracleBitwise",)),
@@ -165,10 +177,10 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertTrue(all("Gemma" in suite for suite in plan.GEMMA_SUITES))
         # Shards 4 and 5 run only these base selections, in two groups each,
         # and no switched (GPU) selection.
-        for shard, groups in ((4, {1: ["base-gemma-tensor-parallel-oracle", "base-gemma-runtime"],
-                                   2: ["base-gemma-tensor-parallel", "base-gemma-prefix", "base-shard-4"]}),
-                              (5, {1: ["base-gemma-batch-decode", "base-qwen-tp-cpu", "base-shard-5"],
-                                   2: ["base-gemma", "base-mimo-tp", "base-batch-session-partitions"]})):
+        for shard, groups in ((4, {1: ["base-gemma-tensor-parallel-oracle"],
+                                   2: ["base-gemma-tensor-parallel", "base-shard-4"]}),
+                              (5, {1: ["base-gemma-batch-decode", "base-shard-5"],
+                                   2: ["base-gemma", "base-mimo-tp"]})):
             with self.subTest(shard=shard):
                 members = [selection for selection in plan.SELECTIONS
                            if (selection.lane, selection.shard) == ("blocking", shard)]
@@ -176,8 +188,28 @@ class ClusterTestPlanTests(unittest.TestCase):
                 self.assertEqual({group: [selection.name for selection in members if selection.group == group]
                                   for group in (1, 2)}, groups)
                 self.assertTrue(all(selection.group is not None for selection in members))
+        # Shards 2, 3, 6 and 7 each run a group of switched (GPU) selections
+        # beside a group of base selections that starts with a batch-session
+        # selection.
+        for shard, groups in ((2, {1: ["qwen-tp-batch-gpu", "tf32-off"], 2: ["base-batch-session", "base-qwen-tp-cpu"]}),
+                              (3, {1: ["qwen-tp-batch-gpu-paged", "qwen-tp-moe-gpu", "glm53-prefix-ssd",
+                                       "glm53-paged-kv", "glm53-row-invariance", "glm53-depth-invariance",
+                                       "gemma-tp-diag"],
+                                   2: ["base-batch-session-warm-prefix-tier"]}),
+                              (6, {1: ["qwen-tp-mtp-gpu"],
+                                   2: ["base-batch-session-ssd-prefix-tier", "base-gemma-prefix"]}),
+                              (7, {1: ["qwen-tp-batch-gpu-prefix-depth", "qwen-tp-aqv-gpu"],
+                                   2: ["base-batch-session-histories", "base-batch-session-partitions"]})):
+            with self.subTest(shard=shard):
+                members = [selection for selection in plan.SELECTIONS
+                           if (selection.lane, selection.shard) == ("blocking", shard)]
+                self.assertEqual({group: [selection.name for selection in members if selection.group == group]
+                                  for group in (1, 2)}, groups)
+                self.assertTrue(all(not selection.base for selection in members if selection.group == 1))
+                self.assertTrue(all(selection.base for selection in members if selection.group == 2))
+                self.assertEqual(len(members), sum(len(names) for names in groups.values()))
         # Shard 1 runs one process at a time: `base`, then the share probe,
-        # then qwen-tp-aqv-gpu. The probe times its share against a 1.5 s
+        # then base-gemma-runtime. The probe times its share against a 1.5 s
         # budget: it runs right after `base` and never shares a shard with the
         # concurrent GPU groups (run 41973436945 failed it right after them).
         order = [selection.name for selection in plan.SELECTIONS]
@@ -187,7 +219,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertIsNone(probe.group)
         self.assertEqual([selection.name for selection in plan.SELECTIONS
                           if (selection.lane, selection.shard) == ("blocking", base_selection.shard)],
-                         ["base", "qwen-tp-share-probe-gpu", "qwen-tp-aqv-gpu"])
+                         ["base", "qwen-tp-share-probe-gpu", "base-gemma-runtime"])
         self.assertGreater(order.index(probe.name), order.index(base_selection.name))
         grouped_shards = {(selection.lane, selection.shard) for selection in plan.SELECTIONS
                           if selection.group is not None}

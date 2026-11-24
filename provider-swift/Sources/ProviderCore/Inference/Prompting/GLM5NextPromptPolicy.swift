@@ -18,6 +18,18 @@ enum GLM5NextPromptPolicy {
         modelType == "glm5_next" || modelType == "glm5_next_text" || modelType == "glm5_next_mtp"
     }
 
+    /// `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY`: history tool-call arguments and
+    /// tool schemas in shapes vLLM's GLM-5.3 serving and the OpenAI API accept
+    /// are served, by default: a number no JSON value holds exactly is read as
+    /// `JSONValue` reads it, a repeated argument key keeps its last value, and
+    /// GLM tool-call markers inside argument keys and strings are text. `0`,
+    /// `off`, `false` or `no` restores refusing all three. Read once per process.
+    static let referenceToolHistoryEnvironmentKey = "DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY"
+    static let referenceToolHistoryEnabled = !ToolOutputLeniencySwitch.isOff(
+        ProcessInfo.processInfo.environment[referenceToolHistoryEnvironmentKey])
+    @TaskLocal static var referenceToolHistoryForTesting: Bool?
+    static var referenceToolHistory: Bool { referenceToolHistoryForTesting ?? referenceToolHistoryEnabled }
+
     /// A JSON answer (`GLM5NextResponseFormat`) or a required/named call is
     /// withheld until it validates, with reasoning split on its typed channel.
     /// One Mac's media path withholds a JSON answer too; a forced call with
@@ -479,7 +491,8 @@ enum GLM5NextPromptPolicy {
             if let calls = message.toolCalls {
                 value["tool_calls"] = try calls.map { call -> [String: any Sendable] in
                     let arguments = try decodeHistoryArguments(call.function.arguments)
-                    for (key, value) in arguments {
+                    // The reference server renders these as text.
+                    for (key, value) in arguments where !referenceToolHistory {
                         guard !key.isEmpty, !key.contains("<"), !key.contains(">") else {
                             throw invalid("history argument names must not contain native delimiters", .nativeDelimiterInHistory)
                         }
@@ -565,13 +578,22 @@ enum GLM5NextPromptPolicy {
         guard pending == completed else { throw invalid("history is missing a tool result", .unansweredToolCall) }
     }
 
-    /// Reuse the native codec's strict JSON value parser rather than introduce
-    /// a second parser with different duplicate-key or numeric-rounding rules.
-    /// The fixed outer frame is internal data plumbing, never a model prompt;
-    /// schema checks stay on, so nothing but the one declared argument parses.
-    private static func decodeHistoryArguments(_ raw: String) throws -> [String: MLXLMCommon.JSONValue] {
+    /// The native codec's strict JSON value parser reads first, so arguments it
+    /// accepts render exactly as before. With `referenceToolHistory`, what it
+    /// refuses is read again as the reference server reads it
+    /// (`GLM5NextHistoryArguments`); anything that is not one JSON object is
+    /// refused either way.
+    static func decodeHistoryArguments(_ raw: String) throws -> [String: MLXLMCommon.JSONValue] {
         // A call without arguments, as vLLM and the other native families read it.
         guard !raw.isEmpty else { return [:] }
+        if let arguments = nativeHistoryArguments(raw) { return arguments }
+        if referenceToolHistory, let arguments = GLM5NextHistoryArguments.object(raw) { return arguments }
+        throw invalid("history arguments require a complete, exactly representable JSON object", .invalidToolArguments)
+    }
+
+    /// The fixed outer frame is internal data plumbing, never a model prompt;
+    /// schema checks stay on, so nothing but the one declared argument parses.
+    static func nativeHistoryArguments(_ raw: String) -> [String: MLXLMCommon.JSONValue]? {
         let frame = "<tool_call>_glm5_history<arg_key>arguments</arg_key><arg_value>"
             + raw + "</arg_value></tool_call>"
         let argumentSchema: [String: any Sendable] = ["type": "object"]
@@ -581,12 +603,14 @@ enum GLM5NextPromptPolicy {
         let tools: [[String: any Sendable]] = [["function": function]]
         guard let call = GLM5ToolCallParser(grammarOnly: false).parse(content: frame, tools: tools),
             case .object(let arguments)? = call.function.arguments["arguments"]
-        else { throw invalid("history arguments require a complete, exactly representable JSON object", .invalidToolArguments) }
+        else { return nil }
         return arguments
     }
 
-    /// Validate numbers against the original decoder before the typed tool
-    /// schema can erase precision. No schema values are retained by this probe.
+    /// Bound schema nesting before the typed tool schema decodes. With
+    /// `referenceToolHistory` a number is read as the typed schema reads it;
+    /// otherwise a number the typed schema would round is refused. No schema
+    /// values are retained by this probe.
     private struct ExactSchemaValues: Decodable {
         init(from decoder: any Decoder) throws {
             guard decoder.codingPath.count <= 128 else { throw invalid("tool schema exceeds nesting bound", .invalidToolSchema) }
@@ -595,6 +619,13 @@ enum GLM5NextPromptPolicy {
                 || (try? value.decode(String.self)) != nil { return }
             if (try? value.decode([String: Self].self)) != nil { return }
             if (try? value.decode([Self].self)) != nil { return }
+            if GLM5NextPromptPolicy.referenceToolHistory {
+                // The typed schema's numeric reading (`JSONValue`: Int, then
+                // Double), on this scalar only, so the bound above still holds.
+                if (try? value.decode(Int.self)) != nil { return }
+                _ = try value.decode(Double.self)
+                return
+            }
             let original = try value.decode(Decimal.self)
             let typed = try value.decode(MLXLMCommon.JSONValue.self)
             let encoded = try JSONEncoder().encode(typed)

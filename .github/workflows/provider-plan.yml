@@ -269,10 +269,11 @@ jobs:
   # Chooses a Darkbloom Sandbox or the Blacksmith fallback for the macOS jobs
   # of provider-tests.yml. This table is the one place that names each job's
   # lane and size. A lane is granted whole or falls back whole, so each job
-  # (each shard) has a lane of its own and falls back alone, except where two
-  # shards share one lane with a count of 2: the two Cluster Focused Checks
-  # shards, Cluster Runtime Tests shards 2 and 3 (test-cluster-2) and shards
-  # 4 and 5 (test-cluster-3). A lane asks for a job only when the job runs.
+  # (each shard) has a lane of its own and falls back alone, except where
+  # shards share one lane with a count: the two Cluster Focused Checks
+  # shards, Cluster Runtime Tests shards 2, 3, 6 and 7 (test-cluster-2, a
+  # count of 4) and shards 4 and 5 (test-cluster-3). A lane asks for a job
+  # only when the job runs.
   #
   # Every lane names its size (<vCPUs>x<GiB>) after its count and its
   # placement, `balanced` (darkbloom-route.yml), so no lane gets the
@@ -320,7 +321,7 @@ jobs:
       lanes: |
         ${{ inputs.linux_lanes }}
         ci-plan-checks linux_arm64 ubuntu-24.04 ${{ inputs.run_tests && 1 || 0 }} balanced 4x16
-        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x24
+        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 4 || 0 }} balanced 4x24
         test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
         test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
         test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
@@ -328,6 +329,7 @@ jobs:
         test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
         test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
         test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-5 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
         test-provider-gates macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
         build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
         build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32

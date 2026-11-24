@@ -32,6 +32,8 @@ enum InklingWithheldReasoningHeartbeat {
     /// encoded `event`, keeping the chunk's id, model and creation time; nil
     /// for every other frame.
     static func frame(rewriting frame: String) -> String? {
+        // Red control: no frame is rewritten.
+        return nil
         guard frame.contains(#""reasoning_content":"""#), frame.hasPrefix("data: ") else { return nil }
         let json = frame.dropFirst("data: ".count).trimmingCharacters(in: .whitespacesAndNewlines)
         guard let chunk = try? JSONDecoder().decode(OpenAIChatCompletionChunk.self, from: Data(json.utf8)),

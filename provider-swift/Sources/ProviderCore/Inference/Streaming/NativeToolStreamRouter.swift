@@ -383,7 +383,8 @@ struct NativeToolStreamRouter {
                 guard !reasoning.isEmpty else { continue }
                 if withholdReasoning {
                     withheldReasoning += reasoning
-                    if withheldReasoningHeartbeat, !sentWithheldReasoningHeartbeat {
+                    // Red control: never sent.
+                    if false, withheldReasoningHeartbeat, !sentWithheldReasoningHeartbeat {
                         sentWithheldReasoningHeartbeat = true
                         events.append(InklingWithheldReasoningHeartbeat.event)
                     }

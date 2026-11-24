@@ -3056,9 +3056,11 @@ first steps or tail and could pull a Mac measuring 80–100 tok/s down to about
 as before, so a slot that serves only short replies never ages out while
 serving; it publishes no rate until a longer one. The deadline decode rate
 (`observedDecodeTpsEwma` and its measured step) follows the same 32-token rule
-once it has a sample, but any completed request starts it, on a new slot or
-after the decode evidence expired, so a slot that serves only short replies is
-still priced for deadline admission. Before that first sample, a deadline
+once a counted request (32 tokens or more, or calibration) has moved it since
+it last restarted (`decodeEwmaCounted`, reset with it on calibration or when
+the decode evidence expired). Until then every completed request moves it as
+before, so a slot that serves only short replies keeps a rate that follows them
+and is still priced for deadline admission. Before that first sample, a deadline
 request beside decoding rows is priced at the slowest delivered cadence among
 requests decoding on the slot now (tokens after the first emission over the
 time since the first token, once a request has 8 such tokens;

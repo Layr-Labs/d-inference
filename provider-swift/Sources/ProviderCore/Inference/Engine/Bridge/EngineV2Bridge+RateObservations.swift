@@ -18,8 +18,8 @@ struct EngineRateObservation: Sendable {
     /// Decode only: false for a completed request that generated fewer than
     /// `EngineV2Bridge.minimumPublishedDecodeTokens` tokens. Such a sample
     /// never moves the published rate, and moves the deadline decode rate only
-    /// when that rate has no sample (first completion or after it expired);
-    /// it feeds the performance measurements and their age as before.
+    /// while no counted sample has moved it since it last restarted; it feeds
+    /// the performance measurements and their age as before.
     var setsPublishedDecode = true
 }
 
@@ -60,11 +60,14 @@ extension EngineV2Bridge {
         if isDecode && value.aggregate {
             if calibration || performanceMeasurements.rateExpiration("decode").map({ value.at > $0 }) == true {
                 ewmaInitialized = false
+                decodeEwmaCounted = false
             }
-            // A short reply starts the deadline rate, so the slot never stays
-            // without one; once it has a sample only counted ones move it.
-            if calibration || value.setsPublishedDecode || !ewmaInitialized {
+            // Short replies move the deadline rate as before until a counted
+            // sample has; from then on only counted samples move it.
+            let counted = calibration || value.setsPublishedDecode
+            if counted || !decodeEwmaCounted {
                 updateDecodeTpsEwma(value.tps, shape: value.decodeShape)
+                decodeEwmaCounted = decodeEwmaCounted || counted
             }
             if calibration || value.setsPublishedDecode {
                 updatePublishedDecodeTps(value.tps, at: value.at, restart: calibration)

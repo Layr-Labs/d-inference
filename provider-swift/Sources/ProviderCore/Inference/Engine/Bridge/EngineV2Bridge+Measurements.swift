@@ -147,8 +147,8 @@ extension EngineV2Bridge {
     /// rate (`observed_decode_tps`); the coordinator's own
     /// `completion_tokens >= 32` convention. A shorter request's rate is mostly
     /// its first steps or its tail. It still feeds the rate's age and the
-    /// performance measurements, and starts the deadline decode rate when that
-    /// has no sample.
+    /// performance measurements, and moves the deadline decode rate until a
+    /// counted sample has.
     static let minimumPublishedDecodeTokens = 32
 
     static func setsPublishedDecodeRate(completionTokens: Int) -> Bool {

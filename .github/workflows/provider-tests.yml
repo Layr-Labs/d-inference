@@ -405,9 +405,10 @@ jobs:
       - name: Start the resource sampler
         run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
       # The pinned downloads below need no test products, so each shard
-      # restores them and downloads what its entry lacks while the build runs,
-      # in the background, with the interpreter the products step selects for
-      # the later steps (docs/developer/build.md#ci-caching).
+      # restores the MiMo metadata (and shard 1 Prompt Parity's artifacts) and
+      # downloads what its entry lacks while the build runs, in the background,
+      # with the interpreter the products step selects for the later steps
+      # (docs/developer/build.md#ci-caching).
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: ${{ !cancelled() }}
         with:
@@ -425,8 +426,9 @@ jobs:
           path: /private/tmp/dinf-ci/mimo-metadata-cache
           key: mimo-metadata-v1-${{ hashFiles('scripts/prepare-mimo-prompt-fixtures.py', 'scripts/prepare-mimo-audio-fixtures.py') }}
       # The preparation's three commands, in their order, in one background
-      # command. The two scripts write the variables they set to a file of the
-      # command's own, which its wait adds to the job's environment.
+      # command. The runner reads a step's $GITHUB_ENV only when the step ends,
+      # so the two scripts write their variables to a file of the command's
+      # own, which its wait adds to the job's environment.
       - name: Start the pinned MiMo metadata downloads
         id: mimo-metadata-downloads
         if: ${{ !cancelled() }}
@@ -441,7 +443,7 @@ jobs:
       # (scripts/verified_download_cache.py). The key hashes the manifests that
       # pin them; prepare-prompt-fixtures.py uses an entry only if its bytes
       # still have the pinned size and digest, and downloads any other. Only
-      # this shard saves the entry, so few Macs hold it: in 82 of 110 green pull
+      # shard 1 saves the entry, so few Macs hold it: in 82 of 110 green pull
       # request runs on 2026-11-23 and 2026-11-24, Prompt Parity downloaded all
       # of it after the tests, in 12 to 317 s.
       - name: Restore verified prompt fixture downloads
@@ -487,9 +489,9 @@ jobs:
           mkdir -p "$profiles"
           echo "PROVIDER_COVERAGE_DIR=$profiles" >> "$GITHUB_ENV"
           echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"
-      # The tests read the MiMo metadata from here on. A failed or stalled
-      # preparation fails this wait, with its output, and the tests then do
-      # not run (nor download again).
+      # The Swift tests (and shard 1's public prompt golden vectors) read the
+      # MiMo metadata from here on. A failed or stalled preparation fails this
+      # wait, with its output, and they then do not run (nor download again).
       - name: Wait for the pinned MiMo metadata downloads
         id: mimo-prompt-fixtures
         if: ${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-metadata-downloads.outcome == 'success' }}

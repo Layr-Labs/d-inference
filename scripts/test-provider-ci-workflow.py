@@ -534,15 +534,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     # fixture downloads and Provider Gates' audio codec before
                     # the products: they need none, so they are fetched while
                     # the build runs.
-                    caches = {"test-provider": [("mimo-metadata-cache", "mimo-metadata-v1-", False),
-                                                ("prompt-fixture-cache", "prompt-fixtures-v1-", False)],
-                              GATES: [("mimo-metadata-cache", "mimo-metadata-v1-", False),
-                                      ("mimo-audio-cache", "mimo-audio-source-v2-", False)]}
+                    caches = {"test-provider": [("mimo-metadata-cache", "mimo-metadata-v1-"),
+                                                ("prompt-fixture-cache", "prompt-fixtures-v1-")],
+                              GATES: [("mimo-metadata-cache", "mimo-metadata-v1-"),
+                                      ("mimo-audio-cache", "mimo-audio-source-v2-")]}
                     expected = caches[job_id]
-                    self.assertEqual([field(step, "id") for step in restores], [cache for cache, _, _ in expected])
-                    for restore, (_, key, after_products) in zip(restores, expected):
+                    self.assertEqual([field(step, "id") for step in restores], [cache for cache, _ in expected])
+                    for restore, (_, key) in zip(restores, expected):
                         self.assertIn(key, restore)
-                        self.assertEqual(steps.index(restore) > steps.index(builds[0]), after_products)
+                        self.assertLess(steps.index(restore), steps.index(builds[0]))
                 else:
                     self.assertEqual(restores, [])
                 self.assertNotIn("spm-v3-", self.jobs[job_id])

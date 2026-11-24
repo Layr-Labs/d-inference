@@ -164,11 +164,6 @@ public enum KVEstimation {
         if let mcl = maxContextLength {
             maxContextLength = min(max(mcl, 1), 2_097_152)
         }
-        // Inkling 2 Mini serves a window below its checkpoint's context
-        // (`Inkling2ModelIdentity.servedContextTokens`).
-        if inklingLayout != nil, let mcl = maxContextLength {
-            maxContextLength = min(mcl, Inkling2ModelIdentity.servedContextTokens)
-        }
 
         // Clamp MoE / dimension fields against a malicious config.json.
         let maxDimBound = 1 << 20  // 1,048,576 — far above any real width.

@@ -72,23 +72,10 @@ public struct ClusterNativeMemberAttachment: Codable, Sendable, Equatable {
             throw ClusterConfigurationError.invalid("Saved native member attachment has unsupported or ambiguous inputs")
         }
         let policy = try NativePairMemberPolicy(policyBytes)
-        let hex = NativePairMemberPolicy.hex
-        // Plan, artifact, native runtime, capability and profile are the saved
-        // setup's own pins; the metallib, resource library and resource policy
-        // digests exist only in the approval and are checked against the
-        // installed files when the member starts. A cluster approval fixes no
-        // plan: its first digest is the placement policy, and the plan is the
-        // one this member derives (`selectedPlanSHA256`) and registers. A model
-        // approval pins no runtime: the member takes it from this setup.
-        let runtimeIsTheSetups = policy.runtime.map {
-            hex($0.nativeRuntime) == capability.runtimeBinarySHA256 && hex($0.capability) == configuration.capabilitySHA256
-                && hex($0.profile) == capability.profileFingerprint
-        } ?? true
-        guard policy.model == configuration.publicModelID,
-              policy.cluster != nil || policy.pinnedPlan.map(hex) == configuration.selectedPlanSHA256,
-              hex(policy.artifact) == capability.artifactSHA256, runtimeIsTheSetups,
-              policy.schedule == (configuration.selectedPrefillSchedule == .serial ? 1 : 2) else {
-            throw ClusterConfigurationError.invalid("Saved pair approval differs from the model, runtime, Plan, profile or schedule")
+        let differing = Self.differences(policy, configuration: configuration, capability: capability)
+        guard differing.isEmpty else {
+            throw ClusterConfigurationError.invalid("Saved pair approval differs from this setup in its "
+                + differing.joined(separator: "; "))
         }
         guard isRoster else { return }
         guard let roster, let memberPins, let terms = policy.cluster else {
@@ -104,6 +91,36 @@ public struct ClusterNativeMemberAttachment: Codable, Sendable, Equatable {
               Set((edges ?? []).map(\.peerPin)).count == (edges ?? []).count else {
             throw ClusterConfigurationError.invalid("Saved roster pins differ from the setup's members, the approval's bounds or the saved links")
         }
+    }
+
+    /// What of `policy` differs from the saved setup, each named with both values (a digest by its first 12 hex
+    /// characters), so a refusal says which pin moved. Plan, artifact, native runtime, capability and profile are the
+    /// saved setup's own pins; the metallib, resource library and resource policy digests exist only in the approval
+    /// and are checked against the installed files when the member starts. A cluster approval fixes no plan: its
+    /// first digest is the placement policy, and the plan is the one this member derives (`selectedPlanSHA256`) and
+    /// registers. A model approval pins no runtime: the member takes it from this setup.
+    static func differences(_ policy: NativePairMemberPolicy, configuration: ClusterConfiguration,
+                            capability: ClusterRuntimeCapability) -> [String] {
+        let hex = NativePairMemberPolicy.hex
+        var differing: [String] = []
+        func compare(_ name: String, approval: String?, setup: String?, digest: Bool = true) {
+            guard approval != setup else { return }
+            func shown(_ value: String?) -> String { value.map { digest ? String($0.prefix(12)) : $0 } ?? "none" }
+            differing.append("\(name) (approval \(shown(approval)), setup \(shown(setup)))")
+        }
+        compare("model", approval: policy.model, setup: configuration.publicModelID, digest: false)
+        if policy.cluster == nil {
+            compare("Plan", approval: policy.pinnedPlan.map(hex), setup: configuration.selectedPlanSHA256)
+        }
+        compare("artifact", approval: hex(policy.artifact), setup: capability.artifactSHA256)
+        if let runtime = policy.runtime {
+            compare("runtime", approval: hex(runtime.nativeRuntime), setup: capability.runtimeBinarySHA256)
+            compare("capability", approval: hex(runtime.capability), setup: configuration.capabilitySHA256)
+            compare("profile", approval: hex(runtime.profile), setup: capability.profileFingerprint)
+        }
+        let schedule: UInt8 = configuration.selectedPrefillSchedule == .serial ? 1 : 2
+        compare("schedule", approval: String(policy.schedule), setup: String(schedule), digest: false)
+        return differing
     }
 
     static func validateObject(_ object: [String: Any]) throws {

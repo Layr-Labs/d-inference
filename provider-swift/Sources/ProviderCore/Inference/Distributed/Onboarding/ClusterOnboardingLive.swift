@@ -1493,7 +1493,7 @@ final class OnboardingLive: @unchecked Sendable {
         // setup this one replaced: the next check of the coordinator's approvals says why this one isn't offered.
         try? store.updateRecord {
             $0.leadership?.deployment = choice.deployment; $0.leadership?.speculationNote = choice.plan?.speculationNote
-            $0.approvalNote = nil
+            $0.approvalNote = nil; $0.approvalRefused = nil
         }
         // Which members the planner said hold this model alone: what failover may serve alone (synced by the lease),
         // bound to the plan just saved so a verdict never outlives its plan.
@@ -1536,7 +1536,7 @@ final class OnboardingLive: @unchecked Sendable {
             scratch: store.paths.directory, now: Date().timeIntervalSince1970) { request in
             _ = try command(request, seconds: 180)
         }
-        if let note = result.note { try? store.updateRecord { $0.approvalNote = note } }
+        if let note = result.note { try? store.updateRecord { $0.approvalNote = note; $0.approvalRefused = result.refused } }
         if case .failure(let failure) = localServe() { return .failure(.init((result.line.map { [$0 + "."] } ?? []) + failure.lines)) }
         return .success(result.line.map { [$0 + "."] } ?? [])
     }

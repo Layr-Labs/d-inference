@@ -82,6 +82,24 @@ struct ClusterApprovalSyncTests {
         }
     }
 
+    /// A build-pinned entry that matches this Mac's installation but not its saved setup (the setup was re-adopted for
+    /// another build, as after a rollback and forward): the refusal names each pin that differs with both values, and
+    /// the refused approval is kept beside the note for the next comparison.
+    @Test func aRefusalNamesEachPinTheSavedSetupDiffersInAndKeepsTheApproval() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        try macs.readopt(runtime: ClusterApprovalMacs.hash("9"))
+        let before = try macs.macs.map(macs.bytes), sent = ClusterApprovalRecorder<ClusterServiceCommand>()
+        let result = macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts, sent: sent)
+        let runtime = "runtime (approval \(String(repeating: "a", count: 12)), setup \(String(repeating: "9", count: 12)))"
+        #expect(!result.changed && sent.values.isEmpty)
+        #expect(result.line?.contains("Saved pair approval differs from this setup in its " + runtime) == true,
+                "\(result.line ?? "")")
+        #expect(result.note == .some(result.line))
+        #expect(result.refused == approval)
+        #expect(try macs.macs.map(macs.bytes) == before)
+    }
+
     @Test func onlyTheEntryOfThisModelAndPrefillScheduleIsTaken() throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         let before = try macs.macs.map(macs.bytes), facts = try macs.facts()

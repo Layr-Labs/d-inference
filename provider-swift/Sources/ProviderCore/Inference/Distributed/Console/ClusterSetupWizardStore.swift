@@ -93,6 +93,9 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
     /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
     public var approvalNote: String? = nil
+    /// The cluster approval whose refusal `approvalNote` says, as the coordinator served it, so its pins can be compared
+    /// with the next one's; nil when the note is about anything else, or there is none.
+    public var approvalRefused: ClusterRuntimeApproval? = nil
     /// How far the leading Mac's start is (`ClusterOnboardingStartProgressMark`), published in its status for the Mac
     /// that joined; nil when no start set it.
     public var startProgress: ClusterOnboardingStartProgressMark? = nil

@@ -225,7 +225,7 @@ extension EngineV2Bridge {
         let observedDecodeTps = DecodeRateIdleAge.published(ewma: publishedDecodeTps,
             newestSampleAge: performanceMeasurements.observationAge("decode", now: now),
             idle: snapshot.activeRequests == 0 && snapshot.waitingRequests == 0,
-            maximum: DecodeRateIdleAge.configured)
+            maximum: DecodeRateIdleAge.effectiveMaximum)
         return BackendSlotCapacity(
             model: modelId,
             state: state,

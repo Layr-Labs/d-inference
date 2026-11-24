@@ -39,7 +39,7 @@ public enum ClusterUnpairing {
             catch { outcome.serviceProblem = "\(error)" }
         }
         if let providerConfiguration, let settings = try? ClusterPrefixCacheSettings.resolved(providerConfiguration: providerConfiguration) {
-            outcome.reclaim = ClusterPrefixSSDReclaim.reclaim(root: settings.root)
+            outcome.reclaim = ClusterPrefixSSDReclaim.reclaim(root: settings.root, volumeUUID: settings.volumeUUID)
         }
         return outcome
     }

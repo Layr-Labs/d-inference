@@ -19,6 +19,10 @@ import Foundation
 /// coordinator's idle measurement age; a positive whole number of seconds sets
 /// it; `0`, `false`, `no` or `off` (trimmed, case-insensitive) publishes the
 /// last rate however old, as 0.10.17 did. Any other value keeps the default.
+///
+/// A coordinator that decays a stale rate by its age advertises
+/// `decode_rate_age_decay` in `trust_status.coordinator_features`; while it
+/// does, the heartbeat publishes the rate and its age instead (`effectiveMaximum`).
 enum DecodeRateIdleAge {
     static let environmentKey = "DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS"
     static let defaultMaximum: Duration = .seconds(1_800)
@@ -31,6 +35,30 @@ enum DecodeRateIdleAge {
         if ["0", "false", "no", "off"].contains(raw) { return nil }
         guard let seconds = Int(raw), seconds > 0 else { return defaultMaximum }
         return .seconds(seconds)
+    }
+
+    /// The `trust_status.coordinator_features` entry of a coordinator that
+    /// decays a stale published decode rate itself, by its
+    /// `observed_decode_tps_age_ms`.
+    static let coordinatorDecayFeature = "decode_rate_age_decay"
+
+    /// Whether the connected coordinator advertised `coordinatorDecayFeature`
+    /// in its latest `trust_status`. False until it does, and again after a
+    /// disconnect or a `trust_status` without it.
+    static let coordinatorDecays = CoordinatorDecayAdvertisement()
+
+    /// Tests set this to price one heartbeat without the process-wide value.
+    @TaskLocal static var coordinatorDecaysOverride: Bool?
+
+    /// The maximum the heartbeat applies: none while the coordinator decays a
+    /// stale rate itself (it then sees the rate and its age), else `configured`.
+    static func effectiveMaximum(configured: Duration?, coordinatorDecays: Bool) -> Duration? {
+        coordinatorDecays ? nil : configured
+    }
+
+    static var effectiveMaximum: Duration? {
+        effectiveMaximum(configured: configured,
+            coordinatorDecays: coordinatorDecaysOverride ?? coordinatorDecays.value)
     }
 
     /// The decode rate the heartbeat publishes: `ewma`, or zero when the slot
@@ -51,4 +79,22 @@ enum DecodeRateIdleAge {
         let age = max(.zero, now - movedAt)
         return age.components.seconds * 1_000 + age.components.attoseconds / 1_000_000_000_000_000
     }
+}
+
+/// The connected coordinator's `decode_rate_age_decay` advertisement
+/// (`DecodeRateIdleAge.coordinatorDecays`).
+final class CoordinatorDecayAdvertisement: @unchecked Sendable {
+    private let lock = NSLock()
+    private var advertised = false
+
+    var value: Bool { lock.withLock { advertised } }
+
+    /// From one `trust_status`: nil (an older coordinator) or a list without
+    /// the feature keeps the provider's idle age.
+    func update(features: [String]?) {
+        let decays = features?.contains(DecodeRateIdleAge.coordinatorDecayFeature) ?? false
+        lock.withLock { advertised = decays }
+    }
+
+    func reset() { lock.withLock { advertised = false } }
 }

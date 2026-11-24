@@ -146,6 +146,8 @@ struct Inkling2OutputChannels {
     /// The content body a header-only answer goes on in: it ends at any marker.
     private var answerFromHeader = false
     private var state = State.boundary
+    /// Red control: a call frame opening an answer is read only before any call.
+    private var sawCall = false
     private var pending: [UInt8] = []
     private var header: [UInt8] = []
     private var toolBody: [UInt8] = []
@@ -376,13 +378,14 @@ struct Inkling2OutputChannels {
         let kind = marked == .toolCall && callsAreText ? Kind.content : marked
         answerFromHeader = false
         if kind == .toolCall {
+            sawCall = true
             toolBody = []
             json = BoundedJSONShape()
         } else {
             header = []
         }
         state = .body(kind)
-        if marked == .content, readsCallOpeningAnswer {
+        if marked == .content, readsCallOpeningAnswer, !sawCall {
             state = .answerStart
         }
     }

@@ -197,6 +197,60 @@ struct DeclaredToolArgumentTests {
             == (try Self.json(["const": ["enum": [1]], "type": "object"])))
     }
 
+    /// The shapes the coordinator forwards for `{}`, `true` and `false`
+    /// (the realistic grid's `array/{}`, `nullable/{}` and `prefixItems`
+    /// tails): a string render type and the marker. The parser reads the
+    /// boolean schema the marker names, as the strict check does.
+    @Test func markedNodesReadAsTheirBooleanSchemas() throws {
+        let marker = ToolSchemaNormalization.originalBooleanSchemaKey
+        let forwarded = try Self.json([
+            "type": "object", "additionalProperties": false,
+            "properties": [
+                "message_ids": ["type": "array", "items": ["type": "string", marker: true]],
+                "duration_minutes": [
+                    "description": "Timer length in minutes, or null for a stopwatch with no fixed end.",
+                    "type": "string", marker: true,
+                ],
+                "alert_rule": [
+                    "type": "array", "prefixItems": [["type": "string"], ["type": "integer"]],
+                    "items": ["type": "string", marker: false],
+                ],
+                "kept": ["type": "string", marker: true, "minLength": 1],
+                "plain": ["type": "string"],
+            ] as [String: Any],
+        ])
+        let expected = try Self.json([
+            "type": "object", "additionalProperties": false,
+            "properties": [
+                "message_ids": ["type": "array", "items": [String: Any]()],
+                "duration_minutes": [
+                    "description": "Timer length in minutes, or null for a stopwatch with no fixed end."
+                ],
+                "alert_rule": [
+                    "type": "array", "prefixItems": [["type": "string"], ["type": "integer"]], "items": false,
+                ],
+                // Not a marker the strict check reads (an assertion beside it): as written.
+                "kept": ["type": "string", marker: true, "minLength": 1],
+                "plain": ["type": "string"],
+            ] as [String: Any],
+        ])
+        #expect(ToolArgumentSchemas.typingFiniteValues(forwarded, depth: 0) == expected)
+
+        // The parser reads a marked `{}` as untyped (with the SDK's literal
+        // reading, `45` then reads as 45), never as a declared string.
+    }
+
+    @Test func theLocalAPIAcceptsRenderMarkersOnlyBehindItsTestingSwitch() {
+        let key = LocalToolSchemaMetadata.environmentKey
+        #expect(key == "DARKBLOOM_LOCAL_ALLOW_TOOL_SCHEMA_METADATA")
+        #expect(!LocalToolSchemaMetadata.allowed(environment: [:]))
+        #expect(LocalToolSchemaMetadata.allowed(environment: [key: "1"]))
+        #expect(LocalToolSchemaMetadata.allowed(environment: [key: " 1 "]))
+        for value in ["0", "true", "on", "yes", ""] {
+            #expect(!LocalToolSchemaMetadata.allowed(environment: [key: value]), "\(value)")
+        }
+    }
+
     /// The strict check accepts what the call parser reads under the schemas
     /// the coordinator forwards (a render type beside a mixed enum, a `not`
     /// of that type, a condition, a union), and a client's own type that

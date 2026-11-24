@@ -39,4 +39,16 @@ enum DecodeRateIdleAge {
         guard let maximum, idle, let newestSampleAge, newestSampleAge > maximum else { return ewma }
         return 0
     }
+
+    /// The age the heartbeat sends with a published `rate`
+    /// (`observed_decode_tps_age_ms`): whole milliseconds since `movedAt`, the
+    /// newest sample that moved it (`publishedDecodeAt`). nil without a
+    /// published rate or that time. It changes nothing the provider decides;
+    /// the coordinator can decay a stale rate with it.
+    static func publishedAgeMilliseconds(rate: Double, movedAt: ContinuousClock.Instant?,
+                                         now: ContinuousClock.Instant) -> Int64? {
+        guard rate > 0, let movedAt else { return nil }
+        let age = max(.zero, now - movedAt)
+        return age.components.seconds * 1_000 + age.components.attoseconds / 1_000_000_000_000_000
+    }
 }

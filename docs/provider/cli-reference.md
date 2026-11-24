@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-24
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -977,7 +977,12 @@ darkbloom stop --force             # explicit interruption, including stalled wo
 Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) below
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
-Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
+Only me (`--local`) also waits for active HTTP response bodies. A second `SIGINT`
+(Ctrl-C) after any stop signal ends the process at once with status 130, without
+finishing the drain, and says so on stderr; a second `SIGTERM` or `SIGHUP` only
+joins the drain, because the cluster supervisor and launchd may send `SIGTERM`
+more than once (`ProviderStopSignalState` in
+`provider-swift/Sources/ProviderCore/Service/ProviderSignalHandler.swift`). `SIGHUP`
 enters it too for a provider started by hand (`start --local --here`, or, in a
 debug build, `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal

@@ -37,11 +37,20 @@ extension EngineV2Bridge {
     }
 
     var effectiveServingConcurrency: Int {
-        effectiveServingConcurrency(allowExpansion: ServingPerformanceProfiles.postureAllowsExpansion)
+        effectiveServingConcurrency(allowExpansion: widthPostureAllowsExpansion)
+    }
+
+    /// The posture the width needs: a reviewed profile's width needs nominal
+    /// (`postureAllowsExpansion`); the automatic width holds at fair too
+    /// (`postureAllowsAutomaticWidth`).
+    var widthPostureAllowsExpansion: Bool {
+        performanceProfile == nil
+            ? ServingPerformanceProfiles.postureAllowsAutomaticWidth
+            : ServingPerformanceProfiles.postureAllowsExpansion
     }
 
     /// Reviewed profiles and any width above the unqualified width (the
-    /// automatic M5 paged default) need nominal power and thermal posture;
+    /// automatic M5 paged default) need their posture (`widthPostureAllowsExpansion`);
     /// otherwise admission falls back to the unqualified width.
     var hasPostureGatedWidth: Bool {
         performanceProfile != nil || maxConcurrentRequests > unqualifiedMaxConcurrentRequests
@@ -67,6 +76,9 @@ extension EngineV2Bridge {
         allowExpansion: Bool? = nil,
         takesStoppedRowPlace: Bool = false) -> Bool {
         let expansionAllowed = allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion
+        // An explicit `allowExpansion` decides both; by default the width
+        // follows its own posture (fair keeps the automatic width).
+        let widthExpansionAllowed = allowExpansion ?? widthPostureAllowsExpansion
         let effectiveProfile = currentPerformanceProfile(allowExpansion: expansionAllowed)
         let effectiveDeadlineProfile = currentDeadlineProfile(allowQualifiedPosture: expansionAllowed)
         // A suspended submission already owns its allowance. Count its ID once
@@ -74,13 +86,13 @@ extension EngineV2Bridge {
         let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
         if usesMemoryLimitedConcurrency, !takesStoppedRowPlace {
             let occupiedConcurrency = max(activeRequestCount(), active.count + pendingOnlyCount)
-            if occupiedConcurrency >= effectiveServingConcurrency(allowExpansion: expansionAllowed) {
+            if occupiedConcurrency >= effectiveServingConcurrency(allowExpansion: widthExpansionAllowed) {
                 return false
             }
         }
         // The same once-per-ID count: a local request holding its head
         // (`holdHeadUntilAdmitted`) is in both sets until its submit returns.
-        if hasPostureGatedWidth, !expansionAllowed, !takesStoppedRowPlace,
+        if hasPostureGatedWidth, !widthExpansionAllowed, !takesStoppedRowPlace,
             active.count + pendingOnlyCount >= unqualifiedMaxConcurrentRequests {
             return false
         }

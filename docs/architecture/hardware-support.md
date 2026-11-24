@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-22
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -719,6 +719,15 @@ belongs to load admission, not this runtime grant. Default SSD streaming has no
 resident prefix-bank carve (`UnifiedMemoryCap.kvBudgetBytes`,
 `provider-swift/Sources/ProviderCore/Inference/Memory/SlotSizingSnapshot.swift`).
 
+Before a looped Inkling 2 Mini checkpoint loads, its pre-load rate counts one
+cache slot per layer application, not one per stored layer: 48 slots, of which
+the 8 full-attention slots grow 32,768 fp16 bytes per token, while its 40
+sliding slots plateau at their 1024-token window and each sequence carries
+short-convolution state (3,833,856 bytes in FP32, half that in BF16)
+(`provider-swift/Sources/ProviderCore/Inference/Memory/KVEstimation.swift`,
+`parseModelArchitecture`; `provider-swift/Sources/ProviderCoreFoundation/Inkling2ModelIdentity.swift`,
+`CacheLayout`; [contract reference](../reference/inkling2-mini-support.md#cache-layout)).
+
 One model slot receives the full fleet KV budget. With multiple slots,
 `EngineV2KVSizing.resliceGrants` divides it in proportion to each model's fp16
 owning-full-attention marginal byte rate times context, capped by
@@ -947,9 +956,11 @@ paged allowlist start at the legacy ceiling 8
 `machdep.cpu.brand_string`, not full detection). The width changes no KV grant,
 load quotation or activation reserve (already sized for B=8); it only raises how
 many admitted requests a slot may run at once, still bounded by fixed-workspace
-memory concurrency and the coordinator's per-model quality cap. Under Low Power
-Mode or a non-nominal thermal state the bridge serves and reports the configured
-width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
+memory concurrency and the coordinator's per-model quality cap. The automatic
+width stays at 8 at nominal or fair thermal state with Low Power Mode off.
+Low Power Mode, a serious or critical thermal state, or an unknown state returns
+the bridge to the configured width (`EngineV2Bridge.widthPostureAllowsExpansion`).
+A reviewed profile's expanded width requires nominal thermal state. Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
 
 The [prompt geometry](inference.md#prompt-geometry) likewise changes no KV

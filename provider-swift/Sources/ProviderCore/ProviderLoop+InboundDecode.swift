@@ -190,7 +190,8 @@ extension ProviderLoop {
             modelId: request.model, modelType: modelType)
         guard let ids = try? tokenizer.inner.applyChatTemplate(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
-            tools: ChatTemplateFixes.normalizeTools(toolSpecs, context: fixContext),
+            tools: ChatTemplateFixes.normalizeTools(
+                toolSpecs, context: fixContext, declared: templateControls.declaredTools),
             additionalContext: additionalContext
         ) else { return 0 }
         return ids.count

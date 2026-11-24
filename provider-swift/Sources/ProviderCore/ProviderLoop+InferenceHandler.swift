@@ -717,12 +717,19 @@ extension ProviderLoop {
             rejectInvalidRequest(refusal)
             return
         }
-        let (remoteCache, historyNullServedCold) = ToolCallHistoryNullCache.servingContext(
+        let (historyNullContext, historyNullServedCold) = ToolCallHistoryNullCache.servingContext(
             plannedCache, for: chatRequest, modelType: modelType,
             managedSuper: slot.modelContainer.nemotronSuper != nil)
         if historyNullServedCold {
             stats.incrementPromptCacheSkippedToolCallNull()
             logger.info(.promptCacheSkippedToolCallNull)
+        }
+        let (remoteCache, unionTypeServedCold) = GemmaToolUnionTypeCache.servingContext(
+            historyNullContext, for: chatRequest, modelType: modelType,
+            declared: templateControls.declaredTools)
+        if unionTypeServedCold {
+            stats.incrementPromptCacheSkippedToolUnionType()
+            logger.info(.promptCacheSkippedToolUnionType)
         }
         // Cache identity is coordinator-authored: the sealed copy bound to this
         // attempt's receipt nonce, else the frame's scope. Never trust

@@ -305,8 +305,9 @@ next request reads it again, with no restart.
   failure, a request that ran here to its overall deadline (its busy `503`:
   run again elsewhere it would start over) and anything after the first
   streamed byte stay this Mac's answer.
-  The routed paths are chat completions, completions and responses; every
-  other route is this Mac's only. A `404` for a public alias of a build this
+  The routed paths are chat completions, completions and responses, in any
+  spelling the router resolves to them ([request limits](#request-limits));
+  every other route is this Mac's only. A `404` for a public alias of a build this
   Mac serves (the name the coordinator lists it under) is first answered by
   this Mac, under the build's own id.
 - **What is sent:** the request body as the client wrote it, with the account
@@ -453,7 +454,8 @@ models, the catalog decides.
 ## Routes
 
 The responder stack is auth → the local router → CORS → `/metrics` →
-chat-upload interception → the upstream `MLXLMServer` router
+chat-upload interception, behind the [request limits](#request-limits) →
+the upstream `MLXLMServer` router
 (`provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`,
 `makeLocalInferenceApplication`). Routes are registered in
 `libs/mlx-swift-lm/Libraries/MLXLMServer/HTTP/MLXServerApplication.swift`
@@ -478,14 +480,8 @@ value in [runtime constants](./cli-reference.md#runtime-constants))
 matches the coordinator WebSocket frame allowance. Per-image, per-video and
 per-audio limits are the same as fleet serving and are configured through the
 variables in [`reference/configuration.md`](../reference/configuration.md).
-A JSON body (chat, batch, Responses, completions, tokenizer utilities,
-embeddings, or one the [local router](#when-this-mac-cant-take-a-request-the-local-router)
-would pass on) that nests objects and arrays more than 64 deep
-(`JSONNestingLimit.maximumDepth`) or is not UTF-8 is HTTP `400` before it is
-parsed, and so is a chat, batch, Responses or `/apply-template` request whose
-tool-call `arguments` nest that deep or hold a NUL: the JSON parsers recurse
-once per level on the request task's 512 KiB stack, which a few KB nested a
-few hundred deep would exhaust, ending the process.
+Every route's body is held to the [request limits](#request-limits) before it
+is parsed.
 A request that omits `max_tokens` may write up to 32,768 tokens (`SlotSizingSnapshot.defaultOutputTokens`, as on a pair), cut to the context window its prompt leaves; a `max_tokens` may ask for the rest of the window ([each model's whole window](#each-models-whole-window-on-this-mac)).
 
 For Chat/Completions streaming, inspect every SSE event for `error`, even after
@@ -506,6 +502,44 @@ finishing the cancelled request
 while it runs ends instead with that refusal's error chunk, after the tokens
 already sent: `code` `request_exceeds_node_budget` and the busy memory 503's words
 ([refused request shapes](#refused-request-shapes)).
+
+### Request limits
+
+Every request but a GET, HEAD or OPTIONS passes one guard, `LocalIngress.admit`
+(`provider-swift/Sources/ProviderCore/Server/LocalIngress.swift`), before a
+parser or a model reads its body. It checks, in this order:
+
+| Limit | Value | Over it |
+|---|---|---|
+| Body size | `LocalRoute.bodyCeiling`: `localInferenceMaxUploadBytes` for chat and batch, `LocalIngress.defaultBodyCeiling = 2 * 1024 * 1024` for every other route | HTTP `413`: `request body exceeds the <N> MiB local endpoint limit` |
+| JSON nesting | 64 levels of objects and arrays (`JSONNestingLimit.maximumDepth`), and no NUL byte, which every UTF-16 or UTF-32 text holds | HTTP `400`: `request JSON nests deeper than 64 levels or is not UTF-8` |
+| Batch length | `LocalRoute.maxItems`: 64 requests in a `/v1/chat/completions/batch` array ([refused request shapes](#refused-request-shapes)) | HTTP `400`, code `batch_too_large` |
+
+The JSON parsers recurse once per level on the request task's 512 KiB stack,
+which a few KB nested a few hundred deep would exhaust, ending the process.
+For the same reason a chat, batch, Responses or `/apply-template` request
+whose tool-call `arguments` nest more than 64 deep or hold a NUL is HTTP `400`
+once its body is decoded (`LocalChatUploadResponder.respond`). A batch's
+requests are counted without being decoded (`LocalIngress.itemCount`), behind
+a UTF-8 byte-order mark as without one; a comma after the last request counts
+as one more.
+
+The limits belong to the route, not to the path as the client wrote it. The
+SDK router splits a path on `/` and drops its empty segments, so
+`/v1/chat/completions/`, `//v1/chat/completions` and `/v1//chat/completions`
+are the route `/v1/chat/completions`. `LocalRoute` reads the path the same
+way, so every such spelling gets its route's limits, its handler and its
+[local router](#when-this-mac-cant-take-a-request-the-local-router) hops.
+
+A request no route was given limits for keeps the default body ceiling and the
+nesting check (`LocalRoute.other`): `/v1/responses/:response_id/cancel`,
+`/tokenize`, `/detokenize`, embeddings, a route a later SDK registers, and a
+path or method no route serves, which gets the router's `404` only within
+them. No GET or HEAD route reads a body, and theirs is left unread; an OPTIONS
+request is answered as a CORS preflight before the guard, its body unread too.
+The local router takes the body of a request it may pass on from the same
+guard, before it reads it (`LocalRouter.route`,
+`provider-swift/Sources/ProviderCore/Server/LocalRouterResponder.swift`).
 
 ### A long prompt's progress
 
@@ -630,7 +664,7 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 | An image or video the model's processor refuses: for Qwen 3.5 and 3.8 a side below `patch_size × merge_size` (32 pixels) or an aspect ratio above 200:1, which it does not upscale; a video without a decodable track; more images or videos than the processor takes | HTTP `400` `Invalid media input.` (failure code `invalid_media`), before the vision tower or any native reservation, never the retryable `503` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`) |
 | A video whose reader fails on GLM 5.3, MiMo V2.6, Qwen4 or Nemotron Super after its metadata checks passed, or whose audio track's reader fails on MiMo V2.6 | The provider decodes the track once more with a new reader. If that succeeds, the request is served. If it fails again with a decoder, hardware or interruption code, HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider; any other second failure is HTTP `400` `Invalid media input.` (failure code `invalid_media`). Each failed pass logs a WARN `engine_health` event, `video_reader_failed` or `audio_reader_failed`, with the reader status and error codes only | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`); `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`); `provider-swift/Sources/ProviderCore/Inference/Vision/MiMo/MiMoV26EncodedMediaIngress.swift` (`outwardFailure`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | A Nemotron Super video whose decoding outlasts its decode allowance (5 s, then 2 ms a frame and 4 ns a coded pixel, at most 120 s of wall time waiting on the decoder), as on a slow or loaded Mac | HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider. The video's own limits (coded frame size, frame grid, source frames, control markers, decoded pixels) are HTTP `400` `Media input is too large.` (failure code `media_too_large`; the coordinator answers 413) | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVideoDecode.swift` (`decodeAllowance`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
-| A `/v1/chat/completions/batch` array of more than 64 requests. A batch's requests run one after another and its answer waits for the last, so its count is bounded as well as its body | HTTP `400`, code `batch_too_large`, after the body is read and before its requests are decoded (the array's items are counted first) or any model is acquired: `batch exceeds the 64-request local endpoint limit`. Send the rest as further batches | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`localInferenceMaxBatchRequests`, `respond`) |
+| A `/v1/chat/completions/batch` array of more than 64 requests. A batch's requests run one after another and its answer waits for the last, so its count is bounded as well as its body | HTTP `400`, code `batch_too_large`, after the body is read and before its requests are decoded (the array's items are counted first) or any model is acquired: `batch exceeds the 64-request local endpoint limit`. Send the rest as further batches | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`localInferenceMaxBatchRequests`, `respond`); `provider-swift/Sources/ProviderCore/Server/LocalIngress.swift` (`LocalIngress.admit`, `itemCount`) |
 
 For GLM sharing a Mac with other models, a request larger than its current share but small enough for GLM alone waits for the grant to grow. By default this wait lasts up to 120 seconds; an explicit memory-wait setting or request header sets its limit instead. Finishing generation on the other model does not itself unload its weights. `DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` (or `false`, `no`, `off`; `darkbloom start` passes it to the launchd provider) turns this off: such a request is refused at once with the larger-than-memory words, and the busy 503 reads `This Mac is at capacity: requests already running are using the memory this request needs. Retry in a moment, when they finish.`, both as in 0.10.17.
 
@@ -646,7 +680,7 @@ restart (`provider-swift/Sources/ProviderCore/Server/LocalResponseConversation.s
 
 | Behavior | Local contract | Source |
 |---|---|---|
-| Input limit | Responses POST bodies use `min(maxUploadBytes, 2 * 1024 * 1024)`; the larger Chat upload cap does not apply. Reconstructed history still passes ordinary token/context admission. | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`respond`) |
+| Input limit | Responses POST bodies use `LocalIngress.defaultBodyCeiling = 2 * 1024 * 1024` ([request limits](#request-limits)); the larger Chat upload cap does not apply. Reconstructed history still passes ordinary token/context admission. | `provider-swift/Sources/ProviderCore/Server/LocalIngress.swift` (`LocalRoute.bodyCeiling`) |
 | Continuation ID | Omitted or JSON `null` starts without prior history. Non-null non-string values, empty/unknown IDs, evicted IDs and IDs whose history was too large to keep return JSON HTTP `400`, code `previous_response_not_found`, before model acquisition or SSE setup. | `LocalResponseConversation.prepare`; `LocalChatUploadResponder.respond` |
 | Saved history | Input plus one assistant turn containing answer, reasoning and tool calls; tool-result `call_id` is preserved. A streamed completed/incomplete response is recorded before its terminal frame is forwarded; a failed frame is not recorded. | `LocalResponseConversation.conversation`, `finalResponse`; `provider-swift/Sources/ProviderCore/Server/LocalResponseConversationStore.swift` (`record`, `recording`) |
 | Continuation lifetime | One history store per local application. Defaults are `maxResponses = 256`, `maxBytes = 64 * 1024 * 1024` and `maxEntryBytes = localInferenceMaxUploadBytes` (32 MiB, the largest body the local API takes), measured as retained serialized histories including inline media. Reads refresh recency; oldest entries are evicted. A history larger than `maxEntryBytes` (or the byte cap) is not saved and evicts nothing: it is larger than any request body the local API takes, and each continuation parses its history and serializes it again before admission. Continuing it returns `previous_response_not_found`. This is not a total process-memory bound. | `LocalResponseConversationStore.init`, `conversation`, `save`; `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` (`makeLocalInferenceApplication`) |

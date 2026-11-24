@@ -20,14 +20,10 @@ public struct LocalRouterResponder<Inner: HTTPResponder>: HTTPResponder where In
 
     public func respond(to request: Request, context: Context) async throws -> Response {
         guard let router else { return try await inner.respond(to: request, context: context) }
-        let path = request.uri.path
-        if request.method == .get, LocalRouterPolicy.isModelsPath(path) {
-            return try await router.models(request, context: context, inner: inner)
-        }
-        guard request.method == .post, let upstreamPath = LocalRouterPolicy.upstreamPath(forLocalPath: path) else {
-            return try await inner.respond(to: request, context: context)
-        }
-        return try await router.route(request, upstreamPath: upstreamPath, context: context, inner: inner)
+        // By the route the SDK router resolves, so every spelling of a routed path is routed (`LocalRoute`).
+        let route = LocalRoute(method: request.method, path: request.uri.path)
+        if route == .models { return try await router.models(request, context: context, inner: inner) }
+        return try await router.route(request, as: route, context: context, inner: inner)
     }
 }
 
@@ -78,27 +74,25 @@ public final class LocalRouter: Sendable {
     // MARK: - Inference
 
     /// This Mac first: its engine's answer, streamed or not, is returned as it is with one header added, unless this
-    /// Mac can't take the request (`LocalRouterPolicy.passesOn`) and the route dials out.
-    func route<Inner: HTTPResponder>(_ request: Request, upstreamPath: String, context: Inner.Context,
+    /// Mac can't take the request (`LocalRouterPolicy.passesOn`) and the route dials out. A route with no coordinator
+    /// path (`LocalRoute.upstreamPath`) is this Mac's only, and its answer is the engine's, untouched.
+    func route<Inner: HTTPResponder>(_ request: Request, as apiRoute: LocalRoute, context: Inner.Context,
                                      inner: Inner) async throws -> Response {
-        var request = request
-        // Collected once, kept for a pass-on, within the engine's own ceilings (32 MiB for chat, 2 MiB otherwise).
-        // The engine collects the body anyway: it is handed this same buffer, with no copy, and nothing on this Mac's
-        // path parses it.
-        let limit = upstreamPath == "/v1/chat/completions" ? localInferenceMaxUploadBytes : 2 * 1024 * 1024
-        let body: ByteBuffer
-        do {
-            body = try await request.collectBody(upTo: limit)
-        } catch is NIOTooManyBytesError {
-            var response = Self.errorResponse(.contentTooLarge,
-                message: "request body exceeds the \(limit / (1024 * 1024)) MiB local endpoint limit")
-            response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
-            return response
+        guard let upstreamPath = apiRoute.upstreamPath else {
+            return try await inner.respond(to: request, context: context)
         }
-        // Checked here as well as by this Mac's routes: a pass-on parses the body, recursing per JSON level on this
-        // task's stack, and this Mac can answer before its own check runs (a pair's gate refuses a POST at once, 503).
-        guard !JSONNestingLimit.refuses(body) else {
-            var response = Self.errorResponse(.badRequest, message: JSONNestingLimit.refusalMessage)
+        var request = request
+        // Collected once, kept for a pass-on, within the route's own limits (`LocalIngress.admit`). The engine
+        // collects the body anyway: it is handed this same buffer, with no copy, and nothing on this Mac's path
+        // parses it. Admitted here as well as by this Mac's routes: a pass-on parses the body, recursing per JSON
+        // level on this task's stack, and this Mac can answer before its own check runs (a pair's gate refuses a POST
+        // at once, 503).
+        let body: ByteBuffer
+        switch try await LocalIngress.admit(&request, as: apiRoute) {
+        case .admitted(let admitted):
+            body = admitted
+        case .refused(let refusal):
+            var response = Self.errorResponse(refusal.status, message: refusal.message, code: refusal.code)
             response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
             return response
         }

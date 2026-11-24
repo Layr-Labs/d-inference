@@ -290,6 +290,53 @@ struct QwenStrictToolGrammarTests {
                          constraint, after: "<tool_call>\n<function=probe>\n"))
     }
 
+    /// A forced choice compiles a render-marked `{}` that keeps its
+    /// annotations (as the coordinator forwards `{"description": …}` and
+    /// `nullable/{}`) as it compiles the bare marker: free text. A marker
+    /// beside an assertion, or a `false` marker, is still refused.
+    @Test func annotatedRenderMarkersCompileUnderAForcedChoice() throws {
+        let marker = ToolSchemaNormalization.originalBooleanSchemaKey
+        func tools(_ node: String) -> [OpenAITool]? {
+            try? JSONDecoder().decode([OpenAITool].self, from: Data((#"[{"type":"function","function":{"name":"probe","#
+                + #""parameters":{"type":"object","properties":{"p":"# + node + #"},"required":["p"]}}}]"#).utf8))
+        }
+        for node in [
+            #"{"type":"string","\#(marker)":true}"#,
+            #"{"type":"string","\#(marker)":true,"description":"The content, or null for an empty placeholder."}"#,
+            #"{"type":"string","\#(marker)":true,"title":"P","default":null,"examples":[1]}"#,
+        ] {
+            for mode in [ToolConstraintMode.required, .named("probe")] {
+                let compiled = try ToolConstraintSchemaCompiler.compile(tools: tools(node), mode: mode)
+                guard case .object(let properties, _, _)? = compiled.first?.parameters,
+                      case .string(let values, let nullable)? = properties.first?.schema,
+                      values == nil, !nullable else {
+                    Issue.record("\(node) did not compile as free text"); continue
+                }
+            }
+        }
+        for node in [
+            #"{"type":"string","\#(marker)":true,"minLength":1}"#,
+            #"{"type":"string","\#(marker)":false}"#,
+            #"{"type":"string","\#(marker)":false,"description":"nothing"}"#,
+            #"{"type":"integer","\#(marker)":true}"#,
+        ] {
+            #expect(throws: (any Error).self, "\(node)") {
+                try ToolConstraintSchemaCompiler.compile(tools: tools(node), mode: .required)
+            }
+        }
+        // Auto keeps falling back to raw validation for every marker.
+        #expect(throws: (any Error).self) {
+            try ToolConstraintSchemaCompiler.compile(
+                tools: tools(#"{"type":"string","\#(marker)":true,"description":"x"}"#), mode: .auto)
+        }
+        // Served end to end under tool_choice required: the call constrains.
+        let body = F.body(tools: #"[{"type":"function","function":{"name":"probe","strict":true,"parameters":{"#
+            + #""type":"object","properties":{"p":{"type":"string","\#(marker)":true,"description":"anything"}},"#
+            + #""required":["p"],"additionalProperties":false}}}]"#, choice: #""required""#)
+        let (_, prepared) = try F.prepared(body)
+        #expect(prepared.compiledTools?.count == 1)
+    }
+
     /// An optional string (`["string","null"]`, `anyOf` string or null) keeps
     /// its text constraint although the parser reads its `null` text as null:
     /// that literal is one the declaration admits.

@@ -623,8 +623,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         collect, merge = (names.index(name) for name in GATES_COVERAGE_STEPS)
         report = names.index("Report provider coverage")
         upload = names.index("Upload provider coverage report")
+        # The MiMo metadata preparation's self-test runs in the background
+        # before the products (test_mimo_metadata_is_prepared_while_the_build_runs).
+        # It runs only Python, never a provider binary, so it writes no profile.
         tests = [index for index, step in enumerate(steps)
-                 if "run-nested-suite.sh" in step or "scripts/test-" in (run_command(step) or "")]
+                 if run_command(step) != MIMO_METADATA_START
+                 and ("run-nested-suite.sh" in step or "scripts/test-" in (run_command(step) or ""))]
         self.assertEqual(collect, download + 1)
         shard_steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["test-provider"])}
         self.assertEqual(run_command(steps[collect]), run_command(shard_steps[COVERAGE_STEPS[0]]))

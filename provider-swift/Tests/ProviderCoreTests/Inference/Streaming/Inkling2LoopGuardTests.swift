@@ -5,9 +5,9 @@ import Testing
 
 @testable import ProviderCore
 
-/// Inkling 2 Mini under the reasoning-loop guard, on the same policy as the
-/// other families: guarded by default (its card warns of long reasoning
-/// loops), off for constrained, forced and JSON outputs, disarmed at a call
+/// Inkling 2 Mini under the reasoning-loop guard: off by default (it thinks
+/// at length before a correct answer), guarded when `DARKBLOOM_LOOP_GUARD`
+/// lists it; then off for constrained, forced and JSON outputs, disarmed at a call
 /// message; the exit from a repeating thought has its markers and stays off
 /// until its A/B, as Nemotron Super's does.
 @Suite("Inkling 2 loop guard")
@@ -39,11 +39,20 @@ struct Inkling2LoopGuardTests {
         let (request, prepared) = try Self.prepared(tools: tools, choice: choice, json: json)
         return GenerationLoopGuardPolicy.resolve(
             modelType: type, request: request, prepared: prepared, tokenConstraint: nil,
-            setting: .modelTypes(GenerationLoopGuardPolicy.defaultModelTypes))
+            setting: .modelTypes([Self.type]))
     }
 
-    @Test func guardedByDefaultWithAndWithoutTools() throws {
-        #expect(GenerationLoopGuardPolicy.defaultModelTypes.contains(Self.type))
+    @Test func offByDefaultAndGuardedWhenListed() throws {
+        // Off by default; a list that names the family guards it.
+        #expect(!GenerationLoopGuardPolicy.defaultModelTypes.contains(Self.type))
+        let (request, prepared) = try Self.prepared(tools: false)
+        #expect(GenerationLoopGuardPolicy.resolve(
+            modelType: Self.type, request: request, prepared: prepared, tokenConstraint: nil,
+            setting: GenerationLoopGuardPolicy.setting(environment: [:])) == nil)
+        #expect(GenerationLoopGuardPolicy.resolve(
+            modelType: Self.type, request: request, prepared: prepared, tokenConstraint: nil,
+            setting: GenerationLoopGuardPolicy.setting(
+                environment: [GenerationLoopGuardPolicy.environmentKey: "gemma4,inkling2_loop"])) != nil)
         #expect(try Self.guardFor(tools: false) != nil)
         // No text tool parser decides Inkling's markers, so tools keep the guard.
         #expect(try Self.guardFor(tools: true) != nil)

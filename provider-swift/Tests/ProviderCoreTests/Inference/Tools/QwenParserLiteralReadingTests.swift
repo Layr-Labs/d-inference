@@ -24,7 +24,7 @@ struct QwenParserLiteralReadingTests {
     ]
 
     /// A schema as a request's tool map carries it.
-    static func sendable(_ value: JSONValue) -> any Sendable {
+    static func sendable(_ value: MLXLMCommon.JSONValue) -> any Sendable {
         switch value {
         case .null: NSNull()
         case .bool(let bool): bool
@@ -40,7 +40,7 @@ struct QwenParserLiteralReadingTests {
         let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
         var literals = 0
         for raw in Self.schemas {
-            guard case .object(let schema) = try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8)) else {
+            guard case .object(let schema) = try JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(raw.utf8)) else {
                 Issue.record("not a schema object: \(raw)")
                 continue
             }
@@ -67,7 +67,7 @@ struct QwenParserLiteralReadingTests {
     /// which no text reads as a literal says so.
     @Test func admittingNoLiteralTypeReadsNoLiteral() throws {
         for raw in Self.schemas {
-            guard case .object(let schema) = try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8)) else {
+            guard case .object(let schema) = try JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(raw.utf8)) else {
                 continue
             }
             if !QwenParserLiteralReading.admitsLiteralType(schema) {

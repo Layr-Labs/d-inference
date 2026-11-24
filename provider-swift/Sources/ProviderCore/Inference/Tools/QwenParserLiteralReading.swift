@@ -14,7 +14,7 @@ import MLXLMCommon
 enum QwenParserLiteralReading {
     /// The literal the parser reads `text` as under `schema`, or nil when it
     /// keeps the text. Only for a parameter `parserConversion` reads as text.
-    static func literal(_ text: String, schema: [String: JSONValue]) -> JSONValue? {
+    static func literal(_ text: String, schema: [String: MLXLMCommon.JSONValue]) -> MLXLMCommon.JSONValue? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let literal = jsonLiteral(trimmed), admitsLiteralType(schema),
               admission(of: .value(literal), .object(schema), depth: 0) == .yes else { return nil }
@@ -30,7 +30,7 @@ enum QwenParserLiteralReading {
     /// Whether some text may read as a literal under `schema`: a number it may
     /// admit, or a Boolean or null it may admit while it does not admit every
     /// string. A schema this cannot decide keeps every text.
-    static func admitsLiteralType(_ schema: [String: JSONValue]) -> Bool {
+    static func admitsLiteralType(_ schema: [String: MLXLMCommon.JSONValue]) -> Bool {
         var readings: [String: Admission] = [:]
         for type in ["integer", "number", "boolean", "null", "string"] {
             let reading = admission(of: .type(type), .object(schema), depth: 0)
@@ -44,7 +44,7 @@ enum QwenParserLiteralReading {
 
     /// A scalar spelled exactly as JSON writes it: `true`, `false`, `null`
     /// or a JSON number (no sign but `-`, no leading zeros, no bare point).
-    static func jsonLiteral(_ text: String) -> JSONValue? {
+    static func jsonLiteral(_ text: String) -> MLXLMCommon.JSONValue? {
         switch text {
         case "true": return .bool(true)
         case "false": return .bool(false)
@@ -76,10 +76,10 @@ enum QwenParserLiteralReading {
 
     /// The SDK's number reading: an integral spelling is an integer when it
     /// fits, else a finite double.
-    private static func number(_ text: String) -> JSONValue? {
+    private static func number(_ text: String) -> MLXLMCommon.JSONValue? {
         if let value = Int(text) { return .int(value) }
         guard let value = Double(text), value.isFinite else { return nil }
-        return decimalInteger(text).map(JSONValue.int) ?? .double(value)
+        return decimalInteger(text).map(MLXLMCommon.JSONValue.int) ?? .double(value)
     }
 
     /// Integral decimal or exponent spellings, without floating-point rounding.
@@ -138,7 +138,7 @@ enum QwenParserLiteralReading {
     enum Admission { case yes, no, maybe, unknown }
 
     enum Probe {
-        case value(JSONValue)
+        case value(MLXLMCommon.JSONValue)
         case type(String)
 
         var type: String {
@@ -157,7 +157,7 @@ enum QwenParserLiteralReading {
 
     /// A JSON value as the parser's tool map carries it: an integral double
     /// reads back as an integer.
-    private static func carried(_ value: JSONValue) -> JSONValue {
+    private static func carried(_ value: MLXLMCommon.JSONValue) -> MLXLMCommon.JSONValue {
         if case .double(let double) = value, double.rounded() == double, let int = Int(exactly: double) {
             return .int(int)
         }
@@ -166,7 +166,7 @@ enum QwenParserLiteralReading {
 
     /// The keywords that decide a scalar, as the SDK reads them; a local or
     /// dynamic reference is undecided here.
-    static func admission(of probe: Probe, _ node: JSONValue, depth: Int) -> Admission {
+    static func admission(of probe: Probe, _ node: MLXLMCommon.JSONValue, depth: Int) -> Admission {
         if case .bool(let flag) = node { return flag ? .yes : .no }
         guard depth < 32, case .object(let schema) = node, schema["$dynamicRef"] == nil, schema["$ref"] == nil
         else { return .unknown }
@@ -191,7 +191,7 @@ enum QwenParserLiteralReading {
             parts.append(admitted.contains(type) || (type == "integer" && admitted.contains("number")) ? .yes : .no)
         }
         for key in ["enum", "const"] where schema[key] != nil {
-            let options: [JSONValue]
+            let options: [MLXLMCommon.JSONValue]
             if key == "enum" {
                 guard case .array(let members)? = schema[key] else { return .unknown }
                 options = members
@@ -264,7 +264,7 @@ enum QwenParserLiteralReading {
 
     /// The numeric bounds for a number, the length bounds and `pattern` for a
     /// string; a type probe only learns that some values may fail them.
-    private static func bounds(of probe: Probe, _ schema: [String: JSONValue]) -> Admission {
+    private static func bounds(of probe: Probe, _ schema: [String: MLXLMCommon.JSONValue]) -> Admission {
         let numeric = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"]
         let textual = ["minLength", "maxLength", "pattern"]
         let keys = ["integer", "number"].contains(probe.type) ? numeric : probe.type == "string" ? textual : []

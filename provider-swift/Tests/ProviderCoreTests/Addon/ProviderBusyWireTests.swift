@@ -130,11 +130,13 @@ struct ProviderBusyWireTests {
             stats: AtomicProviderStats(), state: state, liveAPNsToken: { nil })
         state.busy = Self.busy
         state.refusingNewWork = true
-        let draining = try #require(JSONSerialization.jsonObject(with: Data(await client.buildHeartbeatJSON().utf8)) as? [String: Any])
+        let drainingJSON = try #require(await client.buildHeartbeatJSON())
+        let draining = try #require(JSONSerialization.jsonObject(with: Data(drainingJSON.utf8)) as? [String: Any])
         #expect(draining["status"] as? String == "draining" && draining["busy_addon"] as? String == "io.darkbloom.sandbox")
         // A stale busy value never rides a routable status.
         state.refusingNewWork = false
-        let idle = try #require(JSONSerialization.jsonObject(with: Data(await client.buildHeartbeatJSON().utf8)) as? [String: Any])
+        let idleJSON = try #require(await client.buildHeartbeatJSON())
+        let idle = try #require(JSONSerialization.jsonObject(with: Data(idleJSON.utf8)) as? [String: Any])
         #expect(idle["status"] as? String == "idle" && idle["busy_reason"] == nil)
     }
 }

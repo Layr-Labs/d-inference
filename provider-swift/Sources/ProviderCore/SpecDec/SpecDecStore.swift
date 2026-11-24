@@ -331,6 +331,10 @@ enum SpecDecStore {
                 "model.safetensors.index.json does not decode (weight_map): \(indexURL.path)")
         }
 
+        if declaresInkling2DSparkMTP(root) {
+            return inspectInkling2DSpark(directory: directory, configDigest: sha256Hex(configData))
+        }
+
         let prefix: String
         if let inline = root["mtplx_mtp"] as? [String: Any],
             inline["included"] as? Bool == true
@@ -454,7 +458,7 @@ enum SpecDecStore {
         {
             return .declared
         }
-        if declaresNativeQwen4MTP(root) || declaresNemotronLightningMTP(root) {
+        if declaresNativeQwen4MTP(root) || declaresNemotronLightningMTP(root) || declaresInkling2DSparkMTP(root) {
             return .declared
         }
         return .absent
@@ -512,6 +516,92 @@ enum SpecDecStore {
         else { return false }
         return true
     }
+    /// Inkling 2 Mini's trained DSpark drafter: the native looped target and
+    /// an `mtp_config` with its block geometry and the target visits it
+    /// reads. Its weights are `mtp.safetensors` beside the target, outside the
+    /// target's index.
+    static func declaresInkling2DSparkMTP(_ root: [String: Any]) -> Bool {
+        guard Inkling2ModelIdentity.declaresNativeTextTower(root),
+            let mtp = root["mtp_config"] as? [String: Any],
+            let block = integralValue(mtp["block_size"]), (2...32).contains(block),
+            let layers = integralValue(mtp["num_hidden_layers"]), (1...8).contains(layers),
+            let targets = mtp["target_layer_ids"] as? [Any], (1...16).contains(targets.count),
+            targets.allSatisfy({ integralValue($0).map { $0 >= 0 } == true })
+        else { return false }
+        return true
+    }
+
+    static let inkling2DSparkFileName = "mtp.safetensors"
+
+    /// The drafter file's own safetensors header, read with the inline bound:
+    /// every tensor's range lies in the file, and the payload is their sum.
+    /// The file is an integrity file of the target checkpoint
+    /// (`ModelScanner.isIntegrityFile`), whose verification owns its bytes; the
+    /// header digest pins its tensor selection as `inlineIndexSHA256` pins an
+    /// indexed head's.
+    private static func inspectInkling2DSpark(
+        directory: URL, configDigest: String
+    ) -> Result<SpecDecArtifact, InlineArtifactRejection> {
+        let url = directory.appendingPathComponent(inkling2DSparkFileName)
+        guard let fileSize = resolvedRegularFileSize(url), fileSize > 8 else {
+            return rejectInline("DSpark drafter is missing, empty, not a regular file, or a broken symlink: \(url.path)")
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return rejectInline("DSpark drafter is unreadable: \(url.path)")
+        }
+        defer { try? handle.close() }
+        guard let lengthData = try? handle.read(upToCount: 8), lengthData.count == 8 else {
+            return rejectInline("DSpark drafter has no safetensors header: \(url.path)")
+        }
+        let headerLength = lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).littleEndian }
+        guard headerLength > 0, headerLength <= 16 * 1024 * 1024, 8 + headerLength <= fileSize,
+            let headerData = try? handle.read(upToCount: Int(headerLength)), headerData.count == Int(headerLength),
+            let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any]
+        else {
+            return rejectInline("DSpark drafter safetensors header is unreadable or out of bounds: \(url.path)")
+        }
+        let payloadBytes = fileSize - 8 - headerLength
+        var total: UInt64 = 0
+        var count = 0
+        for (key, value) in header where key != "__metadata__" {
+            guard key.utf8.count <= 1024, let entry = value as? [String: Any],
+                let offsets = entry["data_offsets"] as? [NSNumber], offsets.count == 2,
+                CFGetTypeID(offsets[0]) != CFBooleanGetTypeID(), CFGetTypeID(offsets[1]) != CFBooleanGetTypeID(),
+                offsets[0].int64Value >= 0, offsets[1].int64Value > offsets[0].int64Value,
+                UInt64(offsets[1].int64Value) <= payloadBytes
+            else {
+                return rejectInline("DSpark drafter tensor '\(key.prefix(128))' has an invalid range: \(url.path)")
+            }
+            let (sum, overflow) = total.addingReportingOverflow(UInt64(offsets[1].int64Value - offsets[0].int64Value))
+            guard !overflow else { return rejectInline("DSpark drafter payload overflows: \(url.path)") }
+            total = sum
+            count += 1
+        }
+        guard count > 0, count <= 512, total > 0, total <= SpecDecLimits.maximumArtifactBytes else {
+            return rejectInline(
+                "DSpark drafter declares \(count) tensors / \(total) bytes, outside (0, 512] / (0, \(SpecDecLimits.maximumArtifactBytes)]: \(url.path)")
+        }
+        let headerDigest = sha256Hex(headerData)
+        return .success(
+            SpecDecArtifact(
+                directory: directory,
+                source: .inline,
+                revision: "inline-\(configDigest.prefix(8))-\(headerDigest.prefix(8))",
+                artifactBytes: total,
+                residentBytes: SpecDecLimits.residentEstimate(artifactBytes: total),
+                manifestSHA256: nil,
+                localConfigSHA256: configDigest,
+                inlineIndexSHA256: headerDigest))
+    }
+
+    /// An integral JSON number, not a Boolean.
+    private static func integralValue(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, double.rounded(.towardZero) == double, abs(double) < 1e15 else { return nil }
+        return Int(double)
+    }
+
     private static func rejectInline(
         _ reason: String
     ) -> Result<SpecDecArtifact, InlineArtifactRejection> {

@@ -32,6 +32,8 @@ public enum PromptTokenCachePolicy {
     static let environmentKey = "DARKBLOOM_TTFT_PROMPT_CACHE"
     static let capacityEnvironmentKey = "DARKBLOOM_TTFT_PROMPT_CACHE_MB"
     public static let verifyEnvironmentKey = "DARKBLOOM_TTFT_PROMPT_CACHE_VERIFY"
+    static let ttlEnvironmentKey = "DARKBLOOM_TTFT_PROMPT_CACHE_TTL_SECONDS"
+    static let defaultTTLSeconds = 1_800
 
     /// The global prefix-cache kill switch also turns token reuse off.
     static func isEnabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
@@ -49,6 +51,16 @@ public enum PromptTokenCachePolicy {
             let megabytes = Int(raw.trimmingCharacters(in: .whitespaces)), megabytes >= 0
         else { return 32 << 20 }
         return min(megabytes, 4096) << 20
+    }
+
+    /// How long a piece stays after its last use, like the prefix caches'
+    /// 30 minutes: whole seconds up to 1,800, or `0` for no expiry. Anything
+    /// else keeps the default.
+    static func ttl(environment: [String: String] = ProcessInfo.processInfo.environment) -> Duration? {
+        guard let raw = environment[ttlEnvironmentKey],
+            let seconds = Int(raw.trimmingCharacters(in: .whitespaces)), (0...defaultTTLSeconds).contains(seconds)
+        else { return .seconds(defaultTTLSeconds) }
+        return seconds == 0 ? nil : .seconds(seconds)
     }
 
     /// The first prompts of each tokenizer, then one in N, are re-tokenized on
@@ -214,38 +226,66 @@ struct PromptPieceSplitter: Sendable {
 /// new and reused pieces live in the young generation; when it exceeds half
 /// the capacity it becomes the old one, and the previous old generation is
 /// dropped. Both together hold at most the capacity plus one piece.
+///
+/// With a TTL, a piece is dropped once it has gone unused that long: a lookup
+/// never returns it, and a sweep at least once a minute removes it.
 final class PromptPieceTokenStore: @unchecked Sendable {
+    private struct Entry {
+        let tokens: [Int32]
+        var lastUse: ContinuousClock.Instant
+    }
+
     private static let entryOverheadBytes = 96
+    static let sweepInterval: Duration = .seconds(60)
     let capacityBytes: Int
+    let ttl: Duration?
+    private let now: @Sendable () -> ContinuousClock.Instant
     private let lock = NSLock()
-    private var young: [SHA256Digest: [Int32]] = [:]
-    private var old: [SHA256Digest: [Int32]] = [:]
+    private var young: [SHA256Digest: Entry] = [:]
+    private var old: [SHA256Digest: Entry] = [:]
     private var youngBytes = 0
     private var oldBytes = 0
+    private var sweepTask: Task<Void, Never>?
 
-    init(capacityBytes: Int) {
+    init(capacityBytes: Int, ttl: Duration? = nil, now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) {
         self.capacityBytes = capacityBytes
+        self.ttl = ttl
+        self.now = now
     }
+
+    deinit { sweepTask?.cancel() }
 
     var storedBytes: Int { lock.withLock { youngBytes + oldBytes } }
 
     func lookup(_ keys: [SHA256Digest]) -> [[Int32]?] {
         lock.withLock {
+            let now = now()
             // Snapshot the whole request before promotion can rotate away old
             // entries that later pieces still need. Arrays share their backing
             // storage; this retains hits without copying token payloads.
             var needsPromotion = false
             let hits: [[Int32]?] = keys.map { key in
-                if let tokens = young[key] { return tokens }
-                guard let tokens = old[key] else { return nil }
+                if let entry = young[key] {
+                    guard isLive(entry, now: now) else {
+                        removeYoung(key)
+                        return nil
+                    }
+                    young[key]?.lastUse = now
+                    return entry.tokens
+                }
+                guard let entry = old[key] else { return nil }
+                guard isLive(entry, now: now) else {
+                    removeOld(key)
+                    return nil
+                }
                 needsPromotion = true
-                return tokens
+                return entry.tokens
             }
             guard needsPromotion else { return hits }
             for (key, tokens) in zip(keys, hits) {
                 guard young[key] == nil, let tokens else { continue }
-                if let previous = old.removeValue(forKey: key) { oldBytes -= Self.cost(previous) }
-                admit(key, tokens)
+                removeOld(key)
+                admit(key, tokens, now: now)
             }
             return hits
         }
@@ -253,25 +293,70 @@ final class PromptPieceTokenStore: @unchecked Sendable {
 
     func insert(_ items: [(SHA256Digest, [Int32])]) {
         lock.withLock {
+            let now = now()
             for (key, tokens) in items where young[key] == nil {
-                if let previous = old.removeValue(forKey: key) { oldBytes -= Self.cost(previous) }
-                admit(key, tokens)
+                removeOld(key)
+                admit(key, tokens, now: now)
             }
         }
     }
 
+    /// Drops every piece unused for the TTL.
+    func removeExpired() {
+        lock.withLock {
+            let now = now()
+            for (key, entry) in young where !isLive(entry, now: now) { removeYoung(key) }
+            for (key, entry) in old where !isLive(entry, now: now) { removeOld(key) }
+        }
+    }
+
     /// Caller holds the lock.
-    private func admit(_ key: SHA256Digest, _ tokens: [Int32]) {
+    private func isLive(_ entry: Entry, now: ContinuousClock.Instant) -> Bool {
+        guard let ttl else { return true }
+        return entry.lastUse.duration(to: now) < ttl
+    }
+
+    /// Caller holds the lock.
+    private func removeYoung(_ key: SHA256Digest) {
+        if let removed = young.removeValue(forKey: key) { youngBytes -= Self.cost(removed.tokens) }
+    }
+
+    /// Caller holds the lock.
+    private func removeOld(_ key: SHA256Digest) {
+        if let removed = old.removeValue(forKey: key) { oldBytes -= Self.cost(removed.tokens) }
+    }
+
+    /// Caller holds the lock.
+    private func admit(_ key: SHA256Digest, _ tokens: [Int32], now: ContinuousClock.Instant) {
         let cost = Self.cost(tokens)
         // One giant piece must not flush everything else.
         guard cost <= capacityBytes / 8 else { return }
-        young[key] = tokens
+        young[key] = Entry(tokens: tokens, lastUse: now)
         youngBytes += cost
+        if ttl != nil, sweepTask == nil { sweepTask = makeSweepTask() }
         guard youngBytes > capacityBytes / 2 else { return }
         old = young
         oldBytes = youngBytes
         young = [:]
         youngBytes = 0
+    }
+
+    /// Runs while the store holds pieces, so an idle Mac still drops them.
+    private func makeSweepTask() -> Task<Void, Never> {
+        let interval = min(Self.sweepInterval, ttl ?? Self.sweepInterval)
+        return Task.detached { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard let self else { return }
+                self.removeExpired()
+                let empty = self.lock.withLock { () -> Bool in
+                    guard self.young.isEmpty, self.old.isEmpty else { return false }
+                    self.sweepTask = nil
+                    return true
+                }
+                if empty { return }
+            }
+        }
     }
 
     private static func cost(_ tokens: [Int32]) -> Int {
@@ -338,7 +423,9 @@ final class PromptTokenCache: @unchecked Sendable {
         self.template = template
         self.specialTokenContext = specialTokenContext
         self.splitter = splitter
-        self.store = PromptPieceTokenStore(capacityBytes: PromptTokenCachePolicy.capacityBytes(environment: environment))
+        self.store = PromptPieceTokenStore(
+            capacityBytes: PromptTokenCachePolicy.capacityBytes(environment: environment),
+            ttl: PromptTokenCachePolicy.ttl(environment: environment))
         self.workers = PromptTokenCachePolicy.encodeWorkers()
         self.verificationInterval = PromptTokenCachePolicy.verificationInterval(environment: environment)
         // Linear-time loop forms only when they agree with the unchanged path.

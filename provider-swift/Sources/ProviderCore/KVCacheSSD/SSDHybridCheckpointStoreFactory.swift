@@ -29,7 +29,8 @@ enum SSDHybridCheckpointStoreFactory {
         kvBudget: GlobalKVCacheBudget?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
-        persistentKeyLoader: SSDCacheKeyMaterial.PersistentLoader? = nil
+        persistentKeyLoader: SSDCacheKeyMaterial.PersistentLoader? = nil,
+        attachesMemoryOnlyTier: Bool = false
     ) async -> Result<SSDHybridCheckpointStore, ConstructionFailure> {
         func refuse(_ reason: SSDPrefixCacheConstructionFailure, _ error: (any Error)? = nil)
             -> Result<SSDHybridCheckpointStore, ConstructionFailure>
@@ -58,6 +59,8 @@ enum SSDHybridCheckpointStoreFactory {
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentMTPLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.contiguousAsymmetricLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.contiguousAsymmetricMTPLayout
@@ -119,6 +122,13 @@ enum SSDHybridCheckpointStoreFactory {
                 payloadRoot: wholeRoot,
                 isolated: SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) != nil)
         } catch { return refuse(.writeBudgetUnavailable, error) }
+        let minEffectiveTokens = SSDPrefixCachePolicy.minEffectiveTokens(environment: environment)
+        let memoryOnlyTier = attachesMemoryOnlyTier
+            && backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout
+            ? MemoryOnlyCheckpointTier(
+                config: .init(identity: identity, backendLayout: backendLayout, minEffectiveTokens: minEffectiveTokens),
+                kvBudget: kvBudget, pool: kvBudget?.memoryOnlyPool ?? .shared)
+            : nil
         let cache = SSDHybridCheckpointStore(config: .init(
             modelId: modelId, identity: identity, backendLayout: backendLayout,
             nativePrefillChunkSize: nativePrefillChunkSize,
@@ -126,12 +136,14 @@ enum SSDHybridCheckpointStoreFactory {
             epochStore: epoch,
             maxReadBytes: SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(environment: environment),
             maxStageMillis: SSDPrefixCachePolicy.completeCheckpointMaxStageMillis(environment: environment),
-            minEffectiveTokens: SSDPrefixCachePolicy.minEffectiveTokens(environment: environment),
-            ttlSeconds: ttl, strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
+            minEffectiveTokens: minEffectiveTokens,
+            ttlSeconds: ttl, ttlMode: SSDPrefixCachePolicy.ttlMode(environment: environment),
+            strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
             nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: budget,
             maintainWholeRoot: maintain,
             incrementalCheckpoints: SSDPrefixCachePolicy.incrementalCheckpoints(environment: environment),
-            parallelStage: SSDPrefixCachePolicy.parallelStage(environment: environment)),
+            parallelStage: SSDPrefixCachePolicy.parallelStage(environment: environment),
+            memoryOnlyTier: memoryOnlyTier),
             kekKey: material.key, kvBudget: kvBudget,
             maxWriteBytesPerDay: maxWriteBytesPerDay,
             usesEphemeralKey: material.ephemeral,
@@ -147,7 +159,7 @@ enum SSDHybridCheckpointStoreFactory {
     static func namespace(
         modelId: String, identity: CBv2CompleteCheckpointIdentity, backendLayout: String
     ) -> String {
-        let epoch = SSDHybridCheckpointEnvelope.layoutEpoch(identity: identity, backendLayout: backendLayout)
+        let epoch = SSDHybridCheckpointEnvelope.directoryEpoch(identity: identity, backendLayout: backendLayout)
         return String(Data(SHA256.hash(
             data: Data(("complete-checkpoint-v2:" + modelId + ":" + epoch).utf8))).hexString.prefix(12))
     }

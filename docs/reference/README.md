@@ -1,6 +1,6 @@
 # Provider Reference
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-20
 
 Exact public wire shapes, manifests and provider configuration.
 
@@ -8,6 +8,7 @@ Exact public wire shapes, manifests and provider configuration.
 - [App Attest shadow protocol, machine inventory, and evidence](app-attest-shadow.md)
 - [Configuration reference](configuration.md)
 - [Desktop control API](desktop-control.md): Swift CLI/backend control API, operations, lifecycle, and desktop account projection
+- [Inkling 2 Mini provider contract](inkling2-mini-support.md)
 - [Model registry format](model-registry-format.md)
 - [Nemotron Super image formats](nemotron-super-image-formats.md)
 - [Prediction decision telemetry](prediction-decision-telemetry.md)

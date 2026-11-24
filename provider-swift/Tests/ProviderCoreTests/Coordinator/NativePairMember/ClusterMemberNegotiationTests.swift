@@ -10,7 +10,7 @@ import Testing
 
 @Suite("Cluster member negotiation (mock coordinator)")
 struct ClusterMemberNegotiationTests {
-    private func memberConfig(_ url: String) -> CoordinatorClientConfig {
+    private func memberConfig(_ url: String, heartbeatInterval: TimeInterval = 60) -> CoordinatorClientConfig {
         CoordinatorClientConfig(
             url: url,
             hardware: .init(machineModel: "fixture", chipName: "Apple M4", chipFamily: .m4, chipTier: .pro,
@@ -18,7 +18,7 @@ struct ClusterMemberNegotiationTests {
                 gpuCores: 16, memoryBandwidthGbs: 200),
             models: [.init(id: "fixture-model", modelType: "qwen3", sizeBytes: 1, estimatedMemoryGb: 1)],
             backendName: "mlx-swift",
-            heartbeatInterval: 60,
+            heartbeatInterval: heartbeatInterval,
             executionRole: .clusterMember)
     }
 
@@ -58,6 +58,147 @@ struct ClusterMemberNegotiationTests {
         try await mock.pushClusterMemberAcceptance(nonce: nonce)
         #expect(await waitFor { await client.sessionRegistered })
         #expect(await client.memberRoleFailure == false)
+    }
+
+    /// The coordinator dispatches to a re-formed pair only once each member's
+    /// heartbeat reports it (DevNet drill, 2026-11-20: a returning member's
+    /// first heartbeat came one interval after its registration, ~5 s of a
+    /// 10.8 s no-dispatch window). A member's first heartbeat on every
+    /// connection goes at its acceptance: the baseline interval here is an
+    /// hour, so no timer heartbeat can arrive. None goes before the
+    /// acceptance, and one acceptance sends one heartbeat. A capacity quote
+    /// is the barrier: the client answers the probe on the same ordered
+    /// connection, so a heartbeat it sent before the quote arrives first.
+    @Test func aMemberHeartbeatsAtItsAcceptanceAndAgainAtItsReconnectsAcceptance() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        // What `prepareClusterMemberControl` publishes: refusing, no slots.
+        let state = ProviderState()
+        state.refusingNewWork = true
+        state.backendCapacity = BackendCapacity(slots: [], gpuMemoryActiveGb: 0, gpuMemoryPeakGb: 0,
+            gpuMemoryCacheGb: 0, totalMemoryGb: 24, freeForLoadGb: 0)
+        let client = CoordinatorClient(config: memberConfig(url.mockProviderWebSocketURL(), heartbeatInterval: 3_600),
+            stats: .init(), state: state, liveAPNsToken: { nil })
+        _ = await client.start()
+        defer { Task { await client.shutdown(); await mock.shutdown() } }
+
+        func barrier(_ quoteID: String) async throws -> CapturedMessages {
+            try await mock.pushCapacityProbe(.init(quoteId: quoteID, model: "fixture-model",
+                promptTokensBucket: 512, maxOutputTokens: 1, deadlineRemainingMs: 1000))
+            return try #require(try await mock.waitForSnapshot(timeout: .seconds(5)) {
+                $0.capacityQuotes.contains { $0.quoteId == quoteID }
+            })
+        }
+        for connection in 1...2 {
+            // The second connection is the reconnect after an edge restart (1012).
+            let registered = try #require(try await mock.waitForSnapshot(timeout: .seconds(15)) {
+                $0.registers.count == connection
+            })
+            let nonce = try #require(registered.registers[connection - 1].memberRegistrationNonce)
+            let before = try await barrier("before-acceptance-\(connection)")
+            #expect(before.heartbeats.count == connection - 1, "a heartbeat went before connection \(connection)'s acceptance")
+
+            try await mock.pushClusterMemberAcceptance(nonce: nonce)
+            let accepted = try #require(try await mock.waitForSnapshot(timeout: .seconds(5)) {
+                $0.heartbeats.count == connection
+            }, "no heartbeat within 5 s of connection \(connection)'s acceptance (baseline interval 1 h)")
+            // A full heartbeat, the first of this connection's capacity session.
+            let first = accepted.heartbeats[connection - 1]
+            #expect(first.status == .draining)
+            #expect(first.backendCapacity?.capacitySeq == 1)
+            #expect(first.backendCapacity?.slots.isEmpty == true)
+            let after = try await barrier("after-acceptance-\(connection)")
+            #expect(after.heartbeats.count == connection, "one acceptance sends one heartbeat")
+
+            if connection == 1 { await mock.dropActiveWebSocket(closeCode: 1012, reason: "edge restart") }
+        }
+        #expect(await client.memberRoleFailure == false)
+    }
+
+    /// What `prepareClusterMemberControl` publishes: refusing, no slots.
+    /// `gpuMemoryActiveGb: .nan` makes the heartbeat fail to encode
+    /// (JSONEncoder throws on a non-finite number).
+    private func memberCapacity(gpuMemoryActiveGb: Double = 0) -> BackendCapacity {
+        BackendCapacity(slots: [], gpuMemoryActiveGb: gpuMemoryActiveGb, gpuMemoryPeakGb: 0,
+            gpuMemoryCacheGb: 0, totalMemoryGb: 24, freeForLoadGb: 0)
+    }
+
+    /// A member client (baseline interval one hour) whose first connection
+    /// was accepted and whose acceptance heartbeat arrived.
+    private func acceptedMember(state: ProviderState) async throws -> (MockCoordinator, CoordinatorClient) {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        let client = CoordinatorClient(config: memberConfig(url.mockProviderWebSocketURL(), heartbeatInterval: 3_600),
+            stats: .init(), state: state, liveAPNsToken: { nil })
+        _ = await client.start()
+        let registration = try #require(try await mock.awaitFirstRegister(timeout: .seconds(3)))
+        try await mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
+        _ = try #require(try await mock.waitForSnapshot(timeout: .seconds(5)) { $0.heartbeats.count == 1 })
+        return (mock, client)
+    }
+
+    /// The coordinator applies a heartbeat only when its `capacity_seq` is
+    /// higher than the last one it applied on the connection; an older frame
+    /// counts for liveness only. The acceptance heartbeat and the next one on
+    /// the same connection (the serve loop's `.connected` heartbeat in
+    /// production) leave in sequence order, 1 then 2, and the later one
+    /// carries the same full state, so the frame applied last never loses
+    /// the member's state.
+    @Test func aMembersHeartbeatsAfterItsAcceptanceLeaveInSequenceOrderWithItsFullState() async throws {
+        let state = ProviderState()
+        state.refusingNewWork = true
+        state.backendCapacity = memberCapacity()
+        let (mock, client) = try await acceptedMember(state: state)
+        defer { Task { await client.shutdown(); await mock.shutdown() } }
+
+        await client.sendEventHeartbeat()
+        let beats = try #require(try await mock.waitForSnapshot(timeout: .seconds(5)) {
+            $0.heartbeats.count == 2
+        }).heartbeats
+        // The mock records frames in the order they arrived on the connection.
+        #expect(beats.map { $0.backendCapacity?.capacitySeq } == [1, 2])
+        // Equal but for the sequence and the live system metrics.
+        var later = beats[1]
+        later.backendCapacity?.capacitySeq = 1
+        later.systemMetrics = beats[0].systemMetrics
+        #expect(later == beats[0])
+        #expect(beats[1].status == .draining && beats[1].backendCapacity?.slots.isEmpty == true)
+    }
+
+    /// The minimal fallback frame has no `capacity_seq` and no
+    /// `cluster_session`: the coordinator would apply it outside the
+    /// sequence order and withdraw the member's session report. A member
+    /// whose heartbeat fails to encode sends nothing, on the event path and
+    /// on the baseline timer's path, and its next heartbeat is a full one. A
+    /// solo provider keeps the fallback frame.
+    @Test func aMemberWhoseHeartbeatFailsToEncodeSendsNoFrame() async throws {
+        let state = ProviderState()
+        state.refusingNewWork = true
+        state.backendCapacity = memberCapacity()
+        let (mock, client) = try await acceptedMember(state: state)
+        defer { Task { await client.shutdown(); await mock.shutdown() } }
+
+        state.backendCapacity = memberCapacity(gpuMemoryActiveGb: .nan)
+        #expect(await client.buildHeartbeatJSON() == nil, "the baseline timer's build gives nothing to send")
+        await client.sendEventHeartbeat()
+        state.backendCapacity = memberCapacity()
+        await client.sendEventHeartbeat()
+        // The full heartbeat is the barrier: a frame sent before it on the
+        // same connection would have arrived first.
+        let beats = try #require(try await mock.waitForSnapshot(timeout: .seconds(5)) {
+            $0.heartbeats.contains { $0.backendCapacity?.capacitySeq == 4 }
+        }).heartbeats
+        // Sequences 2 and 3 were the two failed builds; no frame carried them.
+        #expect(beats.map { $0.backendCapacity?.capacitySeq } == [1, 4])
+        #expect(beats[1].status == .draining && beats[1].backendCapacity?.slots.isEmpty == true)
+
+        let soloState = ProviderState()
+        soloState.backendCapacity = memberCapacity(gpuMemoryActiveGb: .nan)
+        let solo = CoordinatorClient(config: CoordinatorClientConfig(url: "ws://127.0.0.1:0/ignored",
+            hardware: memberConfig("ws://127.0.0.1:0/ignored").hardware, models: [], backendName: "mlx-swift"),
+            stats: .init(), state: soloState, liveAPNsToken: { nil })
+        let fallback = try #require(await solo.buildHeartbeatJSON(), "a solo provider keeps the fallback frame")
+        #expect(fallback.contains(#""type":"heartbeat""#) && !fallback.contains("backend_capacity"))
     }
 
     @Test func wrongNonceAcceptanceFailsClosed() async throws {

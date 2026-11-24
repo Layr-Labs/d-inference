@@ -51,10 +51,12 @@ func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource,
             if source.bf16ConversionEnabled && array.dtype == .float16 {
                 array = array.asType(.bfloat16)
             }
-            eval(array)
-            // Match copySelectedTensor's settled ownership check: eval can
-            // return before Metal completion handlers release their refs.
-            Stream.gpu.synchronize()
+            ClusterLoadPhaseClock.time(.weightEvaluate) {
+                eval(array)
+                // Match copySelectedTensor's settled ownership check: eval can
+                // return before Metal completion handlers release their refs.
+                Stream.gpu.synchronize()
+            }
             try check()
             guard array.nbytes == entry.byteCount, read.copiedBytes == entry.byteCount,
                   String(describing: array.dtype) == entry.loadedDType,

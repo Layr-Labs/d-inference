@@ -489,14 +489,32 @@ tests it ran the gates that run once, and everything after its Swift tests
 took 238 s on 4 vCPUs (run 44771184962) against 107 s on a 12-vCPU Blacksmith
 runner (run 44843788822). Those gates now run in Provider Gates, a job of
 their own that starts beside the build as the shards do, so a full run has 12
-blocking test jobs, and the planner plans every shard at about 196 s. Every
+blocking test jobs, and the planner plans every shard at about 196 s. Since
+2026-11-21 the provider suite runs in five shards and the cluster runtime
+tests in seven, so a full run has 15 blocking test jobs. On four provider
+shards each planned 177 s; on five the shard that holds
+`BootSecurityServeLoopTests` (170 s, a suite the planner never splits) plans
+170 s and the others 139 s, so a sixth shard would plan the same longest
+shard. Cluster Runtime Tests shards 2 and 3, the last jobs of two of the
+three rounds measured (runs 44909381968 and 44914459288), ran 439 to 571 s;
+their GPU and batch-session work now runs on four shards. Provider Gates
+fetches the MiMo audio codec while the build runs. In the next two rounds
+(runs 44924815069 and 44927907327) the cluster jobs ended last: Cluster
+Release Build Checks (its release build, then the worker's request lifecycle
+tests, 132 to 164 s, one after the other) and Cluster Runtime Tests shards 1,
+4 and 5 (267 to 395 s against 169 to 243 s for the others). The lifecycle
+tests now run on runtime shard 6 while it waits for the cluster build, and
+four selections of shards 1, 4 and 5 run on shards 2, 6 and 7, so every
+runtime shard plans under about 300 s. Every
 macOS job is routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once
 
 Each lane builds its debug test products once, on a large runner, and its
 test jobs run them with `swift test --skip-build`. No test job compiles the
-provider or the cluster packages. Every job below reads its runner from the
+provider or the cluster packages; runtime shard 6 also builds and runs the
+worker package's request lifecycle tests, which need no products, while it
+waits for them. Every job below reads its runner from the
 route ([CI Runner Routing](#ci-runner-routing)). Every job asks for its own
 size ([Job sizes](#job-sizes)).
 
@@ -504,10 +522,10 @@ size ([Job sizes](#job-sizes)).
 |---|---|---|---|
 | `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
-| `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
-| `test-provider`, shards 1 to 4 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity (shard 1), the isolated processes (the last shard), the audit and coverage |
+| `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
+| `test-provider`, shards 1 to 5 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity (shard 1), the isolated processes (the last shard), the audit and coverage |
 | `test-provider-gates` (Provider Gates) | routed | `build-provider` (in the job) | The checks that run once beside the suite: the relocated-resource, MDM-reader and installer checks, the Gemma conformance switches, the desktop control API and the native MiMo gates (the audio gate when its inputs changed), and its own coverage |
-| `test-cluster`, shards 1 to 5 | routed | `build-cluster` (in the job) | The blocking cluster selections |
+| `test-cluster`, shards 1 to 7 | routed | `build-cluster` (in the job) | The blocking cluster selections; shard 6 first starts the worker package's request lifecycle tests (a debug build of their own) and waits for them before its selections |
 | `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` (in the job) | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
 
@@ -658,7 +676,7 @@ shard the lane its matrix entry names, `matrix.lane`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-4`, one per shard), `test-provider-gates`, `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-5`, one per shard), `test-provider-gates`, `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2, 3, 6 and 7, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
 | `provider-tests.yml` (lane requested by `provider-plan.yml` on every run of the test jobs) | `ci-plan-checks` (Check the CI plans) | `ubuntu-24.04` (GitHub-hosted) |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
@@ -918,10 +936,10 @@ shard 5 took 453 s on Blacksmith (458 s).
 
 | Lane | Jobs | Size | Used memory (GiB) |
 |---|---|---|---|
-| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`); both before the 2026-11-20 rebalance moved three GPU selections from shard 2 to shard 3 and qwen-tp-aqv-gpu from shard 3 to shard 1 |
+| `test-cluster-2` (runtime shards 2, 3, 6 and 7, the concurrent groups) | 4 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`); both before the 2026-11-20 rebalance moved three GPU selections from shard 2 to shard 3 and qwen-tp-aqv-gpu from shard 3 to shard 1 |
 | `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 |
-| `test-provider-2`, `test-provider-3`, `test-provider-4` | 1 each | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821), both of shard 2 of 2. The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12. Each of the four shards runs 3 of 12 selections, a smaller part of the suite; they keep this size until sampled |
+| `test-provider-2`, `test-provider-3`, `test-provider-4`, `test-provider-5` | 1 each | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821), both of shard 2 of 2. The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12. Each of the five shards runs 3 of 15 selections, a smaller part of the suite; they keep this size until sampled |
 | `test-cluster-1` | 1 | 4x24 | 11.99. Its GLM-5.3 resident-stage tests need more than 16 GiB of physical memory: `ClusterStageResidency` keeps max(16 GiB, a tenth) for the system and refuses at or below it ("Stage residency requires a GPU device and its recommended working set"). At 4x16 it failed 10 of 10 Darkbloom runs on 2026-11-20 |
 | `test-provider-gates` | 1 | 4x24 | 7.92 in the last shard of run 44771184962 (4x24, Darkbloom), 7.63 to 7.75 while its gates ran there and in runs 44828405682 and 44832255099; at most 3.25 of 4 vCPUs busy, 1.4 on average. The memory would fit 4x16, but the complete-prefix, media admission, retained-fault and lifecycle drain gates size their KV budget from the host's physical memory (`GlobalKVCacheBudget` over `ProcessInfo.physicalMemory`, with 5.5 GiB of activation and 4 GiB of config reserve), and they have run only on 24 GiB and more. On 4x24 the gates took 172 to 230 s, about as long as a shard's tests; 12x32 would not end the run sooner |
 | `test-provider-1` | 1 | 12x32 | 11.52. It runs the parallel class after selection 1, one process whose tests run concurrently. On 4 vCPUs the bounded waits of its fan helper and hardware-load tests (2 s, and 5 s for the fan read gate) timed out in 14 of 14 Darkbloom runs on 2026-11-20, also in run 44678601420, in which the class ran after the job's serial selections had ended. At 8x16 (16 GiB) the memory-budget suites that share its selections (`NemotronSuperLocalPrefixCacheTests`, `EngineV2ResliceFloorWiringTests`) failed: they size their budgets from physical memory. 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB |

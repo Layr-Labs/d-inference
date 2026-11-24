@@ -678,7 +678,7 @@ public final class ClusterService: @unchecked Sendable {
             // A save of the cluster approval that this journal refused (its save's own recovery refused then) is tried
             // again: the next approval check asks once more, and the status no longer says to run `cluster recover`.
             if ClusterJournalAutoRecover.refusedByJournal((try? store.readRecord())?.approvalNote) {
-                _ = try? store.updateRecord { $0.approvalNote = ClusterJournalAutoRecover.clearedSaveNote }
+                _ = try? store.updateRecord { $0.approvalNote = ClusterJournalAutoRecover.clearedSaveNote; $0.approvalRefused = nil }
                 lock.withLock { approvalChecked = false; nextApprovalCheck = .distantPast }
             }
         default:
@@ -1307,8 +1307,7 @@ public final class ClusterService: @unchecked Sendable {
             let answer = try ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
                                                               body: body, seconds: seconds)
             let reply = try JSONDecoder().decode(ClusterMemberCacheControl.UnpairReply.self, from: answer.reply)
-            return "The other Mac reclaimed its pair cache: removed \(reply.removedPlans) plan\(reply.removedPlans == 1 ? "" : "s")"
-                + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
+            return reply.statusLine
         } catch {
             let reason = (error as? ClusterSetupFailure)?.text ?? String(describing: error)
             return memberNotReachedLine(reason: reason)
@@ -1666,7 +1665,7 @@ public final class ClusterService: @unchecked Sendable {
                 },
                 sendToPeer: send)
             try? self.store.updateRecord { stored in
-                if let note = result.note { stored.approvalNote = note }
+                if let note = result.note { stored.approvalNote = note; stored.approvalRefused = result.refused }
                 // The approval set aside is kept while the pair serves locally and dropped once one is saved again.
                 if result.changed, let setAside = ClusterApprovalCheck.setAside(by: step, worker: decided.worker,
                                                                                 now: Date().timeIntervalSince1970) {
@@ -1970,6 +1969,24 @@ public final class ClusterService: @unchecked Sendable {
               let text = try? String(contentsOf: pidFile, encoding: .utf8),
               Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) == writer else { return nil }
         return status
+    }
+
+    /// `publishedLive`, only while its file was written within `seconds`: every tick rewrites it, so an older one is
+    /// from a service that stalled or could not write (a full disk), and what it says about the other Mac is stale.
+    static func publishedLive(writtenWithin seconds: Double, now: Date = Date()) -> ClusterServiceStatus? {
+        guard let directory = try? paths().pid.deletingLastPathComponent() else { return nil }
+        let file = directory.appendingPathComponent(ClusterServiceStatus.fileName)
+        // The file's time first: a status read after it is at least as new.
+        let modified = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
+        guard writtenRecently(modified, now: now, within: seconds) else { return nil }
+        return publishedLive()
+    }
+
+    /// A time in the future (the clock stepped back) proves nothing about the file's age.
+    static func writtenRecently(_ modified: Date?, now: Date, within seconds: Double) -> Bool {
+        guard let modified else { return false }
+        let age = now.timeIntervalSince(modified)
+        return age >= 0 && age <= seconds
     }
 
     // MARK: - This Mac's part
@@ -2339,8 +2356,9 @@ public final class ClusterService: @unchecked Sendable {
             return
         }
         if running == nil, cacheStore.reclaimPending,
-           let root = try? ClusterPrefixCacheSettings.resolved(providerConfiguration: settings.wizard.providerConfiguration).root,
-           let report = ClusterMemberCacheControl.finishPendingReclaim(root: root, store: cacheStore), report.keptLive == 0 {
+           let selection = try? ClusterPrefixCacheSettings.resolved(providerConfiguration: settings.wizard.providerConfiguration),
+           let report = ClusterMemberCacheControl.finishPendingReclaim(root: selection.root, volumeUUID: selection.volumeUUID,
+                                                                       store: cacheStore), !report.needsRetry {
             say("reclaimed the pair cache the leader's unpair left in use (\(report.removedPlans) plan\(report.removedPlans == 1 ? "" : "s"))")
         }
         // Single-Mac serving holds this Mac's one serving lock and never ends by itself: a part started beside it only
@@ -2513,7 +2531,9 @@ public final class ClusterService: @unchecked Sendable {
                 : "the cluster approval \(saved.configuration.nativeMember?.clusterApproval?.id ?? "") expired: saved this Mac's setup without it; "
                     + "the pair serves on the leader's local API"
             say(line)
-            if !localOnly, saved.configuration.role == .leader { try? store.updateRecord { $0.approvalNote = line } }
+            if !localOnly, saved.configuration.role == .leader {
+                try? store.updateRecord { $0.approvalNote = line; $0.approvalRefused = nil }
+            }
         } catch {
             say("could not save this Mac's setup without its cluster approval yet: \(ClusterApprovalSync.refusal(error))")
             lock.withLock {

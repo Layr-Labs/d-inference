@@ -38,8 +38,8 @@ isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"
 # and controlled interleavings; only unrelated test cases run sequentially.
 # MiMo native fixtures have their own explicit, bounded CI selections.
 # CI sets PROVIDER_TEST_SHARD=K/N (scripts/provider-test-shards.py chooses the
-# suites) and PROVIDER_TEST_REPORT_DIR for each run's log, xUnit report and
-# executed counts. Selection 1 also runs the MLX-free test targets in one
+# suites) and PROVIDER_TEST_REPORT_DIR for each run's stdout log, xUnit report
+# and executed counts. Selection 1 also runs the MLX-free test targets in one
 # parallel process; the last shard also runs the isolated processes below.
 # Without a shard, everything runs here as one serial suite.
 #
@@ -73,12 +73,20 @@ run_provider_test_selection() {
   [ "$selection" != parallel ] || parallel_flag=()
   echo "Provider test selection $name: ${#arguments} characters of filters"
   mark_selection start "$name"
+  # The counts come from Swift Testing's xUnit report (SwiftPM writes it as
+  # "$report-swift-testing.xml") and from SwiftPM's stdout alone in
+  # "$report.log". SwiftPM writes its own warnings to stderr at no fixed
+  # point, so stderr bypasses that log and goes straight to the output.
+  # Earlier files are removed, so a run that writes no report cannot be
+  # counted from an old one.
+  rm -f "$report.xml" "$report-swift-testing.xml" "$report.json"
   env -u MIMO_V26_SERIAL_NATIVE_TESTS -u DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST -u DARKBLOOM_ISOLATED_DEADLINE_TEST \
     swift test --skip-build ${shared_build_flags[@]+"${shared_build_flags[@]}"} ${parallel_flag[@]+"${parallel_flag[@]}"} \
-    "${selected[@]}" --xunit-output "$report.xml" 2>&1 | tee "$report.log"
+    "${selected[@]}" --xunit-output "$report.xml" | tee "$report.log"
   status=${PIPESTATUS[0]}
   mark_selection end "$name"
-  python3 "$script_directory/provider-test-shards.py" counts "$selection" "$isolated_pattern" "$report.log" "$report.json" || status=1
+  python3 "$script_directory/provider-test-shards.py" counts "$selection" "$isolated_pattern" \
+    "$report-swift-testing.xml" "$report.log" "$report.json" || status=1
   return "$status"
 }
 # One process slot: a selection, and after selection 1 the parallel class.

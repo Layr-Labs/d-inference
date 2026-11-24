@@ -53,6 +53,7 @@ extension EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
+        cachePolicy: RequestCachePolicy = .default,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
         mimoClusterImages: Data? = nil,
@@ -74,6 +75,7 @@ extension EngineV2Bridge {
                 requestId: requestId,
                 cacheScope: cacheScope,
                 cacheEnabled: cacheEnabled,
+                cachePolicy: cachePolicy,
                 usageSignal: usageSignal,
                 multimodal: multimodal,
                 mimoClusterImages: mimoClusterImages,
@@ -146,6 +148,7 @@ extension EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
+        cachePolicy: RequestCachePolicy = .default,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
         mimoClusterImages: Data? = nil,
@@ -186,7 +189,7 @@ extension EngineV2Bridge {
             earlierAttempt = true
             return try await submitTokenizedAttempt(
                 promptTokens: promptTokens, request: request, requestId: requestId, cacheScope: cacheScope,
-                cacheEnabled: cacheEnabled, usageSignal: usageSignal, multimodal: multimodal,
+                cacheEnabled: cacheEnabled, cachePolicy: cachePolicy, usageSignal: usageSignal, multimodal: multimodal,
                 mimoClusterImages: mimoClusterImages, clusterStillImages: clusterStillImages,
                 clusterGLMMedia: clusterGLMMedia, clusterQwenMedia: clusterQwenMedia,
                 qwenMediaLifetime: qwenMediaLifetime, positionState: positionState,
@@ -215,6 +218,7 @@ extension EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
+        cachePolicy: RequestCachePolicy = .default,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
         mimoClusterImages: Data? = nil,
@@ -310,9 +314,14 @@ extension EngineV2Bridge {
             try media.validate(prompt:promptTokens)
             imageBoundCacheScope = cacheScope.isEmpty ? "" : cacheScope + "|mimo=" + media.fingerprint
         } else { imageBoundCacheScope = cacheScope }
+        let submissionPolicy = PrefixCacheSubmissionPolicy(
+            cachePolicy: cachePolicy,
+            memoryOnlyTierAvailable: ssdHybridCheckpointStore?.memoryOnlyTier?.isAvailable == true && multimodal == nil
+                && !servesDistributedPair && ownedEngine is EngineV2)
         // Never manufacture an authenticated scope from an image digest.
-        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil && clusterQwenMedia == nil
-            && (mimoClusterImages == nil || !cacheScope.isEmpty)
+        let imageCacheEnabled = submissionPolicy.cacheEnabled(
+            cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil && clusterQwenMedia == nil
+                && (mimoClusterImages == nil || !cacheScope.isEmpty))
         // This is our frame-receipt clock when available, never an upstream wall
         // timestamp. Local engines are unaffected by the distributed-only context.
         let httpResponse = DistributedHTTPResponseScope.current
@@ -584,16 +593,16 @@ extension EngineV2Bridge {
         if imageCacheEnabled, (multimodal == nil || mediaHybridCacheEligible),
             ssdPrefixCache != nil || ssdHybridCheckpointStore != nil || residentPrefixCacheEvidence != nil
         {
-            let receiptID = mintPrefixCacheReceiptID()
+            let receiptID = mintPrefixCacheReceiptID(memoryOnly: !submissionPolicy.usesSSDTier)
             prefixCacheReceiptID = receiptID
-            if let ssd = ssdPrefixCache, let callback = usageSignal?.onCacheReady {
+            if submissionPolicy.usesSSDTier, let ssd = ssdPrefixCache, let callback = usageSignal?.onCacheReady {
                 ssd.registerReadyReceipt(requestID: receiptID, callback: callback)
                 readyReceiptRegistered = true
             }
             // Native media keys address exact encoder boundaries, not the
             // coordinator's fixed-block hash contract. Do not advertise a
             // fabricated aligned holder; actual engine reuse still reports usage.
-            if !nativeMediaCacheEligible, let store = ssdHybridCheckpointStore,
+            if submissionPolicy.usesSSDTier, !nativeMediaCacheEligible, let store = ssdHybridCheckpointStore,
                 let callback = usageSignal?.onCacheReady {
                 store.registerReadyReceipt(requestID: receiptID, promptTokens: promptTokens,
                                            cacheScope: checkpointScope, callback: callback)
@@ -603,7 +612,7 @@ extension EngineV2Bridge {
             // demand hint rides the receipt ID. It survives an abandoned stage
             // (the same receipt retries cold) and clears at terminal or when the
             // request ends in error below.
-            if let donationDemand, let store = ssdHybridCheckpointStore {
+            if submissionPolicy.usesSSDTier, let donationDemand, let store = ssdHybridCheckpointStore {
                 store.registerDonationDemand(donationDemand, requestID: receiptID)
             }
             if multimodal == nil, let evidence = residentPrefixCacheEvidence, let usageSignal,
@@ -640,6 +649,22 @@ extension EngineV2Bridge {
             usageSignal?.finalizeLookup(
                 failure: .policy,
                 fallbackTier: prefixCacheFallbackTier)
+        } else if submissionPolicy.usesMemoryOnlyTier, let tier = ssdHybridCheckpointStore?.memoryOnlyTier,
+            let prefixCacheReceiptID, let liveEngine = ownedEngine as? EngineV2
+        {
+            let importRequest = cbv2Request
+            let stageResult = await tier.stage(requestID: prefixCacheReceiptID, request: importRequest,
+                reserveReadScratch: { try liveEngine.reserveCompleteCheckpointReadScratch() }) {
+                try liveEngine.planCompleteCheckpointImport(manifest: $0, request: importRequest)
+            }
+            ssdStaged = stageResult.staged
+            ssdReuseAttempted = stageResult.staged
+            usageSignal?.record(stageResult: stageResult)
+            if case .skippedCapacity = stageResult.disposition {
+                emitPrefixCacheColdFallback(requestId: id, reason: "stage_capacity", capacityRefusal: true)
+            }
+        } else if !submissionPolicy.usesSSDTier {
+            // No SSD stage: the engine's RAM-tier lookup settles the receipt.
         } else if let store = ssdHybridCheckpointStore, let prefixCacheReceiptID,
             let liveEngine = ownedEngine as? EngineV2
         {

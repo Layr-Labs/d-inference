@@ -6,7 +6,7 @@ public enum MTPAutomaticVerificationPolicy {
 
     /// Qwen retains its request-stateful controller and drafter-owned cap.
     /// Exact Gemma QAT drafts two tokens at fixed depth on a measured chip
-    /// (`gemmaTwoDrafts(chipName:)`, with `fixedDraftTokensByDecodeRows`), and
+    /// (`gemmaTwoDrafts(chipName:m5UltraLoneRow:)`, with `fixedDraftTokensByDecodeRows`), and
     /// elsewhere or with its switch off alternates ordinary decode with one
     /// draft token;
     /// all other stateless assistants retain fixed depth one. Explicit offline
@@ -36,7 +36,7 @@ public enum MTPAutomaticVerificationPolicy {
 
     /// `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS`: on (unset, empty, `1`, `true`, `yes`,
     /// `on`; trimmed, any case) the catalog Gemma 4 26B QAT drafts two tokens
-    /// a round at fixed depth on the chips listed in `gemmaTwoDrafts(chipName:)`;
+    /// a round at fixed depth on the chips listed in `gemmaTwoDrafts(chipName:m5UltraLoneRow:)`;
     /// other chips keep the adaptive one-draft lone-row policy below. Any other
     /// value restores that policy everywhere. Read once per process.
     public static let gemmaTwoDraftsEnvironmentKey = "DARKBLOOM_GEMMA_MTP_TWO_DRAFTS"
@@ -45,31 +45,105 @@ public enum MTPAutomaticVerificationPolicy {
 
     /// The two-draft policy per measured chip: the fixed depth by planned
     /// decode rows and the envelope that admits its widest verification.
-    /// - M5 Ultra: one or two rows draft two tokens (`[2, 3]`, envelope 6).
-    /// - M3 Ultra and M5 Max: only a lone row drafts two (`[1, 3]`); envelope 3
-    ///   gives two rows depth 0 (two rows drafting two did not beat plain there).
+    /// On M5 Ultra, M3 Ultra and M5 Max only a lone row drafts two (`[1, 3]`);
+    /// envelope 3 gives two rows depth 0, ordinary chained decode (two rows
+    /// drafting two did not beat plain decode on these chips). With
+    /// `m5UltraLoneRow` off, M5 Ultra keeps its earlier table: one or two rows
+    /// draft two (`[2, 3]`, envelope 6).
     /// Every other chip returns nil and keeps the lone-row policy.
-    static func gemmaTwoDrafts(chipName: String) -> (byDecodeRows: [Int], tokens: Int)? {
+    static func gemmaTwoDrafts(
+        chipName: String, m5UltraLoneRow: Bool? = nil
+    ) -> (byDecodeRows: [Int], tokens: Int)? {
+        let m5UltraLoneRow = m5UltraLoneRow ?? gemmaM5UltraLoneRowEnabled
         switch parseChipIdentity(chipName) {
-        case (.m5, .ultra): return ([2, 2, 0], 6)
-        case (.m3, .ultra), (.m5, .max): return ([2, 0], 3)
+        case (.m5, .ultra) where !m5UltraLoneRow: return ([2, 2, 0], 6)
+        case (.m5, .ultra), (.m3, .ultra), (.m5, .max): return ([2, 0], 3)
         default: return nil
         }
     }
+
+    /// `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW`: on (unset, empty, `1`, `true`,
+    /// `yes`, `on`; trimmed, any case) M5 Ultra drafts two tokens only for a
+    /// lone row; any other value (e.g. `0`) restores its earlier table, one or
+    /// two rows drafting two. Read once per process.
+    public static let gemmaM5UltraLoneRowEnvironmentKey = "DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW"
+    static let gemmaM5UltraLoneRowEnabled = gemmaLoneRowEnabled(
+        ProcessInfo.processInfo.environment[gemmaM5UltraLoneRowEnvironmentKey])
 
     static func resolvedChipName(_ chipName: String?) -> String {
         chipName ?? (try? sysctlString("machdep.cpu.brand_string")) ?? "Unknown"
     }
 
+    /// The operator's Gemma draft prompt-length setting
+    /// (`DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS`).
+    enum GemmaDraftPromptLimit: Equatable {
+        /// Unset, empty or not a positive integer: the chip's measured limit.
+        case chipDefault
+        /// `0`, `off`, `false` or `no`: no limit; every prompt drafts.
+        case off
+        /// A positive integer: that limit on the chips that have one.
+        case tokens(Int)
+
+        init(_ raw: String?) {
+            let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            if ["0", "off", "false", "no"].contains(value) {
+                self = .off
+            } else if let tokens = Int(value), tokens > 0 {
+                self = .tokens(tokens)
+            } else {
+                self = .chipDefault
+            }
+        }
+    }
+
+    /// `DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS`: under the two-draft policy on
+    /// M5 Ultra, a Gemma 4 26B QAT decode step whose speculation-eligible rows
+    /// all have prompts over the limit runs without drafts
+    /// (`CBv2MTPConfig.maxDraftPromptTokens`); a row under the limit keeps the
+    /// chip's table. Unset: `gemmaM5UltraMaxDraftPromptTokens`;
+    /// `0` (or `off`, `false`, `no`): no limit, the earlier behaviour; a
+    /// positive integer: that limit. Other chips never get one. Read once per
+    /// process.
+    public static let gemmaMaxDraftPromptTokensEnvironmentKey =
+        "DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS"
+    static let gemmaDraftPromptLimit = GemmaDraftPromptLimit(
+        ProcessInfo.processInfo.environment[gemmaMaxDraftPromptTokensEnvironmentKey])
+    /// On a quiet M5 Ultra a lone row's two-draft rounds lose to plain decode
+    /// above this prompt length.
+    static let gemmaM5UltraMaxDraftPromptTokens = 16384
+    /// Whether an unset `DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS` applies the
+    /// chip's limit. False gives every chip no limit unless the operator sets
+    /// a positive value.
+    static let gemmaPromptLimitOnByDefault = true
+
+    /// The prompt-length limit for drafting for `modelID` on this chip, or nil
+    /// for no limit.
+    static func maxDraftPromptTokens(
+        modelID: String?, chipName: String? = nil, hasBenchmarkVerificationOverride: Bool = false,
+        twoDrafts: Bool? = nil, limit: GemmaDraftPromptLimit? = nil,
+        onByDefault: Bool = gemmaPromptLimitOnByDefault
+    ) -> Int? {
+        guard modelID == MTPAcceptancePolicy.gemmaQATModelID, !hasBenchmarkVerificationOverride,
+            twoDrafts ?? gemmaTwoDraftsEnabled,
+            case (.m5, .ultra) = parseChipIdentity(resolvedChipName(chipName))
+        else { return nil }
+        switch limit ?? gemmaDraftPromptLimit {
+        case .chipDefault: return onByDefault ? gemmaM5UltraMaxDraftPromptTokens : nil
+        case .off: return nil
+        case .tokens(let tokens): return tokens
+        }
+    }
+
     /// The per-row depth table for `modelID` on this chip, or nil.
     static func fixedDraftTokensByDecodeRows(
         modelID: String?, chipName: String? = nil, hasBenchmarkVerificationOverride: Bool = false,
-        twoDrafts: Bool? = nil
+        twoDrafts: Bool? = nil, m5UltraLoneRow: Bool? = nil
     ) -> [Int]? {
         guard modelID == MTPAcceptancePolicy.gemmaQATModelID, !hasBenchmarkVerificationOverride,
             twoDrafts ?? gemmaTwoDraftsEnabled
         else { return nil }
-        return gemmaTwoDrafts(chipName: resolvedChipName(chipName))?.byDecodeRows
+        return gemmaTwoDrafts(
+            chipName: resolvedChipName(chipName), m5UltraLoneRow: m5UltraLoneRow)?.byDecodeRows
     }
 
     /// `DARKBLOOM_GEMMA_MTP_LONE_ROW`: on (unset, empty, `1`, `true`, `yes`,
@@ -97,13 +171,15 @@ public enum MTPAutomaticVerificationPolicy {
         chipName: String? = nil,
         modelID: String? = nil,
         gemmaLoneRow: Bool? = nil,
-        gemmaTwoDrafts: Bool? = nil
+        gemmaTwoDrafts: Bool? = nil,
+        gemmaM5UltraLoneRow: Bool? = nil
     ) -> Int {
         let chip = Self.resolvedChipName(chipName)
         var certifiedMaximum = maxRectangularTokens(chipName: chip)
         if modelID == MTPAcceptancePolicy.gemmaQATModelID {
             if gemmaTwoDrafts ?? gemmaTwoDraftsEnabled,
-                let twoDrafts = Self.gemmaTwoDrafts(chipName: chip)
+                let twoDrafts = Self.gemmaTwoDrafts(
+                    chipName: chip, m5UltraLoneRow: gemmaM5UltraLoneRow)
             {
                 certifiedMaximum = min(certifiedMaximum, twoDrafts.tokens)
             } else if gemmaLoneRow ?? gemmaLoneRowEnabled {

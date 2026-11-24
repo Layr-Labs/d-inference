@@ -342,6 +342,34 @@ class NativeGPUTestRouting(unittest.TestCase):
                 self.assertIn('--skip-build', calls[0]['args'])
                 self.assertEqual(calls[0]['args'][calls[0]['args'].index('--configuration') + 1], 'debug')
 
+    def test_nested_suite_keeps_its_report_and_stdout_for_the_shard_audit(self):
+        # Prompt Parity's counts for the shard audit (provider-test-shards.py
+        # counts) read the gate's report and stdout, never the merged console.
+        self.env.pop('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
+        selected = 'ProductionPromptParityTests'
+        reports = self.work / 'reports'
+        reports.mkdir()
+        prefix = reports / 'parity-prompt'
+        xunit, stdout = reports / 'parity-prompt-swift-testing.xml', reports / 'parity-prompt.log'
+        result, _ = self.run_script('run-nested-suite.sh', selected, NESTED_SUITE_REPORT=str(prefix),
+                                    FAKE_SWIFT_SPLIT=selected)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('warning:', result.stderr)
+        self.assertIn('✔ Test run with 29 tests in 3 suites passed', stdout.read_text())
+        self.assertNotIn('warning:', stdout.read_text())
+        counts = subprocess.run([sys.executable, str(ROOT / 'scripts/provider-test-shards.py'), 'counts', 'parity',
+                                 selected, str(xunit), str(stdout), str(reports / 'shard-parity-prompt.json')],
+                                env=self.env, text=True, capture_output=True, timeout=20)
+        self.assertEqual(counts.returncode, 0, counts.stdout + counts.stderr)
+        self.assertEqual(json.loads((reports / 'shard-parity-prompt.json').read_text()),
+                         {'shard': 'parity', 'pattern': selected, 'processes': 1, 'swift_testing': 29, 'xctest': 0})
+        # A later run that writes no report fails, and leaves no earlier one to count.
+        result, _ = self.run_script('run-nested-suite.sh', selected, NESTED_SUITE_REPORT=str(prefix),
+                                    FAKE_SWIFT_NO_XUNIT=selected)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f'::error::{selected} wrote no Swift Testing xUnit report', result.stdout)
+        self.assertFalse(xunit.exists())
+
     def test_exclusive_helper_rejects_broad_or_extra_selectors_before_swift(self):
         for args in [(), ('CBv2PagedKernelTests',), (MEMORY, '--filter', 'anything')]:
             with self.subTest(args=args):

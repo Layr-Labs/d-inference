@@ -88,6 +88,11 @@ extension CoordinatorClient {
         // A member that lost trust or runtime verification may not keep an
         // attachment: its session's native work is cancelled at once.
         if case .trustStatus(let status) = parsed, ["untrusted", "offline"].contains(status.status) { detachNativePairMember() }
+        // Only the connected coordinator's latest `trust_status` says whether
+        // it decays a stale decode rate (`DecodeRateIdleAge.coordinatorDecays`).
+        if case .trustStatus(let status) = parsed {
+            DecodeRateIdleAge.coordinatorDecays.update(features: status.coordinatorFeatures)
+        }
         if case .runtimeStatus(let status) = parsed, !status.verified || !status.mismatches.isEmpty { detachNativePairMember() }
         // A coordinator that does not know the member role answers its
         // registration like any provider's (desired builds, challenges...).
@@ -103,6 +108,15 @@ extension CoordinatorClient {
                 memberNegotiation = negotiation
                 sessionRegistered = true
                 try nativePairMemberAccepted()
+                // The connection's first heartbeat goes at once, after the
+                // attachment so it reports a resumed session's
+                // `cluster_session`: the coordinator dispatches to the pair
+                // only after a heartbeat from each member. The baseline
+                // timer's first send is one interval after registration, the
+                // session watch reports only a change, and the loop's
+                // `.connected` heartbeat can wait behind disconnect cleanup in
+                // its work queue.
+                sendEventHeartbeat()
                 eventContinuation?.yield(.connected)
             } catch { refuseMemberNegotiation() }
 
@@ -192,7 +206,8 @@ extension CoordinatorClient {
                 profile: profile,
                 serviceReservationID: request.serviceReservationID,
                 promptWork: request.promptWork,
-                gemmaPromptContract: request.gemmaPromptContract
+                gemmaPromptContract: request.gemmaPromptContract,
+                frameCachePolicy: request.frameCachePolicy
             ))
 
         case .cancel(let cancel):

@@ -52,7 +52,9 @@ extension ProviderLoop {
         OOMDetector.saveLastScan(now, at: lastScanURL)
 
         let monitor = MemoryPressureMonitor(
-            clearCache: { [nativeMiMoRegistry] in
+            clearCache: { [nativeMiMoRegistry, memoryOnlyPool = kvBudget.memoryOnlyPool] in
+                // Host memory, so no native owner needs to agree first.
+                memoryOnlyPool.releaseAll(reason: .pressure)
                 guard ProviderLoop.nativeProcessAllowsReclamation(),
                     !nativeMiMoRegistry.hasRetainedFault,
                     !nativeMiMoRegistry.hasUnretiredClosingTransactions else { return }

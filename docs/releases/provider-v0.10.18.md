@@ -11,6 +11,10 @@ Bug fixes, performance and security posture improvements. Update with `darkbloom
 
 - **Pairs:** both Macs of a pair must run the same version; a pair on 0.10.17 updates itself. `darkbloom update
   --rollback` puts back 0.10.17.
+- This provider includes native support for Inkling 2 Mini. Catalog availability is a separate rollout.
+- Sampling at temperatures above 0 no longer occasionally picks a token the model rates as practically impossible. It
+  mostly affected requests that sample from the full vocabulary (GPT-OSS by default; other models when a client sets
+  `top_p` 1 and `top_k` 0).
 
 ## For operators: turning a change off
 
@@ -27,6 +31,7 @@ Set the variable before `darkbloom start`; the installed service keeps it.
 | `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` | Gemma 4 26B prefix-cache checkpoints use 0.10.17's layout before the draft model attaches |
 | `DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` | cluster commands wait a fixed 40 s for this Mac's leadership, as in 0.10.17 |
 | `DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` | `cluster stop --service` on a leading Mac whose partner doesn't answer refuses, as in 0.10.17 |
+| `DARKBLOOM_TTFT_SHAPE_WARMUP=0` | Inkling 2 Mini loads without warming its first prefill chunk and its decode and drafter shapes |
 | `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` | Qwen 3.5, 3.6 and 3.8 image and video preparation shares the running requests' GPU stream, as in 0.10.17 |
 
 The full technical changelog is in [CHANGELOG.md](https://github.com/Layr-Labs/d-inference/blob/v0.10.18/CHANGELOG.md).

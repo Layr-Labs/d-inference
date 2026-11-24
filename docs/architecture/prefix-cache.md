@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-20
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -68,6 +68,7 @@ for these exact fleet/candidate identities, not family names, aliases or substri
 - `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` (separate 9B policy)
 - `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` (same separate 9B policy)
 - The [owned Flash-Next candidate](../reference/qwen4-next-support.md#identity-and-serving-policy)
+- The served [Inkling 2 Mini identities](../reference/inkling2-mini-support.md#identity-and-serving-policy) (`Inkling2ModelIdentity.servedModelIDs`)
 
 Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown
 models, resolves contiguous under `auto`. Per-model configuration still overrides

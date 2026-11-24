@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 
 extension EngineV2SlotFactory {
@@ -57,6 +58,7 @@ extension EngineV2SlotFactory {
                 modelDTypes: (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
                 nativeDTypes: preparedBackend.nativeLayerDTypes, pagedConfig: preparedBackend.pagedPoolConfig,
                 assistant: CompleteCheckpointAssistant(drafter: mtpDrafter),
+                assistantKeepsHistory: CompleteCheckpointAssistant.keepsHistory(mtpConfig),
                 checkpointQuantization: checkpointQuantization)
         }
         guard let storage else {
@@ -96,13 +98,20 @@ extension EngineV2SlotFactory {
         /// `persistentExactHistory`: a persistent codec whose history stays
         /// exact beside lossy older target rows
         /// (`CBv2MTPExactHistoryPrefixCheckpointCoding`).
-        case none, stateless, persistentCodec, persistentExactHistory, unsupportedPersistent
+        /// `persistentHistorical`: a persistent codec that exports its own
+        /// complete prefix history beside a historical (windowed) recurrent
+        /// target, the SDK's `CBv2HistoricalMTPPrefixCheckpointCoding`. That
+        /// protocol is package-scoped, so the provider names its one
+        /// conformer, Inkling 2's DSpark drafter.
+        case none, stateless, persistentCodec, persistentExactHistory, persistentHistorical,
+            unsupportedPersistent
 
         init(drafter: (any CBv2MTPDrafter)?) {
             if drafter == nil { self = .none }
             else if drafter is any CBv2MTPExactHistoryPrefixCheckpointCoding {
                 self = .persistentExactHistory
-            } else if drafter is any CBv2MTPPrefixCheckpointCoding { self = .persistentCodec }
+            } else if drafter is Inkling2DSparkDrafter { self = .persistentHistorical }
+            else if drafter is any CBv2MTPPrefixCheckpointCoding { self = .persistentCodec }
             else if drafter is any CBv2MTPRequestStatefulDrafter { self = .unsupportedPersistent }
             else { self = .stateless }
         }
@@ -115,8 +124,16 @@ extension EngineV2SlotFactory {
             switch self {
             case .none, .stateless: false
             case .persistentExactHistory: !pagedRecurrent
-            case .persistentCodec, .unsupportedPersistent: true
+            case .persistentCodec, .persistentHistorical, .unsupportedPersistent: true
             }
+        }
+
+        /// Whether the engine's round driver keeps a persistent assistant's
+        /// history, so its checkpoints carry that history (the SDK's
+        /// `tracksPersistentHistory` with MTP effectively on). A configured
+        /// but inactive drafter writes target-only checkpoints.
+        static func keepsHistory(_ config: CBv2MTPConfig) -> Bool {
+            config.effectiveEnabled && config.maxDraftTokens > 0 && config.fixedDraftTokens != 0
         }
     }
 
@@ -128,10 +145,30 @@ extension EngineV2SlotFactory {
         supportsRecurrent: Bool, supportsHistoricalAttention: Bool,
         modelDTypes: [DType]?, nativeDTypes: [DType]?, pagedConfig: PagedKVPoolConfig?,
         assistant: CompleteCheckpointAssistant,
+        assistantKeepsHistory: Bool = true,
         checkpointQuantization: PagedKVQuantizationConfig? = nil
     ) -> CompleteCheckpointStorageIdentity? {
         let layerDTypes: [DType]
         let target: CompleteCheckpointStorageIdentity.Target
+        if supportsRecurrent, kind == .paged, layerKinds.contains(where: { layer in
+            if case .slidingWindow = layer.attention { return true }
+            return false
+        }) {
+            // Sliding windows beside recurrent state: the SDK's historical
+            // recurrent codec, with an assistant only when it exports its own
+            // history (Inkling 2 and its DSpark drafter). It stores exact
+            // native rows only, so a requested checkpoint profile (the fleet
+            // default is lossy) keeps native storage here, as an unsupported
+            // encoding does elsewhere; the identity records `native`.
+            guard let nativeDTypes,
+                nativeDTypes.count == layerKinds.count,
+                modelDTypes == nil || modelDTypes == nativeDTypes,
+                [.none, .persistentHistorical].contains(assistant)
+            else { return nil }
+            return .init(kind: kind, layerDTypes: nativeDTypes, pagedConfig: pagedConfig,
+                         target: .historicalRecurrent(layerKinds),
+                         assistantHistory: assistant == .persistentHistorical && assistantKeepsHistory)
+        }
         if supportsRecurrent {
             guard !layerKinds.isEmpty, layerKinds.allSatisfy({ layer in
                 if case .full = layer.attention { return layer.sharesKVWithLayer == nil }

@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-24
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -40,9 +40,10 @@ Before tagging `v0.10.18`:
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d`, `libs/mlx-swift` `b1c94d29` and `libs/mlx-swift-lm` `3296e1bc83`, as in v0.10.17; the tag build's `metallib_hash` should equal v0.10.17's `5b97893c…70ac`.
+- Pins for the combined Inkling 2 Mini and sampler source: `libs/mlx` `72dffa2dbbdce95601fd84f5e8b6d7b4ec97a11b`, `libs/mlx-swift` `b1c94d29c5ddff16838fdc25b83fbe8fde48b3e8`, `libs/mlx-swift-lm` `3085d3e5f25927d9bf78de2b15003c0f0860ab2e`. Compare the packaged Metal library and
+  application inventory with the manifests for this exact combined build.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree; expect 12 models, 11 grants, 18 qualifications, as v0.10.17.
+  tree; compare the model, grant and qualification counts with the combined build's verified facts (12 models, 11 grants, 18 qualifications).
 - Catalog room: v0.10.17 holds 24 approvals and v0.10.18 adds two per model;
   v0.10.16's are left out. Pairs still on 0.10.16 stop serving through Darkbloom
   until they update.
@@ -183,6 +184,16 @@ The installer's `configure_device_verification` downloads no profile; a
 refreshed platform snapshot carries that wording.
 The served installer still names `darkbloom enroll`, so that hidden command keeps
 running (`provider-swift/Sources/darkbloom/EnrollCommand.swift`).
+
+The release sets these modes before signing. `scripts/provider-signing-validation.py`
+`stage` (`copy_executable`) gives the CLI, the enclave and fan helpers and both
+cluster helpers mode `0755`, whatever mode the build left: a build under
+`umask 077` leaves its products `0700`. `unpack` (`check_executable_modes`)
+refuses an unsigned app in which any of them, or any other Mach-O file in the
+app, is not a regular file with mode `0755` exactly. The signing job copies the
+unpacked app with `cp -pR`, so its own umask cannot change a mode, and runs
+`provider-signing-validation.py executable-modes` on the copy before the
+unsigned smoke and signing.
 
 ## Steps
 

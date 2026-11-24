@@ -10,18 +10,29 @@ qualification, opt-in and deployment limits rather than claiming activation.
 
 ## v0.10.18 — candidate (unpublished)
 
-Prepared on 2026-11-23; tagging and publication are separate steps.
+Prepared on 2026-11-24; tagging and publication are separate steps.
 
 ### Upgrade and rollout notes
 
 - Bug fixes, performance and security posture improvements.
 - **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.17 updates itself. `darkbloom update --rollback` puts back 0.10.17.
-- **Turning a change off:** `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` (GLM-5.3-Flash refuses the tool-history and schema shapes it refused in 0.10.17); `DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` (a local GLM request that fits only once another loaded model gives back memory is refused at once, with 0.10.17's busy words); `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0` (images and video outside user messages are handled as in 0.10.17); `DARKBLOOM_MTP_STOP_STRING_ROWS=0` (Gemma 4 26B requests with stop strings decode without speculation, as in 0.10.17); `DARKBLOOM_MTP_PENALTY_ROWS=0` (Gemma 4 26B requests with a presence or frequency penalty decode without speculation, as in 0.10.17); `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` (Gemma 4 26B on M5 Ultra drafts two tokens with one or two requests decoding, as in 0.10.17); `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` (Gemma 4 26B prefix-cache checkpoints use 0.10.17's layout before the draft model attaches); `DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` (cluster commands wait a fixed 40 s for this Mac's leadership, as in 0.10.17); `DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` (`cluster stop --service` on a leading Mac whose partner doesn't answer refuses, as in 0.10.17); `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` (Qwen 3.5, 3.6 and 3.8 image and video preparation shares the running requests' GPU stream, as in 0.10.17).
+- This provider includes native support for Inkling 2 Mini. Catalog availability is a separate rollout.
+- Sampling at temperatures above 0 no longer occasionally picks a token the model rates as practically impossible. It mostly affected requests that sample from the full vocabulary (GPT-OSS by default; other models when a client sets `top_p` 1 and `top_k` 0).
+- **Turning a change off:** `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` (GLM-5.3-Flash refuses the tool-history and schema shapes it refused in 0.10.17); `DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` (a local GLM request that fits only once another loaded model gives back memory is refused at once, with 0.10.17's busy words); `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0` (images and video outside user messages are handled as in 0.10.17); `DARKBLOOM_MTP_STOP_STRING_ROWS=0` (Gemma 4 26B requests with stop strings decode without speculation, as in 0.10.17); `DARKBLOOM_MTP_PENALTY_ROWS=0` (Gemma 4 26B requests with a presence or frequency penalty decode without speculation, as in 0.10.17); `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` (Gemma 4 26B on M5 Ultra drafts two tokens with one or two requests decoding, as in 0.10.17); `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` (Gemma 4 26B prefix-cache checkpoints use 0.10.17's layout before the draft model attaches); `DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` (cluster commands wait a fixed 40 s for this Mac's leadership, as in 0.10.17); `DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` (`cluster stop --service` on a leading Mac whose partner doesn't answer refuses, as in 0.10.17); `DARKBLOOM_TTFT_SHAPE_WARMUP=0` (Inkling 2 Mini loads without warming its first prefill chunk and its decode and drafter shapes); `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` (Qwen 3.5, 3.6 and 3.8 image and video preparation shares the running requests' GPU stream, as in 0.10.17).
 
 ### `darkbloom logs` keeps a single Mac's update steps
 
 - A single Mac's background update now writes one fixed public line for each step (available and staging, staged and draining, restarting, deferred, and each failure) at the level macOS unified logging keeps on disk, so `darkbloom logs --last 24h` still shows an update hours later.
 - Before this, the update's progress lines were private info lines, which unified logging keeps only in memory, so the log showed no update at all. Those lines stay as they were. A check that finds the Mac up to date adds no line.
+
+### Automatic serving width holds at thermal state fair
+
+- The automatic M5 paged width (8, no reviewed profile) now needs Low Power Mode
+  off and a thermal state of nominal or fair; serious and critical still return
+  the bridge to the unqualified width (4). A Mac Studio under sustained load sits
+  at fair, where the old nominal-only rule held it to 4 requests and kept the
+  others waiting for a free row. Reviewed performance profiles and
+  deadline profiles keep the nominal requirement.
 
 ### Provider CI: shorter last cluster jobs
 
@@ -138,6 +149,49 @@ available.", since another loaded model may hold the memory.
 `DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` restores 0.10.17's behaviour and busy
 words; the LaunchAgent forwards it.
 
+### Inkling 2 Mini: provider prompt and output contract
+
+- The provider reads Thinking Machines' Inkling 2 Mini (`inkling2_loop`) from its own configuration: its looped
+  cache layout (48 cache slots per sequence, 8 full-attention and 40 sliding-window), still-image input without
+  video, and its separate DSpark drafter file (`mtp.safetensors`) as the checkpoint's inline assistant. The native
+  text model and its vision wrapper serve on paged KV only; images enter as causal tokens, video is refused.
+- Its template renders with the Transformers-compatible `tojson` filter, which its tool declarations and tool-call
+  history require. Tool declarations and earlier tool calls' arguments render as the client sent them (`null`s
+  kept, no inferred schema types, argument member order kept), and a message's list of text parts renders part by
+  part, as the model's reference renders them, on every request. An image in a tool result is read in its place,
+  as the reference reads it. An image in an assistant or system message is refused before decode with HTTP 400
+  `invalid_request` and refusal `media_role_not_rendered` by default, or `invalid_media` with
+  `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0`. A `developer` message is still read as `system`.
+  The template self-check no longer renders a video part for a model that takes no video.
+- Reasoning effort: each of the seven names reaches the template as its own level (`none` 0 through `xhigh` and
+  `max` 0.99). Turning thinking off renders effort 0, and whatever the model still thinks is counted but not
+  returned. The shared `reasoning_effort_vectors.json` gains the family's cases.
+- Its output is read by its own message tokens: reasoning, answer text and one JSON call per call message. A call
+  drafted inside a thought stays reasoning, markers inside argument strings are data, nesting and sizes are bounded,
+  and a malformed call is refused. Required and named tool choices are prompt-forced and each call is checked before
+  it leaves; to a client that streams, each call leaves when its message closes.
+- The reasoning-loop guard covers Inkling 2 as it does the other served families: a reply repeating verbatim ends
+  as `length`, and a call message turns the guard off. Its exit from a repeating thought is in place but stays off
+  until measured (`DARKBLOOM_LOOP_EXIT_THINKING=inkling2_loop` turns it on).
+- The DSpark drafter serves by default (up to 7 drafts and 8 speculating rows, adaptive depth); image rows run without
+  it. Before serving, every draft depth also runs once on a private engine with its own scratch memory, so a first
+  request no longer compiles verify widths mid-stream.
+- Loading Inkling 2 warms its first full prefill chunk and its decode and drafter shapes before it serves, so the
+  first request no longer pays the first-chunk cost (`DARKBLOOM_TTFT_SHAPE_WARMUP=0` turns it off).
+- Another role's turn marker stops generation. The upstream model id serves on paged KV with the prefix cache on
+  by default.
+- Follow-up turns reuse their prefix: complete checkpoints of Inkling 2 carry every cache slot (full-attention
+  history, sliding windows, convolution and recurrent state, and the drafter's history when it drafts), on whole
+  2,048-token prefill chunks, in the same encrypted store with the same cache identity and tenant scoping as every
+  other model. Before, its loads reported the prefix cache disabled (`unsupported_layout`).
+- Inkling 2 prefills in 2,048-token chunks with no solo stripe. Under the generic 512-token chunk and 2,048-token
+  solo stripe, the engine's fixed prefill grid refused every prefix checkpoint, so follow-up turns reused nothing.
+- After its load warm-up, Inkling 2 resets the MTP depth policy's measured step costs (`EngineV2.resetMTPCostLearning`),
+  so the first served request measures them. The warm-up's cold first steps had made every draft round look free,
+  so the policy drafted at its maximum depth. Tokens are unchanged.
+- Inkling 2's MTP picks each row's draft depth from the measured cost of each window depth (mlx-swift-lm snapshot 2.13).
+  Tokens are unchanged.
+
 ### Local streamed response stops at once when its write ends
 
 - When the write of a streamed local response ends early (a cancelled task or
@@ -183,6 +237,22 @@ words; the LaunchAgent forwards it.
   first use included. Other model families keep the shared stream.
 - `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` (or `false`, `no`, `off`) restores the
   shared stream; it is forwarded to the launchd provider job.
+
+### Provider release: every packaged executable keeps mode 0755
+
+- Unsigned staging gives the CLI, the enclave and fan helpers and both cluster helpers mode `0755`, whatever mode the build left. A build under `umask 077` left the CLI, enclave and fan helper `0700`, and the installer and the final release check refuse a fan helper whose mode is not `0755`.
+- Unpack refuses an unsigned app in which one of them, or any other Mach-O file in the app, has another mode. The signing job copies the app with `cp -pR`, so its own umask no longer changes the modes, and checks them again before its smoke and signing.
+- The executables' bytes, signatures and runtime behavior are unchanged.
+
+### Sampled output no longer picks tokens of almost no probability
+
+- At a temperature above 0, the sampler could pick a token the model gives
+  almost no probability (below 10⁻¹⁰), seen as a stray word or a fragment of
+  another script mid-sentence. A Float32 rounding error, in turning the
+  sampler's random draw into noise, caused it for every model served with
+  continuous batching; GPT-OSS 20B, with its large vocabulary, showed it most.
+- Sampled output for a request with a fixed `seed` can differ from earlier
+  releases. Temperature 0 output does not change.
 
 ## v0.10.17
 

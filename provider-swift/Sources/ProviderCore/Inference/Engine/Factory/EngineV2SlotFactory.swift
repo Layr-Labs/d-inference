@@ -310,6 +310,13 @@ enum EngineV2SlotFactory {
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
             acceptance: mtpAcceptance.acceptance)
+        if assistantHandle?.drafter is Inkling2DSparkDrafter {
+            // The drafter's own engine profile: up to 7 drafts, up to 8
+            // speculating rows, adaptive depth down to plain decode. The
+            // operator's acceptance setting still applies.
+            mtpConfig = Inkling2DSparkDrafter.defaultMTPConfig()
+            mtpConfig.acceptance = mtpAcceptance.acceptance
+        }
         // Per-build SDK switches this release turns on where they were measured;
         // the operator's value (read above by the SDK) wins.
         let sdkDefaults = SDKFeatureDefaults.applyMTPDefaults(
@@ -632,6 +639,17 @@ enum EngineV2SlotFactory {
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
         await bridge.installGLM5NextStepSetup(bytes: glm5NextStepSetupBytes)
+        if Inkling2PromptContract.applies(modelType: modelType) {
+            // Per-depth warm-up engines on scratch pools (`Inkling2DepthWarmup`);
+            // nil for a scripted engine or a slot off the segmented paged pool.
+            let depthWarmup = makeEngineOverride != nil ? nil : preparedBackend.flatMap { served in
+                EngineV2Factory.inkling2DepthWarmup(
+                    model: servingModel, tokenizer: tokenizer.inner, servedBackend: served,
+                    drafter: mtpConfig.effectiveEnabled ? assistantHandle?.drafter : nil,
+                    servedRows: effectiveMaxConcurrentRequests, kvBudget: kvBudget)
+            }
+            await bridge.adoptInkling2ShapeWarmup(depthWarmup: depthWarmup)
+        }
 
         do {
             try await bridge.requireServiceableOrdinaryGrant()

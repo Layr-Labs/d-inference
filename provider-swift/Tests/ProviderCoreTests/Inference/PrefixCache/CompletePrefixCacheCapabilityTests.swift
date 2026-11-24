@@ -1,4 +1,5 @@
 import MLX
+import MLXLLM
 import MLXLMCommon
 import Testing
 @testable import ProviderCore
@@ -48,5 +49,65 @@ struct CompletePrefixCacheCapabilityTests {
         #expect(resolve(.stateless) == nil)
         #expect(resolve(.unsupportedPersistent) == nil)
         #expect(resolve(.persistentCodec, types: nil) == nil)
+    }
+
+    /// Inkling 2: sliding-window and full attention beside recurrent state on
+    /// the native paged pool select the SDK's historical recurrent layouts;
+    /// the DSpark drafter's history rides only while its rounds keep it.
+    @Test("Sliding windows beside recurrent state select the historical recurrent layouts")
+    func historicalRecurrentCapability() {
+        let kinds = [
+            CBv2LayerKind(attention: .slidingWindow(1024), headDim: 128, kvHeads: 8, queryHeads: 16),
+            CBv2LayerKind(attention: .full, headDim: 128, kvHeads: 8, queryHeads: 16),
+        ]
+        let types: [DType] = [.bfloat16, .bfloat16]
+        let config = PagedKVPoolConfig(capacityBytes: 1 << 20, segmentSizeBytes: 64 << 10, layerDTypes: types)
+        func resolve(_ assistant: EngineV2SlotFactory.CompleteCheckpointAssistant, keepsHistory: Bool = true,
+                     kind: EngineV2KVBackendKind = .paged, nativeTypes: [DType]? = [.bfloat16, .bfloat16],
+                     modelTypes: [DType]? = nil, quantization: PagedKVQuantizationConfig? = nil)
+            -> CompleteCheckpointStorageIdentity?
+        {
+            EngineV2SlotFactory.completeCheckpointStorage(kind: kind, layerKinds: kinds,
+                supportsRecurrent: true, supportsHistoricalAttention: false, modelDTypes: modelTypes,
+                nativeDTypes: nativeTypes, pagedConfig: kind == .paged ? config : nil,
+                assistant: assistant, assistantKeepsHistory: keepsHistory,
+                checkpointQuantization: quantization)
+        }
+        let plain = resolve(.none)
+        #expect(plain?.backendLayout == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout)
+        #expect(plain?.checkpointQuantization == nil)
+        #expect(plain?.fingerprintFields["storage.layout"] == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout)
+        #expect(plain?.fingerprintFields["storage.attention.0.window"] == "1024")
+        #expect(plain?.fingerprintFields["storage.attention.1.window"] == "full")
+        #expect(resolve(.persistentHistorical)?.backendLayout
+            == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentMTPLayout)
+        #expect(resolve(.persistentHistorical, keepsHistory: false)?.backendLayout
+            == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout)
+        #expect(resolve(.none, modelTypes: types)?.backendLayout
+            == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout)
+        // Only an assistant that exports its own history, the paged pool,
+        // and the actual native dtypes.
+        #expect(resolve(.persistentCodec) == nil)
+        #expect(resolve(.persistentExactHistory) == nil)
+        #expect(resolve(.stateless) == nil)
+        #expect(resolve(.unsupportedPersistent) == nil)
+        #expect(resolve(.none, kind: .contiguous) == nil)
+        #expect(resolve(.none, nativeTypes: nil) == nil)
+        #expect(resolve(.none, nativeTypes: [.float16, .float16]) == nil)
+        #expect(resolve(.none, modelTypes: [.float16, .float16]) == nil)
+        // The fleet's default checkpoint profile is lossy; this layout keeps
+        // native rows, and the identity says so.
+        let profiled = resolve(.none, quantization: EngineV2KVQuantizationSelection.balanced.configuration)
+        #expect(profiled?.backendLayout == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout)
+        #expect(profiled?.checkpointQuantization == nil)
+        #expect(profiled?.fingerprintFields["storage.quantization"] == "native")
+    }
+
+    @Test("A persistent assistant keeps history only while its rounds run")
+    func assistantHistoryFollowsTheRoundDriver() {
+        typealias Assistant = EngineV2SlotFactory.CompleteCheckpointAssistant
+        #expect(Assistant.keepsHistory(Inkling2DSparkDrafter.defaultMTPConfig()) == CBv2MTPConfig.envEnabled)
+        #expect(!Assistant.keepsHistory(CBv2MTPConfig()))
+        #expect(!Assistant.keepsHistory(Inkling2DSparkDrafter.defaultMTPConfig(maxDraftTokens: 0)))
     }
 }

@@ -167,6 +167,28 @@ public enum ServingPerformanceProfiles {
         !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
     }
 
+    /// Posture for the automatic width (no reviewed profile): Low Power Mode off
+    /// and a thermal state of nominal or fair. A Mac Studio under sustained load
+    /// sits at fair, where macOS takes only minor measures; serious and critical
+    /// still return the bridge to the unqualified width. Reviewed profiles and
+    /// deadline profiles keep `postureAllowsExpansion` (nominal).
+    static var postureAllowsAutomaticWidth: Bool {
+        postureAllowsAutomaticWidth(
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            thermalState: ProcessInfo.processInfo.thermalState)
+    }
+
+    static func postureAllowsAutomaticWidth(
+        lowPowerMode: Bool, thermalState: ProcessInfo.ThermalState
+    ) -> Bool {
+        guard !lowPowerMode else { return false }
+        switch thermalState {
+        case .nominal, .fair: return true
+        case .serious, .critical: return false
+        @unknown default: return false
+        }
+    }
+
     public static func concurrency(configured: UInt64, profile: ServingPerformanceProfile? = nil) -> Int {
         let ceiling = profile?.isValid == true ? profile!.maxConcurrency : legacyMaximumConcurrency
         return Int(min(max(1, configured), UInt64(ceiling)))
@@ -177,8 +199,9 @@ public enum ServingPerformanceProfiles {
     /// production paged decode on those chips keeps adding aggregate
     /// throughput through B=8, whereas the default of 4 came from a contiguous
     /// M4 curve that flattened at B=4. The B=8 activation reserve already
-    /// covers this width, Low Power or thermal pressure returns the bridge to
-    /// the configured width, and the coordinator's per-model quality cap still
+    /// covers this width, Low Power Mode or a serious or critical thermal state
+    /// returns the bridge to the configured width (`postureAllowsAutomaticWidth`;
+    /// fair keeps it), and the coordinator's per-model quality cap still
     /// bounds admission. Models paged only by explicit selection or live
     /// packed quantization keep the configured width.
     static func automaticConcurrency(

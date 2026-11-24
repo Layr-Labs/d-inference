@@ -160,11 +160,11 @@ struct MTPConfigKeyTests {
         let gemma = MTPAcceptancePolicy.gemmaQATModelID
         func limit(
             _ chip: String, _ setting: Limit, model: String? = MTPAcceptancePolicy.gemmaQATModelID,
-            twoDrafts: Bool = true, benchmark: Bool = false
+            twoDrafts: Bool = true, benchmark: Bool = false, onByDefault: Bool = true
         ) -> Int? {
             MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
                 modelID: model, chipName: chip, hasBenchmarkVerificationOverride: benchmark,
-                twoDrafts: twoDrafts, limit: setting)
+                twoDrafts: twoDrafts, limit: setting, onByDefault: onByDefault)
         }
         #expect(MTPAutomaticVerificationPolicy.gemmaM5UltraMaxDraftPromptTokens == 16384)
         #expect(limit("Apple M5 Ultra", .chipDefault) == 16384)
@@ -189,7 +189,9 @@ struct MTPConfigKeyTests {
         // A call without the setting follows the read-once process value.
         #expect(MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
             modelID: gemma, chipName: "Apple M5 Ultra", twoDrafts: true)
-            == limit("Apple M5 Ultra", MTPAutomaticVerificationPolicy.gemmaDraftPromptLimit))
+            == limit(
+                "Apple M5 Ultra", MTPAutomaticVerificationPolicy.gemmaDraftPromptLimit,
+                onByDefault: MTPAutomaticVerificationPolicy.gemmaPromptLimitOnByDefault))
     }
 
     /// The build default can be switched off in one line

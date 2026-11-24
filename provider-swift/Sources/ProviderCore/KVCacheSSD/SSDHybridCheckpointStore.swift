@@ -30,6 +30,8 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         // Monotonic, stage-local deadline clock. Default preserves first-attempt
         // timing; injected clocks keep retry boundary tests deterministic.
         var stageNow: @Sendable () -> ContinuousClock.Instant = { .now }
+        /// Where `memory_only` receipts go instead of this store's files.
+        var memoryOnlyTier: MemoryOnlyCheckpointTier? = nil
     }
 
     public let identity: CBv2CompleteCheckpointIdentity
@@ -127,9 +129,18 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         diskBudget.register(self)
     }
 
+    /// The slot's RAM-only tier: a `memory_only` receipt goes there before any
+    /// path of this store, which refuses it when there is none.
+    var memoryOnlyTier: MemoryOnlyCheckpointTier? { config.memoryOnlyTier }
+
     public func takeStaged(
         requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int
     ) -> CBv2StagedCompleteCheckpoint? {
+        if MemoryOnlyReceipt.contains(requestID), let memoryOnlyTier {
+            return memoryOnlyTier.takeStaged(
+                requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
+                maximumSequenceLength: maximumSequenceLength)
+        }
         guard let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
                                      maximumSequenceLength: maximumSequenceLength, native: false),
             case .autoregressive(let value) = staged else { return nil }
@@ -185,6 +196,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     }
 
     func completeStaging(requestID: CBv2RequestID) {
+        if MemoryOnlyReceipt.contains(requestID), let memoryOnlyTier {
+            return memoryOnlyTier.completeStaging(requestID: requestID)
+        }
         let (staged, access) = lock.withLock {
             let access = reading.removeValue(forKey: requestID)
             authenticatedReceipts.removeValue(forKey: requestID)
@@ -204,6 +218,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     /// completion still consults the demand hint, so the hint stays until
     /// `completeStaging` (terminal) or an explicit `discardDonationDemand`.
     func abandonStaging(requestID: CBv2RequestID) async {
+        if MemoryOnlyReceipt.contains(requestID), let memoryOnlyTier {
+            return await memoryOnlyTier.abandonStaging(requestID: requestID)
+        }
         let (stage, reservation, access) = lock.withLock {
             let access = reading.removeValue(forKey: requestID)
             authenticatedReceipts.removeValue(forKey: requestID)
@@ -219,6 +236,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var hasSafeRoot: Bool { SSDBlockStore.isSafeModelRoot(config.root, dedicatedRoot: config.dedicatedRoot) }
 
     public func close() {
+        memoryOnlyTier?.close()
         let retiring = lock.withLock { () -> (stages: [SSDCheckpointStage], reads: [SSDCheckpointFileCoordinator.Access])? in
             guard !closed else { return nil }
             closed = true
@@ -242,6 +260,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
 
     public func closeAndWait() async {
         close()
+        await memoryOnlyTier?.closeAndWait()
         await pipeline.waitUntilDrained()
         await activity.waitUntilDrained()
     }

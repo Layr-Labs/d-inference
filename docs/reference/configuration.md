@@ -894,6 +894,7 @@ The controls do not enable caches, alter attestation policy or skip load checks.
 |---|---|---|---|---|
 | `DARKBLOOM_TTFT_PROMPT_CACHE` | `0`, `false`, `off`, `no` disable | on | `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift` (`PromptTokenCachePolicy.isEnabled`) | Reuses the token IDs of rendered chat-template pieces (text between added tokens) already seen in the request's prefix-cache scope; the IDs equal the uncached path. The global `DARKBLOOM_PREFIX_CACHE` disable also turns it off. Read at tokenizer load. Forwarded by LaunchAgent. |
 | `DARKBLOOM_TTFT_PROMPT_CACHE_MB` | MiB, `0`…`4096` | `32` | same file (`capacityBytes`) | Least-recently-used piece storage per loaded tokenizer; `0` keeps only the multi-core encoding of new long prompts. Read at tokenizer load. Forwarded by LaunchAgent. |
+| `DARKBLOOM_TTFT_PROMPT_CACHE_TTL_SECONDS` | whole seconds, `0`…`1800`; `0` keeps pieces until evicted | `1800` | same file (`ttl`, `PromptPieceTokenStore`) | A piece unused this long is dropped: lookups no longer return it and a sweep at least once a minute removes it, also on an idle Mac; reuse restarts it. Values above 1800 or malformed keep the default. `memory_only` requests never use the cache. Read at tokenizer load. Forwarded by LaunchAgent. |
 | `DARKBLOOM_TTFT_PROMPT_CACHE_VERIFY` | integer, `0` off | `256` | same file (`verificationInterval`) | Re-tokenizes each tokenizer's first 4 prompts, then one in N, on the uncached path in the background; a mismatch, or an uncached path that throws, disables reuse for that tokenizer. `darkbloom benchmark --prompt-prep` sets `0`. Read at tokenizer load. Forwarded by LaunchAgent. |
 | `DARKBLOOM_TTFT_TEMPLATE_LOOPS` | `0`, `false`, `off`, `no` disable | on | `provider-swift/Sources/ProviderCore/Inference/Prompting/ChatTemplateLoopRewrites.swift` (`ChatTemplateLoopRewrites.isEnabled`) | The prompt token cache renders Gemma 4 and GPT-OSS templates through linear-time forms of their per-message history scans, which render the same text; used only when the load-time comparison with the served template passes, and checked by the same background comparisons. Read at tokenizer load. Forwarded by LaunchAgent. |
 | `DARKBLOOM_TTFT_COLD_LOAD_RELEASE` | `0`, `false`, `off`, `no` disable | on | `provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift` (`WorkFIFOPolicy`) | Lets later coordinator events overtake a request waiting for its model load (see [process boundaries](../architecture/components/provider.md#process-boundaries)). Read at loop start. Forwarded by LaunchAgent. |
@@ -961,6 +962,19 @@ default of `off`; consult the platform's latest default branch for current polic
 `maximumCheckpointsPerRequest = 2`; the Super owner raises the entry limit to
 one per 256 MiB of bank. These have no CLI environment overrides
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixCacheContract.swift`).
+
+### RAM-only prefix tier for `memory_only` requests
+
+Requests marked `cache_policy: memory_only` reuse complete checkpoints from
+page-locked RAM only. The tier holds nothing until such a request donates, and
+the coordinator's marking is off by default, so `auto` costs no memory
+otherwise. Mechanism and limits:
+[`../architecture/prefix-cache.md#ram-only-tier-for-memory_only-requests`](../architecture/prefix-cache.md#ram-only-tier-for-memory_only-requests).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_ZDR_PREFIX_CACHE_RAM` | `auto`; any other nonempty value turns it off (trimmed, case-insensitive) | `auto` | `provider-swift/Sources/ProviderCore/KVCacheRAM/MemoryOnlyPrefixCachePolicy.swift` (`isEnabled`) | `auto` attaches the tier to each single-Mac complete-checkpoint slot (not GLM-5.3-Flash, DiffusionGemma, native MiMo, Nemotron Super, pairs, or slots built with `DARKBLOOM_PREFIX_CACHE_MEMORY=1`); off makes `memory_only` requests prefill cold. A negative `DARKBLOOM_PREFIX_CACHE` also turns it off. Read at slot construction and at each load and unload. Forwarded by LaunchAgent. |
+| `DARKBLOOM_ZDR_PREFIX_CACHE_RAM_MAX_MB` | whole MiB > 0 | `8192` | same file (`capBytes`, `budgetBytes`) | Replaces the cap. The budget is `min(cap, fleet KV headroom / 4)` and is 0 (off) below 1 GiB. Forwarded by LaunchAgent. |
 
 ### Benchmark, harness and tests
 

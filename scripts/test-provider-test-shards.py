@@ -175,6 +175,39 @@ class PartitionTests(unittest.TestCase):
         self.assertEqual(len(selected), len(set(selected)))
         self.assertEqual(set(selected), {test for test in self.tests if not re.search(ISOLATED, test)})
 
+    def test_the_own_process_class_leaves_the_selections_only_with_several_processes(self):
+        own = shards.OWN_PROCESS_SUITES[0]
+        own_tests = [f"{own}/s()", f"{own.replace('.', '/', 1)}/t()"]
+        # The heaviest suite, so a plan of one process per job gives it a selection.
+        weights = {**self.weights, own: 6000.0}
+        tests = [*self.tests, *own_tests]
+        expected = [test for test in tests if not re.search(ISOLATED, test)]
+        for processes in (1, 2):
+            with self.subTest(processes=processes):
+                selections = [*shards.class_selections(processes), *(f"{index}/4" for index in range(1, 5))]
+                plans = {selection: shards.planned(tests, selection, ISOLATED, weights, processes)
+                         for selection in selections}
+                selected = [test for plan in plans.values() for test in plan]
+                self.assertEqual(sorted(selected), sorted(expected))
+                self.assertEqual(len(selected), len(set(selected)))
+                holders = [index for index, keys in enumerate(shards.assignment(4, weights, processes)[0])
+                           if own in keys]
+                if processes == 1:
+                    # One process per job (the release qualification lane): a
+                    # numbered selection plans the suite, as before.
+                    self.assertNotIn("own", plans)
+                    self.assertEqual(len(holders), 1)
+                    with self.assertRaisesRegex(ValueError, "several processes"):
+                        shards.arguments("own", ISOLATED, weights, processes)
+                else:
+                    # Its own serial process: the command line of a selection
+                    # that held only this suite; the last selection skips it.
+                    self.assertEqual(holders, [])
+                    self.assertEqual(sorted(plans["own"]), sorted(own_tests))
+                    self.assertEqual(shards.arguments("own", ISOLATED, weights, processes),
+                                     ["--filter", shards.suites_regex([own]), "--skip", ISOLATED])
+                    self.assertIn(shards.suites_regex([own]), shards.arguments("4/4", ISOLATED, weights, processes)[1])
+
     def test_arguments_and_shard_validation(self):
         self.assertEqual(shards.arguments("parallel", ISOLATED, self.weights),
                          ["--filter", shards.parallel_regex(), "--skip", ISOLATED])
@@ -337,7 +370,8 @@ class CountAndAuditTests(unittest.TestCase):
                  "ProviderCoreTests.D/x()",
                  "ProviderCoreTests.New/d()", "ProviderCoreTests.ProcessMemoryNativeIntegrationTests/e()",
                  "ProviderCoreFoundationTests.Pure/f()", "ProviderCoreTests.ProductionPromptParityTests/p()",
-                 "ProviderCoreTests.NemotronTemplateParityLiveTests/n()"]
+                 "ProviderCoreTests.NemotronTemplateParityLiveTests/n()",
+                 f"{shards.OWN_PROCESS_SUITES[0]}/s()"]
         parity = [{"shard": "parity", "pattern": name, "swift_testing": 1, "xctest": 0}
                   for name in ("ProductionPromptParityTests", "NemotronTemplateParityLiveTests")]
 
@@ -347,21 +381,32 @@ class CountAndAuditTests(unittest.TestCase):
                                                                                  weights, processes)))}
                     for selection in selections]
 
-        # 2 jobs of 2 processes: job 1 runs the parallel class, 1/4, 2/4 and
-        # Prompt Parity (PARITY_SHARD 2); job 2 runs 3/4 and 4/4.
-        first, second = own(("parallel", "1/4", "2/4")) + parity, own(("3/4", "4/4"))
+        # 2 jobs of 2 processes: job 1 runs the parallel class, the
+        # own-process class, 1/4, 2/4 and Prompt Parity (PARITY_SHARD 2); job
+        # 2 runs 3/4 and 4/4.
+        first, second = own(("parallel", "own", "1/4", "2/4")) + parity, own(("3/4", "4/4"))
+        self.assertEqual(len(shards.planned(tests, "own", ISOLATED, weights, 2)), 1)
         self.assertEqual(shards.audit_job(tests, first, ISOLATED, weights, 1, 2, 2), [])
         self.assertEqual(shards.audit_job(tests, second, ISOLATED, weights, 2, 2, 2), [])
         # A selection that ran one test too few, a missing one, parity in the
-        # wrong job, or a report planned for another process count fails.
+        # wrong job, or a report planned for another process count fails;
+        # so does an own-process class that ran short, is missing from job 1
+        # or ran in another job.
         self.assertTrue(shards.audit_job(tests, own(("3/4", "4/4"), **{"4/4": 0}), ISOLATED, weights, 2, 2, 2))
         self.assertTrue(shards.audit_job(tests, own(("3/4",)), ISOLATED, weights, 2, 2, 2))
         self.assertTrue(shards.audit_job(tests, second + parity, ISOLATED, weights, 2, 2, 2))
-        self.assertTrue(shards.audit_job(tests, own(("parallel", "1/4", "2/4")), ISOLATED, weights, 1, 2, 2))
+        self.assertTrue(shards.audit_job(tests, own(("parallel", "own", "1/4", "2/4")), ISOLATED, weights, 1, 2, 2))
         self.assertTrue(shards.audit_job(tests, own(("3/4", "4/4"), processes=1), ISOLATED, weights, 2, 2, 2))
+        self.assertTrue(shards.audit_job(tests, own(("parallel", "own", "1/4", "2/4"), **{"own": 0}) + parity,
+                                         ISOLATED, weights, 1, 2, 2))
+        self.assertTrue(shards.audit_job(tests, own(("parallel", "1/4", "2/4")) + parity, ISOLATED, weights, 1, 2, 2))
+        self.assertTrue(shards.audit_job(tests, second + own(("own",)), ISOLATED, weights, 2, 2, 2))
         # Every test is in exactly one plan, so the job audits add up to the
-        # full-suite audit over all of the reports.
+        # full-suite audit over all of the reports, which needs the own-process
+        # class's report too.
         self.assertEqual(shards.audit(tests, first + second, ISOLATED, weights, 2), [])
+        self.assertTrue(shards.audit(tests, [report for report in first + second if report["shard"] != "own"],
+                                     ISOLATED, weights, 2))
 
     def test_audit_requires_every_shard_to_run_its_plan_and_the_sum_to_match(self):
         weights = {"ProviderCoreTests.A": 10.0, "ProviderCoreTests.B": 10.0}
@@ -674,7 +719,7 @@ class RunnerTests(unittest.TestCase):
         # xUnit report and stdout alone, which the warning never enters; the
         # warning still reaches the output, and slot-*.out beside the stdout.
         for shard, processes, names in (("2/4", "1", ["2-of-4"]),
-                                        ("1/2", "3", ["1-of-6", "2-of-6", "3-of-6", "parallel"])):
+                                        ("1/2", "3", ["1-of-6", "2-of-6", "3-of-6", "own", "parallel"])):
             with self.subTest(processes=processes):
                 _, reports = self.run_tests(shard, processes=processes, STUB_SPLIT="1")
                 for name in names:
@@ -720,20 +765,21 @@ class RunnerTests(unittest.TestCase):
 
     def test_processes_run_their_selections_beside_each_other_with_their_own_files(self):
         calls, reports = self.run_tests("1/2", processes="3")
-        # Job 1 of 2 with 3 processes runs selections 1 to 3 of 6, and selection
-        # 1's process also runs the parallel class; no isolated process runs.
+        # Job 1 of 2 with 3 processes runs selections 1 to 3 of 6 and, in a
+        # fourth process, the own-process class; selection 1's process also
+        # runs the parallel class. No isolated process runs.
         self.assertEqual(sorted(self.selection_of(call) for call in calls),
-                         ["1-of-6", "2-of-6", "3-of-6", "parallel"])
+                         ["1-of-6", "2-of-6", "3-of-6", "own", "parallel"])
         for call in calls:
             self.assertEqual(call[:4], ["test", "--skip-build", "--ignore-lock", "--disable-build-manifest-caching"])
-        for name in ("1-of-6", "2-of-6", "3-of-6", "parallel"):
+        for name in ("1-of-6", "2-of-6", "3-of-6", "own", "parallel"):
             self.assertTrue((reports / f"shard-{name}.json").is_file(), name)
         # Each process has its own TMPDIR and state files; the parallel class
         # shares selection 1's, as it runs after it in the same slot.
         directories = {environment["TMPDIR"] for environment in self.environments}
         states = {environment["DARKBLOOM_STATE_FILE"] for environment in self.environments}
-        self.assertEqual(len(directories), 3)
-        self.assertEqual(len(states), 3)
+        self.assertEqual(len(directories), 4)
+        self.assertEqual(len(states), 4)
         for environment in self.environments:
             self.assertTrue(environment["DARKBLOOM_STATE_FILE"].startswith(str(Path(environment["TMPDIR"]).parent)))
 
@@ -744,8 +790,30 @@ class RunnerTests(unittest.TestCase):
         self.run_tests("1/2", processes="3")
         starts = [started for started, call in map(json.loads, self.starts.read_text().splitlines())
                   if self.selection_of(call) != "parallel"]
-        self.assertEqual(len(starts), 3)
+        self.assertEqual(len(starts), 4)
         self.assertLess(max(starts) - min(starts), 5.0)
+
+    def test_job_one_runs_the_own_process_class_beside_its_selections(self):
+        # Serial, with the shared-build flags of its job's selections, the
+        # filter of a selection that held only those suites, its own report;
+        # the last selection skips them. No other job, and no job of one
+        # process, runs it.
+        calls, reports = self.run_tests("1/2", processes="3")
+        own = next(call for call in calls if self.selection_of(call) == "own")
+        second = next(call for call in calls if self.selection_of(call) == "2-of-6")
+        self.assertEqual(own[:7], ["test", "--skip-build", "--ignore-lock", "--disable-build-manifest-caching",
+                                   "--no-parallel", "--filter", shards.suites_regex(shards.OWN_PROCESS_SUITES)])
+        self.assertEqual(own[7:9], second[second.index("--skip"):second.index("--skip") + 2])
+        self.assertEqual(json.loads((reports / "shard-own.json").read_text())["shard"], "own")
+        self.assertTrue((reports / "slot-own.out").is_file())
+        calls, _ = self.run_tests("2/2", processes="3")
+        catch_all = next(call for call in calls[:3] if self.selection_of(call) == "6-of-6")
+        self.assertIn(shards.suites_regex(shards.OWN_PROCESS_SUITES), catch_all[catch_all.index("--skip") + 1])
+        for shard, processes in (("2/2", "3"), ("1/2", "1")):
+            with self.subTest(shard=shard, processes=processes):
+                calls, reports = self.run_tests(shard, processes=processes)
+                self.assertFalse([call for call in calls if any("/shard-own" in argument for argument in call)])
+                self.assertFalse((reports / "shard-own.json").exists())
 
     def test_last_job_runs_its_selections_then_every_isolated_process_alone(self):
         calls, reports = self.run_tests("2/2", processes="3")
@@ -768,12 +836,12 @@ class RunnerTests(unittest.TestCase):
         # of them pass even when they start together and a holder keeps it.
         calls, reports = self.run_tests("1/2", processes="3", STUB_PEERS="3")
         self.assertEqual(sorted(self.selection_of(call) for call in calls),
-                         ["1-of-6", "2-of-6", "3-of-6", "parallel"])
+                         ["1-of-6", "2-of-6", "3-of-6", "own", "parallel"])
         # The slot output holds both streams of its selections.
-        for name in ("1-of-6", "2-of-6", "3-of-6"):
+        for name in ("1-of-6", "2-of-6", "3-of-6", "own"):
             self.assertNotIn("database is locked", (reports / f"slot-{name}.out").read_text())
         self.assertEqual(sorted(path.name for path in reports.iterdir() if not path.name.startswith("shard-")),
-                         ["slot-1-of-6.out", "slot-2-of-6.out", "slot-3-of-6.out"])
+                         ["slot-1-of-6.out", "slot-2-of-6.out", "slot-3-of-6.out", "slot-own.out"])
         # The stub is SwiftPM's lock: without the flag, processes that start
         # together find the database locked.
         temporary = tempfile.TemporaryDirectory(prefix="provider-build-database-")

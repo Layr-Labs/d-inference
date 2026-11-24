@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-24
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -505,7 +505,11 @@ tests, 132 to 164 s, one after the other) and Cluster Runtime Tests shards 1,
 4 and 5 (267 to 395 s against 169 to 243 s for the others). The lifecycle
 tests now run on runtime shard 6 while it waits for the cluster build, and
 four selections of shards 1, 4 and 5 run on shards 2, 6 and 7, so every
-runtime shard plans under about 300 s. Every
+runtime shard plans under about 300 s. On 4x24, `BootSecurityServeLoopTests`
+ran 167 to 250 s, and its shard was the last provider job in 16 of the 35
+green pull-request rounds of 2026-11-23. It now runs in a process of its own
+beside provider shard 1's selections, on that shard's 12x32 lane, and every
+selection plans 130 s ([provider shards](test.md#provider-and-sdk)). Every
 macOS job is routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once

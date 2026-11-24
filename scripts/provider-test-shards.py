@@ -6,27 +6,30 @@ PROVIDER_TEST_PROCESSES selections at the same time (default 1: one selection
 per job); job K of J runs selections (K-1)*P+1 .. K*P of N = J*P.
 The parallel class is the test targets whose dependency closure has no MLX or
 Metal (`PARALLEL_MODULES`); it runs in one process with Swift Testing's default
-in-process parallelism, after selection 1. Every other suite stays serial
+in-process parallelism, after selection 1. When a job runs more than one
+process, the own-process class (`OWN_PROCESS_SUITES`, selection `own`) runs
+serially in one more process beside job 1's selections, and no numbered
+selection plans it. Every other suite stays serial
 (`--no-parallel`). Prompt Parity runs in the job of selection `PARITY_SHARD`
 against that job's build; the audit checks each parity run's executed count
 against the suite list. Serial suites are assigned to selections by measured
 seconds (`provider-test-shard-weights.json`, longest first onto the least
 loaded selection); a selection starts loaded with the fixed work its job
 runs. A job's selections start together. Selections 1..N-1 pick
-their assigned suites with `--filter`; the last selection skips the parallel
-class and every other selection's suites, so a suite that is new or missing
-from the weights always runs there.
+their assigned suites with `--filter`; the last selection skips both classes
+and every other selection's suites, so a suite that is new or missing from
+the weights always runs there.
 
 Subcommands:
-  args SHARD ISOLATED    print the `swift test` selection for SHARD (`K/N` or
-                         `parallel`), one argument per line; ISOLATED is the
-                         run-provider-tests.sh isolated-process pattern
+  args SHARD ISOLATED    print the `swift test` selection for SHARD (`K/N`,
+                         `parallel` or `own`), one argument per line; ISOLATED
+                         is the run-provider-tests.sh isolated-process pattern
   counts SELECTION PATTERN XUNIT STDOUT OUTPUT
                          write the executed test counts of one `swift test` run
                          from its Swift Testing xUnit report and its stdout
-                         alone; SELECTION is `K/N` or `parallel` with the
-                         isolated pattern, or `parity` with the parity suite
-                         filter
+                         alone; SELECTION is `K/N`, `parallel` or `own` with
+                         the isolated pattern, or `parity` with the parity
+                         suite filter
   audit LIST REPORTS     check each selection executed exactly its planned tests
                          and that all of them together executed the full list
   audit-job LIST REPORTS K/N
@@ -65,6 +68,15 @@ PARALLEL_MODULES = (
     "DarkbloomHardwareLoadTests", "DarkbloomPublishTests", "DarkbloomSigningIdentityTests",
     "ProviderAppAttestTests", "ProviderCoreFoundationTests",
 )
+# Suites that run in a process of their own beside job 1's selections when a
+# job runs several processes (own_process_suites); CI routes job 1 to its
+# 12x32 lane (test-provider-1 in provider-plan.yml). Each test of
+# BootSecurityServeLoopTests verifies the test host's real code signature.
+# Alone in a selection of a 4x24 shard it ran 167 to 250 s and ended that
+# shard last (runs 45229548023, 45248580608, 45256515690, 45258903123 and
+# 45261556892), against 117 s on 12x32 in one process (SDK 27 qualification,
+# run 45227128376).
+OWN_PROCESS_SUITES = ("ProviderCoreTests.BootSecurityServeLoopTests",)
 # Prompt Parity's suites, run with their artifacts required (scripts/verify-*-parity.sh).
 PARITY_FILTERS = ("ProductionPromptParityTests", "NemotronTemplateParityLiveTests")
 # CI runs Prompt Parity in the job that holds this selection: provider-tests.yml
@@ -108,8 +120,19 @@ def suite_key(test_id):
 def parse_shard(value):
     match = re.fullmatch(r"([1-9][0-9]*)/([1-9][0-9]*)", value)
     if not match or int(match.group(1)) > int(match.group(2)):
-        raise ValueError(f"Expected a shard K/N with 1 <= K <= N or 'parallel', got {value!r}")
+        raise ValueError(f"Expected a shard K/N with 1 <= K <= N, 'parallel' or 'own', got {value!r}")
     return int(match.group(1)), int(match.group(2))
+
+
+def own_process_suites(processes):
+    """The own-process class's suites: none when a job runs one process (the
+    release qualification lane), so that plan stays as it was."""
+    return OWN_PROCESS_SUITES if processes > 1 else ()
+
+
+def class_selections(processes):
+    """The selections besides the numbered ones; job 1 runs them."""
+    return ["parallel", *(["own"] if own_process_suites(processes) else [])]
 
 
 def assignment(shards, weights, processes=1):
@@ -118,6 +141,8 @@ def assignment(shards, weights, processes=1):
     `shards` is the number of selections, `processes` how many of them one job
     runs at the same time. The last selection's list only balances the load:
     that selection runs every serial suite that selections 1..N-1 do not pick.
+    The own-process class's suites are in no selection's list; their process
+    runs beside job 1's selections and adds nothing to their load.
     """
     if shards % processes:
         raise ValueError(f"{shards} selections do not make jobs of {processes} processes")
@@ -132,8 +157,9 @@ def assignment(shards, weights, processes=1):
         if job == last_job:
             loads[index] += LAST_SHARD_EXTRA_SECONDS
     assigned = [[] for _ in range(shards)]
+    own = own_process_suites(processes)
     serial = {key: seconds for key, seconds in weights.items()
-              if key.split(".", 1)[0] not in PARALLEL_MODULES}
+              if key.split(".", 1)[0] not in PARALLEL_MODULES and key not in own}
     for key in sorted(serial, key=lambda key: (-serial[key], key)):
         index = min(range(shards), key=lambda index: (loads[index], index))
         loads[index] += serial[key]
@@ -166,13 +192,18 @@ def selection(shard, isolated, weights, processes=1):
     """Return (filter regex or None, skip regex) for one selection."""
     if shard == "parallel":
         return parallel_regex(), isolated
+    own = own_process_suites(processes)
+    if shard == "own":
+        if not own:
+            raise ValueError("Selection 'own' runs only when a job runs several processes (PROVIDER_TEST_PROCESSES)")
+        return suites_regex(own), isolated
     index, shards = parse_shard(shard)
     assigned, _ = assignment(shards, weights, processes)
     if index < shards:
         if not assigned[index - 1]:
             raise ValueError(f"Shard {shard} has no suites; use fewer shards")
         return suites_regex(assigned[index - 1]), isolated
-    others = [suites_regex(keys) for keys in assigned[:-1] if keys]
+    others = [suites_regex(keys) for keys in (*assigned[:-1], own) if keys]
     return None, "|".join([parallel_regex(), *others, isolated])
 
 
@@ -236,11 +267,11 @@ def audit(test_ids, reports, isolated, weights, processes=1):
     reports = [report for report in reports if report["shard"] != "parity"]
     expected = [test_id for test_id in test_ids if not re.search(isolated, test_id)]
     shards = {report["shard"] for report in reports}
-    totals = {parse_shard(shard)[1] for shard in shards if shard != "parallel"}
+    totals = {parse_shard(shard)[1] for shard in shards if shard not in ("parallel", "own")}
     if len(totals) != 1:
         return errors + [f"Shard reports disagree on the shard count: {sorted(shards)}"]
     total = totals.pop()
-    wanted = {"parallel", *(f"{index}/{total}" for index in range(1, total + 1))}
+    wanted = {*class_selections(processes), *(f"{index}/{total}" for index in range(1, total + 1))}
     if shards != wanted or len(reports) != len(wanted):
         errors.append(f"Expected one report per shard {sorted(wanted)}, got {sorted(r['shard'] for r in reports)}")
     executed = 0
@@ -270,13 +301,15 @@ def audit_job(test_ids, reports, isolated, weights, job, jobs, processes):
     """Return error lines for one CI job's own reports.
 
     Each job checks that every selection it ran executed exactly its planned
-    tests, and its Prompt Parity runs if it had any. The last job also checks
-    that the plans of all jobs together list every test once. With every job
-    required to pass, that is the full-suite audit without a job of its own.
+    tests, and its Prompt Parity runs if it had any; job 1 also runs the
+    parallel class and, with several processes, the own-process class. The
+    last job also checks that the plans of all selections together list every
+    test once. With every job required to pass, that is the full-suite audit
+    without a job of its own.
     """
     total = jobs * processes
     first, last = (job - 1) * processes + 1, job * processes
-    expected = {"parallel"} if first == 1 else set()
+    expected = set(class_selections(processes)) if first == 1 else set()
     expected |= {f"{index}/{total}" for index in range(first, last + 1)}
     parity = [report for report in reports if report["shard"] == "parity"]
     own = [report for report in reports if report["shard"] != "parity"]
@@ -298,7 +331,8 @@ def audit_job(test_ids, reports, isolated, weights, job, jobs, processes):
         errors.append(f"Prompt Parity ran in job {job}, not job {parity_job}")
     if job == jobs:
         expected_tests = [test_id for test_id in test_ids if not re.search(isolated, test_id)]
-        seen = [test_id for selection in ("parallel", *(f"{index}/{total}" for index in range(1, total + 1)))
+        seen = [test_id for selection in (*class_selections(processes),
+                                          *(f"{index}/{total}" for index in range(1, total + 1)))
                 for test_id in planned(test_ids, selection, isolated, weights, processes)]
         if len(seen) != len(set(seen)):
             errors.append(f"{len(seen) - len(set(seen))} tests are planned in more than one selection")
@@ -463,7 +497,7 @@ def main():
     if args.command == "args":
         print("\n".join(arguments(args.shard, args.isolated, load_weights(), processes_per_job())))
     elif args.command == "counts":
-        if args.shard not in ("parallel", "parity"):
+        if args.shard not in ("parallel", "own", "parity"):
             parse_shard(args.shard)
         try:
             executed = counts(args.xunit, args.stdout)
@@ -501,7 +535,7 @@ def main():
         for error in errors:
             print(f"::error::{error}")
         for report in reports:
-            if report["shard"] in ("parallel", "parity"):
+            if report["shard"] in ("parallel", "own", "parity"):
                 continue
             name = report["shard"].replace("/", "-of-")
             own = [path for path in (args.reports / f"shard-{name}-swift-testing.xml", args.reports / f"shard-{name}.log")

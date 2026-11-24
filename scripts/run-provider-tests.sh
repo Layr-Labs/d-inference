@@ -45,8 +45,9 @@ isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"
 #
 # PROVIDER_TEST_PROCESSES=P (default 1) makes job K of N run the P selections
 # (K-1)*P+1 .. K*P of N*P at the same time, each serial in its own process with
-# its own TMPDIR and provider state files. The isolated processes still run
-# after all of them, alone.
+# its own TMPDIR and provider state files. With P > 1, job 1 also runs the
+# own-process class (selection `own`) in one more such process beside them.
+# The isolated processes still run after all of them, alone.
 provider_test_shard=${PROVIDER_TEST_SHARD:-}
 provider_test_processes=${PROVIDER_TEST_PROCESSES:-1}
 # Processes of one job read the same build. With --skip-build none of them
@@ -130,9 +131,13 @@ else
   else
     shared_build_flags=(--ignore-lock --disable-build-manifest-caching)
     selections_total=$((jobs * provider_test_processes))
-    pids=() names=()
+    selections=()
     for ((slot = 1; slot <= provider_test_processes; slot++)); do
-      selection="$(((job - 1) * provider_test_processes + slot))/$selections_total"
+      selections+=("$(((job - 1) * provider_test_processes + slot))/$selections_total")
+    done
+    [ "$job" != 1 ] || selections+=(own)
+    pids=() names=()
+    for selection in "${selections[@]}"; do
       name=${selection//\//-of-}
       names+=("$name")
       run_provider_test_slot_alone "$selection" > "$PROVIDER_TEST_REPORT_DIR/slot-$name.out" 2>&1 &

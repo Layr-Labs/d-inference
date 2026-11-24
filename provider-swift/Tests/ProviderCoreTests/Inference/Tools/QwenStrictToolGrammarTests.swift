@@ -259,10 +259,10 @@ struct QwenStrictToolGrammarTests {
             + #""list":{"type":"array","items":{"type":"string","\#(marker)":true}}},"#
             + #""required":["any"],"additionalProperties":false}}}]"#
         if choice != nil {
-            // A forced choice compiles the declared tools, where a marked node
-            // compiles only as exactly `{type: string, <marker>: true}`
-            // (`ToolConstraintSchema`, unchanged here): an annotated or `false`
-            // marker is refused before any argument reading, as before.
+            // A forced choice compiles the declared tools, where a `false`
+            // marker (`none`) is refused before any argument reading
+            // (`ToolConstraintSchema`); the annotated `true` marker (`any`)
+            // compiles as free text (`annotatedRenderMarkersCompileUnderAForcedChoice`).
             #expect(throws: (any Error).self) { try F.prepared(F.body(tools: tools, choice: choice)) }
             return
         }

@@ -46,7 +46,7 @@ struct NativeChannelSplitter {
     init(prefix: String, protectToolFrames: Bool, qwenStructuredFrames: Bool = false, flintFrames: Bool = false,
          glmFrames: Bool = false, tools: [[String: any Sendable]]? = nil,
          preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false,
-         promotesTrailingCalls: Bool = false) {
+         holdsFramesAfterThought: Bool = false, promotesTrailingCalls: Bool = false) {
         state = prefix == "<think>" ? .reasoning : .content
         self.protectToolFrames = protectToolFrames
         self.qwenStructuredFrames = qwenStructuredFrames

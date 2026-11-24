@@ -2606,7 +2606,7 @@ an explicit Boolean. Input IDs, sampling and cache keys do not depend on it.
 Bridge-side order (`EngineV2Bridge.submitTokenized`): request-id
 normalisation (`maxRequestIdLength = 256`; duplicates rejected) → first
 deadline check → translation (`maxTokens = outputTokens(requested:promptTokens:)`: an omitted `max_tokens` is the
-slot's 32,768-token default cut to the window the prompt leaves; every single-Mac slot refuses a prompt that fills
+slot's 32,768-token default (65,536 on an Inkling 2 Mini slot, `SlotSizingSnapshot.defaultMaxTokens`) cut to the window the prompt leaves; every single-Mac slot refuses a prompt that fills
 its window, its advertised context else its model's, `promptExceedsContext`, and cuts a larger `max_tokens` to what
 the prompt leaves; a pair keeps its own limits) → resident probe / useful SSD stage → shared-KV reservation (contiguous slots
 only; segmented paged admission and backing use the shared native process owner) → final deadline

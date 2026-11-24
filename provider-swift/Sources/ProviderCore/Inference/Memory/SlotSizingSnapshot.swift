@@ -66,6 +66,21 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
     /// `max_tokens` may ask for the rest of the window.
     public static let defaultOutputTokens = DistributedEngineFactory.defaultOutputTokens
 
+    /// Inkling 2 Mini's output for a request that names no `max_tokens`: its
+    /// long reasoning runs past the standard request's 32,768 tokens, so a
+    /// slot that serves it reserves and allows 65,536 by default. A request
+    /// that names `max_tokens` is unchanged, and so is every other model.
+    public static let inkling2DefaultOutputTokens = 65_536
+
+    /// A slot's output for a request that names no `max_tokens`: the model's
+    /// default output (`defaultOutputTokens`, or `inkling2DefaultOutputTokens`
+    /// for Inkling 2), cut to its window; `fallback` when the window is unknown.
+    /// The bridge then cuts it to what each prompt leaves of the window.
+    public static func defaultMaxTokens(maxContext: Int, servesInkling2: Bool, fallback: Int) -> Int {
+        guard maxContext > 0 else { return fallback }
+        return min(maxContext, servesInkling2 ? inkling2DefaultOutputTokens : defaultOutputTokens)
+    }
+
     /// `auxiliaryWeightBytes`: resident weight bytes that live OUTSIDE the
     /// model container (the MTP drafter — never scanned, advertised, or
     /// attested), folded into `weightsBytes` here so all downstream memory
@@ -125,6 +140,7 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
             let bytes: Int
             let moduleKVRate: Int?
             let isQwenVLMWrapper: Bool
+            var isInkling2 = false
         }
         let facts = await container.perform { ctx -> ModuleFacts in
             let bytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
@@ -165,9 +181,13 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
             case let nemotron as NemotronH35Model:
                 rate = fp16KVBytesPerToken(layerKinds: nemotron.cbv2LayerKinds)
             case let inkling as Inkling2Model:
-                rate = fp16KVBytesPerToken(layerKinds: inkling.cbv2LayerKinds)
+                return ModuleFacts(
+                    bytes: bytes, moduleKVRate: fp16KVBytesPerToken(layerKinds: inkling.cbv2LayerKinds),
+                    isQwenVLMWrapper: false, isInkling2: true)
             case let inkling as MLXVLM.Inkling2VLM:
-                rate = fp16KVBytesPerToken(layerKinds: inkling.cbv2LayerKinds)
+                return ModuleFacts(
+                    bytes: bytes, moduleKVRate: fp16KVBytesPerToken(layerKinds: inkling.cbv2LayerKinds),
+                    isQwenVLMWrapper: false, isInkling2: true)
             case is MLXVLM.Qwen35:
                 return ModuleFacts(
                     bytes: bytes,
@@ -205,7 +225,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         }
 
         let maxContext = architecture.maxContextLength ?? 0
-        let defaultMaxTokens = maxContext > 0 ? min(maxContext, defaultOutputTokens) : fallbackDefaultMaxTokens
+        let defaultMaxTokens = Self.defaultMaxTokens(
+            maxContext: maxContext, servesInkling2: facts.isInkling2, fallback: fallbackDefaultMaxTokens)
 
         return SlotSizingSnapshot(
             weightsBytes: facts.bytes,

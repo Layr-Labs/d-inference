@@ -743,7 +743,8 @@ observed per-layer dtype, window rings, recurrent state and configured MTP state
 
 A request reserves its prompt plus its `max_tokens` from that grant when it is
 submitted. A request that names no `max_tokens` reserves the 32,768-token default
-(`SlotSizingSnapshot.defaultOutputTokens`, as on a pair) cut to the window its
+(`SlotSizingSnapshot.defaultOutputTokens`, as on a pair; 65,536 for Inkling 2 Mini,
+`SlotSizingSnapshot.inkling2DefaultOutputTokens`) cut to the window its
 prompt leaves, so the default never needs more than the model's context. Every
 single-Mac slot holds every request to its window (`EngineV2Bridge.modelWindowTokens`:
 its advertised context, else its model's): a prompt that fills it is refused as

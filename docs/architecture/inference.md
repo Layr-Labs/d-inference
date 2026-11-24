@@ -4446,9 +4446,13 @@ rewrites at most 100,000 schema nodes per request
 becomes a two-key map, so a few MiB of them rewrote into tens of MiB of JSON
 and hundreds of MiB of objects before the request was decoded. Past the budget
 the body is decoded as sent, as one above `maxNormalizationBytes` (4 MiB)
-already is
+already is. Gemma 4's prompt step applies the same repair again
+(`Gemma4ToolSchemaEnforcement`, through `injectDefaultTypes`) under its own
+100,000-node budget, shared by the request's tools, so it leaves a schema past
+the budget as sent too; its render invariants still apply
 (`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/Gemma4ToolSchemaEnforcement.swift`,
 `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
 
 On the local API, tool schemas with `$ref` are resolved before that repair
@@ -6461,6 +6465,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | `token_budget_exhausted: duplicate request ID` | Request id already live on the bridge | `EngineV2Bridge+Submission.swift` |
 | `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations; thrown before any stream exists (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` |
 | `token_budget_exhausted: …` from engine admission | On one Mac, a request the engine's own admission can never hold (a paged slot's only memory gate, `EngineV2.requireRequestCanEverFit`); thrown before any stream exists, so a streamed local request gets 503 (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` (`submitTokenized`) |
+| `capacityExhausted(needed: …, available: …)` from the engine (503 `capacity`, `token_budget_exhausted`) | A request's paged pages could not be reserved when its step was built, for example a drafter's private pool; retryable capacity, never an untyped generation failure | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngineError.swift` (`fromSchedulerMessage`) |
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
 | Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s. On this Mac's API a streamed request's head waits for its admission (`holdHeadUntilAdmitted`), so a queued request that waits out the admission lease gets the memory 503 before any SSE header, as does one a paged pool keeps full through its requeues; one that isn't streamed gets the same words | `EngineLoopV2.swift`; `EngineV2Bridge+Events.swift`; `EngineV2Bridge+HeadHold.swift` |
 | `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |

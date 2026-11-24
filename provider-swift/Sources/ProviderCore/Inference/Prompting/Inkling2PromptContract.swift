@@ -105,7 +105,18 @@ enum Inkling2PromptContract {
     /// Where client stop strings apply when call frames are answer text: in
     /// every body the client receives as content, so everywhere but the
     /// thought (`answerStopScope` would skip a call frame's text).
-    static let undeclaredCallTextStopScope = CBv2StopStringScope(excluding: [thoughtSpan])
+    static let undeclaredCallTextStopScope = CBv2StopStringScope(excluding: [thoughtSpan] + controlTokenSpans)
+
+    /// Inkling's other control tokens, each up to its closing `|>`, so a
+    /// client stop such as "end" never matches inside `<|end_message|>`. The
+    /// thought's opener keeps its own span; none of these openers is a prefix
+    /// of it.
+    static let controlTokenSpans: [CBv2StopStringScope.Span] = [
+        "message_model", "content_text", "content_tool_error", "content_invoke_tool_text",
+        "content_invoke_tool_json", "content_image", "content_xml", "end_message",
+        "content_model_end_sampling", "message_user", "message_system", "message_tool",
+        "endoftext", "begin_of_text",
+    ].map { CBv2StopStringScope.Span(opener: "<|" + $0, closers: ["|>"]) }
 
     /// This request's stop scope, when it is not the model's (`answerStopScope`).
     static func stopStringScope(

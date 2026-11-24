@@ -7,29 +7,24 @@ import MLXLMCommon
 /// SDK's `ToolArgumentNormalization` for the Qwen XML dialect (`literal`,
 /// `LiteralReading.preferred`): under a schema with no single non-string type
 /// (`not`, `if`/`then`/`else`, a union, no `type`), a text that spells a JSON
-/// literal the schema admits becomes that literal. A number does whenever it
-/// is written exactly as JSON writes it; `true`, `false` and `null` only when
-/// the schema rejects the text as a string. Like `parserConversion`, it reads
-/// no `$ref`: a schema that holds one reads as text here.
+/// literal the schema admits becomes that literal: a number, `true`, `false`
+/// or `null` (in any case, and Python's `None`) written exactly so, else
+/// one with surrounding whitespace when the schema rejects the text as a
+/// string. Like `parserConversion`, it reads no `$ref`: a schema that holds
+/// one reads as text here.
 enum QwenParserLiteralReading {
     /// The literal the parser reads `text` as under `schema`, or nil when it
     /// keeps the text. Only for a parameter `parserConversion` reads as text.
     static func literal(_ text: String, schema: [String: MLXLMCommon.JSONValue]) -> MLXLMCommon.JSONValue? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let literal = jsonLiteral(trimmed), admitsLiteralType(schema),
+        guard let literal = jsonLiteral(trimmed) ?? spelledLiteral(trimmed), admitsLiteralType(schema),
               admission(of: .value(literal), .object(schema), depth: 0) == .yes else { return nil }
-        switch literal {
-        case .int, .double:
-            if trimmed == text { return literal }
-        default:
-            break
-        }
+        if trimmed == text { return literal }
         return admission(of: .value(.string(text)), .object(schema), depth: 0) == .no ? literal : nil
     }
 
-    /// Whether some text may read as a literal under `schema`: a number it may
-    /// admit, or a Boolean or null it may admit while it does not admit every
-    /// string. A schema this cannot decide keeps every text.
+    /// Whether some text may read as a literal under `schema`: a number,
+    /// Boolean or null it may admit. A schema this cannot decide keeps every text.
     static func admitsLiteralType(_ schema: [String: MLXLMCommon.JSONValue]) -> Bool {
         var readings: [String: Admission] = [:]
         for type in ["integer", "number", "boolean", "null", "string"] {
@@ -37,9 +32,17 @@ enum QwenParserLiteralReading {
             guard reading != .unknown else { return false }
             readings[type] = reading
         }
-        func admitted(_ type: String) -> Bool { readings[type] != .no }
-        return admitted("integer") || admitted("number")
-            || ((admitted("boolean") || admitted("null")) && readings["string"] != .yes)
+        return ["integer", "number", "boolean", "null"].contains { readings[$0] != .no }
+    }
+
+    /// The literal scalars in any case, and Python's `None`.
+    static func spelledLiteral(_ text: String) -> MLXLMCommon.JSONValue? {
+        switch text.lowercased() {
+        case "true": .bool(true)
+        case "false": .bool(false)
+        case "null", "none": .null
+        default: nil
+        }
     }
 
     /// A scalar spelled exactly as JSON writes it: `true`, `false`, `null`

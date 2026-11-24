@@ -254,6 +254,13 @@ struct NativeToolStreamRouter {
         return events
     }
 
+    /// A call recovered at the end of generation (`GPTOSSToolCallRecovery`),
+    /// exposed and checked as a call never streamed is.
+    mutating func recovered(_ call: ToolCall) throws -> [MLXServerGenerationEvent] {
+        guard let prepared = streamedCallPolicy else { return [] }
+        return try routeToolSegment(.call(call), prepared: prepared)
+    }
+
     private mutating func recordCut(leftOpen: Bool) {
         if leftOpen { callsLeftOpenAtCut += 1 } else { callsDroppedAtCut += 1 }
     }

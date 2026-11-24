@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-24
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -641,6 +641,21 @@ vCPUs and the sampled time scaled to 4 and 8 vCPUs to the log and the step
 summary. They upload the samples and `summary.json` as
 `resource-samples-<job>-<index>`. The sampler is report-only: its steps never
 fail a job.
+
+Only after a failed `Run Swift tests` step, each Provider Unit Tests shard
+also uploads report-only system diagnostics as
+`provider-system-diagnostics-<shard>`, kept 5 days, to tell a stalled runner
+from a slow test:
+
+- The guest's crash and hang reports of the last hour, from
+  `~/Library/Logs/DiagnosticReports` and `/Library/Logs/DiagnosticReports`,
+  up to 32 MiB, and a list of every one.
+- Ten minutes of the unified log (`log show --last 10m --info`) of the test
+  and helper processes, the crash reporter, `spindump`, `amfid` and
+  `syspolicyd`, within 150 s and 32 MiB.
+
+Both steps continue on error, so they never change the job's result, and a
+green run never runs them. The job reads no repository secret.
 
 Release Integrity and Docs Lint are CI (master)'s own jobs, so their checks keep
 their plain names (`master`'s ruleset requires `Release Integrity`). The test

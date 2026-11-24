@@ -48,6 +48,8 @@ FIXED_PATH = "\n".join(('cd /', 'rm -rf /private/tmp/dinf /private/tmp/dinf-ci "
 # Where those jobs keep every cache outside the workspace (FIXED_PATH's comment).
 CI_CACHE_ROOT = "/private/tmp/dinf-ci"
 SAMPLER_STEPS = ("Start the resource sampler", "Report the resource samples", "Upload the resource samples")
+# The provider shards' report-only system diagnostics, after failed tests only.
+FAILURE_DIAGNOSTIC_STEPS = ("Collect system diagnostics after failed tests", "Upload system diagnostics after failed tests")
 # Every macOS job: the build jobs, the test jobs and the release build checks.
 MAC_JOBS = (*BUILD_JOBS, *PRODUCT_JOBS, "cluster-release-checks", "test-cluster-focused")
 BLACKSMITH_MAC = "blacksmith-12vcpu-macos-27"
@@ -348,7 +350,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 # (test_each_lane_builds_once_and_its_test_jobs_run_its_products).
                 self.assertNotRegex(job, r"(?m)^    needs:")
                 self.assertIn("    if: ${{ inputs.provider == 'true' }}\n", job)
-                self.assertEqual(continues_on_error(job), [SAMPLER_STEPS[-1]])
+                failure_only = list(FAILURE_DIAGNOSTIC_STEPS) if job_id == "test-provider" else []
+                self.assertEqual(continues_on_error(job), [*failure_only, SAMPLER_STEPS[-1]])
                 self.assertNotIn("DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST:", job)
         self.assertIn("    name: Provider Unit Tests (shard ${{ matrix.shard }})\n", self.jobs["test-provider"])
         self.assertIn("    name: Provider Gates\n", self.jobs[GATES])
@@ -658,7 +661,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 steps = work_steps(self.jobs[job_id])
                 runs = [run_command(step) for step in steps
                         if field(step, "run") and field(step, "name", indent=6) not in
-                        (*COVERAGE_STEPS, *GATES_COVERAGE_STEPS, *PARITY_STEPS, *SHARD_CHECK_STEPS)]
+                        (*COVERAGE_STEPS, *GATES_COVERAGE_STEPS, *PARITY_STEPS, *SHARD_CHECK_STEPS,
+                         *FAILURE_DIAGNOSTIC_STEPS)]
                 self.assertEqual(runs, list(commands))
         everywhere = Counter(run_command(step) for job in self.jobs.values() for step in step_blocks(job))
         for command in (*gates, PROVIDER_TEST_COMMAND):
@@ -720,7 +724,34 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("          path: |\n            ${{ runner.temp }}/provider-test-diagnostics\n"
                       "            ${{ runner.temp }}/provider-unit-shard/slot-*.out\n", upload)
         self.assertEqual(field(upload, "retention-days", indent=10), "7")
-        self.assertEqual(continues_on_error(self.jobs["test-provider"]), [SAMPLER_STEPS[-1]])
+        self.assertEqual(continues_on_error(self.jobs["test-provider"]), [*FAILURE_DIAGNOSTIC_STEPS, SAMPLER_STEPS[-1]])
+
+    def test_failed_tests_collect_bounded_system_diagnostics_that_cannot_change_the_result(self):
+        job = self.jobs["test-provider"]
+        steps = {field(step, "name", indent=6): step for step in step_blocks(job)}
+        names = list(steps)
+        collect, upload = (steps[name] for name in FAILURE_DIAGNOSTIC_STEPS)
+        # Right after the test step's own diagnostics, only when the test step
+        # failed; each continues on error, and the test step itself does not.
+        self.assertEqual(names.index(FAILURE_DIAGNOSTIC_STEPS[0]), names.index("Upload provider test diagnostics") + 1)
+        self.assertEqual(names.index(FAILURE_DIAGNOSTIC_STEPS[1]), names.index(FAILURE_DIAGNOSTIC_STEPS[0]) + 1)
+        for step in (collect, upload):
+            self.assertEqual(field(step, "if"), "${{ failure() && steps.provider-unit-tests.outcome == 'failure' }}")
+            self.assertEqual(field(step, "continue-on-error"), "true")
+        self.assertNotIn("continue-on-error:", steps["Run Swift tests"])
+        # Bounded: an hour of reports within 32 MiB, ten minutes of the log
+        # within 150 s and 32 MiB, and the whole step within 5 minutes.
+        self.assertEqual(field(collect, "timeout-minutes"), "5")
+        for bound in ("-type f -mmin -60", "budget=$((32 * 1024 * 1024))", "timeout=150",
+                      "/usr/bin/log show --last 10m", "head -c $((32 * 1024 * 1024))"):
+            self.assertIn(bound, run_command(collect))
+        self.assertEqual(field(upload, "uses"), "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1")
+        self.assertEqual(field(upload, "name", indent=10), "provider-system-diagnostics-${{ matrix.shard }}")
+        self.assertEqual(field(upload, "path", indent=10), "${{ runner.temp }}/provider-system-diagnostics")
+        self.assertEqual(field(upload, "if-no-files-found", indent=10), "ignore")
+        self.assertEqual(field(upload, "retention-days", indent=10), "5")
+        # Nothing secret to redact: the job reads no repository secret.
+        self.assertNotIn("secrets.", job)
 
     def test_coverage_summary_preserves_weighted_rows_and_failure_checks(self):
         summary_script = COVERAGE_REPORT.read_text().split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]

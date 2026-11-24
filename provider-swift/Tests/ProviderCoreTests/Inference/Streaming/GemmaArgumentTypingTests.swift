@@ -72,13 +72,14 @@ struct GemmaArgumentTypingTests {
         try ToolConstraintValidation.validate(calls, prepared: prepared)
     }
 
-    /// The parse reads the schema Gemma is shown, after ingress
-    /// `ToolSchemaNormalization`: a property declared without a type (`{}`
-    /// or a description only) is shown as STRING, and a union as its first
-    /// member's type, so their bare values follow that type. vLLM, reading
-    /// the caller's schema, keeps 5, true and 3 there. Each result here is
-    /// valid for the caller's schema, and the `strict` validator accepts it.
-    @Test("an untyped property or a string-first union reads a bare value as the type Gemma is shown")
+    /// The parse reads the repaired schema (ingress `ToolSchemaNormalization`):
+    /// a property declared without a type (`{}` or a description only) is
+    /// shown as STRING, so its bare value stays text. A string-first union
+    /// reads a bare literal by the declared union (SDK #539: the type the
+    /// repair writes beside a union is a render hint), as vLLM does; with
+    /// #2658 Gemma is also shown that member. Each result here is valid for
+    /// the caller's schema, and the `strict` validator accepts it.
+    @Test("an untyped property reads a bare value as text; a string-first union reads it by the declared union")
     func normalizedSchemasDecideBareValues() throws {
         let body = Data(#"""
             {"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"Store it."}],"stream":true,
@@ -96,7 +97,7 @@ struct GemmaArgumentTypingTests {
             "<|tool_call>call:store{any:5,described:true,either:3,number_first:3,count:3}<tool_call|>")
         let calls = handler.finish()
         #expect(calls.map(\.function.arguments) == [[
-            "any": .string("5"), "described": .string("true"), "either": .string("3"),
+            "any": .string("5"), "described": .string("true"), "either": .int(3),
             "number_first": .int(3), "count": .int(3),
         ]])
         try ToolConstraintValidation.validate(calls, prepared: prepared)

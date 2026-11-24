@@ -58,21 +58,39 @@ enum GPTOSSToolSchemaRender {
     /// types, or nil when that equals the repair's own result (or either is
     /// out of the repair's bounds).
     static func parametersWithoutRenderTypes(_ declaration: OpenAITool) -> MLXLMCommon.JSONValue? {
+        guard let repaired = repairedParameters(declaration, writesRenderTypes: true),
+            let plain = repairedParameters(declaration, writesRenderTypes: false),
+            plain != repaired
+        else { return nil }
+        return plain
+    }
+
+    /// The tools GPT-OSS's served prompt shows for `declared` when nothing
+    /// repaired them yet (the template utility): each tool's parameters
+    /// through the repair without its render types, which equals the
+    /// repair's own result wherever the served prompt keeps it. Other
+    /// families keep `declared`.
+    static func servedTools(_ declared: [OpenAITool]?, modelId: String?, modelType: String?) -> [OpenAITool]? {
+        guard applies(modelId: modelId, modelType: modelType), let declared else { return declared }
+        return declared.map { tool in
+            guard let parameters = repairedParameters(tool, writesRenderTypes: false) else { return tool }
+            var copy = tool
+            copy.function.parameters = parameters
+            return copy
+        }
+    }
+
+    private static func repairedParameters(_ declaration: OpenAITool, writesRenderTypes: Bool)
+        -> MLXLMCommon.JSONValue?
+    {
         guard let parameters = declaration.function.parameters,
             let data = try? JSONEncoder().encode([parameters]),
             data.count <= ToolSchemaNormalization.maxNormalizationBytes,
             let node = (try? JSONSerialization.jsonObject(with: data)) as? [Any], let root = node.first
         else { return nil }
-        var repairedBudget = ToolSchemaNormalization.maxNormalizedNodes
-        var plainBudget = ToolSchemaNormalization.maxNormalizedNodes
-        guard
-            let repaired = ToolSchemaNormalization.repairedParameters(
-                root, writesRenderTypes: true, budget: &repairedBudget).flatMap(jsonValue),
-            let plain = ToolSchemaNormalization.repairedParameters(
-                root, writesRenderTypes: false, budget: &plainBudget).flatMap(jsonValue),
-            plain != repaired
-        else { return nil }
-        return plain
+        var budget = ToolSchemaNormalization.maxNormalizedNodes
+        return ToolSchemaNormalization.repairedParameters(
+            root, writesRenderTypes: writesRenderTypes, budget: &budget).flatMap(jsonValue)
     }
 
     private static func jsonValue(_ node: Any) -> MLXLMCommon.JSONValue? {

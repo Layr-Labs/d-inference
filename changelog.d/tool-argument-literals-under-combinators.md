@@ -1,0 +1,5 @@
+### Tool-call arguments read JSON literals under combinator schemas
+
+- A tool-call argument whose schema has no single non-string type (`not`, `if`/`then`/`else`, a union that admits a string, or no type) now reads a value written as a JSON literal, such as `-2500`, as that literal when the schema admits it and rejects the text as a string. Before, such values stayed strings and failed the schema. Values the check cannot decide keep their text.
+- For a tool parameter with no declared type (an empty or annotation-only schema), a value written as a number, or as `true`, `false` or `null` (in any letter case, or `None`), is now read as that JSON value instead of a string.
+- The same holds for a parameter whose type admits both a string and that value's type, such as an optional string (`["string", "null"]`): a value written `null` is read as `null`, not as the text `"null"`. These readings apply to models whose tool calls write each argument as plain text (Qwen 3.5 to 3.8, Nemotron 3.5); arguments written as quoted JSON strings are unchanged.

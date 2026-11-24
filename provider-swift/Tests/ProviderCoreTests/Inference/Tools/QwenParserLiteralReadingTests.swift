@@ -24,6 +24,8 @@ struct QwenParserLiteralReadingTests {
     static let probes = [
         "5", "2.5", "-2500", "true", "false", "null", "001", "+5", "1e3", "-0", "12.50", "abc", " 5", "15",
         "True", "False", "None", "TRUE", "nil", " null", "NULL", "none", "yes",
+        "12345678901234567890", "0.12345678901234567891", #"{"a":1,"b":[true,null]}"#, "[1,2.5]",
+        #"{"n":12345678901234567890}"#, #"{"a":"#, "{}", "[]",
     ]
 
     /// A schema as a request's tool map carries it.

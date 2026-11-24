@@ -16,11 +16,87 @@ enum QwenParserLiteralReading {
     /// The literal the parser reads `text` as under `schema`, or nil when it
     /// keeps the text. Only for a parameter `parserConversion` reads as text.
     static func literal(_ text: String, schema: [String: MLXLMCommon.JSONValue]) -> MLXLMCommon.JSONValue? {
+        scalar(text, schema: schema) ?? untypedContainer(text, schema: schema)
+    }
+
+    private static func scalar(_ text: String, schema: [String: MLXLMCommon.JSONValue]) -> MLXLMCommon.JSONValue? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let literal = jsonLiteral(trimmed) ?? spelledLiteral(trimmed), admitsLiteralType(schema),
               admission(of: .value(literal), .object(schema), depth: 0) == .yes else { return nil }
         if trimmed == text { return literal }
         return admission(of: .value(.string(text)), .object(schema), depth: 0) == .no ? literal : nil
+    }
+
+    /// Keywords that say nothing about a value: a schema of these alone (`{}`
+    /// included) declares no type.
+    private static let annotationKeywords: Set<String> = [
+        "description", "title", "default", "examples", "$comment", "deprecated", "readOnly", "writeOnly",
+    ]
+
+    /// The JSON object or array a text writes under a parameter with no
+    /// declared type: only a text that parses completely as one, and whose
+    /// numbers decode exactly (the SDK's `untypedContainer`).
+    static func untypedContainer(_ text: String, schema: [String: MLXLMCommon.JSONValue]) -> MLXLMCommon.JSONValue? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.first == "{" || trimmed.first == "[", schema.keys.allSatisfy(annotationKeywords.contains),
+              numbersAreExact(trimmed), let data = trimmed.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        let value = carried(any: parsed)
+        switch value {
+        case .object, .array: return value
+        default: return nil
+        }
+    }
+
+    /// A decoded JSON value as the SDK reads one: a boxed Boolean is a
+    /// Boolean, a boxed number an integer when it is one, else a double.
+    private static func carried(any value: Any) -> MLXLMCommon.JSONValue {
+        switch value {
+        case is NSNull: return .null
+        case let number as NSNumber:
+            if CFGetTypeID(number) == CFBooleanGetTypeID() { return .bool(number.boolValue) }
+            if let int = number as? Int { return .int(int) }
+            return .double(number.doubleValue)
+        case let string as String: return .string(string)
+        case let array as [Any]: return .array(array.map { carried(any: $0) })
+        case let object as [String: Any]: return .object(object.mapValues { carried(any: $0) })
+        default: return .string(String(describing: value))
+        }
+    }
+
+    /// Every number outside a JSON text's strings decodes exactly: an integer
+    /// of at most 18 digits, or a decimal of at most 15 significant digits.
+    private static func numbersAreExact(_ text: String) -> Bool {
+        var inString = false
+        var escaped = false
+        var token = ""
+        func exact(_ token: String) -> Bool {
+            guard !token.isEmpty else { return true }
+            let mantissa = token.prefix { $0 != "e" && $0 != "E" }
+            let digits = mantissa.filter(\.isNumber).drop { $0 == "0" }
+            let integral = mantissa.count == token.count && !token.contains(".")
+            return digits.count <= (integral ? 18 : 15)
+        }
+        for character in text {
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    inString = false
+                }
+                continue
+            }
+            if character.isNumber || "+-.eE".contains(character) {
+                token.append(character)
+                continue
+            }
+            guard exact(token) else { return false }
+            token = ""
+            if character == "\"" { inString = true }
+        }
+        return exact(token)
     }
 
     /// Whether some text may read as a literal under `schema`: a number,
@@ -74,7 +150,20 @@ enum QwenParserLiteralReading {
             guard digits() > 0 else { return nil }
         }
         guard scalars.isEmpty else { return nil }
-        return number(text)
+        let value = number(text)
+        if case .double(let double)? = value, !holdsExactly(text, double) { return nil }
+        return value
+    }
+
+    /// Whether `double` is the number `text` writes, digit for digit, within
+    /// the 38 digits a `Decimal` keeps (the SDK's `holdsExactly`).
+    private static func holdsExactly(_ text: String, _ double: Double) -> Bool {
+        let mantissa = text.prefix { $0 != "e" && $0 != "E" }
+        let digits = mantissa.filter(\.isNumber).drop { $0 == "0" }
+        let posix = Locale(identifier: "en_US_POSIX")
+        guard digits.count <= 38, let written = Decimal(string: text, locale: posix),
+              let read = Decimal(string: "\(double)", locale: posix) else { return false }
+        return written == read
     }
 
     /// The SDK's number reading: an integral spelling is an integer when it

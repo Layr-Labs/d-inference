@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-24
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -22,6 +22,8 @@ separates exactly two conversions. The idle age of the heartbeat's decode rate
 [deadlines](../architecture/inference.md#deadlines)) needs none either: it
 changes only the `observed_decode_tps` an idle slot advertises to routing, not
 admission, measurements or any profile.
+The rate's age on the heartbeat (`observed_decode_tps_age_ms`) needs none
+either: it is informational and changes no rate, admission or profile.
 Profile qualification is separate work required to introduce a measured
 prediction-error envelope.
 

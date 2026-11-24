@@ -3048,11 +3048,14 @@ only on a request that generated at least 32 tokens
 `completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same
 EWMA and restart rule over those samples): one short reply measures mostly its
 first steps or tail and could pull a Mac measuring 80–100 tok/s down to about
-11. A shorter request still feeds the deadline decode rate, the rate's age and
-`performance_measurements`, as before, so a slot that serves only short
-replies is still priced for deadline admission and never ages out while
-serving; it publishes no rate until a longer one. Deadline admission is
-unchanged: it charges the measured step shape. The projection also mirrors the
+11. A shorter request still feeds the rate's age and `performance_measurements`,
+as before, so a slot that serves only short replies never ages out while
+serving; it publishes no rate until a longer one. The deadline decode rate
+(`observedDecodeTpsEwma` and its measured step) follows the same 32-token rule
+once it has a sample, but any completed request starts it, on a new slot or
+after the decode evidence expired, so a slot that serves only short replies is
+still priced for deadline admission. None of this reaches the heartbeat. Deadline admission otherwise charges the measured
+step shape. The projection also mirrors the
 live MTP plan's depth gates
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift`,
 `CBv2MTPRoundDriver.speculationDepthCeiling`): a step with more decode rows

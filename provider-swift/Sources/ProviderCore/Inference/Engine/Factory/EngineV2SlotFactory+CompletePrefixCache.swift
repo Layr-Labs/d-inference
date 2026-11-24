@@ -55,6 +55,7 @@ extension EngineV2SlotFactory {
                 kind: preparedBackend.kind, layerKinds: preparedBackend.layerKinds,
                 supportsRecurrent: preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse,
                 supportsHistoricalAttention: historicalTarget,
+                isInkling2: EngineV2Factory.isInkling2(model),
                 modelDTypes: (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
                 nativeDTypes: preparedBackend.nativeLayerDTypes, pagedConfig: preparedBackend.pagedPoolConfig,
                 assistant: CompleteCheckpointAssistant(drafter: mtpDrafter),
@@ -140,9 +141,12 @@ extension EngineV2SlotFactory {
     /// Pure loaded-capability gate, shared with construction tests. The caller
     /// forwards the effective serving model and actual prepared storage facts.
     /// It never changes the supplied assistant configuration or verification.
+    /// `isInkling2`: the serving model is Inkling 2 (`EngineV2Factory.isInkling2`),
+    /// the one model reviewed on the historical recurrent codec.
     static func completeCheckpointStorage(
         kind: EngineV2KVBackendKind, layerKinds: [CBv2LayerKind],
         supportsRecurrent: Bool, supportsHistoricalAttention: Bool,
+        isInkling2: Bool = false,
         modelDTypes: [DType]?, nativeDTypes: [DType]?, pagedConfig: PagedKVPoolConfig?,
         assistant: CompleteCheckpointAssistant,
         assistantKeepsHistory: Bool = true,
@@ -150,16 +154,18 @@ extension EngineV2SlotFactory {
     ) -> CompleteCheckpointStorageIdentity? {
         let layerDTypes: [DType]
         let target: CompleteCheckpointStorageIdentity.Target
-        if supportsRecurrent, kind == .paged, layerKinds.contains(where: { layer in
+        if isInkling2, supportsRecurrent, kind == .paged, layerKinds.contains(where: { layer in
             if case .slidingWindow = layer.attention { return true }
             return false
         }) {
-            // Sliding windows beside recurrent state: the SDK's historical
-            // recurrent codec, with an assistant only when it exports its own
-            // history (Inkling 2 and its DSpark drafter). It stores exact
-            // native rows only, so a requested checkpoint profile (the fleet
-            // default is lossy) keeps native storage here, as an unsupported
-            // encoding does elsewhere; the identity records `native`.
+            // Inkling 2's sliding windows beside recurrent state: the SDK's
+            // historical recurrent codec, with an assistant only when it
+            // exports its own history (its DSpark drafter). Another model of
+            // this shape was not reviewed on it: it takes the branch below,
+            // which refuses a sliding window beside recurrent state. It stores
+            // exact native rows only, so a requested checkpoint profile (the
+            // fleet default is lossy) keeps native storage here, as an
+            // unsupported encoding does elsewhere; the identity records `native`.
             guard let nativeDTypes,
                 nativeDTypes.count == layerKinds.count,
                 modelDTypes == nil || modelDTypes == nativeDTypes,

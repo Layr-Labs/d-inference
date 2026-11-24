@@ -21,6 +21,11 @@ public enum Inkling2ModelIdentity {
     /// joins this set when the catalog registers one; any other id of the
     /// architecture keeps the type's own policy only.
     public static let servedModelIDs: Set<String> = [upstreamModelID]
+    /// The window this provider serves (prompt plus output), below the
+    /// checkpoint's 1,048,576: the largest window measured to serve with the
+    /// DSpark drafter on. A 1,048,576-token request allocates far more memory
+    /// up front than a 256 GB Mac can spare beside its other models.
+    public static let servedContextTokens = 524_288
 
     public static func isServedModelID(_ modelID: String?) -> Bool {
         modelID.map(servedModelIDs.contains) == true

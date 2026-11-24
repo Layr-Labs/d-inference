@@ -631,12 +631,21 @@ public enum MediaIngest {
     /// image sequence to its own copy of these caps (darkbloom-platform
     /// `EIGENINFERENCE_IMAGE_SEQUENCE_MODELS`, 16 for every build until a release
     /// carrying these values is on the fleet); raise it there once it is.
+    /// Inkling 2 Mini (`Inkling2ModelIdentity.servedModelIDs`) takes 64, not
+    /// below its peers elsewhere, which publish no per-request image limit. It
+    /// needs no image budget: it does not pool, but has one visual token per
+    /// 40x40 px of the image as sent (a side above 4,096 px is scaled down), so the
+    /// per-request 384 MP (`maxRequestImagePixels`) and per-image 100 MP
+    /// (`maxImagePixels`) caps bound a request's visual tokens to about 240K
+    /// (plus padding to the 40 px grid), and the prompt must still fit the
+    /// context. The coordinator does not condense its image sequences.
     static let modelMaxImagesPerRequest: [String: Int] = [
         "gemma-4-26b-qat-4bit": 24,
         "Qwen3.5-9B": 64,
         "qwen3.5-35b-a3b": 64,
         "qwen3.6-35b-a3b-vl-mtp-mxfp8": 64,
         "EigenLabs/Qwen3.8-27B-4bit-mtp": 64,
+        "thinkingmachines/Inkling-2-Mini": 64,
     ]
 
     /// The image cap for one request to `model`: the

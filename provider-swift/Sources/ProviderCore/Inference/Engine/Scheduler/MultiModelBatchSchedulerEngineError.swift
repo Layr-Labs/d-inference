@@ -232,6 +232,12 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         if lowercased.contains("queue full") {
             return .queueFull(message)
         }
+        // The SDK's paged-pool reservation refusal (`CBv2KVError.capacityExhausted`,
+        // pages that cannot be reserved now) is retryable capacity, never an
+        // untyped generation failure.
+        if lowercased.hasPrefix("capacityexhausted(") {
+            return .tokenBudgetExhausted(message)
+        }
         if lowercased.contains("token_budget_exhausted") {
             return .tokenBudgetExhausted(message)
         }

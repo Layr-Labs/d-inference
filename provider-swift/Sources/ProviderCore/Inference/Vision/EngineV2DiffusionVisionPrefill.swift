@@ -67,7 +67,8 @@ extension EngineV2VisionPrefill {
             }
         }
         let context = ChatTemplateFixContext(modelId: request.model, modelType: "diffusion_gemma")
-        let tools = ChatTemplateFixes.normalizeTools(request.tools?.map { $0.toolSpec() }, context: context)
+        let tools = ChatTemplateFixes.normalizeTools(
+            request.tools?.map { $0.toolSpec() }, context: context, declared: templateControls.declaredTools)
         try ChatTemplateFixes.validateGenericToolHistory(request.messages.map { $0.templateMessageDict() })
         var orderedRequest = request
         orderedRequest.messages = try Gemma4TurnStructure.orderTypedToolResults(request.messages)

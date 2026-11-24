@@ -660,6 +660,17 @@ still come from the planned context. `darkbloom logs` notes each such request
 and the daemon state counts them (`promptCacheSkippedToolCallNull`)
 (`provider-swift/Sources/ProviderCore/Inference/PrefixCache/ToolCallHistoryNullCache.swift`).
 
+A Gemma 4 request is served cold the same way when its declared tools carry a
+parameter whose `string`-first union of `string` and one other scalar type now
+renders as that other type, or a parameter declared without a type that now
+renders untyped (`Gemma4ToolSchemaEnforcement` invariants 7 and 8), while
+normalization v9 renders `STRING`. The check runs the shared tool path once
+more on the declared tools, a superset of the rendered ones, and reports
+whether invariant 7 or 8 changed a render type
+(`ChatTemplateFixes.changesGemmaToolRenderType`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/GemmaToolUnionTypeCache.swift`);
+its counter is `promptCacheSkippedToolUnionType`.
+
 Native MiMo historical checkpoints retain only actual uniform-chunk frontiers
 whose target and optional assistant state completed their native observation
 and promotion fences. Their fork target is the deepest successfully captured

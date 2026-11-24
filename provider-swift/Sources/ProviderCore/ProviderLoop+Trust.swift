@@ -74,7 +74,8 @@ extension ProviderLoop {
                 reasoningTokens: self.stats.reasoningTokens,
                 cancellationsPartialComplete: stats.cancellationsPartialComplete,
                 endedEarly: stats.endedEarly,
-                promptCacheSkippedToolCallNull: stats.promptCacheSkippedToolCallNull
+                promptCacheSkippedToolCallNull: stats.promptCacheSkippedToolCallNull,
+                promptCacheSkippedToolUnionType: stats.promptCacheSkippedToolUnionType
             ),
             capacity: cap.map {
                 DaemonState.Capacity(

@@ -43,6 +43,9 @@ public final class AtomicProviderStats: Sendable {
     // cache because their tool-call history carries a null argument
     // (`ToolCallHistoryNullCache`).
     private let _promptCacheSkippedToolCallNull = ManagedAtomic<UInt64>(0)
+    // The same for a Gemma tool union rendered as its typed member
+    // (`GemmaToolUnionTypeCache`).
+    private let _promptCacheSkippedToolUnionType = ManagedAtomic<UInt64>(0)
 
     public init() {}
 
@@ -173,6 +176,12 @@ public final class AtomicProviderStats: Sendable {
 
     public func incrementPromptCacheSkippedToolCallNull() {
         _promptCacheSkippedToolCallNull.add(1)
+    }
+
+    public var promptCacheSkippedToolUnionType: UInt64 { _promptCacheSkippedToolUnionType.load() }
+
+    public func incrementPromptCacheSkippedToolUnionType() {
+        _promptCacheSkippedToolUnionType.add(1)
     }
 
     public func incrementGenerationErrorsAfterOutput() {

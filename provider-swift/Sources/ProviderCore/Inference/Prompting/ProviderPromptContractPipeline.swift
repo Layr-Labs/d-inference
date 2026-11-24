@@ -209,7 +209,7 @@ enum ProviderPromptContractPipeline {
         }
         return try NormalizedInput(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: context),
-            tools: ChatTemplateFixes.normalizeTools(tools, context: context),
+            tools: ChatTemplateFixes.normalizeTools(tools, context: context, declared: templateControls.declaredTools),
             additionalContext: additionalContext)
     }
 }

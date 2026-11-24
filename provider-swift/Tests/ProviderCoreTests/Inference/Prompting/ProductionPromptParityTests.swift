@@ -26,6 +26,7 @@ struct ProductionPromptParityTests {
 
         let artifactRoot = URL(fileURLWithPath: artifactRootPath, isDirectory: true)
         var historyNullCases: Set<String> = []
+        var toolUnionTypeCases: Set<String> = []
         for model in corpus.models {
             let modelDirectory = artifactRoot.appendingPathComponent(
                 model.promptContractID, isDirectory: true)
@@ -80,7 +81,28 @@ struct ProductionPromptParityTests {
                 let served = ToolCallHistoryNullCache.servingContext(
                     RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
                     for: request, modelType: modelType, managedSuper: false)
-                let contractBody = served.servedCold ? try Self.v9HistoryArguments(providerBody) : providerBody
+                // A Gemma tool render type that changed is served cold by the
+                // next rule; the vectors stay the contract for the same body
+                // with each property declared without a type typed `string`,
+                // as the shared repair renders it.
+                let declared = ProviderLoop.extractChatTemplateControls(from: providerBody).declaredTools
+                let renderTypeChanged = GemmaToolUnionTypeCache.changesRender(
+                    request, modelType: modelType, declared: declared)
+                if renderTypeChanged {
+                    toolUnionTypeCases.insert(model.modelID + "/" + fixture.id)
+                    let renderServed = GemmaToolUnionTypeCache.servingContext(
+                        served.context, for: request, modelType: modelType, declared: declared)
+                    #expect((served.servedCold || renderServed.servedCold) && renderServed.context.receiptNonce == nil
+                            && !renderServed.context.cacheEnabled,
+                            "\(model.modelID)/\(fixture.id): a changed tool render must be served without the prompt cache")
+                    if !served.servedCold {
+                        let rendered = try await tokens(providerBody)
+                        #expect(rendered != fixture.tokenIDs,
+                                "\(model.modelID)/\(fixture.id): the tool render change no longer changes the prompt")
+                    }
+                }
+                var contractBody = served.servedCold ? try Self.v9HistoryArguments(providerBody) : providerBody
+                if renderTypeChanged { contractBody = try Self.v9TypedDeclarations(contractBody) }
                 if served.servedCold {
                     historyNullCases.insert(model.modelID + "/" + fixture.id)
                     #expect(served.context.receiptNonce == nil && served.context.scope == nil
@@ -116,6 +138,10 @@ struct ProductionPromptParityTests {
         // Exactly the vector bodies whose earlier tool call carries a null.
         #expect(historyNullCases == Self.historyNullCases,
                 "provider-rendered cases changed: \(historyNullCases.symmetricDifference(Self.historyNullCases).sorted())")
+        // Exactly the Gemma vector bodies whose tool render type changed
+        // (GemmaToolUnionTypeCache): a property declared without a type.
+        #expect(toolUnionTypeCases == Self.toolUnionTypeCases,
+                "Gemma tool-union cases changed: \(toolUnionTypeCases.sorted())")
     }
 
     /// Gemma 4 prompt contracts on the served artifacts: a request that asks
@@ -227,6 +253,48 @@ extension ProductionPromptParityTests {
          "gpt-oss-20b", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"].flatMap { model in
             ["endpoint_messages_tool_turn", "gemma_tool_turn"].map { model + "/" + $0 }
         })
+
+    /// The vector bodies whose Gemma tool render type changed: the Gemma
+    /// models' bodies that declare a property without a type (`city: {}`).
+    static let toolUnionTypeCases: Set<String> = Set(
+        ["gemma-4-26b", "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit"].flatMap { model in
+            ["endpoint_messages_tool_turn", "tools"].map { model + "/" + $0 }
+        })
+
+    /// `body` with every tool property declared without a type
+    /// (`Gemma4ToolSchemaEnforcement.declaresAnyValue`) typed `string`, as the
+    /// shared repair renders it under the v9 contract.
+    private static func v9TypedDeclarations(_ body: Data) throws -> Data {
+        func typed(_ node: [String: Any]) -> [String: Any] {
+            var node = node
+            if var properties = node["properties"] as? [String: Any] {
+                for (key, value) in properties {
+                    guard var property = value as? [String: Any] else { continue }
+                    if Gemma4ToolSchemaEnforcement.declaresAnyValue(property) {
+                        property["type"] = "string"
+                    } else {
+                        property = typed(property)
+                    }
+                    properties[key] = property
+                }
+                node["properties"] = properties
+            }
+            if let items = node["items"] as? [String: Any] { node["items"] = typed(items) }
+            return node
+        }
+        guard var object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let tools = object["tools"] as? [Any]
+        else { return body }
+        object["tools"] = tools.map { tool -> Any in
+            guard var tool = tool as? [String: Any], var function = tool["function"] as? [String: Any],
+                  let parameters = function["parameters"] as? [String: Any]
+            else { return tool }
+            function["parameters"] = typed(parameters)
+            tool["function"] = function
+            return tool
+        }
+        return try JSONSerialization.data(withJSONObject: object)
+    }
 
     /// `body` with each earlier tool call's arguments object passed through the
     /// production drop policy (`sanitizeForJinja`, which the v9 contract applies

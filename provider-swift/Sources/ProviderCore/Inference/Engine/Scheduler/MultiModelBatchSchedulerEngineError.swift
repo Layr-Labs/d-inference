@@ -107,6 +107,11 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// The history has no user query its Qwen 3.5/3.6/3.8 or Bonsai 2 template
     /// accepts. Deterministic request error, before template rendering.
     case missingUserQuery
+    /// An image or video sits in a message role the model's chat template does
+    /// not render (it raises on it, or leaves no placeholder for it), so the
+    /// model could not see that media. Deterministic for the request on every
+    /// provider, so 400 — the reference server refuses the same request.
+    case mediaRoleNotRendered
     /// A typed CBv2 platform/engine terminal (a monotonic deadline lease or
     /// the step watchdog) fired mid-generation. Unlike `.generationFailed`,
     /// this carries the machine-readable `cause` AND the engine-reconciled
@@ -169,6 +174,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return message
         case .missingUserQuery:
             return "This model requires at least one user message that is not only a tool response"
+        case .mediaRoleNotRendered:
+            return "An image or video is in a message this model's chat template does not place"
         case .platformTerminal(_, let message, _):
             return message
         case .distributedRequestRefused(_, let message):

@@ -201,31 +201,132 @@ class PartitionTests(unittest.TestCase):
             self.assertTrue(all(assigned[:-1]), total)
 
 
-class CountAndAuditTests(unittest.TestCase):
-    LOG = textwrap.dedent("""\
-        Test Suite 'Selected tests' started at 2026-10-29 12:25:40.000.
-        Test Suite 'Selected tests' passed at 2026-10-29 12:26:47.783.
-        \t Executed 3 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.0 (1.0) seconds
-        ✔ Test run with 4 tests in 2 suites passed after 1.000 seconds.
-        """)
+def swift_testing_report(*cases):
+    """Swift Testing's xUnit report as Swift 6.4 writes it; a case is
+    (classname/name, skipped). Its `tests` attribute leaves out the skips."""
+    skips = sum(skipped for _, skipped in cases)
+    body = "".join(f'<testcase classname="{name.rsplit("/", 1)[0]}" name="{name.rsplit("/", 1)[-1]}" time="0.1"'
+                   + (' >\n<skipped>needs a fixture</skipped>\n</testcase>\n' if skipped else ' />\n')
+                   for name, skipped in cases)
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n<testsuites>\n'
+            f'<testsuite name="TestResults" errors="0" tests="{len(cases) - skips}" failures="0" skipped="{skips}" '
+            f'time="1.0">\n{body}</testsuite>\n</testsuites>\n')
 
-    def test_counts_read_both_frameworks_and_failures(self):
-        self.assertEqual(shards.counts(self.LOG), {"swift_testing": 4, "xctest": 3})
-        failed = self.LOG.replace("passed after 1.000 seconds.", "failed after 1.000 seconds with 2 issues.")
-        self.assertEqual(shards.counts(failed), {"swift_testing": 4, "xctest": 3})
-        self.assertEqual(shards.counts("✔ Test run with 1 test in 1 suite passed after 0.1 seconds."),
-                         {"swift_testing": 1, "xctest": 0})
-        # A shard run without a Swift Testing summary did not finish, even
-        # when its XCTest pass did.
-        xctest_only = "Test Suite 'Selected tests' passed at x\n Executed 2 tests, with 0 failures"
-        with self.assertRaisesRegex(ValueError, "did not finish"):
-            shards.counts(xctest_only)
-        # A parity selection of only XCTest cases (Nemotron) prints no Swift Testing summary.
-        self.assertEqual(shards.counts(xctest_only, xctest_only=True), {"swift_testing": 0, "xctest": 2})
-        with self.assertRaisesRegex(ValueError, "did not finish"):
-            shards.counts("Test Suite 'Selected tests' started at x\nfatal error", xctest_only=True)
+
+# SwiftPM's stdout (the test process's output) for 3 XCTest cases, one skipped.
+XCTEST_STDOUT = textwrap.dedent("""\
+    Test Suite 'Selected tests' started at 2026-10-29 12:25:40.000.
+    Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-10-29 12:26:47.782.
+    \t Executed 3 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.0 (1.0) seconds
+    Test Suite 'Selected tests' passed at 2026-10-29 12:26:47.783.
+    \t Executed 3 tests, with 1 test skipped and 0 failures (0 unexpected) in 1.0 (1.0) seconds
+    ✔ Test run with 4 tests in 2 suites passed after 1.000 seconds.
+    """)
+# Run 44909219943: SwiftPM's stderr warning inside the Swift Testing summary
+# of a merged console (`2>&1`).
+SPLIT_CONSOLE = ("✔ Test run with 29warning: '--build-system native' has been deprecated and will be removed in a "
+                 "future release; please report an issue at https://github.com/swiftlang/swift-package-manager/issues "
+                 "if you are unable to adopt the default build system\n"
+                 " tests in 3 suites passed after 72.041 seconds.\n")
+
+
+class CountAndAuditTests(unittest.TestCase):
+    def counts(self, report, stdout):
+        """counts() of one run whose report and stdout log hold this text; None writes no file."""
+        temporary = tempfile.TemporaryDirectory(prefix="shard-counts-")
+        self.addCleanup(temporary.cleanup)
+        xunit, log = Path(temporary.name) / "shard-1-of-2-swift-testing.xml", Path(temporary.name) / "shard-1-of-2.log"
+        for path, text in ((xunit, report), (log, stdout)):
+            if text is not None:
+                path.write_text(text)
+        return shards.counts(xunit, log)
+
+    def test_counts_read_both_frameworks_skips_included(self):
+        # Skipped tests count as run in both, as the console summaries did:
+        # in run 44914459288 selection 3/12 printed `Test run with 1245 tests`,
+        # and its report held 1245 cases, 213 of them skipped.
+        report = swift_testing_report(("M.A/a()", False), ("M.A/b()", True), ("M.B/c()", False), ("M.B/d()", False))
+        self.assertEqual(self.counts(report, XCTEST_STDOUT), {"swift_testing": 4, "xctest": 3})
+        failed = XCTEST_STDOUT.replace("Test Suite 'Selected tests' passed", "Test Suite 'Selected tests' failed")
+        self.assertEqual(self.counts(report, failed), {"swift_testing": 4, "xctest": 3})
+        self.assertEqual(self.counts(swift_testing_report(("M.A/a()", False)), ""), {"swift_testing": 1, "xctest": 0})
+        # A parity selection of only XCTest cases (Nemotron): its report holds none.
+        self.assertEqual(self.counts(swift_testing_report(), XCTEST_STDOUT), {"swift_testing": 0, "xctest": 3})
+        # The test process's own output can arrive between XCTest's last two lines.
+        noisy = XCTEST_STDOUT.replace("12:26:47.783.\n", "12:26:47.783.\nflushed\noutput\nof\na test\n")
+        self.assertEqual(self.counts(report, noisy), {"swift_testing": 4, "xctest": 3})
         with self.assertRaisesRegex(ValueError, "zero tests"):
-            shards.counts("✔ Test run with 0 tests passed after 0.001 seconds.")
+            self.counts(swift_testing_report(), "Test Suite 'Selected tests' passed at x\n Executed 0 tests")
+
+    def test_a_warning_inside_the_console_summary_does_not_move_the_counts(self):
+        # The same run's merged console read as its stdout: the counts never
+        # come from the Swift Testing summary line.
+        report = swift_testing_report(*((f"M.S/test{index}()", False) for index in range(29)))
+        self.assertEqual(self.counts(report, SPLIT_CONSOLE), {"swift_testing": 29, "xctest": 0})
+        self.assertEqual(self.counts(report, XCTEST_STDOUT.replace("✔ Test run with 4 tests in 2 suites passed after "
+                                                                   "1.000 seconds.\n", SPLIT_CONSOLE)),
+                         {"swift_testing": 29, "xctest": 3})
+
+    def test_counts_fail_without_a_readable_report_or_stdout(self):
+        # SwiftPM writes the report when the run finishes: without one, or
+        # with one cut short, the run did not finish, whatever its console says.
+        console = "✔ Test run with 4 tests in 2 suites passed after 1.000 seconds.\n"
+        for report, message in ((None, "No Swift Testing xUnit report"),
+                                ("", "Unreadable Swift Testing xUnit report"),
+                                ('<?xml version="1.0" encoding="UTF-8"?>\n<testsuites>\n',
+                                 "Unreadable Swift Testing xUnit report")):
+            with self.subTest(report=report), self.assertRaisesRegex(ValueError, message + ".*did not finish"):
+                self.counts(report, XCTEST_STDOUT + console)
+        with self.assertRaisesRegex(ValueError, "No stdout log.*did not finish"):
+            self.counts(swift_testing_report(("M.A/a()", False)), None)
+
+    def test_counts_command_fails_loudly_and_a_test_that_did_not_run_fails_the_audit(self):
+        # The run's report and stdout, through `counts` and `audit-job`, as CI runs them.
+        weighted = next(key for key in shards.load_weights() if key.startswith("DarkbloomCLITests."))
+        tests = [f"{weighted}/a()", f"{weighted}/b()", "ProviderCoreTests.XCTestClass/testOne",
+                 "ProviderCoreTests.XCTestClass/testTwo", "ProviderCoreTests.XCTestClass/testThree",
+                 "ProviderCoreFoundationTests.Pure/f()"]
+        temporary = tempfile.TemporaryDirectory(prefix="shard-counts-audit-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "tests.txt").write_text("\n".join(tests) + "\n")
+        reports = root / "reports"
+        reports.mkdir()
+        environment = {key: value for key, value in os.environ.items() if key != "PROVIDER_TEST_PROCESSES"}
+
+        def run(*arguments):
+            return subprocess.run(["python3", str(ROOT / "scripts/provider-test-shards.py"), *map(str, arguments)],
+                                  capture_output=True, text=True, env=environment)
+
+        def counts(shard, cases, stdout):
+            name = shard.replace("/", "-of-")
+            report = reports / f"shard-{name}-swift-testing.xml"
+            if cases is not None:
+                report.write_text(swift_testing_report(*cases))
+            (reports / f"shard-{name}.log").write_text(stdout)
+            return run("counts", shard, ISOLATED, report, reports / f"shard-{name}.log", reports / f"shard-{name}.json")
+
+        self.assertEqual(counts("parallel", [], "").returncode, 1)
+        self.assertFalse((reports / "shard-parallel.json").exists())
+        self.assertEqual(counts("parallel", [("ProviderCoreFoundationTests.Pure/f()", False)], "").returncode, 0)
+        missing = counts("1/1", None, XCTEST_STDOUT)
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("::error::Selection 1/1: No Swift Testing xUnit report", missing.stdout)
+        self.assertFalse((reports / "shard-1-of-1.json").exists())
+        # Every planned test ran once, one Swift Testing test as a skip: the
+        # audit passes, though a warning split the console's summary.
+        ran = counts("1/1", [(f"{weighted}/a()", False), (f"{weighted}/b()", True)], XCTEST_STDOUT + SPLIT_CONSOLE)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertEqual(json.loads((reports / "shard-1-of-1.json").read_text()),
+                         {"shard": "1/1", "pattern": ISOLATED, "processes": 1, "swift_testing": 2, "xctest": 3})
+        audited = run("audit-job", root / "tests.txt", reports, "1/1")
+        self.assertEqual(audited.returncode, 0, audited.stdout + audited.stderr)
+        self.assertIn("selection 1/1: planned 5, executed 5", audited.stdout)
+        # A planned test that did not run fails the audit.
+        self.assertEqual(counts("1/1", [(f"{weighted}/a()", False)], XCTEST_STDOUT).returncode, 0)
+        audited = run("audit-job", root / "tests.txt", reports, "1/1")
+        self.assertEqual(audited.returncode, 1, audited.stdout + audited.stderr)
+        self.assertIn("::error::Selection 1/1 executed 4 tests but its plan lists 5", audited.stdout)
 
     def test_each_job_audits_its_own_selections_and_the_last_the_whole_plan(self):
         # Seconds well above the fixed extra seconds, so each of the 4
@@ -457,16 +558,20 @@ class CountAndAuditTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     """run-provider-tests.sh with a recording `swift` in place of the toolchain."""
 
-    def run_tests(self, shard=None, processes=None, status=0, **stub):
+    def run_tests(self, shard=None, processes=None, status=0, stale_reports=(), **stub):
         temporary = tempfile.TemporaryDirectory(prefix="provider-shard-runner-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
+        # Reports an earlier run left in the report directory.
+        for name in stale_reports:
+            (root / "reports").mkdir(exist_ok=True)
+            (root / "reports" / name).write_text(swift_testing_report(("M.S/old()", False), ("M.S/older()", False)))
         calls, environments = root / "calls.jsonl", root / "environments.jsonl"
         self.starts = root / "starts.jsonl"
         swift = root / "swift"
         swift.write_text(textwrap.dedent("""\
             #!/usr/bin/env python3
-            import json, os, sqlite3, sys, time
+            import json, os, sys, time
             with open(os.environ["STUB_CALLS"], "a") as calls:
                 calls.write(json.dumps(sys.argv[1:]) + "\\n")
             with open(os.environ["STUB_STARTS"], "a") as starts:
@@ -475,39 +580,57 @@ class RunnerTests(unittest.TestCase):
                 environments.write(json.dumps({name: os.environ.get(name) for name in (
                     "TMPDIR", "DARKBLOOM_STATE_FILE", "DARKBLOOM_LOADED_MODELS_FILE",
                     "DARKBLOOM_VERIFIED_WEIGHTS_FILE")}) + "\\n")
-            if "--xunit-output" in sys.argv:
+            split = bool(os.environ.get("STUB_SPLIT"))
+            if "--xunit-output" in sys.argv and not os.environ.get("STUB_NO_XUNIT"):
                 report = sys.argv[sys.argv.index("--xunit-output") + 1]
                 open(report, "w").write("<testsuites/>")
-                # Swift Testing's report, which scripts/run-nested-suite.sh counts.
+                # Swift Testing's report, which the selection's counts and
+                # scripts/run-nested-suite.sh read.
+                cases = "".join(f'<testcase name="t{index}()" />' for index in range(29 if split else 2))
                 open(report.removesuffix(".xml") + "-swift-testing.xml", "w").write(
-                    '<testsuites><testsuite tests="2"><testcase name="a()" /><testcase name="b()" />'
-                    '</testsuite></testsuites>')
+                    f'<testsuites><testsuite tests="{29 if split else 2}">{cases}</testsuite></testsuites>')
             # SwiftPM's native build system: unless the build is planned in
             # memory (--disable-build-manifest-caching), `swift test
             # --skip-build` runs llbuild's package-structure step inside BEGIN
             # EXCLUSIVE on .build/build.db. A process that cannot get the
             # database reports it locked, runs its tests anyway and exits 1.
             # The holder keeps the database until STUB_PEERS processes have
-            # tried it, as a slow step does while the others start.
+            # tried it, as a slow step does while the others start. Exactly
+            # one process holds it: an exclusive create decides, where SQLite's
+            # BEGIN EXCLUSIVE with no wait can refuse every process that
+            # starts at the same moment.
             locked = False
             if "--disable-build-manifest-caching" not in sys.argv:
                 os.makedirs(".build", exist_ok=True)
-                database = sqlite3.connect(".build/build.db", timeout=0, isolation_level=None)
                 try:
-                    database.execute("BEGIN EXCLUSIVE")
-                except sqlite3.OperationalError:
+                    holder = os.open(".build/build.db.holder", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
                     locked = True
                 with open(".build/attempts", "a") as attempts:
                     attempts.write(".")
                 peers, deadline = int(os.environ.get("STUB_PEERS", "1")), time.monotonic() + 10
                 while not locked and len(open(".build/attempts").read()) < peers and time.monotonic() < deadline:
                     time.sleep(0.01)
-                database.close()
+                if not locked:
+                    os.close(holder)
+                    os.unlink(".build/build.db.holder")
             if locked:
                 print('error: unable to attach DB: error: accessing build database "/x/.build/build.db": '
                       'database is locked Possibly there are two concurrent builds running in the same '
                       'filesystem location.')
-            print("Test run with 2 tests in 1 suite passed after 0.1 seconds.")
+            if split:
+                # Run 44909219943: SwiftPM's own warning, on its stderr, inside
+                # the summary line the test process wrote to its stdout.
+                for stream, text in (
+                        (sys.stdout, "\\u2714 Test run with 29"),
+                        (sys.stderr, "warning: '--build-system native' has been deprecated and will be removed "
+                                     "in a future release\\n"),
+                        (sys.stdout, " tests in 3 suites passed after 72.041 seconds.\\n")):
+                    stream.flush()
+                    stream.buffer.write(text.encode())
+                    stream.buffer.flush()
+            else:
+                print("Test run with 2 tests in 1 suite passed after 0.1 seconds.")
             sys.exit(1 if locked else 0)
             """))
         swift.chmod(0o755)
@@ -523,6 +646,7 @@ class RunnerTests(unittest.TestCase):
         result = subprocess.run(["bash", str(ROOT / "scripts/run-provider-tests.sh")], cwd=root,
                                 env=environment, text=True, capture_output=True, timeout=60)
         self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+        self.result, self.reports = result, root / "reports"
         if status:
             return result
         self.environments = [json.loads(line) for line in environments.read_text().splitlines()]
@@ -543,6 +667,32 @@ class RunnerTests(unittest.TestCase):
         report = json.loads((reports / "shard-2-of-4.json").read_text())
         self.assertEqual(report["shard"], "2/4")
         self.assertEqual(report["swift_testing"], 2)
+
+    def test_counts_survive_a_warning_inside_the_summary_line(self):
+        # Run 44909219943: SwiftPM's stderr warning split `✔ Test run with 29`
+        # from ` tests in 3 suites passed`. Each selection's counts read its
+        # xUnit report and stdout alone, which the warning never enters; the
+        # warning still reaches the output, and slot-*.out beside the stdout.
+        for shard, processes, names in (("2/4", "1", ["2-of-4"]),
+                                        ("1/2", "3", ["1-of-6", "2-of-6", "3-of-6", "parallel"])):
+            with self.subTest(processes=processes):
+                _, reports = self.run_tests(shard, processes=processes, STUB_SPLIT="1")
+                for name in names:
+                    self.assertEqual(json.loads((reports / f"shard-{name}.json").read_text())["swift_testing"], 29)
+                    log = (reports / f"shard-{name}.log").read_text()
+                    self.assertIn("✔ Test run with 29 tests in 3 suites passed", log)
+                    self.assertNotIn("warning:", log)
+                output = self.result.stdout + self.result.stderr
+                self.assertIn("warning: '--build-system native' has been deprecated", output)
+                for slot in reports.glob("slot-*.out"):
+                    self.assertIn("warning: '--build-system native'", slot.read_text())
+
+    def test_a_selection_without_its_report_fails_beside_an_earlier_one(self):
+        result = self.run_tests("2/4", status=1, stale_reports=["shard-2-of-4-swift-testing.xml"],
+                                STUB_NO_XUNIT="1")
+        self.assertIn("::error::Selection 2/4: No Swift Testing xUnit report", result.stdout)
+        self.assertFalse((self.reports / "shard-2-of-4-swift-testing.xml").exists())
+        self.assertFalse((self.reports / "shard-2-of-4.json").exists())
 
     def test_first_shard_also_runs_the_parallel_class(self):
         calls, reports = self.run_tests("1/4")
@@ -619,8 +769,9 @@ class RunnerTests(unittest.TestCase):
         calls, reports = self.run_tests("1/2", processes="3", STUB_PEERS="3")
         self.assertEqual(sorted(self.selection_of(call) for call in calls),
                          ["1-of-6", "2-of-6", "3-of-6", "parallel"])
-        for name in ("1-of-6", "2-of-6", "3-of-6", "parallel"):
-            self.assertNotIn("database is locked", (reports / f"shard-{name}.log").read_text())
+        # The slot output holds both streams of its selections.
+        for name in ("1-of-6", "2-of-6", "3-of-6"):
+            self.assertNotIn("database is locked", (reports / f"slot-{name}.out").read_text())
         self.assertEqual(sorted(path.name for path in reports.iterdir() if not path.name.startswith("shard-")),
                          ["slot-1-of-6.out", "slot-2-of-6.out", "slot-3-of-6.out"])
         # The stub is SwiftPM's lock: without the flag, processes that start

@@ -22,10 +22,16 @@ import MLXVLM
 extension EngineV2VisionPrefill {
     /// Decode with the existing bounded ingest, but preserve GLM's native
     /// tool/history values and interleaved symbolic media parts. No URL or media
-    /// bytes enter the prompt, and non-user media is rejected rather than lost.
+    /// bytes enter the prompt; media in other roles is placed by the template
+    /// (`MediaIngest.placesNonUserMedia`), or rejected rather than lost when
+    /// the switch is off.
     static func glm5NextUserInput(request: OpenAIChatCompletionRequest,
                                   controls: ChatTemplateControls) async throws -> UserInput {
         var textRequest = request
+        // Media in a system, assistant or tool message is placed by the template
+        // too (it renders media in every role); without such media only user
+        // messages carry parts, as before.
+        let everyRole = MediaIngest.placesNonUserMedia(request)
         for index in request.messages.indices {
             let message = request.messages[index]
             if case .parts(let parts) = message.content {
@@ -33,7 +39,7 @@ extension EngineV2VisionPrefill {
                     switch part {
                     case .text: break
                     case .imageURL, .videoURL:
-                        guard message.role == .user else {
+                        guard message.role == .user || everyRole else {
                             throw EngineV2VisionPrefillError.unsupportedMedia("GLM media requires a user role")
                         }
                     case .inputAudio, .unsupported:
@@ -48,13 +54,13 @@ extension EngineV2VisionPrefill {
             prepared: prepared, controls: controls)
         var messages = normalized.messages
         let prefix = messages.count - request.messages.count
-        guard (0...1).contains(prefix) else {
+        guard (0...1).contains(prefix), prepared.messages.count == messages.count else {
             throw EngineV2VisionPrefillError.unsupportedMedia("GLM prompt alignment")
         }
         for index in request.messages.indices {
             let message = request.messages[index]
-            guard message.role == .user, case .parts(let parts) = message.content else { continue }
-            messages[index + prefix]["content"] = try parts.map { part -> [String: String] in
+            guard message.role == .user || everyRole, case .parts(let parts) = message.content else { continue }
+            var content = try parts.map { part -> [String: String] in
                 switch part {
                 case .text(let text): return ["type": "text", "text": text]
                 case .imageURL: return ["type": "image"]
@@ -63,8 +69,20 @@ extension EngineV2VisionPrefill {
                     throw EngineV2VisionPrefillError.unsupportedMedia("GLM supports image/video parts only")
                 }
             }
+            // An instruction the text policy appended to a system message
+            // (tool_choice) stays after its parts. The policy's typed messages
+            // have the same indices as `messages`.
+            if message.role != .user {
+                let original = message.textContent
+                let rendered = prepared.messages[index + prefix].textContent
+                if rendered.count > original.count, rendered.hasPrefix(original) {
+                    content.append(["type": "text", "text": String(rendered.dropFirst(original.count))])
+                }
+            }
+            messages[index + prefix]["content"] = content
         }
-        let decoded = try await MediaIngest.buildUserInput(from: request, templateControls: controls)
+        let decoded = try await MediaIngest.buildUserInput(from: request, templateControls: controls,
+            keepNonUserMedia: everyRole)
         return UserInput(messages: messages, images: decoded.images, videos: decoded.videos,
             tools: normalized.tools, additionalContext: normalized.additionalContext)
     }

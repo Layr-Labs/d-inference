@@ -901,6 +901,15 @@ public struct SelfUpdater: Sendable {
         try? recoveryStore()?.loadState()
     }
 
+    /// The release this install updated from, as its kept rollback copy records it: that release's version and the
+    /// cluster worker inside the copy. Read without the lease, as `recordedRecoveryState` reads; nil when no copy is
+    /// kept or the state cannot be read.
+    public func keptRollbackWorker() -> (version: String, worker: URL)? {
+        guard let store = recoveryStore(), let copy = try? store.loadState().predecessor,
+              let bundle = try? store.resolvedRecoveryPath(copy.bundlePath) else { return nil }
+        return (copy.release.version, ClusterRuntimeApprovalFacts.Installation(app: bundle).worker)
+    }
+
     private func recoveryStore() -> UpdateRecoveryStore? {
         guard let root = resolvedInstallRoot() else { return nil }
         return UpdateRecoveryStore(

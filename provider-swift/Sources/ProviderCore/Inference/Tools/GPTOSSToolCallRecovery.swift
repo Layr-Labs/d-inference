@@ -26,14 +26,15 @@ import MLXLMServer
 ///
 /// vLLM returns both as text (or nothing). Neither changes a rendered prompt.
 ///
-/// `DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY`: unset or any other value keeps it on;
-/// `0`, `off`, `false` or `no` turns it off. Read once per process.
+/// `DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY`: `1`, `on`, `true` or `yes` turns it
+/// on; unset or any other value keeps it off. Read once per process.
 struct GPTOSSToolCallRecovery: Sendable {
     static let environmentKey = "DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY"
     static let enabled = isEnabled(environment: ProcessInfo.processInfo.environment)
 
     static func isEnabled(environment: [String: String]) -> Bool {
-        !ToolOutputLeniencySwitch.isOff(environment[environmentKey])
+        ["1", "on", "true", "yes"].contains(
+            environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "")
     }
 
     /// The most visible text kept for the analysis check: a frame is a header

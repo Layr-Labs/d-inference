@@ -515,9 +515,8 @@ public enum LaunchAgent: Sendable {
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
     /// `DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY`: a whole declared GPT-OSS call
-    /// written as the answer or inside the analysis is returned as a call by
-    /// default (`GPTOSSToolCallRecovery`); `0`, `off`, `false` or `no` returns
-    /// it as generated.
+    /// written as the answer or inside the analysis is returned as a call when
+    /// set to `1`, `on`, `true` or `yes` (`GPTOSSToolCallRecovery`); off by default.
     /// `DARKBLOOM_HARMONY_AUTO_TOOL_GRAMMAR`: GPT-OSS `auto` calls follow a
     /// declared name and that function's schema in the sampler by default; an
     /// off word restores calls as generated.

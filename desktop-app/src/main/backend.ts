@@ -74,10 +74,11 @@ function compatible(snapshot: Snapshot) {
 function actionBody(action: Action & { id: string }) {
   let leastBytes = 0;
   const body = JSON.stringify(action, function (this: unknown, key: string, value: unknown) {
-    // A property adds at least its key (inside an object) and one byte per value character.
-    if (value !== undefined)
-      leastBytes +=
-        (Array.isArray(this) ? 0 : key.length) + (typeof value === 'string' ? value.length : 1);
+    // An array element adds at least one byte (`null` for a hole or undefined); an object
+    // property adds at least its key, unless omitted. A string adds a byte per character.
+    const inArray = Array.isArray(this);
+    if (inArray || value !== undefined)
+      leastBytes += (inArray ? 0 : key.length) + (typeof value === 'string' ? value.length : 1);
     if (leastBytes > maxActionBytes) throw new Error('Backend action too large');
     return value;
   });

@@ -306,3 +306,21 @@ it('stops serializing an oversized action at the field that exceeds the limit', 
   expect(runtime.posted).toEqual([]);
   expect(laterFieldSerialized).toBe(false);
 });
+
+it('refuses an action whose array holes would each serialize as null', async () => {
+  const runtime = await runtimeRecordingActions();
+  const holes: unknown[] = [];
+  holes.length = 1_000_000;
+  let elementsRead = 0;
+  const counted = new Proxy(holes, {
+    get(target, key, receiver) {
+      if (typeof key === 'string' && /^\d+$/.test(key)) elementsRead++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const action = { action: 'stop', holes: counted } as unknown as Action;
+  await expect(runtime.backend.act(action)).rejects.toThrow('Backend action too large');
+  runtime.close();
+  expect(runtime.posted).toEqual([]);
+  expect(elementsRead).toBeLessThanOrEqual(16_384);
+});

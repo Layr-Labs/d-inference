@@ -1131,7 +1131,7 @@ struct SSDPrefixCacheLifecycleTests {
         }
     }
 
-    @Test("attention TTL characterization: read eligibility changes only after the expiry sweep",
+    @Test("attention TTL: a block past its TTL is not staged, whether or not the expiry sweep ran",
           arguments: [899, 900, 901], [false, true])
     func ttlStageBeforeSweepCharacterization(age: Int, sweepFirst: Bool) async throws {
         try await Device.withDefaultDevice(.cpu) {
@@ -1163,11 +1163,11 @@ struct SSDPrefixCacheLifecycleTests {
                 let expired = age >= 900
                 #expect(cache.index.expired(now: clock.now, ttlSeconds: 900).count == (expired ? 8 : 0))
                 if sweepFirst { cache.sweepExpiredEntries() }
-                let expectedStage = !expired || !sweepFirst
+                let expectedStage = !expired
                 let prompt = tokens + [999]
                 let result = await cache.stage(requestID: "idle-boundary", promptTokens: prompt, cacheScope: "")
-                // Characterize the existing sweep-enforced contract. This is
-                // not a proposed strict read-time cutoff or an expected-red fix.
+                // The stage plan counts only blocks within their TTL, so the
+                // cutoff holds before the sweep removes them.
                 #expect(result.staged == expectedStage)
                 if expectedStage {
                     let matched: Int = try {
@@ -1192,8 +1192,9 @@ struct SSDPrefixCacheLifecycleTests {
                     }
                 } else {
                     #expect(result.disposition == .missAbsent)
-                    #expect(cache.index.count == 0)
-                    #expect(dbk3Files(under: dir).isEmpty)
+                    // Only the sweep removes them; the refused stage leaves them alone.
+                    #expect(cache.index.count == (sweepFirst ? 0 : 8))
+                    #expect(dbk3Files(under: dir).count == (sweepFirst ? 0 : 8))
                 }
                 cache.completeStaging(requestID: "idle-boundary")
                 #expect(cache.bytesInUse == 0)

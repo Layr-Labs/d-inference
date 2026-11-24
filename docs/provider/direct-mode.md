@@ -523,8 +523,8 @@ tier's refusals of a `memory_only` request's engine calls
 read, write or index path, each refused there
 (`darkbloom_memory_only_ssd_tier_touches_total`, which stays 0)
 (`RequestCachePolicyCounters`). Both SSD counts stay 0 while `memory_only`
-requests run with their cache off; they count only for a memory-only request
-that runs with a cache on, as with a RAM-only tier.
+requests run with their cache off; they would count only for a memory-only
+request run with a cache on, as by a RAM-only tier.
 
 ### A long prompt's progress
 
@@ -612,7 +612,8 @@ renders their templates: members in the order you sent them, `", "` and `": "`
 separators, non-ASCII text as written and `null` arguments kept. Without
 either, they read them as before: members sorted and compact. Nemotron 3.5
 Lightning takes the order; Gemma 4 and Nemotron 3.5 Super already read them as
-Transformers does. Requests with images, audio or video, batch requests and
+Transformers does, and Inkling 2 Mini always reads your tool declarations and
+earlier tool calls' arguments as you sent them. Requests with images, audio or video, batch requests and
 `/v1/responses` render as before, and the variable does not change requests
 the network sends your Mac. `DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns this off
 ([inference architecture](../architecture/inference.md#tool-json-as-transformers-renders-it)).

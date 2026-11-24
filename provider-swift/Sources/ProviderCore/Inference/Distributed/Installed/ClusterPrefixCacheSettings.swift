@@ -1,4 +1,5 @@
 import Darwin
+import DarkbloomClusterProtocol
 import Foundation
 
 /// The product's caching surface as it reaches the pair: the SAME saved
@@ -19,6 +20,8 @@ public struct ClusterPrefixCacheSettings: Equatable, Sendable {
     /// `darkbloom/cluster-prefix-v1` (`rootDirectoryName`: the install's own
     /// cache namespace), beside the single-Mac `kv3` tier.
     public var root: URL
+    /// Local operator volume pin. It never comes from the peer's settings.
+    public var volumeUUID: String?
     /// The product's prefix-cache gate: off turns the pair's prefix cache and
     /// its SSD tier off (the rank keeps nothing anywhere).
     public var prefixCacheEnabled: Bool
@@ -31,13 +34,14 @@ public struct ClusterPrefixCacheSettings: Equatable, Sendable {
     /// The sliding TTL in seconds (the product's 1,800 ceiling); nil keeps
     /// the rank's default (1,800).
     public var ttlSeconds: Int?
-    /// A use leaves a record's age alone, so it expires `ttlSeconds` after it
-    /// was written (`DARKBLOOM_SSD_KV_TTL_MODE=fixed`, this Mac's own switch).
+    /// A use leaves a record's age alone, so it is not reused `ttlSeconds` after
+    /// it was written (`DARKBLOOM_SSD_KV_TTL_MODE=fixed`, this Mac's own switch).
     public var fixedTTL: Bool
 
-    public init(root: URL, prefixCacheEnabled: Bool = true, byteBudget: Int? = nil, dailyWriteBytes: Int? = nil,
+    public init(root: URL, volumeUUID: String? = nil, prefixCacheEnabled: Bool = true, byteBudget: Int? = nil, dailyWriteBytes: Int? = nil,
                 ttlSeconds: Int? = nil, fixedTTL: Bool = false) {
-        self.root = root; self.prefixCacheEnabled = prefixCacheEnabled; self.byteBudget = byteBudget
+        self.root = root; self.volumeUUID = volumeUUID?.lowercased()
+        self.prefixCacheEnabled = prefixCacheEnabled; self.byteBudget = byteBudget
         self.dailyWriteBytes = dailyWriteBytes; self.ttlSeconds = ttlSeconds; self.fixedTTL = fixedTTL
     }
 
@@ -198,7 +202,7 @@ public struct ClusterPrefixSSDInspection: Equatable, Sendable, Encodable {
             plans += 1
             let planURL = root.appendingPathComponent(plan, isDirectory: true)
             for name in ((try? fileManager.contentsOfDirectory(atPath: planURL.path)) ?? []).sorted() {
-                guard name.hasPrefix("rank"), let rank = Int(name.dropFirst(4)), rank >= 0 else { continue }
+                guard let rank = ClusterPrefixRecordDirectory.rank(name) else { continue }
                 let directory = planURL.appendingPathComponent(name, isDirectory: true)
                 var records = 0, bytes = 0
                 for file in (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? [] where isRecordName(file) {
@@ -213,11 +217,11 @@ public struct ClusterPrefixSSDInspection: Equatable, Sendable, Encodable {
     }
 
     static func isPlanDirectoryName(_ name: String) -> Bool {
-        name.hasPrefix("v1-") && name.utf8.count == 27 && name.dropFirst(3).allSatisfy { $0.isHexDigit && !$0.isUppercase }
+        ClusterPrefixRecordDirectory.isPlan(name)
     }
 
     static func isRecordName(_ name: String) -> Bool {
-        name.hasSuffix(".dbpx") && name.utf8.count == 37 && name.dropLast(5).allSatisfy { $0.isHexDigit && !$0.isUppercase }
+        ClusterPrefixRecordDirectory.isRecord(name)
     }
 
     /// One line for the status output.
@@ -235,39 +239,9 @@ public struct ClusterPrefixSSDInspection: Equatable, Sendable, Encodable {
 /// never one a live rank holds (its `in-use` lock), then the root itself
 /// when nothing is left. Best effort: failures are reported, never thrown.
 public enum ClusterPrefixSSDReclaim {
-    public struct Report: Equatable, Sendable {
-        public var removedPlans = 0
-        public var keptLive = 0
-        public var rootRemoved = false
-        public var problems: [String] = []
-    }
+    public typealias Report = ClusterPrefixPlanReclaim.Result
 
-    public static func reclaim(root: URL) -> Report {
-        var report = Report()
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else { return report }
-        let names = (try? fileManager.contentsOfDirectory(atPath: root.path)) ?? []
-        for name in names where ClusterPrefixSSDInspection.isPlanDirectoryName(name) {
-            let plan = root.appendingPathComponent(name, isDirectory: true)
-            let lock = Darwin.open(plan.appendingPathComponent("in-use").path, O_RDONLY | O_NOFOLLOW)
-            if lock >= 0 {
-                defer { Darwin.close(lock) }
-                guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { report.keptLive += 1; continue }
-            }
-            do { try fileManager.removeItem(at: plan); report.removedPlans += 1 }
-            catch { report.problems.append("\(name): \(error.localizedDescription)") }
-        }
-        // No rank is live here: nothing is being staged, so the staging root goes too.
-        let staging = ClusterPrefixCacheSettings.stagingRoot(root: root)
-        if report.keptLive == 0, fileManager.fileExists(atPath: staging.path) {
-            do { try fileManager.removeItem(at: staging) }
-            catch { report.problems.append("staging: \(error.localizedDescription)") }
-        }
-        if report.keptLive == 0, ((try? fileManager.contentsOfDirectory(atPath: root.path)) ?? []).isEmpty,
-           (try? fileManager.removeItem(at: root)) != nil {
-            report.rootRemoved = true
-        }
-        return report
+    public static func reclaim(root: URL, volumeUUID: String? = nil, expectedInode: UInt64? = nil) -> Report {
+        ClusterPrefixPlanReclaim.run(root: root, includeStaging: true, expectedVolume: volumeUUID, expectedInode: expectedInode)
     }
 }

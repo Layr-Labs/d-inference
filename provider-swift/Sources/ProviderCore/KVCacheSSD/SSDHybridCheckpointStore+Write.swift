@@ -167,7 +167,8 @@ extension SSDHybridCheckpointStore {
         let localRepeat = writeDemand.observe(short, now: config.nowSeconds())
         let demand = donationWritePolicy(requestID: requestID, localRepeat: localRepeat,
                                         checkpointPosition: manifest.position)
-        if !index.contains(tag16: short) {
+        // An entry past its TTL is written again, so it is admitted as new.
+        if index.freshFileBytes(tag16: short, now: config.nowSeconds(), ttlSeconds: config.ttlSeconds) == nil {
             // Demand gate first: a fleet-novel checkpoint is skipped before any
             // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
             // The tag was recorded above, so a local second sighting qualifies.
@@ -202,12 +203,19 @@ extension SSDHybridCheckpointStore {
 
     /// A request that consumed a restore shares its rows byte for byte, so it
     /// extends the restored file, or the chain's root once the chain is full.
+    /// Every link must be within its TTL. Under a fixed TTL a child is reused
+    /// only until its oldest link expires, so a chain with less than half a
+    /// TTL left gets a full checkpoint instead.
     private func deltaEnvelope(requestID: CBv2RequestID?, manifest: CBv2CompleteCheckpointManifest)
         -> SSDHybridCheckpointEnvelope? {
         guard config.incrementalCheckpoints, let requestID,
             let restored = lock.withLock({ restoredCheckpoints[requestID] }), restored.consumed else { return nil }
+        let ttl = config.ttlSeconds
+        let parentTTL = config.ttlMode.refreshesOnHit || ttl <= 0 ? ttl : max(1, ttl - ttl / 2)
+        let now = config.nowSeconds()
         for parent in restored.files {
-            guard let chain = index.chain(tag16: parent.tag16), chain.tags.count < SSDCheckpointDeltaLayout.maximumChainFiles,
+            guard let chain = index.chain(tag16: parent.tag16, now: now, ttlSeconds: parentTTL),
+                chain.tags.count < SSDCheckpointDeltaLayout.maximumChainFiles,
                 let envelope = try? SSDHybridCheckpointEnvelope(
                     manifest: manifest, lookupKeys: lookupKeys, maximumPlaintextBytes: config.maxReadBytes,
                     parent: parent),
@@ -266,7 +274,15 @@ extension SSDHybridCheckpointStore {
             tag: job.tag, identity: identity, createdAt: config.nowSeconds(), backendLayout: config.backendLayout)
         var authenticatingExistingFile = false
         do {
-            let alreadyDurable = index.contains(tag16: short)
+            // A delta is written only on a parent chain still within its TTL.
+            if let parent = envelope.parent,
+                index.chain(tag16: parent.tag16, now: config.nowSeconds(), ttlSeconds: config.ttlSeconds) == nil
+            {
+                result.outcome = .cacheEntryEvicted; return
+            }
+            // An entry past its TTL is not reused, so it is written again.
+            let alreadyDurable = index.freshFileBytes(
+                tag16: short, now: config.nowSeconds(), ttlSeconds: config.ttlSeconds) != nil
             if alreadyDurable, job.authenticatedFile?.matches(url: url) == true {
                 // This submission already authenticated all bytes during its
                 // stage. Identity and epoch remain unchanged; no second read.

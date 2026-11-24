@@ -67,6 +67,9 @@ extension ProviderLoop {
         // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
         if usesHostServices { SSDPrefixCacheFactory.startWholeRootMaintenance() }
         defer { if usesHostServices { SSDPrefixCacheFactory.stopWholeRootMaintenance() } }
+        // The same periodic maintenance for a pair's expired records, on a pair's Macs too.
+        if serveUsesHostServices { ClusterPrefixRecordExpiry.start() }
+        defer { if serveUsesHostServices { ClusterPrefixRecordExpiry.stop() } }
 
         // Keep the network stack alive during sleep (coordinator socket, APNs).
         networkAssertion.acquire()

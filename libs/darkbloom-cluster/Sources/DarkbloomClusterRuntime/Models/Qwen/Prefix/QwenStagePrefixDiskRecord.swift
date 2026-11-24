@@ -89,13 +89,14 @@ struct QwenStagePrefixDiskHeader: Codable, Equatable {
     /// `tokens` (`[1, f-1]`, int32) and `last` (`[1, 1, H]`). Absent in records
     /// written before this section existed and on the non-decoding rank.
     var history: [Recurrent]? = nil
-    /// Version 2: the speculative history stored once (finding storage:S2 /
+    /// Version 4: the speculative history stored once (finding storage:S2 /
     /// reads:R6: the history at a shallower frontier is a prefix of the
     /// deepest one's, and version 1 wrote a whole copy per frontier, 10-17% of
     /// a decoding rank's record). Rows `[0, prompt)` of the head's hidden
     /// states (`[1, prompt - 1, H]` followed by the `last` row at `prompt - 1`)
-    /// in units of `blockTokens` rows, and the tokens `[1, prompt - 1]` in one
-    /// unit; frontier `f` reads rows `[0, f)` and the first `f - 1` tokens.
+    /// in units of `blockTokens` rows, and one tokens unit of `prompt - 1`
+    /// zeros; frontier `f` reads rows `[0, f)` and takes the tokens `[1, f)`
+    /// from the request's prompt.
     var sharedHistory: SharedHistory? = nil
     struct SharedHistory: Codable, Equatable {
         /// The deepest frontier with a history: `prompt` rows are stored.
@@ -183,7 +184,7 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     let recurrent: [Source]
     /// Per history entry, its source.
     let history: [Source]
-    /// Version 2: the deepest history's hidden rows, its `last` row and its tokens.
+    /// Version 4: the deepest history's hidden rows, its `last` row and its tokens.
     let sharedHidden: Source?
     let sharedLast: Source?
     let sharedTokens: Source?
@@ -396,7 +397,7 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
             sharedLast: sharedSources?.last, sharedTokens: sharedSources?.tokens)
     }
 
-    /// The plaintext of one version-2 history unit: rows
+    /// The plaintext of one version-4 history unit: rows
     /// `[block * blockTokens, ...)` of the deepest history's hidden rows
     /// followed by its `last` row.
     func sharedHistoryPlaintext(block: Int) -> Data {
@@ -813,7 +814,7 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
     let historyItems: [QwenStagePrefixDiskHeader.Recurrent]
     let recurrentBuffers: [QwenStagePrefixRestoreBuffer]
     let historyBuffers: [QwenStagePrefixRestoreBuffer]
-    /// Version 2: rows `[0, frontier)` of the shared history and its tokens,
+    /// Version 4: rows `[0, frontier)` of the shared history and its tokens,
     /// nil when the record has none for this frontier.
     let sharedRows: QwenStagePrefixRestoreBuffer?
     let sharedTokensBuffer: QwenStagePrefixRestoreBuffer?
@@ -962,7 +963,7 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                 if target.bytes > 0 { plain.withUnsafeBytes { target.pointer.copyMemory(from: $0.baseAddress!, byteCount: target.bytes) } }
                 lock.withLock { recurrentDone[slot] = true }
             } else if index >= attentionWork.count + recurrentItems.count + historyItems.count {
-                // Version 2 history: block `k` of rows [0, frontier), then the tokens.
+                // Version 4 history: block `k` of rows [0, frontier), then the tokens.
                 guard let shared = header.sharedHistory, let rows = sharedRows, let tokens = sharedTokensBuffer else {
                     throw ProbeError("Prefix record shared history missing")
                 }

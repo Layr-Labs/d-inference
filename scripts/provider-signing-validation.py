@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import unicodedata
@@ -24,6 +25,10 @@ MAX_ARCHIVE_MEMBERS = 16_384
 # with the two files they load beside themselves.
 CLUSTER_HELPER_EXECUTABLES = ("darkbloom-cluster-worker", "darkbloom-cluster-plan")
 CLUSTER_HELPER_RESOURCES = ("mlx.metallib", "pagedattention.metal")
+FAN_HELPER = "darkbloom-fan-helper"
+# The mode of every executable the app ships. The final release check and the
+# installer refuse a fan helper with any other mode.
+EXECUTABLE_MODE = 0o755
 SIGNING_ENTITLEMENTS = ("entitlements.plist", "entitlements-enclave.plist", "entitlements-cluster-worker.plist")
 # The first four bytes of a thin (either byte order) or universal Mach-O file.
 MACHO_MAGICS = {bytes.fromhex(magic) for magic in ("cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca")}
@@ -103,8 +108,8 @@ def stage(arguments):
         path.mkdir(parents=True)
     # The SwiftPM products keep their names; a dev release renames them here.
     for product, name in executables(names):
-        shutil.copy2(arguments.bin / product, binaries / name)
-    shutil.copy2(arguments.bin / "darkbloom-fan-helper", helpers / "darkbloom-fan-helper")
+        copy_executable(arguments.bin / product, binaries / name)
+    copy_executable(arguments.bin / FAN_HELPER, helpers / FAN_HELPER)
     shutil.copy2(arguments.metallib, binaries / "mlx.metallib")
     stage_cluster_helpers(arguments.cluster_helpers, helpers)
     (resources / "fan-helper-v1").write_text("1\n")
@@ -125,6 +130,7 @@ def stage(arguments):
         str(arguments.bin), str(app), str(root / "validation-inputs/resource-bundles.txt"),
     ], check=True)
     check_cluster_helpers(app)
+    check_executable_modes(app, names)
     source_sha = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=arguments.source, text=True).strip()
     submodules = subprocess.check_output(
@@ -169,6 +175,7 @@ def unpack(arguments):
     names = recorded_packaging(manifest)
     check_info(arguments.output, arguments.version, names)
     check_cluster_helpers(arguments.output / names["appBundleName"])
+    check_executable_modes(arguments.output / names["appBundleName"], names)
     tooling = Path(__file__).resolve().parent.parent
     for name in SIGNING_ENTITLEMENTS:
         if sha256(arguments.output / "validation-inputs" / name) != sha256(tooling / "provider-swift" / name):
@@ -185,7 +192,35 @@ def stage_cluster_helpers(source, helpers):
             raise ValueError(f"Cluster helper is missing from the build: {name}")
         destination = helpers / name
         shutil.copyfile(path, destination)
-        destination.chmod(0o755 if name in CLUSTER_HELPER_EXECUTABLES else 0o644)
+        destination.chmod(EXECUTABLE_MODE if name in CLUSTER_HELPER_EXECUTABLES else 0o644)
+
+
+def copy_executable(source, destination):
+    """Copies a built executable into the app with the release mode. A build
+    leaves its own umask on its products (0700 under umask 077)."""
+    shutil.copy2(source, destination)
+    destination.chmod(EXECUTABLE_MODE)
+
+
+def check_executable_modes(app, packaged):
+    """Fails unless the CLI, the enclave and fan helpers, both cluster helpers
+    and any other Mach-O file in the app are regular files with mode 0755
+    exactly. Unpack refuses a staged app that does not carry these modes, and
+    the signing job checks them again after its own copy of the app."""
+    contents = app / "Contents"
+    expected = [contents / "MacOS" / name for _, name in executables(packaged)]
+    expected += [contents / "Helpers" / name for name in (FAN_HELPER, *CLUSTER_HELPER_EXECUTABLES)]
+    for path in sorted(set(expected) | set(macho_files(app))):
+        name = path.relative_to(app.parent)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"{name} is missing or not a regular file")
+        mode = stat.S_IMODE(path.lstat().st_mode)
+        if mode != EXECUTABLE_MODE:
+            raise ValueError(f"{name} has mode {mode:04o}; every executable in the app must have mode 0755")
+
+
+def executable_modes(arguments):
+    check_executable_modes(arguments.app, packaging(DOCUMENT, arguments.version))
 
 
 def is_arm64_macho(path):
@@ -385,6 +420,9 @@ def main():
     entitlements_parser.add_argument("--plist", type=Path, required=True)
     helpers_parser = commands.add_parser("cluster-helpers")
     helpers_parser.add_argument("--app", type=Path, required=True)
+    modes_parser = commands.add_parser("executable-modes")
+    modes_parser.add_argument("--app", type=Path, required=True)
+    modes_parser.add_argument("--version", required=True)
     bundle_parser = commands.add_parser("bundle-entitlements")
     bundle_parser.add_argument("--app", type=Path, required=True)
     receipt_parser = commands.add_parser("receipt")
@@ -393,6 +431,7 @@ def main():
     arguments = parser.parse_args()
     {"stage": stage, "unpack": unpack, "profile": profile,
      "cli-entitlements": cli_entitlements, "cluster-helpers": cluster_helpers,
+     "executable-modes": executable_modes,
      "bundle-entitlements": bundle_entitlements, "receipt": receipt}[arguments.command](arguments)
 
 

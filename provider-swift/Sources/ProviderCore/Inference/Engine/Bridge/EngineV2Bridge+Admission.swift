@@ -118,11 +118,14 @@ extension EngineV2Bridge {
         }
         guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }
         // The decode EWMA is a per-request rate: charge one measured step per
-        // projected batch step, not every row's tokens.
+        // projected batch step, not every row's tokens. Before its first
+        // sample, requests decoding here now give the rate.
+        let perRequestRate = ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
+            ? observedDecodeTpsEwma : nil
         let decode = DeadlineAdmissionFixes.decodeCharge(
-            perRequestRate: ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
-                ? observedDecodeTpsEwma : nil,
-            measuredStep: observedDecodeStep, enabled: admissionFixes, calibrated: calibration != nil)
+            perRequestRate: perRequestRate,
+            measuredStep: observedDecodeStep, enabled: admissionFixes, calibrated: calibration != nil,
+            liveRate: admissionFixes && perRequestRate == nil && calibration == nil ? liveDecodeCadence() : nil)
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
@@ -133,6 +136,24 @@ extension EngineV2Bridge {
                 ? nativeMediaDeadlinePolicy(requestID: requestID, promptTokens: promptTokens,
                     evidence: nativeMediaEvidence) : nil,
             decodeRateShape: decode.shape)
+    }
+
+    /// The fewest tokens after its first emission a decoding request needs
+    /// before its cadence prices deadline admission.
+    static let minimumLiveDecodeTokens = 8
+
+    /// The slowest delivered cadence among requests decoding on this slot now:
+    /// tokens after the first emission over the time since the first token,
+    /// as `recordFinish` measures a delivered rate. nil when no request has
+    /// `minimumLiveDecodeTokens` yet. Waiting between tokens only lowers it.
+    func liveDecodeCadence(now: ContinuousClock.Instant = .now) -> Double? {
+        active.values.compactMap { state -> Double? in
+            let tokens = state.completionTokens - state.firstEmissionTokens
+            guard let firstTokenAt = state.firstTokenAt, tokens >= Self.minimumLiveDecodeTokens else { return nil }
+            let seconds = WedgeMonitor.seconds(now - firstTokenAt)
+            let rate = Double(tokens) / seconds
+            return seconds > 0 && rate.isFinite && rate > 0 ? rate : nil
+        }.min()
     }
 
     /// Nothing but `requestID` occupies this engine and, through the shared

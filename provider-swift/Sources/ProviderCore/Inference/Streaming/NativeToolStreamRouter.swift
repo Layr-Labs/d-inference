@@ -10,6 +10,11 @@ struct NativeToolStreamRouter {
     private let requiresToolCall: Bool
     private var parser: NativeChannelSplitter?
     private var gemmaParser: DiffusionGemmaChannelSplitter?
+    /// Inkling 2's own message protocol (`Inkling2OutputChannels`): its
+    /// reasoning, answer and call frames are read here, with no SDK handler.
+    private var inklingParser: Inkling2OutputChannels?
+    /// Inkling 2 calls held for the end of generation (complete-call path).
+    private var inklingCalls: [ToolCall] = []
     private let nativeGemmaReasoningEnabled: Bool
     private let nativeMiMoChannels: Bool
     private let nativeMiMoRequiresConstraint: Bool
@@ -83,7 +88,9 @@ struct NativeToolStreamRouter {
          streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
          streamsGLMCalls: Bool = false,
          glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault,
-         harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled) {
+         harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled,
+         nativeInklingChannels: Bool = false, inklingStreamsCalls: Bool = false,
+         inklingUndeclaredCallsAreText: Bool = Inkling2OutputChannels.undeclaredCallsAreTextByDefault) {
         self.handler = handler
         self.withholdReasoning = withholdReasoning
         self.tools = tools
@@ -98,13 +105,24 @@ struct NativeToolStreamRouter {
         } else {
             glmCalls = nil
         }
-        self.streamedCallPolicy = handler?.streamsCalls == true || glmCalls != nil ? streamedCalls : nil
+        // An Inkling 2 call is exposed when its frame closes, complete and
+        // validated, to a client that streams (`inklingStreamsCalls`).
+        self.streamedCallPolicy = handler?.streamsCalls == true || glmCalls != nil
+            || (nativeInklingChannels && inklingStreamsCalls) ? streamedCalls : nil
         // The scheduler passes the prepared choice here on every path.
         self.autoToolChoice = streamedCalls.map { $0.mode == .auto } ?? !requiresToolCall
         if requiresToolCall, handler?.format == .harmony { harmonyAnalysis = HarmonyForcedCallText() }
         harmonyAutoChoice = harmonyAutoToolGrammar && handler?.format == .harmony && streamedCalls?.mode == .auto
             ? streamedCalls : nil
-        if nativeGemmaChannels {
+        if nativeInklingChannels {
+            // An `auto` request that declares no tools renders no
+            // `tool_declare`, so no call can be valid: a frame is answer text,
+            // never a refusal (422 `undeclared_name`, or 500 unparsed).
+            // Client stops follow (`Inkling2PromptContract.stopStringScope`).
+            inklingParser = Inkling2OutputChannels(
+                callsAreText: inklingUndeclaredCallsAreText && autoToolChoice && tools?.isEmpty != false,
+                readsCallOpeningAnswer: tools?.isEmpty == false)
+        } else if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
@@ -114,11 +132,13 @@ struct NativeToolStreamRouter {
                 tools: tools,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 absorbStrayThinkClose: absorbStrayThinkClose,
+                // Nemotron 3.5 drafts calls after an early `</think>`, then closes again.
+                holdsFramesAfterThought: handler?.format == .nemotron,
                 promotesTrailingCalls: promotesTrailingReasoningCalls)
         }
     }
 
-    var usesNativeChannels: Bool { parser != nil || gemmaParser != nil }
+    var usesNativeChannels: Bool { parser != nil || gemmaParser != nil || inklingParser != nil }
 
     /// True when calls leave as `.toolCallDelta` events while generated.
     var streamsToolCalls: Bool { streamedCallPolicy != nil }
@@ -143,6 +163,11 @@ struct NativeToolStreamRouter {
     }
 
     mutating func process(_ text: String) throws -> [MLXServerGenerationEvent] {
+        if inklingParser != nil {
+            let pieces = inklingParser!.parse(text)
+            try checkNativeToolFailure()
+            return try routeInkling(pieces, cutAtLimit: false)
+        }
         let pieces: [ParsedReasoning]
         if gemmaParser != nil { pieces = gemmaParser!.parse(text) }
         else { pieces = parser != nil ? parser!.parse(text) : [.init(content: text, reasoningContent: nil)] }
@@ -156,6 +181,12 @@ struct NativeToolStreamRouter {
     /// unfinished frame: forced-choice text is dropped and a native frame
     /// that no longer parses is not refused (the caller drops its text).
     mutating func finishText(cutAtLimit: Bool = false) throws -> [MLXServerGenerationEvent] {
+        if inklingParser != nil {
+            let pieces = inklingParser!.finish()
+            let events = try routeInkling(pieces, cutAtLimit: cutAtLimit)
+            if !cutAtLimit { try checkNativeToolFailure() }
+            return events
+        }
         let pieces = gemmaParser != nil ? gemmaParser!.finish() : (parser?.finish() ?? [])
         try checkReasoningState()
         try checkNativeToolFailure()
@@ -253,9 +284,13 @@ struct NativeToolStreamRouter {
     /// An `auto` GLM suffix that `finishCompleteCalls` returned as text is not
     /// a failure; one the SDK refused while streaming still is.
     var hasNativeToolFailure: Bool {
-        (nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint)
+        if let inklingParser { return !inklingParser.toolFailures.isEmpty }
+        return (nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint)
             && (handler?.parseFailureCount ?? 0) > 0 && !glmSuffixSplit
     }
+
+    /// The first Inkling 2 call frame that did not parse, for telemetry.
+    var inklingToolFailure: Inkling2ToolFrameFailure? { inklingParser?.toolFailures.first }
 
     /// Streamed path: a native frame that failed to parse before any of it
     /// was exposed comes back as text; refuse it before that text leaves, as
@@ -275,7 +310,8 @@ struct NativeToolStreamRouter {
     /// oversized while streaming still fails.
     func checkNativeToolFailure() throws {
         guard hasNativeToolFailure else { return }
-        let model = handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
+        let model = inklingParser != nil ? "Inkling"
+            : handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
         let message = "native \(model) tool output is invalid"
         if requiresToolCall || nativeMiMoRequiresConstraint {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
@@ -296,6 +332,11 @@ struct NativeToolStreamRouter {
     mutating func finishCompleteCalls(truncated: Bool, cutAtLimit: Bool = false) throws
         -> (calls: [ToolCall], residual: String?)
     {
+        if inklingParser != nil {
+            // Every frame closed in `finishText`; no text is held as a suffix.
+            defer { inklingCalls = [] }
+            return (inklingCalls, nil)
+        }
         guard let handler else { return ([], nil) }
         let calls = handler.finish()
         let residual = handler.takeResidualText()
@@ -321,6 +362,40 @@ struct NativeToolStreamRouter {
 
     private var returnsUnparsedGLMOutputAsText: Bool {
         handler?.format == .glm5 && glmUnparsedOutputIsText && autoToolChoice
+    }
+
+    /// Inkling 2's pieces: reasoning as on every native channel; answer text
+    /// as visible content, refused for a forced choice; each call when its
+    /// frame closed, checked before it leaves (streamed) or held to the end.
+    private mutating func routeInkling(_ pieces: [Inkling2OutputPiece], cutAtLimit: Bool) throws
+        -> [MLXServerGenerationEvent]
+    {
+        var events: [MLXServerGenerationEvent] = []
+        for piece in pieces {
+            switch piece {
+            case .reasoning(let reasoning):
+                guard !reasoning.isEmpty else { continue }
+                if withholdReasoning {
+                    withheldReasoning += reasoning
+                } else {
+                    events.append(.parsed(.init(content: "", reasoningContent: reasoning)))
+                }
+            case .content(let text):
+                guard !text.isEmpty else { continue }
+                if requiresToolCall {
+                    try refuseForcedText(text, cutAtLimit: cutAtLimit)
+                    continue
+                }
+                events.append(visibleEvent(text))
+            case .toolCall(let call):
+                if let prepared = streamedCallPolicy {
+                    events += try routeToolSegment(.call(call), prepared: prepared)
+                } else {
+                    inklingCalls.append(call)
+                }
+            }
+        }
+        return events
     }
 
     private mutating func route(_ pieces: [ParsedReasoning], cutAtLimit: Bool = false) throws

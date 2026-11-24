@@ -219,10 +219,10 @@ struct SSDHybridCheckpointEnvelope {
     // MARK: - Layout epoch
 
     /// Format 2 names a different epoch than format 1 in each file's header
-    /// and in the model's epoch record, but `directoryEpoch` keeps the model
-    /// directory: the epoch store finds the other format's binding in that
-    /// directory's record and removes its files when the store opens, after
-    /// an update and after a rollback alike.
+    /// and in the model's epoch record. `directoryEpoch` also binds the build,
+    /// so each build reads only its own directory; another build's files are
+    /// never read, and whole-root maintenance removes them once unused past
+    /// the TTL, when it runs and can reach them (not when the store opens).
     static let storedFormatDomain = "darkbloom-complete-checkpoint-envelope-v2"
     private static let directoryDomain = "darkbloom-complete-checkpoint-envelope-v1"
 

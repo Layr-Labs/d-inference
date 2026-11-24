@@ -32,6 +32,11 @@
 //      single render type and never the union, and STRING made the model quote
 //      typed values ("-4200" for -4200). The union stays on the wire, so
 //      validation still accepts both branches.
+//   8. A property the caller declared without a type or any other schema
+//      keyword (`{}`: any value) renders an empty type instead of the
+//      `string` the shared normalizer injected, as the served template renders
+//      a typeless property (`type:<|"|><|"|>`). This needs the declarations as
+//      sent; without them the injected type stays.
 //
 // Mirrors the per-model precedent of `GPTOSSHarmonyTemplateFix.normalizeTools`.
 
@@ -40,23 +45,89 @@ import Foundation
 enum Gemma4ToolSchemaEnforcement {
 
     static func normalizeToolSpecs(
-        _ tools: [[String: any Sendable]]
+        _ tools: [[String: any Sendable]],
+        declared: [[String: any Sendable]]? = nil
     ) -> [[String: any Sendable]] {
-        normalizeToolSpecsReportingUnionType(tools).tools
+        normalizeToolSpecsReportingRenderType(tools, declared: declared).tools
     }
 
-    /// `normalizeToolSpecs`, also reporting whether invariant 7 changed any
-    /// property's render type (the prompt then differs from one rendered
-    /// without it).
-    static func normalizeToolSpecsReportingUnionType(
-        _ tools: [[String: any Sendable]]
-    ) -> (tools: [[String: any Sendable]], changedUnionType: Bool) {
+    /// `normalizeToolSpecs`, also reporting whether invariant 7 or 8 changed
+    /// any property's render type (the prompt then differs from one rendered
+    /// without them). `declared` are the caller's tool specs as sent, before
+    /// the shared normalizer; invariant 8 reads them.
+    static func normalizeToolSpecsReportingRenderType(
+        _ tools: [[String: any Sendable]],
+        declared: [[String: any Sendable]]? = nil
+    ) -> (tools: [[String: any Sendable]], changedRenderType: Bool) {
         // The inbound pass's node budget, so a request it left as sent is not
         // rewritten here instead.
         var budget = ToolSchemaNormalization.maxNormalizedNodes
         var changed = false
-        let normalized = tools.map { normalizeToolSpec($0, budget: &budget, changedUnionType: &changed) }
+        var declaredParameters: [String: [String: any Sendable]] = [:]
+        for tool in declared ?? [] {
+            guard let function = tool["function"] as? [String: any Sendable],
+                let name = function["name"] as? String,
+                let parameters = function["parameters"] as? [String: any Sendable]
+            else { continue }
+            declaredParameters[name] = parameters
+        }
+        let normalized = tools.map { tool -> [String: any Sendable] in
+            var output = normalizeToolSpec(tool, budget: &budget, changedUnionType: &changed)
+            guard var function = output["function"] as? [String: any Sendable],
+                let name = function["name"] as? String,
+                let parameters = function["parameters"] as? [String: any Sendable],
+                let declaredRoot = declaredParameters[name]
+            else { return output }
+            function["parameters"] = renderingDeclaredTypeless(parameters, declared: declaredRoot, changed: &changed)
+            output["function"] = function
+            return output
+        }
         return (normalized, changed)
+    }
+
+    /// Keywords that make a declared schema node typed or structured; a node
+    /// with none of them accepts any value.
+    private static let schemaKeywords = [
+        "type", "properties", "patternProperties", "additionalProperties", "items", "prefixItems",
+        "anyOf", "oneOf", "allOf", "not", "enum", "const", "$ref",
+    ]
+
+    /// Invariant 8: whether a declared property accepts any value (a mapping
+    /// with no schema keyword, such as `{}` or one with only a description).
+    static func declaresAnyValue(_ declared: Any?) -> Bool {
+        guard let mapping = declared as? [String: Any] else { return false }
+        return !schemaKeywords.contains { mapping[$0] != nil }
+    }
+
+    /// Invariant 8 over the nodes the template reaches through `properties`
+    /// and `items`, walking the caller's declaration alongside.
+    private static func renderingDeclaredTypeless(
+        _ node: [String: any Sendable], declared: [String: any Sendable], changed: inout Bool
+    ) -> [String: any Sendable] {
+        var output = node
+        if var properties = output["properties"] as? [String: any Sendable],
+            let declaredProperties = declared["properties"] as? [String: any Sendable]
+        {
+            for (key, value) in properties {
+                guard var property = value as? [String: any Sendable] else { continue }
+                if declaresAnyValue(declaredProperties[key]) {
+                    if (property["type"] as? String)?.isEmpty == false {
+                        property["type"] = ""
+                        changed = true
+                    }
+                } else if let declaredProperty = declaredProperties[key] as? [String: any Sendable] {
+                    property = renderingDeclaredTypeless(property, declared: declaredProperty, changed: &changed)
+                }
+                properties[key] = property
+            }
+            output["properties"] = properties
+        }
+        if let items = output["items"] as? [String: any Sendable],
+            let declaredItems = declared["items"] as? [String: any Sendable]
+        {
+            output["items"] = renderingDeclaredTypeless(items, declared: declaredItems, changed: &changed)
+        }
+        return output
     }
 
     /// Invariant 7: the render type for a node typed `string` whose `anyOf` or

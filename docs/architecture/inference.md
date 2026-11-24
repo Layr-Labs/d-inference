@@ -5174,7 +5174,13 @@ typed values. Gemma's tool enforcement now renders the other member there
 The union stays on the wire, so the validator and constrained decoding, which
 read the request's tools rather than the render input, accept both members.
 Unions with more members, non-scalar members or an `enum` keep `STRING`, and
-other families keep the shared repair's render type. Such a request is also
+other families keep the shared repair's render type. A property the caller
+declared without any type or schema keyword (`{}`) renders an empty type
+(`type:<|"|><|"|>`, the served template's rendering of a typeless property)
+instead of the injected `string` (invariant 8). Gemma's render reads the
+caller's declarations as sent (`ChatTemplateControls.declaredTools`) on every
+path that renders a coordinator request: serving, prompt recount and the
+diffusion media path. Such a request is also
 served without the coordinator's prompt cache ([prefix cache](prefix-cache.md)).
 
 GPT-OSS's Harmony template renders a schema as written: a `type` list as

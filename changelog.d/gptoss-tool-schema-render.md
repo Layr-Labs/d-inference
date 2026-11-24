@@ -16,3 +16,9 @@ the repaired types, so a coordinator request whose GPT-OSS tool render this
 changes is served without the prompt cache, like requests whose tool-call
 history carries a null. `darkbloom logs` notes each such request and the
 daemon state counts them (`promptCacheSkippedToolRawSchema`).
+
+The template utility (`/tokenize`) renders a body's tools as that body
+declares them, for GPT-OSS and for Gemma 4's untyped properties. It therefore
+shows the render of the caller's own declarations: a coordinator request
+renders the same only once the coordinator forwards the caller's declarations
+rather than the repaired ones.

@@ -50,6 +50,7 @@ REASONING_MODEL_TYPES = [
     "qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35", "qwen4_exp", "qwen4_exp_text",
     "gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma", "gpt_oss",
     "nemotron_h", "nemotron_h_omni", "mimo_v2", "glm5_next", "glm5_next_text", "glm5_next_mtp", "flint",
+    "inkling2_loop",
 ]
 
 # ReasoningEffortPolicy.qwen35TemplateTypes: the Qwen 3.5 template family,
@@ -263,6 +264,17 @@ class Flint(Family):
         return {}
 
 
+class Inkling(Family):
+    """Inkling 2 Mini: the template reads the seven names exactly (none 0 through
+    xhigh and max 0.99), so each spelling reaches it as its name. It has no
+    thinking switch: none renders effort 0 (Inkling2PromptContract)."""
+
+    name, model, model_type = "inkling2_loop", "thinkingmachines/Inkling-2-Mini", "inkling2_loop"
+
+    def context(self, field, value, effort):
+        return {"enable_thinking": False if effort == "none" else None, "reasoning_effort": effort}
+
+
 class NoReasoning(Family):
     """A model that doesn't reason ignores any effort, a name or not."""
 
@@ -280,7 +292,7 @@ FAMILIES: list[Family] = [
     QwenFamily("qwen3_5_moe", "qwen3.5-35b-a3b", "qwen3_5_moe"),
     QwenFamily("prism_hadamard_qwen35", "ternary-bonsai-2-27b", "prism_hadamard_qwen35"),
     QwenFamily("qwen4_exp", "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp", "qwen4_exp"),
-    Gemma4(), DiffusionGemma(), Lightning(), Harmony(), MiMo(), Super(), GLM(), Flint(), NoReasoning(),
+    Gemma4(), DiffusionGemma(), Lightning(), Harmony(), MiMo(), Super(), GLM(), Flint(), Inkling(), NoReasoning(),
 ]
 
 # Each other type that reasons is asked fewer spellings, enough to tell its

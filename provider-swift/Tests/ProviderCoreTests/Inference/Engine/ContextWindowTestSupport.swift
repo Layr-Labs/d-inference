@@ -22,8 +22,7 @@ let memoryExceedsIdleWords = "This request needs more memory than this Mac can g
 
 /// The words of the memory 503 for a request the memory would hold idle:
 /// requests already running hold it (`LocalMemoryRefusal.busy`).
-let memoryBusyWords = "This Mac is at capacity: requests already running are using the memory this request needs. "
-    + "Retry in a moment, when they finish."
+let memoryBusyWords = "This Mac is at capacity. Retry when more memory is available."
 
 /// That refusal as the bridge throws it.
 func windowRefusal(_ contextTokens: Int) -> MultiModelBatchSchedulerEngineError {

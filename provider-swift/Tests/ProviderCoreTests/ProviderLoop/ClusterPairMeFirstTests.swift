@@ -73,7 +73,8 @@ private func heartbeatBuilder(_ loop: ProviderLoop) async -> CoordinatorClient {
 }
 
 private func heartbeatFields(_ builder: CoordinatorClient) async throws -> [String: Any] {
-    try #require(JSONSerialization.jsonObject(with: Data(await builder.buildHeartbeatJSON().utf8)) as? [String: Any])
+    let json = try #require(await builder.buildHeartbeatJSON())
+    return try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
 }
 
 /// A heartbeat's JSON with sorted keys, without what every build samples

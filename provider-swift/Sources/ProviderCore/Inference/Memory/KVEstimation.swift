@@ -17,6 +17,7 @@
 // no actor isolation).
 
 import Foundation
+import ProviderCoreFoundation
 
 /// Namespace for KV-cache cost estimation. Pure functions only; no
 /// actor state, no global mutation.
@@ -118,6 +119,19 @@ public enum KVEstimation {
         var numExpertsPerTok: Int? = cfg["num_experts_per_tok"] as? Int
             ?? cfg["num_active_experts"] as? Int
 
+        // Inkling 2 Mini runs its loop's core layers once per pass, each pass
+        // with caches of its own: one cache slot per layer application, typed
+        // by the stored layer it applies (`Inkling2ModelIdentity.CacheLayout`).
+        let inklingLayout = Inkling2ModelIdentity.isNativeType(json["model_type"] as? String)
+            ? Inkling2ModelIdentity.CacheLayout(textConfiguration: cfg) : nil
+        if let inklingLayout {
+            numLayers = inklingLayout.slots.count
+            kvHeads = inklingLayout.kvHeads
+            headDim = inklingLayout.headDim
+            layerTypes = inklingLayout.layerTypes
+            slidingWindowPattern = nil
+        }
+
         // Clamp against a malicious config.json (operator-writable dir)
         // that would otherwise inflate the token budget unbounded.
         if let l = numLayers { numLayers = min(max(l, 1), maxLayersBound) }
@@ -145,9 +159,15 @@ public enum KVEstimation {
             ?? cfg["max_sequence_length"] as? Int
             ?? cfg["n_positions"] as? Int
             ?? cfg["seq_length"] as? Int
+            ?? inklingLayout?.maximumContext
         // Clamp to a sane range (1 to 2M tokens).
         if let mcl = maxContextLength {
             maxContextLength = min(max(mcl, 1), 2_097_152)
+        }
+        // Inkling 2 Mini serves a window below its checkpoint's context
+        // (`Inkling2ModelIdentity.servedContextTokens`).
+        if inklingLayout != nil, let mcl = maxContextLength {
+            maxContextLength = min(mcl, Inkling2ModelIdentity.servedContextTokens)
         }
 
         // Clamp MoE / dimension fields against a malicious config.json.

@@ -1,0 +1,39 @@
+{
+  "user": {
+    "model": "m",
+    "messages": [
+      {"role": "user", "content": [{"type": "text", "text": "Chart"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="}}]}
+    ]
+  },
+  "tool": {
+    "model": "m",
+    "messages": [
+      {"role": "user", "content": "Describe the chart."},
+      {"role": "assistant", "content": null, "tool_calls": [{"id": "c", "type": "function", "function": {"name": "chart", "arguments": "{}"}}]},
+      {"role": "tool", "content": [{"type": "text", "text": "Chart"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="}}], "tool_call_id": "c"},
+      {"role": "user", "content": "Please describe the chart."}
+    ]
+  },
+  "assistant": {
+    "model": "m",
+    "messages": [
+      {"role": "user", "content": "Describe the chart."},
+      {"role": "assistant", "content": [{"type": "text", "text": "Chart"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}]},
+      {"role": "user", "content": "Please describe the chart."}
+    ]
+  },
+  "system": {
+    "model": "m",
+    "messages": [
+      {"role": "system", "content": [{"type": "text", "text": "Chart"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}]},
+      {"role": "user", "content": "Please describe the chart."}
+    ]
+  },
+  "developer": {
+    "model": "m",
+    "messages": [
+      {"role": "developer", "content": [{"type": "text", "text": "Chart"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}]},
+      {"role": "user", "content": "Please describe the chart."}
+    ]
+  }
+}

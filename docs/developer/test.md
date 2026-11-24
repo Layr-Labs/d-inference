@@ -2677,7 +2677,8 @@ grammar and its bounds (names, at most 32 lanes, counts up to 16, placements,
 sizes), the default of 2 attempts, `require-darkbloom`, and the GitHub OIDC
 token that a job with `id-token: write` sends. It pins the router's SHA-256 to
 darkbloom-sandbox's `route.yml`, and the CI plan job's route step to the
-router's script and environment, byte for byte. It also pins each routed job's lanes (one per
+router's script, byte for byte, and to its environment but for `LANES` and
+the two defaulted inputs. It also pins each routed job's lanes (one per
 provider or cluster shard, matching the job's matrix), size, fallback, timeout
 and read-only permissions, fails on any lane without a signed size, and keeps
 release workflows on literal Blacksmith runners. No check contacts the real

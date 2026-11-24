@@ -914,8 +914,8 @@ against the plane's grammar and bounds before it sends a request: decimal, no
 leading zeros, 1 to 256 vCPUs and 1 to 1024 GiB. It fails on a bad value. It
 sends every size; no repository variable turns sizes off.
 
-The lane table in the `route` job of `provider-plan.yml` is the one place that
-names each CI job's lane and size. It lists the critical-path test shards
+The lane table in the plan job's route step (`LANES`) of `provider-plan.yml`
+is the one place that names each CI job's lane and size. It lists the critical-path test shards
 first, then the build jobs and Cluster Release Build Checks, then the GPU
 shards.
 
@@ -1012,9 +1012,9 @@ lane). A new lane routes only after the operator adds it to the approval's
 `test-cluster-gpu-1` and `test-cluster-gpu-2` but not `test-cluster-gpu-3`
 (run 42924487818).
 For each lane, the route job's log and step summary (in CI, the plan job's)
-show the runner and the decision with its reason. They do not show the request body. The size
-appears only in a granted lane's last label; the lane table of the caller
-names every lane's size.
+show the runner and the decision with its reason. They do not show the
+request body. The size appears only in a granted lane's last label; the lane
+table of the caller names every lane's size.
 
 ## CI Caching
 

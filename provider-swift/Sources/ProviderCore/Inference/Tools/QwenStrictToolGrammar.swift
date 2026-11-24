@@ -204,7 +204,10 @@ enum QwenStrictToolGrammar {
         guard runsTokenConstraints else { return declined("the engine does not run token constraints") }
         let schema: QwenStrictToolSchema
         do {
-            schema = try QwenStrictToolSchema(declared: prepared.declaredTools ?? rendered, rendered: rendered,
+            // The grammar spells each value as the parser reads it
+            // (`ToolStreamPreparation.makeHandler`).
+            schema = try QwenStrictToolSchema(declared: prepared.declaredTools ?? rendered,
+                                              rendered: prepared.argumentTools ?? rendered,
                                               forbidding: family.forbiddenMarkers, family: family.profile.family,
                                               lenient: family.allTools)
         } catch {

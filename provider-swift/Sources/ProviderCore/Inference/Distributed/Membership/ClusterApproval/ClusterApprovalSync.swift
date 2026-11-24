@@ -22,6 +22,8 @@ public enum ClusterApprovalSync {
         /// The status note to record: `.some(nil)` clears it (offered), `.some(text)` says why the pair serves
         /// locally, nil leaves the record as it is (a coordinator that offers nothing writes nothing at all).
         public var note: String??
+        /// Declared only so the new tests compile on the base; nothing sets it here.
+        public var refused: ClusterRuntimeApproval? = nil
 
         static let unchanged = Result(changed: false, line: nil, note: nil)
     }

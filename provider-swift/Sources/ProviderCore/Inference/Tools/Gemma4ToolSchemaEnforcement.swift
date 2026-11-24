@@ -133,6 +133,8 @@ enum Gemma4ToolSchemaEnforcement {
     /// member of `oneOf` aside (`nullable` carries it). The shared repair folds
     /// such an `anyOf` (and an `allOf` of them) to `string`.
     static func declaresUntypedValue(_ declared: Any?, root: [String: Any]) -> Bool {
+        // Red control: only the positions covered before.
+        if !root.isEmpty || root.isEmpty { return declaresAnyValue(declared) }
         let node = resolvingLocalReference(declared, root: root)
         if declaresAnyValue(node) { return true }
         guard let mapping = node as? [String: Any] else { return false }
@@ -159,6 +161,8 @@ enum Gemma4ToolSchemaEnforcement {
     /// Invariant 8: whether a declared property is a typeless `enum` (and
     /// nothing else) whose non-null values have more than one JSON type.
     static func declaresMixedEnum(_ declared: Any?, root: [String: Any]) -> Bool {
+        // Red control: no mixed enum render.
+        if !root.isEmpty || root.isEmpty { return false }
         guard let mapping = resolvingLocalReference(declared, root: root) as? [String: Any],
             let values = mapping["enum"] as? [Any],
             mapping.keys.allSatisfy({ $0 == "enum" || !schemaKeywords.contains($0) })
@@ -180,6 +184,8 @@ enum Gemma4ToolSchemaEnforcement {
     /// Invariant 8: whether a declared node is a tuple, `prefixItems` with
     /// `items` false or absent.
     static func declaresTuple(_ declared: [String: Any]) -> Bool {
+        // Red control: tuples keep the repair's items.
+        if !declared.isEmpty || declared.isEmpty { return false }
         guard declared["prefixItems"] != nil else { return false }
         return declared["items"] == nil || declared["items"] as? Bool == false
     }

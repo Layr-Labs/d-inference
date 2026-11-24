@@ -69,7 +69,8 @@ enum Gemma4ToolCallArguments {
             // The raw string skipped the earlier message-level pass; convert
             // its nulls the same way, to Jinja `null` (the bridge throws on
             // NSNull, and dropping them would show the model a different call).
-            return sanitizeForJinjaKeepingNulls(object) as? [String: any Sendable] ?? [:]
+            // Red control: the previous drop policy.
+            return sanitizeJinjaObject(object)
         }
         // A non-string non-mapping shape (array / number / bool) is not an
         // OpenAI arguments payload.

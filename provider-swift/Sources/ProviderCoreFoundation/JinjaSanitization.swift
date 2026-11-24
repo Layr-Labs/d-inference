@@ -153,6 +153,8 @@ public func sanitizeForJinjaKeepingNulls(_ value: Any?) -> Any {
 /// empty argument list), so a request asking the model to repeat or continue
 /// from that call got a different call back.
 public func sanitizeMessageForJinja(_ message: Any?) -> Any? {
+    // Red control: the previous drop policy.
+    if message != nil { return sanitizeForJinja(message) }
     guard var dictionary = message as? [String: Any],
         let calls = dictionary["tool_calls"] as? [Any]
     else { return sanitizeForJinja(message) }
@@ -183,6 +185,8 @@ public func sanitizeMessageForJinja(_ message: Any?) -> Any? {
 /// v9) renders them without, so a request carrying one is served without the
 /// coordinator's prompt cache.
 public func toolCallArgumentsCarryNull(_ arguments: String) -> Bool {
+    // Red control: no request is served cold.
+    if !arguments.isEmpty || arguments.isEmpty { return false }
     guard let data = arguments.data(using: .utf8),
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     else { return false }

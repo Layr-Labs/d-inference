@@ -5164,6 +5164,25 @@ history and already kept these nulls. Such a request still plans and counts
 under normalization v9, which drops them, so it is served without the
 coordinator's prompt cache ([prefix cache](prefix-cache.md)).
 
+Gemma 4's `format_parameters` prints one render type per parameter and never
+`anyOf` / `oneOf`. The shared schema repair (`ToolSchemaNormalization`) gives
+a union the first non-null member's type, so a `string`-first union of
+`string` and one other scalar type rendered `STRING` and the model quoted
+typed values. Gemma's tool enforcement now renders the other member there
+(`INTEGER`, `NUMBER`, `BOOLEAN`; invariant 7 in
+`provider-swift/Sources/ProviderCore/Inference/Tools/Gemma4ToolSchemaEnforcement.swift`).
+The union stays on the wire, so the validator and constrained decoding, which
+read the request's tools rather than the render input, accept both members.
+Unions with more members, non-scalar members or an `enum` keep `STRING`, and
+other families keep the shared repair's render type. A property the caller
+declared without any type or schema keyword (`{}`) renders an empty type
+(`type:<|"|><|"|>`, the served template's rendering of a typeless property)
+instead of the injected `string` (invariant 8). Gemma's render reads the
+caller's declarations as sent (`ChatTemplateControls.declaredTools`) on every
+path that renders a coordinator request: serving, prompt recount and the
+diffusion media path. Such a request is also
+served without the coordinator's prompt cache ([prefix cache](prefix-cache.md)).
+
 A template `raise_exception` at request time is classified `jinja_template`
 and returned as HTTP 500, the provider-fault class, so a caller control that
 a template is known to reject must be resolved before rendering. The

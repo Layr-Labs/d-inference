@@ -30,6 +30,12 @@ public enum ModelMediaPolicy {
                 && configuration["language_model_only"] as? Bool != true
                 && configuration["vision_config"] is [String: Any]
         }
+        // Inkling 2 Mini serves images through its own tower only with its
+        // exact native declaration; any other spelling of the type stays text.
+        if (configuration["model_type"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == Inkling2ModelIdentity.modelType {
+            return Inkling2ModelIdentity.declaresNativeVision(configuration)
+        }
         if configuration["model_type"] as? String == "diffusion_gemma_text" { return false }
         if configuration["model_type"] as? String == "diffusion_gemma" {
             guard configuration["language_model_only"] as? Bool != true,
@@ -66,5 +72,13 @@ public enum ModelMediaPolicy {
         }
         guard configuration["language_model_only"] as? Bool != true else { return false }
         return configuration["vision_config"] != nil
+    }
+
+    /// Whether a model that serves media also takes video. Every media family
+    /// does except Inkling 2, whose model and template take still images only.
+    public static func advertisesVideo(_ configuration: [String: Any], modelID: String? = nil) -> Bool {
+        guard advertisesMedia(configuration, modelID: modelID) else { return false }
+        return (configuration["model_type"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != Inkling2ModelIdentity.modelType
     }
 }

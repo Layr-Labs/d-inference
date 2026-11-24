@@ -18,8 +18,16 @@ extension EngineV2Bridge {
         deadlinePostureMonitoring = DeadlinePostureMonitor.shared.acquire()
     }
 
+    /// `ServingPerformanceProfiles.postureAllowsExpansion` (nominal, Low Power
+    /// Mode off) at the bridge's `servingPosture`.
+    var postureAllowsExpansion: Bool {
+        let posture = servingPosture()
+        return ServingPerformanceProfiles.postureAllowsExpansion(
+            lowPowerMode: posture.lowPowerMode, thermalState: posture.thermalState)
+    }
+
     var currentPerformanceProfile: ServingPerformanceProfile? {
-        currentPerformanceProfile(allowExpansion: ServingPerformanceProfiles.postureAllowsExpansion)
+        currentPerformanceProfile(allowExpansion: postureAllowsExpansion)
     }
 
     func currentPerformanceProfile(allowExpansion: Bool) -> ServingPerformanceProfile? {
@@ -27,7 +35,7 @@ extension EngineV2Bridge {
     }
 
     var currentDeadlineProfile: DeadlinePerformanceProfile? {
-        guard let profile = currentDeadlineProfile(allowQualifiedPosture: ServingPerformanceProfiles.postureAllowsExpansion),
+        guard let profile = currentDeadlineProfile(allowQualifiedPosture: postureAllowsExpansion),
             serviceBudget?.deadlineEligibleForAdvertisement(profile.applicability) == true else { return nil }
         return profile
     }
@@ -37,11 +45,23 @@ extension EngineV2Bridge {
     }
 
     var effectiveServingConcurrency: Int {
-        effectiveServingConcurrency(allowExpansion: ServingPerformanceProfiles.postureAllowsExpansion)
+        effectiveServingConcurrency(allowExpansion: widthPostureAllowsExpansion)
+    }
+
+    /// The posture the width needs: a reviewed profile's width needs nominal
+    /// (`postureAllowsExpansion`); the automatic width holds at fair too
+    /// (`postureAllowsAutomaticWidth`).
+    var widthPostureAllowsExpansion: Bool {
+        let posture = servingPosture()
+        return performanceProfile == nil
+            ? ServingPerformanceProfiles.postureAllowsAutomaticWidth(
+                lowPowerMode: posture.lowPowerMode, thermalState: posture.thermalState)
+            : ServingPerformanceProfiles.postureAllowsExpansion(
+                lowPowerMode: posture.lowPowerMode, thermalState: posture.thermalState)
     }
 
     /// Reviewed profiles and any width above the unqualified width (the
-    /// automatic M5 paged default) need nominal power and thermal posture;
+    /// automatic M5 paged default) need their posture (`widthPostureAllowsExpansion`);
     /// otherwise admission falls back to the unqualified width.
     var hasPostureGatedWidth: Bool {
         performanceProfile != nil || maxConcurrentRequests > unqualifiedMaxConcurrentRequests
@@ -66,7 +86,10 @@ extension EngineV2Bridge {
         recoverPrefillEvidence: Bool = false,
         allowExpansion: Bool? = nil,
         takesStoppedRowPlace: Bool = false) -> Bool {
-        let expansionAllowed = allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion
+        let expansionAllowed = allowExpansion ?? postureAllowsExpansion
+        // An explicit `allowExpansion` decides both; by default the width
+        // follows its own posture (fair keeps the automatic width).
+        let widthExpansionAllowed = allowExpansion ?? widthPostureAllowsExpansion
         let effectiveProfile = currentPerformanceProfile(allowExpansion: expansionAllowed)
         let effectiveDeadlineProfile = currentDeadlineProfile(allowQualifiedPosture: expansionAllowed)
         // A suspended submission already owns its allowance. Count its ID once
@@ -74,13 +97,13 @@ extension EngineV2Bridge {
         let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
         if usesMemoryLimitedConcurrency, !takesStoppedRowPlace {
             let occupiedConcurrency = max(activeRequestCount(), active.count + pendingOnlyCount)
-            if occupiedConcurrency >= effectiveServingConcurrency(allowExpansion: expansionAllowed) {
+            if occupiedConcurrency >= effectiveServingConcurrency(allowExpansion: widthExpansionAllowed) {
                 return false
             }
         }
         // The same once-per-ID count: a local request holding its head
         // (`holdHeadUntilAdmitted`) is in both sets until its submit returns.
-        if hasPostureGatedWidth, !expansionAllowed, !takesStoppedRowPlace,
+        if hasPostureGatedWidth, !widthExpansionAllowed, !takesStoppedRowPlace,
             active.count + pendingOnlyCount >= unqualifiedMaxConcurrentRequests {
             return false
         }
@@ -121,6 +144,25 @@ extension EngineV2Bridge {
             overcommit: takesStoppedRowPlace) ?? true
     }
 
+    /// The serving share a text prompt holds while it is rendered and
+    /// tokenized, under the owner ID its submission's allowance takes over
+    /// (`WholeMacServiceBudget.acquirePreparation`). A full Mac refuses as
+    /// capacity, as at submission. Nil: no shared budget, or the owner's
+    /// request, which waits for room at submission (`OwnerMemoryWait`).
+    func acquirePromptPreparation(requestID: String,
+        firstContentDeadline: FirstContentDeadline?) throws -> PromptPreparationShare? {
+        guard let serviceBudget, OwnerMemoryWait.current == nil
+            || !OwnerMemoryWait.servesOwnerRequest(firstContentDeadline: firstContentDeadline) else { return nil }
+        let ownerID = serviceOwnerPrefix + ":" + requestID
+        guard serviceBudget.acquirePreparation(ownerID: ownerID,
+            concurrency: currentPerformanceProfile?.wholeMacConcurrency
+                ?? ServingPerformanceProfiles.legacyWholeMacConcurrency,
+            overcommit: EngineAdmissionPriority.current > 0) else {
+            throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(Self.serviceAllowanceExhausted)
+        }
+        return PromptPreparationShare(budget: serviceBudget, ownerID: ownerID)
+    }
+
     /// Call only at refused pre-submit cleanup or completed engine retirement.
     /// The stream's terminal alone does not prove device resources retired.
     func releaseServiceAllowance(requestID: String) {
@@ -136,4 +178,13 @@ extension EngineV2Bridge {
         }
         serviceBudget?.release(ownerID: serviceOwnerPrefix + ":" + requestID)
     }
+}
+
+/// A prompt preparation's serving share (`EngineV2Bridge.acquirePromptPreparation`).
+/// `end` drops it unless the submission's allowance already took it over.
+struct PromptPreparationShare: Sendable {
+    let budget: WholeMacServiceBudget
+    let ownerID: String
+
+    func end() { budget.releasePreparation(ownerID: ownerID) }
 }

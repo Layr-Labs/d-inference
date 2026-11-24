@@ -361,7 +361,10 @@ extension EngineV2Factory {
             }
         } else {
             steppable = CBv2SteppableLanguageModelAdapter(model)
-            cacheProvider = CBv2LayerCacheBank(caches: caches)
+            // Inkling 2's images are ordinary causal tokens at scalar
+            // positions: its paged bank admits causal media spans, which
+            // no other model's bank does.
+            cacheProvider = CBv2LayerCacheBank(caches: caches, permitsCausalMedia: model is MLXVLM.Inkling2VLM)
         }
         var loopConfig = CBv2EngineLoopConfig(useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled())
         if let engineShutdownTimeout { loopConfig.shutdownTimeout = engineShutdownTimeout }

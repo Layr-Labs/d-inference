@@ -375,7 +375,7 @@ class CountAndAuditTests(unittest.TestCase):
         parity = [{"shard": "parity", "pattern": name, "swift_testing": 1, "xctest": 0}
                   for name in ("ProductionPromptParityTests", "NemotronTemplateParityLiveTests")]
 
-        def own(selections, processes=2, **changed):
+        def job_reports(selections, processes=2, **changed):
             return [{"shard": selection, "pattern": ISOLATED, "processes": processes, "xctest": 0,
                      "swift_testing": changed.get(selection, len(shards.planned(tests, selection, ISOLATED,
                                                                                  weights, processes)))}
@@ -384,7 +384,7 @@ class CountAndAuditTests(unittest.TestCase):
         # 2 jobs of 2 processes: job 1 runs the parallel class, the
         # own-process class, 1/4, 2/4 and Prompt Parity (PARITY_SHARD 2); job
         # 2 runs 3/4 and 4/4.
-        first, second = own(("parallel", "own", "1/4", "2/4")) + parity, own(("3/4", "4/4"))
+        first, second = job_reports(("parallel", "own", "1/4", "2/4")) + parity, job_reports(("3/4", "4/4"))
         self.assertEqual(len(shards.planned(tests, "own", ISOLATED, weights, 2)), 1)
         self.assertEqual(shards.audit_job(tests, first, ISOLATED, weights, 1, 2, 2), [])
         self.assertEqual(shards.audit_job(tests, second, ISOLATED, weights, 2, 2, 2), [])
@@ -392,15 +392,17 @@ class CountAndAuditTests(unittest.TestCase):
         # wrong job, or a report planned for another process count fails;
         # so does an own-process class that ran short, is missing from job 1
         # or ran in another job.
-        self.assertTrue(shards.audit_job(tests, own(("3/4", "4/4"), **{"4/4": 0}), ISOLATED, weights, 2, 2, 2))
-        self.assertTrue(shards.audit_job(tests, own(("3/4",)), ISOLATED, weights, 2, 2, 2))
+        self.assertTrue(shards.audit_job(tests, job_reports(("3/4", "4/4"), **{"4/4": 0}), ISOLATED, weights, 2, 2, 2))
+        self.assertTrue(shards.audit_job(tests, job_reports(("3/4",)), ISOLATED, weights, 2, 2, 2))
         self.assertTrue(shards.audit_job(tests, second + parity, ISOLATED, weights, 2, 2, 2))
-        self.assertTrue(shards.audit_job(tests, own(("parallel", "own", "1/4", "2/4")), ISOLATED, weights, 1, 2, 2))
-        self.assertTrue(shards.audit_job(tests, own(("3/4", "4/4"), processes=1), ISOLATED, weights, 2, 2, 2))
-        self.assertTrue(shards.audit_job(tests, own(("parallel", "own", "1/4", "2/4"), **{"own": 0}) + parity,
+        self.assertTrue(shards.audit_job(tests, job_reports(("parallel", "own", "1/4", "2/4")),
                                          ISOLATED, weights, 1, 2, 2))
-        self.assertTrue(shards.audit_job(tests, own(("parallel", "1/4", "2/4")) + parity, ISOLATED, weights, 1, 2, 2))
-        self.assertTrue(shards.audit_job(tests, second + own(("own",)), ISOLATED, weights, 2, 2, 2))
+        self.assertTrue(shards.audit_job(tests, job_reports(("3/4", "4/4"), processes=1), ISOLATED, weights, 2, 2, 2))
+        self.assertTrue(shards.audit_job(tests, job_reports(("parallel", "own", "1/4", "2/4"), **{"own": 0}) + parity,
+                                         ISOLATED, weights, 1, 2, 2))
+        self.assertTrue(shards.audit_job(tests, job_reports(("parallel", "1/4", "2/4")) + parity,
+                                         ISOLATED, weights, 1, 2, 2))
+        self.assertTrue(shards.audit_job(tests, second + job_reports(("own",)), ISOLATED, weights, 2, 2, 2))
         # Every test is in exactly one plan, so the job audits add up to the
         # full-suite audit over all of the reports, which needs the own-process
         # class's report too.

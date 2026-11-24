@@ -142,7 +142,8 @@ def assignment(shards, weights, processes=1):
     runs at the same time. The last selection's list only balances the load:
     that selection runs every serial suite that selections 1..N-1 do not pick.
     The own-process class's suites are in no selection's list; their process
-    runs beside job 1's selections and adds nothing to their load.
+    runs beside job 1's selections and adds nothing to their load, but it
+    delays Prompt Parity, which runs after all of job 1's processes.
     """
     if shards % processes:
         raise ValueError(f"{shards} selections do not make jobs of {processes} processes")
@@ -157,9 +158,9 @@ def assignment(shards, weights, processes=1):
         if job == last_job:
             loads[index] += LAST_SHARD_EXTRA_SECONDS
     assigned = [[] for _ in range(shards)]
-    own = own_process_suites(processes)
+    own_suites = own_process_suites(processes)
     serial = {key: seconds for key, seconds in weights.items()
-              if key.split(".", 1)[0] not in PARALLEL_MODULES and key not in own}
+              if key.split(".", 1)[0] not in PARALLEL_MODULES and key not in own_suites}
     for key in sorted(serial, key=lambda key: (-serial[key], key)):
         index = min(range(shards), key=lambda index: (loads[index], index))
         loads[index] += serial[key]
@@ -192,18 +193,18 @@ def selection(shard, isolated, weights, processes=1):
     """Return (filter regex or None, skip regex) for one selection."""
     if shard == "parallel":
         return parallel_regex(), isolated
-    own = own_process_suites(processes)
+    own_suites = own_process_suites(processes)
     if shard == "own":
-        if not own:
+        if not own_suites:
             raise ValueError("Selection 'own' runs only when a job runs several processes (PROVIDER_TEST_PROCESSES)")
-        return suites_regex(own), isolated
+        return suites_regex(own_suites), isolated
     index, shards = parse_shard(shard)
     assigned, _ = assignment(shards, weights, processes)
     if index < shards:
         if not assigned[index - 1]:
             raise ValueError(f"Shard {shard} has no suites; use fewer shards")
         return suites_regex(assigned[index - 1]), isolated
-    others = [suites_regex(keys) for keys in (*assigned[:-1], own) if keys]
+    others = [suites_regex(keys) for keys in (*assigned[:-1], own_suites) if keys]
     return None, "|".join([parallel_regex(), *others, isolated])
 
 
@@ -312,11 +313,12 @@ def audit_job(test_ids, reports, isolated, weights, job, jobs, processes):
     expected = set(class_selections(processes)) if first == 1 else set()
     expected |= {f"{index}/{total}" for index in range(first, last + 1)}
     parity = [report for report in reports if report["shard"] == "parity"]
-    own = [report for report in reports if report["shard"] != "parity"]
+    job_reports = [report for report in reports if report["shard"] != "parity"]
     errors = []
-    if {report["shard"] for report in own} != expected or len(own) != len(expected):
-        errors.append(f"Expected one report per selection {sorted(expected)}, got {sorted(r['shard'] for r in own)}")
-    for report in own:
+    if {report["shard"] for report in job_reports} != expected or len(job_reports) != len(expected):
+        errors.append(f"Expected one report per selection {sorted(expected)}, "
+                      f"got {sorted(r['shard'] for r in job_reports)}")
+    for report in job_reports:
         if report.get("processes", 1) != processes:
             errors.append(f"Selection {report['shard']} was planned for {report.get('processes', 1)} processes, not {processes}")
         plan = planned(test_ids, report["shard"], isolated, weights, processes)

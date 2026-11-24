@@ -509,7 +509,9 @@ runtime shard plans under about 300 s. On 4x24, `BootSecurityServeLoopTests`
 ran 167 to 250 s, and its shard was the last provider job in 16 of the 35
 green pull-request rounds of 2026-11-23. It now runs in a process of its own
 beside provider shard 1's selections, on that shard's 12x32 lane, and every
-selection plans 130 s ([provider shards](test.md#provider-and-sdk)). Every
+selection plans 130 s ([provider shards](test.md#provider-and-sdk)). Shard
+1's Prompt Parity then waits for it; modelled on those rounds, the last
+provider shard ends about 11 s sooner at the median. Every
 macOS job is routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once

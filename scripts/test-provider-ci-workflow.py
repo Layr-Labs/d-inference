@@ -371,7 +371,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # is the own-process class (OWN_PROCESS_SUITES). No selection plans
         # it; job 1 runs it in a process of its own beside its selections, on
         # test-provider-1's 12x32 lane. Any other suite 10 s longer than the
-        # shortest job fails here, and the jobs end within 10 s of each other.
+        # shortest job fails here, and the jobs' planned loads end within 10 s
+        # of each other; job 1 also waits for that process before Prompt
+        # Parity.
         # The gates run in Provider Gates, beside the shards.
         # Selections 1..N-1 need suites (`selection` refuses an empty one); the
         # last runs the unweighted suites even when the plan gives it none.

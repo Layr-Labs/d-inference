@@ -254,7 +254,11 @@ a process of its own with its own `TMPDIR` and state files. That process runs
 the command line its selection ran: `--no-parallel`, the suite's `--filter`
 and the isolated-process `--skip`. The planner does not load shard 1's
 selections with it, and the 15 selections share the other suites, 130 s each
-instead of 139.6 s (and 170 s for the suite's selection).
+instead of 139.6 s (and 170 s for the suite's selection). Shard 1's Prompt
+Parity now starts after this process, so shard 1 ends about this process plus
+Prompt Parity after its products. Modelled on the rounds of 2026-11-23 (not
+measured), the last provider shard ends about 11 s sooner at the median, and
+shard 1 becomes the last provider job in about 10 of the 35 rounds.
 
 Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
 `PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)

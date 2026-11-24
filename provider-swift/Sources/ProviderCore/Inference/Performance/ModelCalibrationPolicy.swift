@@ -52,6 +52,45 @@ enum ModelCalibrationPolicy {
         case always
     }
 
+    /// Which shape cells a loaded engine warms.
+    enum ShapeWarmupPlan: Sendable, Equatable {
+        /// `shapeWarmup`, gated by the shader-cache probe.
+        case standard
+        /// Inkling 2 Mini (`inkling2Warmup`): every load, probe or not. Its
+        /// first full prefill chunk in a process cost 26 % more than warm ones
+        /// (977 vs 774 ms for 2,048 tokens on a quiet M5 Max) with a warm
+        /// shader cache, which the probe would call warm and skip.
+        case inkling2
+    }
+
+    /// The mode for a plan: Inkling 2 warms on every load unless the switch
+    /// is off; every other model keeps the switch's own mode.
+    static func shapeWarmupMode(
+        plan: ShapeWarmupPlan, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> ShapeWarmupMode {
+        let mode = shapeWarmupMode(environment: environment)
+        guard plan == .inkling2 else { return mode }
+        return mode == .off ? .off : .always
+    }
+
+    /// Inkling 2's warm-up: one full prefill chunk with a few greedy decode
+    /// steps at one row (greedy, so the drafter's rounds and the verify window
+    /// run with MTP on), then short greedy decodes at two and eight rows where
+    /// the served width allows. Every cell is `warmup` and submitted with the
+    /// cache off (`runModelCalibrationCell`): no checkpoint, no tenant state.
+    static func inkling2Warmup(chunkTokens: Int, width: Int, contextTokens: Int?) -> [Cell] {
+        let chunk = max(1, chunkTokens)
+        var cells = [Cell(promptTokens: chunk, outputTokens: 16, width: 1, warmup: true)]
+        for rows in [2, 8] where rows <= width {
+            cells.append(Cell(promptTokens: 256, outputTokens: 16, width: rows, warmup: true))
+        }
+        return cells.compactMap { cell in
+            let fitting = min(cell.promptTokens, (contextTokens ?? Int.max) - cell.outputTokens)
+            guard fitting >= min(chunk, 256) else { return nil }
+            return Cell(promptTokens: fitting, outputTokens: cell.outputTokens, width: cell.width, warmup: true)
+        }
+    }
+
     static func shapeWarmupMode(
         environment: [String: String] = ProcessInfo.processInfo.environment) -> ShapeWarmupMode {
         guard let raw = environment[shapeWarmupEnvironmentKey]?
@@ -165,6 +204,12 @@ struct ModelCalibrationState {
     var shaderCacheCold: Bool?
     /// Tests pin the mode; production reads the process environment.
     var shapeWarmupModeOverride: ModelCalibrationPolicy.ShapeWarmupMode?
+    /// The loaded model's warm-up (`adoptInkling2ShapeWarmup`).
+    var shapeWarmupPlan: ModelCalibrationPolicy.ShapeWarmupPlan = .standard
+    /// Inkling 2's per-depth warm-up (`Inkling2DepthWarmup`), run once per
+    /// loaded engine after its shape cells; nil for every other model.
+    var inkling2DepthWarmup: Inkling2DepthWarmup.Runner?
+    var inkling2DepthWarmupFinished = false
     var nextAttempt: ContinuousClock.Instant?
     var interrupted = false
     var closed = false

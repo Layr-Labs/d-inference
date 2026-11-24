@@ -266,6 +266,27 @@ final class NemotronSuperPromptContractTests: XCTestCase {
         XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse(deep))
     }
 
+    /// The parser reads the body in place, so input that ends inside a token
+    /// must end in a clean refusal, never a read past its last byte: a string
+    /// or escape cut short, a partial literal or number, an object without its
+    /// value, and the same cuts inside a member that is only scanned.
+    func testOrderedJSONRefusesInputEndingMidToken() throws {
+        for truncated in ["", "\"", "\"abc", "\"\\", "\"\\u", "\"\\u12", "\"\\ud83d", "\"\\ud83d\\", "\"\\ud83d\\ude0",
+                          "t", "tru", "fals", "nul", "-", "1.", "1e", "-1.5E+", "[", "[1,", "{", "{\"a",
+                          "{\"a\"", "{\"a\":", "{\"a\":1,", "{\"a\":[tru"] {
+            XCTAssertThrowsError(try NemotronSuperOrderedJSON.parse(truncated), truncated) {
+                XCTAssertEqual($0 as? NemotronSuperOrderedJSON.Failure, .invalid, truncated)
+            }
+        }
+        for truncated in ["{\"a\":\"x", "{\"a\":\"\\", "{\"a\":\"\\u12", "{\"a\":tru", "{\"a\":-", "{\"a\":[1,",
+                          "{\"a\":{\"b\":tru", "{\"a\":{\"b\"", "{\"a\"", "{\"a\":", "{\"a\":1,\"tools\"",
+                          "{\"tools\":\"\\u12", "{\"tools\":[tru", "{\"tools\":[1,"] {
+            XCTAssertThrowsError(try NemotronSuperOrderedJSON.member("tools", of: Data(truncated.utf8)), truncated) {
+                XCTAssertEqual($0 as? NemotronSuperOrderedJSON.Failure, .invalid, truncated)
+            }
+        }
+    }
+
     /// Only the requested top-level member is parsed, and held to the limits;
     /// the others need only well-formed extents. A repeated key keeps its last
     /// value, as in Python.

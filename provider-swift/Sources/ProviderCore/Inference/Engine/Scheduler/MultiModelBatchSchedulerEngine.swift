@@ -873,7 +873,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let loopGuard = GenerationLoopGuardPolicy.resolve(
                         modelType: modelType, request: visionRequest, prepared: prepared, tokenConstraint: nil,
                         exitThinking: exitThinking)
-                    let stopStringScope = ReasoningStopScope.scope(
+                    let stopStringScope = Inkling2PromptContract.stopStringScope(
+                        modelType: modelType, prepared: prepared) ?? ReasoningStopScope.scope(
                         reasoningParser: visionRequest.reasoningParser,
                         reasoningPrefix: reasoningPrefix,
                         parsesToolCalls: toolHandler != nil)
@@ -934,7 +935,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         // The continuation's output starts after the end of
                         // thinking, so stop strings apply from its first token
                         // (inside the answer, when the exit itself opened it).
-                        let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
+                        let continuationStopScope = exitThinking.answerStopScope
+                            ?? Inkling2PromptContract.stopStringScope(modelType: modelType, prepared: prepared)
+                            ?? ReasoningStopScope.scope(
                             reasoningParser: visionRequest.reasoningParser, reasoningPrefix: nil,
                             parsesToolCalls: toolHandler != nil)
                         let spliced = LoopExitThinkingContinuation.splice(
@@ -1010,7 +1013,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
                             || DiffusionGemmaReasoningControl.enabled(for: visionRequest, controls: templateControls),
                         absorbStrayThinkClose: QwenStrayThinkClose.applies(qwenOutputContext),
-                        withholdReasoning: withholdsReasoning
+                        withholdReasoning: withholdsReasoning,
+                        nativeInklingChannels: Inkling2PromptContract.applies(modelType: modelType),
+                        inklingStreamsCalls: Inkling2PromptContract.applies(modelType: modelType)
+                            && ToolStreamPreparation.streamsInklingCalls(request: visionRequest, prepared: prepared)
                     )
                 } catch {
                     // Every failed media construction releases the same reservations
@@ -1059,6 +1065,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
+
+        let requestId = "req-\(UUID().uuidString.prefix(12))"
+        // Rendering and tokenizing count against the serving width: a full
+        // Mac refuses before that work, and submission takes the share over.
+        let preparation: PromptPreparationShare?
+        do {
+            preparation = try await engineV2Bridge?.acquirePromptPreparation(
+                requestID: requestId, firstContentDeadline: firstContentDeadline)
+        } catch {
+            await releaseBox.fire()
+            throw error
+        }
+        defer { preparation?.end() }
 
         let promptTokens: [Int]
         let prepTiming: ProviderPromptContractPipeline.PrepTiming
@@ -1242,11 +1261,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
             exitThinking: exitThinking)
-        let stopStringScope = ReasoningStopScope.scope(
+        let stopStringScope = Inkling2PromptContract.stopStringScope(
+            modelType: modelType, prepared: prepared) ?? ReasoningStopScope.scope(
             reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix,
             parsesToolCalls: toolHandler != nil)
-
-        let requestId = "req-\(UUID().uuidString.prefix(12))"
 
         // ONE ENGINE (v0.7.5): every production slot — ProviderLoop AND
         // the standalone server — carries a v2 bridge; the tokenized
@@ -1333,7 +1351,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // The continuation's output starts after the end of thinking, so
             // stop strings apply from its first token, whatever the prompt opened
             // (inside the answer, when the exit itself opened it).
-            let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
+            let continuationStopScope = exitThinking.answerStopScope
+                ?? Inkling2PromptContract.stopStringScope(modelType: modelType, prepared: prepared)
+                ?? ReasoningStopScope.scope(
                 reasoningParser: request.reasoningParser, reasoningPrefix: nil, parsesToolCalls: toolHandler != nil)
             // A usage signal belongs to one engine request: the continuation
             // has its own, and the stop that ended the answer is the request's.
@@ -1465,7 +1485,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             answerStopFilter: answerStopFilter,
             answerFormat: jsonAnswer?.format,
             withholdReasoning: withholdsReasoning,
-            rewriteHarmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType)
+            rewriteHarmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType),
+            nativeInklingChannels: Inkling2PromptContract.applies(modelType: modelType),
+            inklingStreamsCalls: Inkling2PromptContract.applies(modelType: modelType)
+                && ToolStreamPreparation.streamsInklingCalls(request: request, prepared: prepared)
         )
     }
 
@@ -1849,7 +1872,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false,
-        rewriteHarmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false,
+        nativeInklingChannels: Bool = false,
+        inklingStreamsCalls: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1880,7 +1905,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 answerStopFilter: answerStopFilter,
                 answerFormat: answerFormat,
                 withholdReasoning: withholdReasoning,
-                rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
+                rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders,
+                nativeInklingChannels: nativeInklingChannels,
+                inklingStreamsCalls: inklingStreamsCalls)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1920,7 +1947,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false,
-        rewriteHarmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false,
+        nativeInklingChannels: Bool = false,
+        inklingStreamsCalls: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1952,7 +1981,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
                     withholdReasoning: withholdReasoning, streamedCalls: prepared,
-                    streamsGLMCalls: streamsGLMCalls)
+                    streamsGLMCalls: streamsGLMCalls,
+                    nativeInklingChannels: nativeInklingChannels, inklingStreamsCalls: inklingStreamsCalls)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.

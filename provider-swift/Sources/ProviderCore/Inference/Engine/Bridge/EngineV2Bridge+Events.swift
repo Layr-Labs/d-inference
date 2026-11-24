@@ -238,6 +238,12 @@ extension EngineV2Bridge {
                 noteRetirementAfterTerminal(requestId: id, held: terminalAt.duration(to: .now))
             }
         }
+        #if DEBUG
+        if let hook = _testBeforeServiceRelease {
+            _testBeforeServiceRelease = nil
+            await hook()
+        }
+        #endif
         releaseServiceAllowance(requestID: id)
         // Every exit releases only the resources owned by this submission.
         // Staging completion is an idempotent backstop for lookup misses.

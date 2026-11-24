@@ -18,9 +18,12 @@ struct QwenParserLiteralReadingTests {
         #"{"type":"string"}"#, #"{"enum":["5","a"]}"#, #"{"const":5}"#, #"{"enum":[true,"x"]}"#,
         #"{"not":{"type":"string"},"multipleOf":5}"#, #"{"type":"string","nullable":true}"#,
         #"{"oneOf":[{"type":"string"},{"type":"integer"},{"type":"number"}]}"#,
+        #"{"type":["string","null"]}"#, #"{"anyOf":[{"type":"string"},{"type":"boolean"}]}"#,
+        #"{"type":["string","integer"],"nullable":true}"#,
     ]
     static let probes = [
         "5", "2.5", "-2500", "true", "false", "null", "001", "+5", "1e3", "-0", "12.50", "abc", " 5", "15",
+        "True", "False", "None", "TRUE", "nil", " null", "NULL", "none", "yes",
     ]
 
     /// A schema as a request's tool map carries it.

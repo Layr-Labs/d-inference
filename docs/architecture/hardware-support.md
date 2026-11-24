@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-24
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -655,6 +655,11 @@ through the measured free memory.
   request reservation is released (loads and other charges are not counted as
   freeable); otherwise it is refused at once as larger than the Mac holds
   (`EngineV2Bridge+OwnerMemoryWait.swift`).
+- A text request's prompt rendering and tokenization hold one share of the
+  whole-Mac service allowance (`WholeMacServiceBudget.acquirePreparation`), so
+  a full Mac refuses a request as capacity before preparing its prompt and
+  concurrent preparation counts against the serving width. Submission takes
+  the share over as the request's allowance.
 - Reservation age is diagnostic only. `GlobalKVCacheBudget.recordCommitRejection`
   logs sustained rejection and keeps every owner's charge until the caller
   releases it after its resources retire. The asynchronous allocator-cache

@@ -253,7 +253,9 @@ public enum ClusterApprovalSync {
 
     /// The other Mac's side of `run`: an `approval` command its leader sent, checked against this Mac's own files
     /// and pairing before anything is saved (`ClusterApprovalAttachment.apply`). A refusal is thrown with
-    /// `peerRefusalPrefix`, so the leader's line names the Mac that refused and why.
+    /// `peerRefusalPrefix`, so the leader's line names the Mac that refused and why. Once this Mac carries the
+    /// leader's approval, a refusal it recorded while it led (leadership moves between the Macs) no longer says why
+    /// the pair isn't offered, and is cleared from its setup record.
     static func receive(_ command: ClusterServiceCommand, paths: ClusterUserPaths, providerConfiguration: URL,
                         pairingStore: ClusterPairingStore, scratch: URL, now: Double, say: (String) -> Void,
                         chipClass: ClusterChipClass? = ClusterChipClass.local(),
@@ -264,11 +266,20 @@ public enum ClusterApprovalSync {
                 providerConfiguration: providerConfiguration, pairingStore: pairingStore, scratch: scratch, now: now,
                 chipClass: chipClass, facts: facts)
             say(line)
+            if command.approval != nil { clearRefusalNote(paths: paths) }
             return line
         } catch {
             let reason = refusal(error)
             say("did not save the cluster approval the leader sent: \(reason)")
             throw ClusterSetupFailure(peerRefusalPrefix + reason)
         }
+    }
+
+    /// Clears the refusal note and the refused approval from this Mac's setup record; a record without either is not
+    /// written.
+    static func clearRefusalNote(paths: ClusterUserPaths) {
+        let store = ClusterSetupStore(paths: .init(paths: paths))
+        guard let record = try? store.readRecord(), record.approvalNote != nil || record.approvalRefused != nil else { return }
+        _ = try? store.updateRecord { $0.approvalNote = nil; $0.approvalRefused = nil }
     }
 }

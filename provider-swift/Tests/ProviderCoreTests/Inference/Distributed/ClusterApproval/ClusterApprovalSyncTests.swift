@@ -100,6 +100,22 @@ struct ClusterApprovalSyncTests {
         #expect(try macs.macs.map(macs.bytes) == before)
     }
 
+    /// The other Mac recorded a refusal while it led (leadership moves between the Macs). Its own refusal keeps that
+    /// note; once it saves the leader's approval, the note no longer says why the pair isn't offered and is cleared.
+    @Test func theOtherMacClearsItsRefusalNoteWhenItSavesTheLeadersApproval() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        let record = ClusterSetupStore(paths: .init(paths: macs.follower.paths))
+        let stale = "Not offered for pairing: this Mac's check refused it: Saved pair approval differs"
+        _ = try record.updateRecord { $0.approvalNote = stale }
+        let refused = macs.sync(.approvals([approval]), leaderFacts: facts,
+                                followerFacts: try macs.facts(differing: "metallib_sha256"))
+        #expect(!refused.changed)
+        #expect(try record.readRecord().approvalNote == stale)
+        #expect(macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts).changed)
+        #expect(try record.readRecord().approvalNote == nil)
+    }
+
     @Test func onlyTheEntryOfThisModelAndPrefillScheduleIsTaken() throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         let before = try macs.macs.map(macs.bytes), facts = try macs.facts()

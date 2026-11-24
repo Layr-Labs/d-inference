@@ -671,6 +671,14 @@ whether invariant 7 or 8 changed a render type
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/GemmaToolUnionTypeCache.swift`);
 its counter is `promptCacheSkippedToolUnionType`.
 
+A GPT-OSS request is served cold the same way when one of its declared tools
+renders differently from the repaired declaration normalization v9 renders:
+a `type` list, a union of several types or a node without a type, which
+GPT-OSS now renders as written (`GPTOSSToolSchemaRender.changesRender`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/GPTOSSToolSchemaCache.swift`);
+its counter is `promptCacheSkippedToolRawSchema`. A body whose tools arrive
+already repaired renders as before and keeps its cache context.
+
 Native MiMo historical checkpoints retain only actual uniform-chunk frontiers
 whose target and optional assistant state completed their native observation
 and promotion fences. Their fork target is the deepest successfully captured

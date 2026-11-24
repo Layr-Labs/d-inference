@@ -1550,6 +1550,13 @@ its `README.md`). `TemplateRenderStackTests` renders that template, and
 nested 64 levels deep, the most a request may carry, on the render stack
 (`TemplateRenderStack`) in the debug test build.
 
+The same directory holds `tool-schema-corpus.json`, the distinct tool
+`parameters` of a realistic tool-call schema corpus (descriptions and titles
+reduced to `d`). `GPTOSSToolSchemaRenderTests` renders each through that
+template as the ingress repair forwards it and requires a byte-identical
+prompt and an unchanged cache context, and renders each as written without a
+template failure (`GPTOSSToolSchemaRender`).
+
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never
 weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to

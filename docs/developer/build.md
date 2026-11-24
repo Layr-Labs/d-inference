@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-24
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -351,9 +351,22 @@ and the gate passes, citing that run. A pull request is tested on its test
 merge commit, so the push of its merge commit, when the base branch did not
 move meanwhile, has the same tree and is not tested again. A squash or rebase
 merge has one parent and is tested again. Any doubt (no record, a failed or
-foreign run, an API error) runs the tests. Such a push runs only the build jobs
-of the components it changed, without an upload, so the branch caches stay
-fresh.
+foreign run, an API error) runs the tests. A push of a tested tree runs no
+test job and, as a rule, no build job. One exception keeps the provider build
+cache usable: a push to `dev` that runs no provider test (its tree was tested,
+or its change selects none) but whose diff moves that cache's dependency tier,
+by changing a gitlink or a `Package.swift`, `Package.resolved` or
+`.gitmodules` (the classifier's `dependency_tier` output), still runs `Build
+provider test products`, without tests and without an upload, and saves the
+caches (`warm_provider_cache`). Without it, pull requests on the new tier (a
+`libs/mlx-swift-lm` bump, for one) would find no `dev` entry to restore. The
+`Provider Tests` gate does not need that build, so a failed one marks the run
+but not the gate. Limits: `dev` pushes coalesce, so a later push cancels a
+running warm build and saves nothing for that tier unless it moves the tier
+itself or runs the provider build; a tier move from the toolchain (a new Xcode,
+SDK or Swift in the runner image) or from `scripts/provider-ci-cache.py`'s
+version is not in the diff and does not warm; and the saved entry reaches only
+the cache of the runner it ran on ([CI caching](#ci-caching)).
 
 Pull requests and pushes into `dev` select the components their diff touches.
 Pushes to `master` and pull requests into `master` select every component, so a
@@ -463,8 +476,10 @@ Cluster GPU shards and the MiMo audio gate) and never skips a tested tree;
 dispatched runs share concurrency group `ci-dev-dispatch` without cancelling an
 in-progress dispatch. On `dev` and `master` pushes, `scripts/ci-tested-tree.py`
 deduplicates both two-parent merge commits and single-parent squash merges by
-matching the tested git tree hash, skipping both test and build jobs when a
-successful run of the same workflow already covered the exact tree.
+matching the tested git tree hash, skipping the test and build jobs when a
+successful run of the same workflow already covered the exact tree (a `dev`
+push that moves the provider build cache's dependency tier still runs `Build
+provider test products`, above).
 
 `.github/workflows/darkbloom-route.yml` makes at most 2 attempts by default:
 after a transient plane error (a transport error, 408, 429 or 5xx) it waits

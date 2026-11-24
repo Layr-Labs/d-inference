@@ -131,7 +131,10 @@ PLAN_LANES = {
     "test-provider-5": (requested("provider"), "4x24"),
     "test-provider-gates": (requested("provider"), "4x24"),
     "build-cluster": (requested("cluster"), "8x16"),
-    "build-provider": (requested("provider"), "12x32"),
+    # Also on a dev push that runs no provider test but moves the build
+    # cache's dependency tier: the build saves its caches, and no test job runs.
+    "build-provider": ("${{ (needs.components.outputs.provider == 'true' || "
+                       "needs.components.outputs.warm_provider_cache == 'true') && 1 || 0 }}", "12x32"),
     "cluster-release-checks": (requested("cluster"), "8x16"),
     "test-cluster-gpu-1": (requested("cluster_gpu"), "4x24"),
     "test-cluster-gpu-2": (requested("cluster_gpu"), "4x24"),

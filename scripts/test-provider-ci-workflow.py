@@ -1125,18 +1125,24 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # Each lane builds once, on a large runner (its lane asks with its
         # size), and uploads its products only when its tests run; a push of a
         # tested tree skips the build jobs as well as the test jobs
-        # (provider-plan.yml).
+        # (provider-plan.yml), except the provider build on a dev push that
+        # moves its cache's dependency tier (warm_provider_cache), which
+        # builds and saves its caches and uploads nothing.
         self.assertNotIn("refresh-caches", self.jobs)
+        runs_when = {"build-provider": "inputs.provider == 'true' || inputs.warm_provider_cache == 'true'",
+                     "build-cluster": "inputs.cluster == 'true'"}
         for job_id, lane in BUILD_JOBS.items():
             with self.subTest(job=job_id):
                 job = self.jobs[job_id]
                 self.assertIn(f"    runs-on: ${{{{ fromJSON(inputs.routes)['{job_id}'] }}}}\n", job)
-                self.assertIn(f"    if: ${{{{ inputs.{lane} == 'true' }}}}\n", job)
-                # Requested exactly when the job runs: the plan's components
-                # (already false when skip is true in provider-plan.yml).
+                self.assertIn(f"    if: ${{{{ {runs_when[job_id]} }}}}\n", job)
+                # Requested exactly when the job runs: the plan's outputs
+                # (components already false when skip is true in provider-plan.yml).
+                count = runs_when[job_id].replace("inputs.", "needs.components.outputs.")
+                count = f"({count})" if "||" in count else count
                 self.assertRegex(self.jobs["route"], re.escape(
                     f"        {job_id} macos_arm64 {BLACKSMITH_MAC} "
-                    f"${{{{ needs.components.outputs.{lane} == 'true' && 1 || 0 }}}} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
+                    f"${{{{ {count} && 1 || 0 }}}} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
                 self.assertNotRegex(job, r"(?m)^    (needs|strategy):")
                 steps = step_blocks(job)
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]

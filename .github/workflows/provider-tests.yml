@@ -17,6 +17,9 @@ on:
       changed_cluster: {type: string, required: true}
       changes_result: {type: string, required: true}
       skip: {type: string, required: true}
+      # 'true': a dev push that runs no provider test builds the provider
+      # lane anyway, to save its Swift build cache (provider-plan.yml).
+      warm_provider_cache: {type: string, required: true}
       tested_run: {type: string, required: true}
       tree: {type: string, required: true}
       base: {type: string, required: true}
@@ -55,8 +58,9 @@ jobs:
     # products to its test jobs (.github/actions/provider-ci-products). The
     # cluster lane builds in a job of its own, so the cluster tests start as
     # soon as their products are up. A push whose tree an earlier run already
-    # tested skips both build and test jobs (provider-plan.yml). The build
-    # jobs need a large Mac: their lanes ask with their size
+    # tested skips both build and test jobs (provider-plan.yml), except the
+    # provider build on a dev push that moves its cache's dependency tier. The
+    # build jobs need a large Mac: their lanes ask with their size
     # (provider-plan.yml).
     name: Build cluster test products
     if: ${{ inputs.cluster == 'true' }}
@@ -156,8 +160,7 @@ jobs:
           lane: cluster
           save-caches: ${{ env.SAVE_CACHES }}
           strict-cache: ${{ inputs.strict_cache }}
-      # Only a run that tests the lane hands its products on; a push of a
-      # tested tree only refreshes the caches.
+      # Only a run that tests the lane hands its products on.
       - name: Upload cluster test products
         if: ${{ inputs.cluster == 'true' }}
         uses: ./.github/actions/provider-ci-products
@@ -180,7 +183,10 @@ jobs:
 
   build-provider:
     name: Build provider test products
-    if: ${{ inputs.provider == 'true' }}
+    # Also on a dev push that runs no provider test but moves the build
+    # cache's dependency tier: it builds and saves the caches, and uploads
+    # nothing.
+    if: ${{ inputs.provider == 'true' || inputs.warm_provider_cache == 'true' }}
     runs-on: ${{ fromJSON(inputs.routes)['build-provider'] }}
     timeout-minutes: 60
     steps:
@@ -271,8 +277,8 @@ jobs:
           lane: provider
           save-caches: ${{ env.SAVE_CACHES }}
           strict-cache: ${{ inputs.strict_cache }}
-      # Only a run that tests the lane hands its products on; a push of a
-      # tested tree only refreshes the caches.
+      # Only a run that tests the lane hands its products on; a warm build
+      # (warm_provider_cache) only saves the caches.
       - name: Upload provider test products
         if: ${{ inputs.provider == 'true' }}
         uses: ./.github/actions/provider-ci-products

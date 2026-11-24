@@ -189,8 +189,10 @@ class GitDiffTests(unittest.TestCase):
             return {}
         self.assertEqual(result.returncode, 0, result.stderr)
         values = dict(line.split("=") for line in output.read_text().splitlines())
-        self.assertEqual(set(values), set(routing.COMPONENTS))
+        self.assertEqual(set(values), {*routing.COMPONENTS, "dependency_tier"})
         self.assertTrue(set(values.values()) <= {"true", "false"}, values)
+        # Not a component: whether the change moves the build cache's dependency tier.
+        self.dependency_tier = values.pop("dependency_tier") == "true"
         return {name: value == "true" for name, value in values.items()}
 
     def pr(self, base, head):
@@ -296,6 +298,60 @@ class GitDiffTests(unittest.TestCase):
         self.assertEqual(self.run_detector("pull_request", event),
                          {"provider": True, "cluster": False, "mimo_audio": False})
 
+    def test_dependency_tier_moves_with_a_gitlink_or_a_dependency_manifest(self):
+        # The Swift build cache's dependency tier hashes every gitlink and every
+        # Package.swift, Package.resolved and .gitmodules (scripts/provider-ci-cache.py);
+        # a dev push that runs no provider test but moves it still builds the provider lane.
+        def tier(base, head):
+            self.pr(base, head)
+            return self.dependency_tier
+
+        self.write("provider-swift/Sources/ProviderCore/ProviderCore.swift")
+        self.write("docs/guide.md")
+        source = self.commit()
+        self.assertFalse(tier(self.base, source), "sources and docs keep the tier")
+        self.assertFalse(tier(source, source), "no change keeps the tier")
+        # A push diffs as a pull request does; without a diff the tier may have moved.
+        self.run_detector("push", {"before": self.base, "after": source, "ref": "refs/heads/dev"})
+        self.assertFalse(self.dependency_tier)
+        self.run_detector("push", {"before": "0" * 40, "after": source, "ref": "refs/heads/dev"})
+        self.assertTrue(self.dependency_tier)
+        self.run_detector("workflow_dispatch", {})
+        self.assertTrue(self.dependency_tier)
+        for path in ("provider-swift/Package.resolved", "provider-swift/Package.swift",
+                     "libs/darkbloom-cluster/Package.swift", "desktop-app/Package.swift", ".gitmodules"):
+            with self.subTest(path=path):
+                before = self.git("rev-parse", "HEAD")
+                content = ('[submodule "libs/fixture"]\n\tpath = libs/fixture\n\turl = https://example.invalid/fixture\n'
+                           if path == ".gitmodules" else f"// pins of {path}\n")
+                self.write(path, content)
+                self.assertTrue(tier(before, self.commit()), path)
+        # Names are read verbatim: only a last component equal to a manifest name counts.
+        for path, moves in (("docs/x\nPackage.swift", False), ("odd\n/Package.swift", True)):
+            with self.subTest(path=path):
+                before = self.git("rev-parse", "HEAD")
+                self.write(path)
+                self.assertEqual(tier(before, self.commit()), moves, repr(path))
+        self.write("libs/plain-file")
+        plain = self.commit()
+        # The gitlinks are index entries without a working tree, so the commits
+        # below take the index alone (commit() would stage their removal).
+        self.git("update-index", "--add", "--cacheinfo", f"160000,{self.base},libs/mlx-swift-lm")
+        self.git("commit", "-qm", "add gitlink")
+        added = self.git("rev-parse", "HEAD")
+        self.assertTrue(tier(plain, added), "a new gitlink")
+        self.git("update-index", "--cacheinfo", f"160000,{source},libs/mlx-swift-lm")
+        self.git("commit", "-qm", "bump gitlink")
+        bumped = self.git("rev-parse", "HEAD")
+        self.assertTrue(tier(added, bumped), "a gitlink bump")
+        self.git("update-index", "--cacheinfo", f"160000,{source},libs/plain-file")
+        self.git("commit", "-qm", "file to gitlink")
+        typed = self.git("rev-parse", "HEAD")
+        self.assertTrue(tier(bumped, typed), "a file replaced by a gitlink")
+        self.git("update-index", "--force-remove", "libs/mlx-swift-lm")
+        self.git("commit", "-qm", "remove gitlink")
+        self.assertTrue(tier(typed, self.git("rev-parse", "HEAD")), "a removed gitlink")
+
     def test_missing_invalid_revisions_and_unsupported_events_fail_closed(self):
         for before in ("f" * 40, "--help", "", None):
             self.run_detector("push", {"before": before, "after": self.base}, success=False)
@@ -344,6 +400,9 @@ class WorkflowRoutingTests(unittest.TestCase):
                 self.assertIn("    uses: ./.github/workflows/provider-plan.yml\n", jobs["plan"])
                 self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", jobs["tests"])
                 self.assertIn("      cluster_gpu: ${{ needs.plan.outputs.cluster_gpu }}\n", jobs["tests"])
+                # The route asks for the provider build lane on the plan's output;
+                # the job runs on the same value, passed through.
+                self.assertIn("      warm_provider_cache: ${{ needs.plan.outputs.warm_provider_cache }}\n", jobs["tests"])
                 self.assertIn(f"    needs: plan\n    if: ${{{{ !cancelled() && ({run_ci_guard}) }}}}\n", jobs["tests"])
                 self.assertIn("    if: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}\n",
                               jobs["unlabel"])
@@ -439,11 +498,18 @@ class WorkflowRoutingTests(unittest.TestCase):
                  "test-cluster-focused": ("cluster", None, "cluster"),
                  "test-cluster-gpu": ("cluster_gpu", "build-cluster", "cluster"),
                  "cluster-release-checks": ("cluster", None, "cluster")}
+        # The provider build also runs, without tests, on a dev push of a
+        # tested tree that moves its cache's dependency tier (below).
+        build_conditions = {
+            "build-provider": "${{ inputs.provider == 'true' || inputs.warm_provider_cache == 'true' }}",
+            "build-cluster": "${{ inputs.cluster == 'true' }}",
+        }
         for lane, (condition_input, build, build_input) in lanes.items():
             with self.subTest(job=lane):
                 self.assertNotRegex(ci[lane], r"(?m)^    needs:")
                 if build:
-                    self.assertIn(f"    if: ${{{{ inputs.{build_input} == 'true' }}}}\n", ci[build])
+                    self.assertIn(f"inputs.{build_input} == 'true'", build_conditions[build])
+                    self.assertIn(f"    if: {build_conditions[build]}\n", ci[build])
                 self.assertIn("    if: ${{ inputs." + condition_input + " == 'true' }}\n", ci[lane])
                 if lane != "test-cluster-gpu":
                     self.assertEqual(workflow.continues_on_error(ci[lane]), [workflow.SAMPLER_STEPS[-1]])
@@ -478,6 +544,46 @@ class WorkflowRoutingTests(unittest.TestCase):
                 self.assertEqual(res.returncode, 0, res.stderr)
                 parsed = dict(line.split("=", 1) for line in out_file.read_text().splitlines())
                 self.assertEqual(parsed["cluster_gpu"], expected, (event_name, ref, gpu_labeled, cluster, skip))
+        # The provider build still runs, with no test job, only on a dev push
+        # that runs no provider test (a tested tree, or no provider change)
+        # and whose change moves the build cache's dependency tier.
+        self.assertIn("          DEPENDENCY_TIER: ${{ steps.paths.outputs.dependency_tier }}\n", choose)
+        self.assertIn("      warm_provider_cache: ${{ steps.choose.outputs.warm_provider_cache || 'false' }}\n",
+                      plan["components"])
+        warm_cases = [
+            # (run_tests, event, ref, skip, provider, dependency_tier, expected warm_provider_cache)
+            ("true", "push", "refs/heads/dev", "true", "true", "true", "true"),
+            ("true", "push", "refs/heads/dev", "false", "false", "true", "true"),
+            ("true", "push", "refs/heads/dev", "true", "true", "false", "false"),
+            ("true", "push", "refs/heads/dev", "false", "true", "true", "false"),
+            ("true", "push", "refs/heads/dev", "", "true", "true", "false"),
+            ("true", "push", "refs/heads/dev", "true", "true", "", "false"),
+            ("true", "push", "refs/heads/dev", "", "", "", "false"),
+            ("true", "push", "refs/heads/master", "true", "true", "true", "false"),
+            ("true", "push", "refs/heads/ci/topic", "true", "true", "true", "false"),
+            ("true", "pull_request", "refs/pull/1/merge", "true", "true", "true", "false"),
+            ("true", "pull_request", "refs/pull/1/merge", "false", "false", "true", "false"),
+            ("true", "workflow_dispatch", "refs/heads/dev", "true", "true", "true", "false"),
+            ("false", "push", "refs/heads/dev", "true", "true", "true", "false"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for run_tests, event_name, ref, skip, provider, tier, expected in warm_cases:
+                out_file = Path(tmpdir) / "out"
+                out_file.write_text("")
+                res = subprocess.run(
+                    ["bash", "-e", "-c", choose_cmd], capture_output=True, text=True, timeout=5,
+                    env={**os.environ, "GITHUB_OUTPUT": str(out_file), "RUN_TESTS": run_tests,
+                         "SKIP": skip, "PROVIDER": provider, "CLUSTER": "true", "MIMO_AUDIO": "true",
+                         "DEPENDENCY_TIER": tier, "EVENT_NAME": event_name, "REF": ref, "GPU_LABELED": "false"},
+                )
+                self.assertEqual(res.returncode, 0, res.stderr)
+                parsed = dict(line.split("=", 1) for line in out_file.read_text().splitlines())
+                case = (run_tests, event_name, ref, skip, provider, tier)
+                self.assertEqual(parsed["warm_provider_cache"], expected, case)
+                # Warming never runs a test job: a tested tree's components stay false.
+                if skip == "true" or run_tests != "true":
+                    self.assertEqual((parsed["provider"], parsed["cluster"], parsed["mimo_audio"]),
+                                     ("false", "false", "false"), case)
         # The lookup reads the event only to bind a record to its change.
         self.assertEqual(lookup.count("github.event_name"), 1)
         self.assertIn("          EVENT: ${{ github.event_name }}\n", lookup)

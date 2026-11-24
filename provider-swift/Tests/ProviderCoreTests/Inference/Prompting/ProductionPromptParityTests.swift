@@ -25,6 +25,7 @@ struct ProductionPromptParityTests {
         #expect(!corpus.models.isEmpty)
 
         let artifactRoot = URL(fileURLWithPath: artifactRootPath, isDirectory: true)
+        var historyNullCases: Set<String> = []
         for model in corpus.models {
             let modelDirectory = artifactRoot.appendingPathComponent(
                 model.promptContractID, isDirectory: true)
@@ -53,19 +54,43 @@ struct ProductionPromptParityTests {
                     withJSONObject: fixture.providerBody.foundationObject())
                 // Exercise the actual service entry point before tokenization: it can
                 // inject response-format instructions into the engine request.
+                func tokens(_ body: Data) async throws -> [Int] {
+                    let request = try ProviderLoop.decodeOpenAIRequest(body)
+                    let engine = PromptPreparationCaptureEngine()
+                    let frames = try await MLXOpenAIService(engine: engine)
+                        .streamChatCompletionFrames(request: request)
+                    for try await _ in frames {}
+                    let generationRequest = try #require(await engine.request)
+                    return try ProviderPromptContractPipeline.tokenize(
+                        prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
+                        request: generationRequest,
+                        tokenizer: tokenizer,
+                        modelType: modelType,
+                        templateControls: ProviderLoop.extractChatTemplateControls(from: body)
+                            .resolvingPromptDate())
+                }
+                // Provider-rendered and uncacheable: an earlier tool call's null
+                // arguments render here as `null`, while this contract
+                // (normalization v9) drops them. Such a body is served without the
+                // prompt cache, so no receipt names its prompt; the vectors stay
+                // the contract for the same body with those nulls dropped by the
+                // production sanitizer.
+                // The classification is the serving decision itself.
                 let request = try ProviderLoop.decodeOpenAIRequest(providerBody)
-                let engine = PromptPreparationCaptureEngine()
-                let frames = try await MLXOpenAIService(engine: engine)
-                    .streamChatCompletionFrames(request: request)
-                for try await _ in frames {}
-                let generationRequest = try #require(await engine.request)
-                let actual = try ProviderPromptContractPipeline.tokenize(
-                    prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
-                    request: generationRequest,
-                    tokenizer: tokenizer,
-                    modelType: modelType,
-                    templateControls: ProviderLoop.extractChatTemplateControls(from: providerBody)
-                        .resolvingPromptDate())
+                let served = ToolCallHistoryNullCache.servingContext(
+                    RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
+                    for: request, modelType: modelType, managedSuper: false)
+                let contractBody = served.servedCold ? try Self.v9HistoryArguments(providerBody) : providerBody
+                if served.servedCold {
+                    historyNullCases.insert(model.modelID + "/" + fixture.id)
+                    #expect(served.context.receiptNonce == nil && served.context.scope == nil
+                            && !served.context.cacheEnabled,
+                            "\(model.modelID)/\(fixture.id): a history null must be served without the prompt cache")
+                    let rendered = try await tokens(providerBody)
+                    #expect(rendered != fixture.tokenIDs,
+                            "\(model.modelID)/\(fixture.id): the history null no longer changes the prompt")
+                }
+                let actual = try await tokens(contractBody)
                 let difference = firstDifference(actual, fixture.tokenIDs).map { index in
                     let actualToken = actual.indices.contains(index)
                         ? "\(actual[index]) \(tokenizer.convertIdToToken(actual[index]) ?? "<unknown>")"
@@ -88,6 +113,9 @@ struct ProductionPromptParityTests {
                 }
             }
         }
+        // Exactly the vector bodies whose earlier tool call carries a null.
+        #expect(historyNullCases == Self.historyNullCases,
+                "provider-rendered cases changed: \(historyNullCases.symmetricDifference(Self.historyNullCases).sorted())")
     }
 
     /// Gemma 4 prompt contracts on the served artifacts: a request that asks
@@ -192,6 +220,41 @@ struct ProductionPromptParityTests {
 }
 
 extension ProductionPromptParityTests {
+    /// The vector bodies (model × case) whose earlier tool call carries a JSON
+    /// null: provider-rendered and served without the prompt cache.
+    static let historyNullCases: Set<String> = Set(
+        ["EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b", "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit",
+         "gpt-oss-20b", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"].flatMap { model in
+            ["endpoint_messages_tool_turn", "gemma_tool_turn"].map { model + "/" + $0 }
+        })
+
+    /// `body` with each earlier tool call's arguments object passed through the
+    /// production drop policy (`sanitizeForJinja`, which the v9 contract applies
+    /// to them): the prompt the vectors were made for.
+    private static func v9HistoryArguments(_ body: Data) throws -> Data {
+        guard var object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let messages = object["messages"] as? [Any]
+        else { return body }
+        object["messages"] = try messages.map { message -> Any in
+            guard var message = message as? [String: Any], let calls = message["tool_calls"] as? [Any] else {
+                return message
+            }
+            message["tool_calls"] = try calls.map { call -> Any in
+                guard var call = call as? [String: Any], var function = call["function"] as? [String: Any],
+                      let raw = function["arguments"] as? String,
+                      let arguments = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+                      let dropped = sanitizeForJinja(arguments) as? [String: Any]
+                else { return call }
+                function["arguments"] = String(
+                    decoding: try JSONSerialization.data(withJSONObject: dropped), as: UTF8.self)
+                call["function"] = function
+                return call
+            }
+            return message
+        }
+        return try JSONSerialization.data(withJSONObject: object)
+    }
+
     /// `tokens` with `token` inserted at `index` (at the end when past it).
     private static func inserting(_ token: Int, into tokens: [Int], at index: Int) -> [Int] {
         var result = tokens

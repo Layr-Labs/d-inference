@@ -644,6 +644,22 @@ the hint when it carries one; the frame supplies the rest
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/SealedPrefixCacheMetadata.swift`;
 [protocol](../reference/protocol-messages.md#inference_request)).
 
+A coordinator request whose earlier tool call carries a JSON null in its
+arguments is served without that context. The shared chat-template path
+renders the null, while the prompt contract the coordinator plans and counts
+with (normalization v9) renders the call without it, so the provider's prompt
+anchor would not match the plan. Once the slot's model type is known, the
+handler replaces the planned context with one without scope or receipt nonce:
+no lookup or ready receipt, no cached-token usage, no checkpoint write. The
+coordinator's attempt then expires unanswered, which carries no proof fence or
+holder invalidation; only the request's exact prompt-work count stops
+qualifying, so it is admitted without calibrated first-content admission.
+GLM-5.3, MiMo, Flint and the managed Nemotron Super owner build their own
+history, already kept these nulls and keep their plan. The template controls
+still come from the planned context. `darkbloom logs` notes each such request
+and the daemon state counts them (`promptCacheSkippedToolCallNull`)
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCache/ToolCallHistoryNullCache.swift`).
+
 Native MiMo historical checkpoints retain only actual uniform-chunk frontiers
 whose target and optional assistant state completed their native observation
 and promotion fences. Their fork target is the deepest successfully captured

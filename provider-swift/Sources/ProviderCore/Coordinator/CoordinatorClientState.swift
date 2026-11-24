@@ -39,6 +39,10 @@ public final class AtomicProviderStats: Sendable {
     // Local to `darkbloom status`: the requests that ended early, by cause
     // (`cancellationsPartialComplete` is their total).
     private let _endedEarly = LockedEndedEarlyCounts()
+    // Local to `darkbloom status`: planned requests served without the prompt
+    // cache because their tool-call history carries a null argument
+    // (`ToolCallHistoryNullCache`).
+    private let _promptCacheSkippedToolCallNull = ManagedAtomic<UInt64>(0)
 
     public init() {}
 
@@ -164,6 +168,12 @@ public final class AtomicProviderStats: Sendable {
     }
 
     public var endedEarly: EndedEarlyCounts { _endedEarly.counts }
+
+    public var promptCacheSkippedToolCallNull: UInt64 { _promptCacheSkippedToolCallNull.load() }
+
+    public func incrementPromptCacheSkippedToolCallNull() {
+        _promptCacheSkippedToolCallNull.add(1)
+    }
 
     public func incrementGenerationErrorsAfterOutput() {
         _generationErrorsAfterOutput.add(1)

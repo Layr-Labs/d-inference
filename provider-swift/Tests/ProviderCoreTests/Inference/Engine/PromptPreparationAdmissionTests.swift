@@ -40,6 +40,29 @@ final class CountingRenderTokenizer: MLXLMCommon.Tokenizer, @unchecked Sendable 
     }
 }
 
+/// Counts the requests submitted to it and answers each with one token and a
+/// `.finished(.stop)` terminal, so a served request completes without error.
+final class PreparationTestEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var submissions: Int { lock.withLock { count } }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        lock.withLock { count += 1 }
+        return AsyncStream { continuation in
+            continuation.yield(.delta(text: "OK", tokens: [9], logprobs: nil))
+            continuation.yield(.finished(reason: .stop, usage: .init(
+                promptTokens: request.promptTokens.count, completionTokens: 1)))
+            continuation.finish()
+        }
+    }
+    func cancel(_ id: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot {
+        .init(activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0, kvBytesCapacity: 0, activeTokens: 0)
+    }
+    func shutdown() async {}
+}
+
 /// A text prompt's rendering and tokenization count against the whole-Mac
 /// serving width: a full Mac refuses a request as capacity before rendering
 /// its prompt, a prompt being prepared holds a share another request cannot
@@ -50,7 +73,7 @@ struct PromptPreparationAdmissionTests {
     private static let width = ServingPerformanceProfiles.legacyWholeMacConcurrency
 
     private struct Served: Sendable {
-        let engine: OutputRecordingEngine
+        let engine: PreparationTestEngine
         let serviceBudget: WholeMacServiceBudget
         let bridge: EngineV2Bridge
         let scheduler: MultiModelBatchSchedulerEngine
@@ -59,7 +82,7 @@ struct PromptPreparationAdmissionTests {
         init(tokenizer: CountingRenderTokenizer, busy: Int) {
             let model = PromptPreparationAdmissionTests.model
             let width = PromptPreparationAdmissionTests.width
-            let engine = OutputRecordingEngine()
+            let engine = PreparationTestEngine()
             let budget = roomyKVBudget()
             for slot in 0..<busy {
                 precondition(budget.serviceBudget.acquire(ownerID: "busy-\(slot)", concurrency: width))
@@ -105,7 +128,7 @@ struct PromptPreparationAdmissionTests {
         let error = await served.complete()
         #expect(error as? MultiModelBatchSchedulerEngineError == Self.capacity)
         #expect(tokenizer.renders == 0)
-        #expect(served.engine.submittedOutputs.isEmpty)
+        #expect(served.engine.submissions == 0)
         #expect(await served.settledCount(Self.width) == Self.width)
         await served.bridge.shutdown()
     }
@@ -124,7 +147,7 @@ struct PromptPreparationAdmissionTests {
         #expect(second as? MultiModelBatchSchedulerEngineError == Self.capacity)
         #expect(rendersWhileHeld == 1)
         #expect(firstError == nil)
-        #expect(served.engine.submittedOutputs.count == 1)
+        #expect(served.engine.submissions == 1)
         #expect(await served.settledCount(Self.width - 1) == Self.width - 1)
         await served.bridge.shutdown()
     }
@@ -135,11 +158,11 @@ struct PromptPreparationAdmissionTests {
         let served = Served(tokenizer: tokenizer, busy: Self.width - 1)
         #expect(await served.complete() == nil)
         #expect(tokenizer.renders == 1)
-        #expect(served.engine.submittedOutputs.count == 1)
+        #expect(served.engine.submissions == 1)
         #expect(await served.settledCount(Self.width - 1) == Self.width - 1)
         // The share is free again: the next request is served on it.
         #expect(await served.complete() == nil)
-        #expect(served.engine.submittedOutputs.count == 2)
+        #expect(served.engine.submissions == 2)
         await served.bridge.shutdown()
     }
 
@@ -151,7 +174,7 @@ struct PromptPreparationAdmissionTests {
         #expect(await served.complete() != nil)
         // Both rendered: the first failure left the last share free.
         #expect(tokenizer.renders == 2)
-        #expect(served.engine.submittedOutputs.isEmpty)
+        #expect(served.engine.submissions == 0)
         #expect(await served.settledCount(Self.width - 1) == Self.width - 1)
         await served.bridge.shutdown()
     }

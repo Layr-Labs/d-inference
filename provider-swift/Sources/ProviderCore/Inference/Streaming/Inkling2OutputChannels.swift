@@ -56,6 +56,11 @@ enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
 /// template's unmatched text) and messages of a kind the model never answers
 /// with (`image`, `xml`) are dropped and counted, never shown.
 ///
+/// An answer that opens with a function name and `<|content_invoke_tool_json|>`
+/// (`<|content_text|>NAME<|content_invoke_tool_json|>{...}<|end_message|>`) is
+/// that call: the model opened a text message where the call's header belongs.
+/// Only the answer's first bytes are held for this, up to 64 name characters.
+///
 /// The lexer reads detokenized text with special tokens kept (the CBv2
 /// detokenizer's default), so a marker spelled out from ordinary tokens reads
 /// like the special token. Every bound is fixed: the header, a call's body and
@@ -116,12 +121,17 @@ struct Inkling2OutputChannels {
     private static let markers: [(bytes: [UInt8], marker: Marker)] = markerSpellings.map { (Array($0.0.utf8), $0.1) }
 
     private static let endMessageBytes = Array(endMessage.utf8)
+    private static let invokeToolJSONBytes = Array("<|content_invoke_tool_json|>".utf8)
+    /// A function name as requests declare it: `^[a-zA-Z0-9_-]{1,64}$`.
+    private static let maximumNameBytes = 64
     private static let endOfSamplingBytes = Array(endOfSampling.utf8)
     private static let lessThan = UInt8(ascii: "<")
 
     private enum State: Equatable {
         case boundary
         case header
+        /// The first bytes of an answer, read as a possible call header.
+        case answerStart
         case body(Kind)
         case ended
     }
@@ -134,6 +144,8 @@ struct Inkling2OutputChannels {
     private var state = State.boundary
     private var pending: [UInt8] = []
     private var header: [UInt8] = []
+    /// The name-like bytes an answer opened with (`State.answerStart`).
+    private var answerLead: [UInt8] = []
     private var toolBody: [UInt8] = []
     private var json = BoundedJSONShape()
 
@@ -159,13 +171,13 @@ struct Inkling2OutputChannels {
     var openChannel: Channel? {
         switch state {
         case .body(.reasoning): .reasoning
-        case .body(.content): .content
+        case .body(.content), .answerStart: .content
         case .body(.toolCall): .toolCall
         default: nil
         }
     }
 
-    var bufferedByteCount: Int { pending.count + header.count + toolBody.count }
+    var bufferedByteCount: Int { pending.count + header.count + answerLead.count + toolBody.count }
 
     mutating func parse(_ text: String) -> [Inkling2OutputPiece] {
         pending.append(contentsOf: text.utf8)
@@ -179,6 +191,9 @@ struct Inkling2OutputChannels {
         switch state {
         case .header:
             closeHeaderOnly(into: &pieces)
+        case .answerStart:
+            releaseAnswerLead(into: &pieces)
+            unterminatedChannel = .content
         case .body(.reasoning):
             unterminatedChannel = .reasoning
         case .body(.content):
@@ -210,6 +225,9 @@ struct Inkling2OutputChannels {
                 index = step
             case .header:
                 guard let step = readHeader(from: index, final: final, into: &pieces) else { break loop }
+                index = step
+            case .answerStart:
+                guard let step = readAnswerStart(from: index, final: final, into: &pieces) else { break loop }
                 index = step
             case .body(let kind) where kind == .toolCall:
                 guard let step = readToolBody(from: index, final: final, into: &pieces) else { break loop }
@@ -362,6 +380,57 @@ struct Inkling2OutputChannels {
             header = []
         }
         state = .body(kind)
+        if marked == .content, !callsAreText {
+            answerLead = []
+            state = .answerStart
+        }
+    }
+
+    /// The start of an answer: a function name then `<|content_invoke_tool_json|>`
+    /// makes the message that call, with the name as its header. Any other
+    /// byte, or a name too long, releases the bytes held as the answer's text.
+    private mutating func readAnswerStart(
+        from index: Int, final: Bool, into pieces: inout [Inkling2OutputPiece]
+    ) -> Int? {
+        var cursor = index
+        while cursor < pending.count {
+            let byte = pending[cursor]
+            if byte == Self.lessThan {
+                if hasPrefix(Self.invokeToolJSONBytes, at: cursor) {
+                    let name = answerLead
+                    answerLead = []
+                    enter(.toolCall)
+                    header = name
+                    return cursor + Self.invokeToolJSONBytes.count
+                }
+                if !final, isStrictPrefix(at: cursor, of: Self.invokeToolJSONBytes) {
+                    return cursor == index ? nil : cursor
+                }
+                break
+            }
+            guard Self.isNameByte(byte), answerLead.count < Self.maximumNameBytes else { break }
+            answerLead.append(byte)
+            cursor += 1
+        }
+        if cursor == pending.count, !final { return cursor }
+        releaseAnswerLead(into: &pieces)
+        state = .body(.content)
+        return cursor
+    }
+
+    private mutating func releaseAnswerLead(into pieces: inout [Inkling2OutputPiece]) {
+        if !answerLead.isEmpty { pieces.append(.content(String(decoding: answerLead, as: UTF8.self))) }
+        answerLead = []
+    }
+
+    private static func isNameByte(_ byte: UInt8) -> Bool {
+        switch byte {
+        case UInt8(ascii: "a")...UInt8(ascii: "z"), UInt8(ascii: "A")...UInt8(ascii: "Z"),
+            UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "_"), UInt8(ascii: "-"):
+            true
+        default:
+            false
+        }
     }
 
     /// A thought or an answer: published as read, up to `<|end_message|>`.

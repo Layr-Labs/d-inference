@@ -388,6 +388,11 @@ public actor EngineV2Bridge {
     var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// The published decode rate (`updatePublishedDecodeTps`) and the newest
+    /// sample behind it.
+    var publishedDecodeTps: Double = 0
+    var publishedDecodeInitialized = false
+    var publishedDecodeAt: ContinuousClock.Instant?
     /// Decode step of the requests behind `observedDecodeTpsEwma`, smoothed
     /// and reset with it. Deadline admission uses it to charge decode per
     /// batch step instead of per row.

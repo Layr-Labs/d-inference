@@ -3042,7 +3042,16 @@ profile or the fleet, as after a reload; the next sample is published as
 measured
 (`provider-swift/Sources/ProviderCore/Inference/Performance/DecodeRateIdleAge.swift`,
 `DecodeRateIdleAge`; `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` sets the age,
-`0` restores publishing the last rate however old). Deadline admission is
+`0` restores publishing the last rate however old). The published rate moves
+only on a request that generated at least 32 tokens
+(`EngineV2Bridge.minimumPublishedDecodeTokens`, the coordinator's
+`completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same
+EWMA and restart rule over those samples): one short reply measures mostly its
+first steps or tail and could pull a Mac measuring 80–100 tok/s down to about
+11. A shorter request still feeds the deadline decode rate, the rate's age and
+`performance_measurements`, as before, so a slot that serves only short
+replies is still priced for deadline admission and never ages out while
+serving; it publishes no rate until a longer one. Deadline admission is
 unchanged: it charges the measured step shape. The projection also mirrors the
 live MTP plan's depth gates
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift`,

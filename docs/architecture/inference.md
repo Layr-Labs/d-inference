@@ -3073,8 +3073,12 @@ measured
 `0` restores publishing the last rate however old). The heartbeat also sends
 the published rate's own age, `observed_decode_tps_age_ms`: the time since the
 newest sample that moved it, which a short reply does not reset
-(`DecodeRateIdleAge.publishedAgeMilliseconds`); it changes nothing the provider
-decides. The published rate moves
+(`DecodeRateIdleAge.publishedAgeMilliseconds`). While the connected
+coordinator's latest `trust_status` lists `decode_rate_age_decay` in
+`coordinator_features`, the coordinator decays a stale rate by that age itself,
+and the provider stops omitting an idle slot's rate
+(`DecodeRateIdleAge.effectiveMaximum`); without it, and after a disconnect, the
+heartbeat is unchanged. The published rate moves
 only on a request that generated at least 32 tokens
 (`EngineV2Bridge.minimumPublishedDecodeTokens`, the coordinator's
 `completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same

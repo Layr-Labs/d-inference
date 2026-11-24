@@ -301,20 +301,20 @@ struct AdmissionRateEstimatorTests {
     func completedRequestRecordsDecodeShape() async throws {
         let (bridge, engine) = bridge(fixes: true)
         let request = ChatCompletionRequest(model: "gemma-4-26b-qat-4bit",
-            messages: [.init(role: "user", content: "hi")], max_tokens: 32)
+            messages: [.init(role: "user", content: "hi")], max_tokens: 64)
         let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 7, count: 200),
             request: request, requestId: "measured-shape")
         let consumer = Task { for await _ in stream {} }
         let continuation = try #require(engine.continuations.first)
-        // Nine verify rounds at four rows confirmed 27 tokens after the first.
-        var usage = CBv2Usage(promptTokens: 200, completionTokens: 28)
+        // Twelve verify rounds at four rows confirmed 36 tokens after the first.
+        var usage = CBv2Usage(promptTokens: 200, completionTokens: 37)
         var timing = CBv2RequestTiming()
         timing.firstTokenNanos = 1_000_000
         timing.lastTokenNanos = 101_000_000
         timing.lastTokenUptimeNanos = DispatchTime.now().uptimeNanoseconds
-        timing.decodeSteps = 9
-        timing.batchRowsSum = 40
-        timing.mtpProposed = 27
+        timing.decodeSteps = 12
+        timing.batchRowsSum = 52
+        timing.mtpProposed = 36
         usage.timing = timing
         continuation.yield(.finished(reason: .stop, usage: usage))
         continuation.finish()
@@ -327,7 +327,7 @@ struct AdmissionRateEstimatorTests {
     func firstTokenStepRowsExcluded() async throws {
         let (bridge, engine) = bridge(fixes: true)
         let request = ChatCompletionRequest(model: "gemma-4-26b-qat-4bit",
-            messages: [.init(role: "user", content: "hi")], max_tokens: 32)
+            messages: [.init(role: "user", content: "hi")], max_tokens: 64)
         let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 7, count: 200),
             request: request, requestId: "wide-first-step")
         let consumer = Task { for await _ in stream {} }
@@ -339,19 +339,19 @@ struct AdmissionRateEstimatorTests {
         prefillTiming.batchRowsSum = 8
         prefill.timing = prefillTiming
         engine.completePrefill(prefill)
-        // ...and the nine decode steps the rate measures ran solo.
-        var usage = CBv2Usage(promptTokens: 200, completionTokens: 10)
+        // ...and the 36 decode steps the rate measures ran solo.
+        var usage = CBv2Usage(promptTokens: 200, completionTokens: 37)
         var timing = CBv2RequestTiming()
         timing.firstTokenNanos = 1_000_000
         timing.lastTokenNanos = 91_000_000
         timing.lastTokenUptimeNanos = DispatchTime.now().uptimeNanoseconds
-        timing.decodeSteps = 9
-        timing.batchRowsSum = 17
+        timing.decodeSteps = 36
+        timing.batchRowsSum = 44
         usage.timing = timing
         continuation.yield(.finished(reason: .stop, usage: usage))
         continuation.finish()
         await consumer.value
-        // Averaging over the first-token step as well would report 1.7 rows.
+        // Averaging over the first-token step as well would report 44/37 rows.
         #expect(await bridge.observedDecodeStep.shape == .init(batchRows: 1))
         await bridge.shutdown()
     }

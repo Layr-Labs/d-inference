@@ -143,6 +143,17 @@ extension EngineV2Bridge {
         return now - .nanoseconds(Int64(age))
     }
 
+    /// The fewest generated tokens whose decode rate may set the published
+    /// rate (`observed_decode_tps`), its age and the deadline decode rate; the
+    /// coordinator's own `completion_tokens >= 32` convention. A shorter
+    /// request's rate is mostly its first steps or its tail, so it is kept only
+    /// in its prompt-size bucket.
+    static let minimumPublishedDecodeTokens = 32
+
+    static func setsPublishedDecodeRate(completionTokens: Int) -> Bool {
+        completionTokens >= minimumPublishedDecodeTokens
+    }
+
     func recordPerformanceFinish(
         id: String, state: ActiveRequestState, usage: CBv2Usage, completion: Int,
         deliveredTps: Double, now: ContinuousClock.Instant
@@ -163,7 +174,8 @@ extension EngineV2Bridge {
                 context: state.promptTokens + completion, cache: cached ? "reused" : "cold",
                 overlap: overlap, at: observedAt,
                 postureEpoch: state.prefillReceipt?.deadlineRateEvidence?.currentEpoch(),
-                aggregate: calibration == nil || (calibration?.width == 1 && !overlap.contended),
+                aggregate: calibration.map { $0.width == 1 && !overlap.contended }
+                    ?? Self.setsPublishedDecodeRate(completionTokens: usage.completionTokens),
                 decodeShape: Self.engineDecodeShape(usage: usage, nativeBlock: usesNativeBlockTiming,
                     firstTokenStepRows: state.prefillReceipt?.firstTokenStepRows)),
                 requestID: id)

@@ -370,6 +370,28 @@ struct NativeToolStreamRouterTests {
         #expect(handler.finish().map(\.function.name) == ["add"])
     }
 
+    @Test func nemotronDraftCallsBeforeASecondCloseAreNeverInvoked() throws {
+        for width in [1, 5, 4096] {
+            let handler = BatchedToolStreamHandler(format: .nemotron, tools: nil)
+            var router = NativeToolStreamRouter(handler: handler, requiresToolCall: false,
+                nativePrefix: "<think>", absorbStrayThinkClose: true)
+            let characters = Array(NativeChannelSplitterTests.draftThenCalls)
+            var events: [MLXServerGenerationEvent] = []
+            for start in stride(from: 0, to: characters.count, by: width) {
+                events += try router.process(String(characters[start..<min(characters.count, start + width)]))
+            }
+            events += try router.finishText()
+            let reasoning = events.compactMap { event -> String? in
+                if case .parsed(let piece) = event { return piece.reasoningContent }
+                return nil
+            }.joined()
+            #expect(reasoning.contains("But keep each value exact."))
+            let calls = handler.finish()
+            #expect(calls.map(\.function.name) == ["post", "post"])
+            #expect(calls.map { $0.function.arguments["text"] } == [.string("A"), .string("B")])
+        }
+    }
+
     @Test func reasoningToolExampleIsNeverInvokedEvenWithSplitMarkers() throws {
         let handler = BatchedToolStreamHandler(format: .qwen35, tools: nil)
         var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true, nativePrefix: "<think>")

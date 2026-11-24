@@ -77,10 +77,11 @@ extension EngineV2Bridge {
     /// It is deliberately independent of `mintEngineRequestId`: seeded engine
     /// ids may repeat after terminal for deterministic sampling, while receipt
     /// callbacks remain retained for the coordinator settlement window.
-    func mintPrefixCacheReceiptID() -> CBv2RequestID {
-        let id = CBv2RequestID(nextPrefixCacheReceiptRawId)
+    /// A `memoryOnly` receipt takes the reserved range (`MemoryOnlyReceipt`).
+    func mintPrefixCacheReceiptID(memoryOnly: Bool = false) -> CBv2RequestID {
+        let raw = nextPrefixCacheReceiptRawId & ~(MemoryOnlyReceipt.bit | Self.seededIdTagBit)
         nextPrefixCacheReceiptRawId &+= 1
-        return id
+        return CBv2RequestID(memoryOnly ? raw | MemoryOnlyReceipt.bit : raw)
     }
 
     // MARK: - Request-id validation

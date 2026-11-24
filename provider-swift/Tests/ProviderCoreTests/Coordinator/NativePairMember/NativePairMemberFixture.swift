@@ -49,7 +49,22 @@ final class NativePairMemberFixture: @unchecked Sendable {
     let policy: Data
     let starts: [ClusterNativeAuthorizationStart]
     let installations: [NativePairMemberInstallation]
-    let prepareUnix, expiresUnix: Int64
+    /// The session's wall-clock windows, fixed on first read, as a coordinator
+    /// stamps them when it reserves the pair, just before its prepare.
+    var prepareUnix: Int64 { sessionWindows.prepare }
+    var expiresUnix: Int64 { sessionWindows.expires }
+    private let preparationNanoseconds, lifetimeNanoseconds: Int64
+    private let windowsLock = NSLock()
+    private var fixedWindows: (prepare: Int64, expires: Int64)?
+    private var sessionWindows: (prepare: Int64, expires: Int64) {
+        windowsLock.withLock {
+            if let fixedWindows { return fixedWindows }
+            let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+            let windows = (prepare: now + preparationNanoseconds, expires: now + lifetimeNanoseconds)
+            fixedWindows = windows
+            return windows
+        }
+    }
     /// Builds the starts' common part for a membership epoch.
     private let makeCommon: (UUID) throws -> ClusterNativeAuthorizationCommon
     var directories: [URL] { (0..<2).map { root.appendingPathComponent("rank-\($0)") } }
@@ -81,8 +96,8 @@ final class NativePairMemberFixture: @unchecked Sendable {
         let helperBytes = try Self.helper()
         root = try Self.privateRoot()
         let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
-        prepareUnix = now + preparationSeconds * 1_000_000_000
-        expiresUnix = now + lifetimeSeconds * 1_000_000_000
+        preparationNanoseconds = preparationSeconds * 1_000_000_000
+        lifetimeNanoseconds = lifetimeSeconds * 1_000_000_000
         let native = Data(SHA256.hash(data: helperBytes))
         var hashes = (0..<8).map { memberDigest("member-fixture-hash-\($0)") }
         hashes[2] = native

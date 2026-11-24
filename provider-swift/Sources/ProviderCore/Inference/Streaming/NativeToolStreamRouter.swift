@@ -22,6 +22,10 @@ struct NativeToolStreamRouter {
     private var rejectedNativeGemmaReasoning = false
     private let withholdReasoning: Bool
     private var withheldReasoning = ""
+    /// Inkling 2: one empty answer delta when withholding starts
+    /// (`InklingWithheldReasoningHeartbeat`).
+    private let withheldReasoningHeartbeat: Bool
+    private var sentWithheldReasoningHeartbeat = false
     private let tools: [[String: any Sendable]]?
     /// An `auto` GLM tool suffix that does not parse at EOS is text
     /// (`GLM5ToolSuffix`).
@@ -89,9 +93,12 @@ struct NativeToolStreamRouter {
          streamsGLMCalls: Bool = false,
          glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault,
          harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled,
-         nativeInklingChannels: Bool = false, inklingStreamsCalls: Bool = false) {
+         nativeInklingChannels: Bool = false, inklingStreamsCalls: Bool = false,
+         inklingUndeclaredCallsAreText: Bool = Inkling2OutputChannels.undeclaredCallsAreTextByDefault,
+         withheldReasoningHeartbeat: Bool = false) {
         self.handler = handler
         self.withholdReasoning = withholdReasoning
+        self.withheldReasoningHeartbeat = withheldReasoningHeartbeat && withholdReasoning && nativeInklingChannels
         self.tools = tools
         self.glmUnparsedOutputIsText = glmUnparsedOutputIsText
         self.requiresToolCall = requiresToolCall
@@ -114,7 +121,13 @@ struct NativeToolStreamRouter {
         harmonyAutoChoice = harmonyAutoToolGrammar && handler?.format == .harmony && streamedCalls?.mode == .auto
             ? streamedCalls : nil
         if nativeInklingChannels {
-            inklingParser = Inkling2OutputChannels()
+            // An `auto` request that declares no tools renders no
+            // `tool_declare`, so no call can be valid: a frame is answer text,
+            // never a refusal (422 `undeclared_name`, or 500 unparsed).
+            // Client stops follow (`Inkling2PromptContract.stopStringScope`).
+            inklingParser = Inkling2OutputChannels(
+                callsAreText: inklingUndeclaredCallsAreText && autoToolChoice && tools?.isEmpty != false,
+                readsCallOpeningAnswer: tools?.isEmpty == false)
         } else if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
@@ -125,6 +138,8 @@ struct NativeToolStreamRouter {
                 tools: tools,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 absorbStrayThinkClose: absorbStrayThinkClose,
+                // Nemotron 3.5 drafts calls after an early `</think>`, then closes again.
+                holdsFramesAfterThought: handler?.format == .nemotron,
                 promotesTrailingCalls: promotesTrailingReasoningCalls)
         }
     }
@@ -243,6 +258,13 @@ struct NativeToolStreamRouter {
             }
         }
         return events
+    }
+
+    /// A call recovered at the end of generation (`GPTOSSToolCallRecovery`),
+    /// exposed and checked as a call never streamed is.
+    mutating func recovered(_ call: ToolCall) throws -> [MLXServerGenerationEvent] {
+        guard let prepared = streamedCallPolicy else { return [] }
+        return try routeToolSegment(.call(call), prepared: prepared)
     }
 
     private mutating func recordCut(leftOpen: Bool) {
@@ -368,6 +390,10 @@ struct NativeToolStreamRouter {
                 guard !reasoning.isEmpty else { continue }
                 if withholdReasoning {
                     withheldReasoning += reasoning
+                    if withheldReasoningHeartbeat, !sentWithheldReasoningHeartbeat {
+                        sentWithheldReasoningHeartbeat = true
+                        events.append(InklingWithheldReasoningHeartbeat.event)
+                    }
                 } else {
                     events.append(.parsed(.init(content: "", reasoningContent: reasoning)))
                 }

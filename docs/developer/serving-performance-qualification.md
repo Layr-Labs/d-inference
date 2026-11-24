@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-24
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -17,7 +17,23 @@ estimator corrections ([deadlines](../architecture/inference.md#deadlines),
 `DARKBLOOM_TTFT_ADMISSION_FIXES`): a request carrying a reviewed calibration
 keeps the per-row decode charge, at the configured MTP width, in both its
 calibrated conversion and its fallback, so `calibratedPathProven` still
-separates exactly two conversions.
+separates exactly two conversions. The idle age of the heartbeat's decode rate
+(`DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS`, see
+[deadlines](../architecture/inference.md#deadlines)) needs none either: it
+changes only the `observed_decode_tps` an idle slot advertises to routing, not
+admission, measurements or any profile.
+The rate's age on the heartbeat (`observed_decode_tps_age_ms`) needs none
+either: it is informational and changes no rate, admission or profile. Nor does
+the decode rate a slot uses before its first completed request (the slowest
+delivered cadence of requests decoding on it, charged per row; see
+[deadlines](../architecture/inference.md#deadlines)): a request carrying a
+reviewed calibration never takes it. Nor does the coordinator's
+`decode_rate_age_decay` advertisement (`trust_status.coordinator_features`;
+shared wire cases in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/coordinator_features_wire.json`,
+checked by `CoordinatorDecodeRateDecayTests` and
+`provider-swift/Tests/test_protocol_fixture_resources.py`): it decides only
+whether an idle slot keeps advertising its rate to routing.
 Profile qualification is separate work required to introduce a measured
 prediction-error envelope.
 

@@ -4446,9 +4446,13 @@ rewrites at most 100,000 schema nodes per request
 becomes a two-key map, so a few MiB of them rewrote into tens of MiB of JSON
 and hundreds of MiB of objects before the request was decoded. Past the budget
 the body is decoded as sent, as one above `maxNormalizationBytes` (4 MiB)
-already is
+already is. Gemma 4's prompt step applies the same repair again
+(`Gemma4ToolSchemaEnforcement`, through `injectDefaultTypes`) under its own
+100,000-node budget, shared by the request's tools, so it leaves a schema past
+the budget as sent too; its render invariants still apply
 (`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/Gemma4ToolSchemaEnforcement.swift`,
 `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
 
 On the local API, tool schemas with `$ref` are resolved before that repair

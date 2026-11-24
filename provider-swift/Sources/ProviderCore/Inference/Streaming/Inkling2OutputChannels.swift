@@ -39,7 +39,9 @@ enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
 ///   messages of one channel join with nothing between them.
 /// - `invoke_tool_json` is one call, `{"name":NAME,"args":{...}}`, the shape
 ///   the template renders for history. A header name, when present, must equal
-///   the body's name.
+///   the body's name. With `callsAreText` (an `auto` request that declares no
+///   tools, so its prompt has no `tool_declare`), no call can be valid and the
+///   frame's body is content, as `invoke_tool_text` is.
 /// - `<|content_model_end_sampling|>` (EOS) ends the output, and so does the
 ///   start of another role's turn (`<|message_user|>`, `<|message_system|>`,
 ///   `<|message_tool|>`, `<|endoftext|>`, `<|begin_of_text|>`): nothing after
@@ -74,6 +76,13 @@ struct Inkling2OutputChannels {
     static let messageModel = "<|message_model|>"
     static let endMessage = "<|end_message|>"
     static let endOfSampling = "<|content_model_end_sampling|>"
+
+    /// `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT`: a call frame in the answer to
+    /// an `auto` request that declares no tools is text by default; exact `0`
+    /// restores its refusal (422 `undeclared_name`, or 500 when it does not parse).
+    static let undeclaredCallTextEnvironmentKey = "DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT"
+    static let undeclaredCallsAreTextByDefault =
+        ProcessInfo.processInfo.environment[undeclaredCallTextEnvironmentKey] != "0"
 
     private enum Kind: Equatable {
         case reasoning, content, toolCall, ignored
@@ -117,6 +126,8 @@ struct Inkling2OutputChannels {
     }
 
     private let limits: Limits
+    /// `invoke_tool_json` opens a content body instead of a call.
+    private let callsAreText: Bool
     private var state = State.boundary
     private var pending: [UInt8] = []
     private var header: [UInt8] = []
@@ -136,8 +147,9 @@ struct Inkling2OutputChannels {
     /// Some reasoning text was published.
     private(set) var hasReasoning = false
 
-    init(limits: Limits = Limits()) {
+    init(limits: Limits = Limits(), callsAreText: Bool = false) {
         self.limits = limits
+        self.callsAreText = callsAreText
     }
 
     /// The channel of the message being read, if any.
@@ -301,7 +313,8 @@ struct Inkling2OutputChannels {
         }
     }
 
-    private mutating func enter(_ kind: Kind) {
+    private mutating func enter(_ marked: Kind) {
+        let kind = marked == .toolCall && callsAreText ? Kind.content : marked
         if kind == .toolCall {
             toolBody = []
             json = BoundedJSONShape()

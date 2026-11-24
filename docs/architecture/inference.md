@@ -3501,6 +3501,11 @@ the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
 on a single Mac. Qwen 3.8 pairs never read this rule and were already exact.
 Exact keeps the model's output distribution; its tokens are not bit-identical
 to MTP off, since verify windows round differently.
+Inkling 2 Mini replaces the generic depth with its drafter's own profile
+(`Inkling2DSparkDrafter.defaultMTPConfig`: up to 7 drafts, adaptive), and
+`DARKBLOOM_INKLING_MTP_MAX_DRAFT` (1 to 7) lowers that cap; the acceptance
+setting still applies (`Inkling2MTPProfilePolicy` in
+`provider-swift/Sources/ProviderCore/Inference/MTP/Inkling2MTPProfilePolicy.swift`).
 Under typical acceptance a draft is kept when the sampler-filtered target row
 gives it probability above `min(1, 0.2 * exp(-H))`, `H` the row's entropy in
 nats; the first rejected position and the bonus position still commit the keyed

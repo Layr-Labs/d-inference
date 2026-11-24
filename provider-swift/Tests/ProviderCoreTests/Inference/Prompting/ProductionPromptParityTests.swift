@@ -25,6 +25,7 @@ struct ProductionPromptParityTests {
         #expect(!corpus.models.isEmpty)
 
         let artifactRoot = URL(fileURLWithPath: artifactRootPath, isDirectory: true)
+        var historyNullCases: Set<String> = []
         for model in corpus.models {
             let modelDirectory = artifactRoot.appendingPathComponent(
                 model.promptContractID, isDirectory: true)
@@ -48,7 +49,6 @@ struct ProductionPromptParityTests {
             let modelType = model.modelType ?? detectedModelType
             #expect(modelType != nil, "production prompt artifact must identify its model type")
             #expect(!model.cases.isEmpty)
-            var historyNullCases: [String] = []
             for fixture in model.cases {
                 let providerBody = try JSONSerialization.data(
                     withJSONObject: fixture.providerBody.foundationObject())
@@ -73,18 +73,18 @@ struct ProductionPromptParityTests {
                 // arguments render here as `null`, while this contract
                 // (normalization v9) drops them. Such a body is served without the
                 // prompt cache, so no receipt names its prompt; the vectors stay
-                // the contract for the same body with those nulls dropped.
+                // the contract for the same body with those nulls dropped by the
+                // production sanitizer.
+                // The classification is the serving decision itself.
                 let request = try ProviderLoop.decodeOpenAIRequest(providerBody)
-                let historyNull = ToolCallHistoryNullCache.carriesNull(request)
-                    && ToolCallHistoryNullCache.rendersThroughSharedSanitizer(
-                        modelType: modelType, managedSuper: false)
-                let contractBody = historyNull ? try Self.droppingHistoryArgumentNulls(providerBody) : providerBody
-                if historyNull {
-                    historyNullCases.append(fixture.id)
-                    let served = ToolCallHistoryNullCache.servingContext(
-                        RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
-                        for: request, modelType: modelType, managedSuper: false)
-                    #expect(served.servedCold && served.context.receiptNonce == nil && !served.context.cacheEnabled,
+                let served = ToolCallHistoryNullCache.servingContext(
+                    RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
+                    for: request, modelType: modelType, managedSuper: false)
+                let contractBody = served.servedCold ? try Self.v9HistoryArguments(providerBody) : providerBody
+                if served.servedCold {
+                    historyNullCases.insert(model.modelID + "/" + fixture.id)
+                    #expect(served.context.receiptNonce == nil && served.context.scope == nil
+                            && !served.context.cacheEnabled,
                             "\(model.modelID)/\(fixture.id): a history null must be served without the prompt cache")
                     let rendered = try await tokens(providerBody)
                     #expect(rendered != fixture.tokenIDs,
@@ -112,9 +112,10 @@ struct ProductionPromptParityTests {
                     #expect(first != otherScope.chainHashes(tokens: actual, maxBlocks: 1).first)
                 }
             }
-            #expect(historyNullCases.count < model.cases.count,
-                    "\(model.modelID): only bodies with a history null are provider-rendered")
         }
+        // Exactly the vector bodies whose earlier tool call carries a null.
+        #expect(historyNullCases == Self.historyNullCases,
+                "provider-rendered cases changed: \(historyNullCases.symmetricDifference(Self.historyNullCases).sorted())")
     }
 
     /// Gemma 4 prompt contracts on the served artifacts: a request that asks
@@ -219,10 +220,18 @@ struct ProductionPromptParityTests {
 }
 
 extension ProductionPromptParityTests {
-    /// `body` with every null removed from earlier tool calls' arguments the
-    /// way the v9 sanitizer removed it (object members dropped, array elements
-    /// compacted): the prompt the vectors were made for.
-    private static func droppingHistoryArgumentNulls(_ body: Data) throws -> Data {
+    /// The vector bodies (model × case) whose earlier tool call carries a JSON
+    /// null: provider-rendered and served without the prompt cache.
+    static let historyNullCases: Set<String> = Set(
+        ["EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b", "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit",
+         "gpt-oss-20b", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"].flatMap { model in
+            ["endpoint_messages_tool_turn", "gemma_tool_turn"].map { model + "/" + $0 }
+        })
+
+    /// `body` with each earlier tool call's arguments object passed through the
+    /// production drop policy (`sanitizeForJinja`, which the v9 contract applies
+    /// to them): the prompt the vectors were made for.
+    private static func v9HistoryArguments(_ body: Data) throws -> Data {
         guard var object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
               let messages = object["messages"] as? [Any]
         else { return body }
@@ -233,24 +242,17 @@ extension ProductionPromptParityTests {
             message["tool_calls"] = try calls.map { call -> Any in
                 guard var call = call as? [String: Any], var function = call["function"] as? [String: Any],
                       let raw = function["arguments"] as? String,
-                      let arguments = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any]
+                      let arguments = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+                      let dropped = sanitizeForJinja(arguments) as? [String: Any]
                 else { return call }
                 function["arguments"] = String(
-                    decoding: try JSONSerialization.data(withJSONObject: droppingNulls(arguments)), as: UTF8.self)
+                    decoding: try JSONSerialization.data(withJSONObject: dropped), as: UTF8.self)
                 call["function"] = function
                 return call
             }
             return message
         }
         return try JSONSerialization.data(withJSONObject: object)
-    }
-
-    private static func droppingNulls(_ value: Any) -> Any {
-        if let dictionary = value as? [String: Any] {
-            return dictionary.filter { !($0.value is NSNull) }.mapValues(droppingNulls)
-        }
-        if let array = value as? [Any] { return array.filter { !($0 is NSNull) }.map(droppingNulls) }
-        return value
     }
 
     /// `tokens` with `token` inserted at `index` (at the end when past it).

@@ -133,5 +133,22 @@ final class MiMoV26PromptContractTests: XCTestCase {
         // shared sanitizer used to drop them, so the other family's render
         // differed; it now keeps them as MiMo always has, and the renders agree.
         XCTAssertEqual(oldIDs, fixture.token_ids, "another family's history-call nulls must render as MiMo's do")
+        // Outside call arguments the shared sanitizer still drops nulls (here a
+        // tool parameter schema's `default`), so the other family's render must
+        // still differ from MiMo's, which keeps it.
+        let schemaTool = OpenAITool(function: .init(name: "f", parameters: .object([
+            "type": .string("object"),
+            "properties": .object(["unit": .object(["type": .string("string"), "default": .null])]),
+        ])))
+        let schemaMessages = [OpenAIChatMessage(role: .user, content: .text("hello")).templateMessageDict()]
+        func schemaIDs(_ modelType: String) throws -> [Int] {
+            let context = ChatTemplateFixContext(modelType: modelType)
+            return try tokenizer.applyChatTemplate(
+                messages: ChatTemplateFixes.normalizeMessages(schemaMessages, context: context),
+                tools: ChatTemplateFixes.normalizeTools([schemaTool.toolSpec()], context: context),
+                additionalContext: nil)
+        }
+        XCTAssertNotEqual(try schemaIDs("llama"), try schemaIDs("mimo_v2"),
+                          "MiMo must not inherit another family's null removal")
     }
 }

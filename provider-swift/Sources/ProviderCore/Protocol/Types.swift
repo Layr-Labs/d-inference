@@ -568,6 +568,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var activeTokens: Int64
     public var maxTokensPotential: Int64
     public var observedDecodeTps: Double
+    /// Red control: declared so the new tests compile; never set or encoded.
+    public var observedDecodeTpsAgeMs: Int64? = nil
     public var observedPrefillTps: Double
     public var activeTokenBudgetUsed: Int64
     public var activeTokenBudgetMax: Int64

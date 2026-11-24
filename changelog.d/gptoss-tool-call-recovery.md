@@ -8,5 +8,5 @@
   declared property, the schema holding), and such a frame when it is
   complete, names a declared function and its arguments hold. Anything else
   is returned as before. No rendered prompt changes.
-- `DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY`: `0`, `off`, `false` or `no` turns it
-  off.
+- Off by default: `DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY` set to `1`, `on`,
+  `true` or `yes` turns it on.

@@ -151,16 +151,16 @@ struct GPTOSSToolCallRecoveryTests {
         #expect(GPTOSSToolCallRecovery.environmentKey == "DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY")
     }
 
-    @Test("`DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY` off turns it off; it reaches the launchd daemon")
+    @Test("`DARKBLOOM_GPTOSS_TOOL_CALL_RECOVERY` is off unless set on; it reaches the launchd daemon")
     func theSwitchReachesTheDaemon() {
         let key = GPTOSSToolCallRecovery.environmentKey
-        for value in ["0", "off", "false", "no", " OFF "] {
+        for value in ["", "0", "off", "false", "no", "2"] {
             #expect(!GPTOSSToolCallRecovery.isEnabled(environment: [key: value]), "\(value)")
         }
-        for value in ["", "1", "on", "true"] {
+        for value in ["1", "on", "true", "yes", " ON "] {
             #expect(GPTOSSToolCallRecovery.isEnabled(environment: [key: value]), "\(value)")
         }
-        #expect(GPTOSSToolCallRecovery.isEnabled(environment: [:]))
+        #expect(!GPTOSSToolCallRecovery.isEnabled(environment: [:]))
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
         #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
     }

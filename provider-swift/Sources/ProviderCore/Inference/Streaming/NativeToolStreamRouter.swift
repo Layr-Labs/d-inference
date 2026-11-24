@@ -22,6 +22,10 @@ struct NativeToolStreamRouter {
     private var rejectedNativeGemmaReasoning = false
     private let withholdReasoning: Bool
     private var withheldReasoning = ""
+    /// Inkling 2: one empty answer delta when withholding starts
+    /// (`InklingWithheldReasoningHeartbeat`).
+    private let withheldReasoningHeartbeat: Bool
+    private var sentWithheldReasoningHeartbeat = false
     private let tools: [[String: any Sendable]]?
     /// An `auto` GLM tool suffix that does not parse at EOS is text
     /// (`GLM5ToolSuffix`).
@@ -90,9 +94,11 @@ struct NativeToolStreamRouter {
          glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault,
          harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled,
          nativeInklingChannels: Bool = false, inklingStreamsCalls: Bool = false,
-         inklingUndeclaredCallsAreText: Bool = Inkling2OutputChannels.undeclaredCallsAreTextByDefault) {
+         inklingUndeclaredCallsAreText: Bool = Inkling2OutputChannels.undeclaredCallsAreTextByDefault,
+         withheldReasoningHeartbeat: Bool = false) {
         self.handler = handler
         self.withholdReasoning = withholdReasoning
+        self.withheldReasoningHeartbeat = withheldReasoningHeartbeat && withholdReasoning && nativeInklingChannels
         self.tools = tools
         self.glmUnparsedOutputIsText = glmUnparsedOutputIsText
         self.requiresToolCall = requiresToolCall
@@ -377,6 +383,10 @@ struct NativeToolStreamRouter {
                 guard !reasoning.isEmpty else { continue }
                 if withholdReasoning {
                     withheldReasoning += reasoning
+                    if withheldReasoningHeartbeat, !sentWithheldReasoningHeartbeat {
+                        sentWithheldReasoningHeartbeat = true
+                        events.append(InklingWithheldReasoningHeartbeat.event)
+                    }
                 } else {
                     events.append(.parsed(.init(content: "", reasoningContent: reasoning)))
                 }

@@ -114,7 +114,7 @@ public enum MTPAutomaticVerificationPolicy {
     /// Whether an unset `DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS` applies the
     /// chip's limit. False gives every chip no limit unless the operator sets
     /// a positive value.
-    static let gemmaPromptLimitOnByDefault = true
+    static let gemmaPromptLimitOnByDefault = false
 
     /// The prompt-length limit for drafting for `modelID` on this chip, or nil
     /// for no limit.

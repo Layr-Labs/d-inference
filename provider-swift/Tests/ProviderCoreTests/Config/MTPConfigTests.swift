@@ -204,7 +204,7 @@ struct MTPConfigKeyTests {
                 modelID: MTPAcceptancePolicy.gemmaQATModelID, chipName: "Apple M5 Ultra",
                 twoDrafts: true, limit: setting, onByDefault: onByDefault)
         }
-        #expect(MTPAutomaticVerificationPolicy.gemmaPromptLimitOnByDefault)
+        #expect(!MTPAutomaticVerificationPolicy.gemmaPromptLimitOnByDefault)
         #expect(limit(.chipDefault, true) == 16384)
         #expect(limit(.chipDefault, false) == nil)
         #expect(limit(.tokens(8192), false) == 8192)

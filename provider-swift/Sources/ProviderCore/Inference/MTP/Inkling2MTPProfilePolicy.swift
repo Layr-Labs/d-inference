@@ -35,8 +35,22 @@ public enum Inkling2MTPProfilePolicy {
         return MaxDraft(tokens: min(max(value, 1), defaultMaxDraftTokens), unrecognized: nil)
     }
 
+    /// Red control stand-ins: the names the tests use, with the base's
+    /// behaviour (coupling is never on and the switch is never read).
+    public static let coupledKey = "DARKBLOOM_INKLING_MTP_COUPLED"
+    public static let coupledByDefault = false
+
+    public static func coupledProposals(
+        modelID: String, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        false
+    }
+
     /// Inkling's engine profile with the operator's cap.
-    public static func engineConfig(maxDraft: MaxDraft) -> CBv2MTPConfig {
+    public static func engineConfig(
+        maxDraft: MaxDraft, coupled: Bool = false, adaptive: Bool = true,
+        maxSpeculativeRows: Int = 8
+    ) -> CBv2MTPConfig {
         Inkling2DSparkDrafter.defaultMTPConfig(maxDraftTokens: maxDraft.tokens)
     }
 }

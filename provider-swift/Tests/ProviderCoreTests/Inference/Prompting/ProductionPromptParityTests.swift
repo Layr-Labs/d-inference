@@ -27,6 +27,8 @@ struct ProductionPromptParityTests {
         let artifactRoot = URL(fileURLWithPath: artifactRootPath, isDirectory: true)
         var historyNullCases: Set<String> = []
         var toolUnionTypeCases: Set<String> = []
+        var toolRawSchemaCases: Set<String> = []
+        var forwardingDifferences: Set<String> = []
         for model in corpus.models {
             let modelDirectory = artifactRoot.appendingPathComponent(
                 model.promptContractID, isDirectory: true)
@@ -84,7 +86,35 @@ struct ProductionPromptParityTests {
                 if GemmaToolUnionTypeCache.changesRender(request, modelType: modelType) {
                     toolUnionTypeCases.insert(model.modelID + "/" + fixture.id)
                 }
-                let contractBody = served.servedCold ? try Self.v9HistoryArguments(providerBody) : providerBody
+                // GPT-OSS renders a declaration this contract repairs as
+                // written (GPTOSSToolSchemaRender); such a body is served cold,
+                // and the vectors stay the contract for its repaired tools.
+                let rawSchema = GPTOSSToolSchemaCache.servingContext(
+                    RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
+                    for: request,
+                    declared: ProviderLoop.extractChatTemplateControls(from: providerBody).declaredTools,
+                    modelType: modelType)
+                if rawSchema.servedCold {
+                    toolRawSchemaCases.insert(model.modelID + "/" + fixture.id)
+                    #expect(rawSchema.context.receiptNonce == nil && rawSchema.context.scope == nil,
+                            "\(model.modelID)/\(fixture.id): a changed GPT-OSS tool render must be served cold")
+                }
+                // The coordinator forwards these tools repaired today and may
+                // forward the caller's own: every prompt but an intended,
+                // served-cold change is the same for both.
+                if request.tools?.isEmpty == false {
+                    let original = try await tokens(providerBody)
+                    let routed = try await tokens(ToolSchemaNormalization.ensureParameterTypes(in: providerBody))
+                    if original != routed {
+                        forwardingDifferences.insert(model.modelID + "/" + fixture.id)
+                    }
+                    #expect(original == routed || rawSchema.servedCold,
+                            "\(model.modelID)/\(fixture.id): the original tools render a different prompt")
+                }
+                var contractBody = served.servedCold ? try Self.v9HistoryArguments(providerBody) : providerBody
+                if rawSchema.servedCold {
+                    contractBody = ToolSchemaNormalization.ensureParameterTypes(in: contractBody)
+                }
                 if served.servedCold {
                     historyNullCases.insert(model.modelID + "/" + fixture.id)
                     #expect(served.context.receiptNonce == nil && served.context.scope == nil
@@ -124,6 +154,13 @@ struct ProductionPromptParityTests {
         // (GemmaToolUnionTypeCache), so every body stays exact for that rule.
         #expect(toolUnionTypeCases == Self.toolUnionTypeCases,
                 "Gemma tool-union cases changed: \(toolUnionTypeCases.sorted())")
+        // Exactly the GPT-OSS vector bodies with a declaration rendered as
+        // written (GPTOSSToolSchemaCache).
+        #expect(toolRawSchemaCases == Self.toolRawSchemaCases,
+                "GPT-OSS tool-schema cases changed: \(toolRawSchemaCases.symmetricDifference(Self.toolRawSchemaCases).sorted())")
+        // Original and repaired tools render apart only there.
+        #expect(forwardingDifferences.isSubset(of: Self.toolRawSchemaCases),
+                "original tools render apart: \(forwardingDifferences.subtracting(Self.toolRawSchemaCases).sorted())")
     }
 
     /// Gemma 4 prompt contracts on the served artifacts: a request that asks
@@ -238,6 +275,11 @@ extension ProductionPromptParityTests {
 
     /// The vector bodies whose Gemma tool render type changed: none.
     static let toolUnionTypeCases: Set<String> = []
+
+    /// The vector bodies whose GPT-OSS tool render changed: those declaring
+    /// a parameter without a type (`{}`, a description alone).
+    static let toolRawSchemaCases: Set<String> = Set(
+        ["endpoint_messages_tool_turn", "gemma_tool_turn", "tools"].map { "gpt-oss-20b/" + $0 })
 
     /// `body` with each earlier tool call's arguments object passed through the
     /// production drop policy (`sanitizeForJinja`, which the v9 contract applies

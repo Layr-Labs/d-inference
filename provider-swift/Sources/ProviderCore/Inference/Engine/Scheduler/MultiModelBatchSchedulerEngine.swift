@@ -1489,7 +1489,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             rewriteHarmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType),
             nativeInklingChannels: Inkling2PromptContract.applies(modelType: modelType),
             inklingStreamsCalls: Inkling2PromptContract.applies(modelType: modelType)
-                && ToolStreamPreparation.streamsInklingCalls(request: request, prepared: prepared)
+                && ToolStreamPreparation.streamsInklingCalls(request: request, prepared: prepared),
+            harmonyCallRecovery: GPTOSSToolCallRecovery.make(modelType: modelType, format: toolHandler?.format,
+                prepared: prepared, loopExit: loopGuard == nil ? nil : exitThinking?.record,
+                enabled: GPTOSSToolCallRecovery.enabled)
         )
     }
 
@@ -1875,7 +1878,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         withholdReasoning: Bool = false,
         rewriteHarmonyFinalHeaders: Bool = false,
         nativeInklingChannels: Bool = false,
-        inklingStreamsCalls: Bool = false
+        inklingStreamsCalls: Bool = false,
+        harmonyCallRecovery: GPTOSSToolCallRecovery? = nil
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1908,7 +1912,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 withholdReasoning: withholdReasoning,
                 rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders,
                 nativeInklingChannels: nativeInklingChannels,
-                inklingStreamsCalls: inklingStreamsCalls)
+                inklingStreamsCalls: inklingStreamsCalls,
+                harmonyCallRecovery: harmonyCallRecovery)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1950,7 +1955,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         withholdReasoning: Bool = false,
         rewriteHarmonyFinalHeaders: Bool = false,
         nativeInklingChannels: Bool = false,
-        inklingStreamsCalls: Bool = false
+        inklingStreamsCalls: Bool = false,
+        harmonyCallRecovery: GPTOSSToolCallRecovery? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -2000,9 +2006,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Qwen answer was compiled with.
                 var formatOutput = (answerFormat ?? prepared.responseFormat).map(JSONAnswerOutput.init)
                 var glmAnswer = prepared.glmResponseFormat.map(GLM5NextResponseFormatOutput.init)
+                // GPT-OSS calls its Harmony parser does not see (`GPTOSSToolCallRecovery`).
+                var callRecovery = harmonyCallRecovery
                 /// A GLM JSON answer leaves only after it validates; its
                 /// reasoning and every other event stream unchanged.
-                func emit(_ routed: MLXServerGenerationEvent) {
+                func send(_ routed: MLXServerGenerationEvent) {
                     formatOutput?.observe(routed)
                     if glmAnswer == nil {
                         continuation.yield(routed)
@@ -2012,6 +2020,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         return
                     }
                     router.responseStarted = true
+                }
+                func emit(_ event: MLXServerGenerationEvent) {
+                    for routed in callRecovery?.route(event) ?? [event] { send(routed) }
                 }
                 startedAt = Date()
 
@@ -2278,6 +2289,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         let settled = try router.finishToolCalls(truncated: stopReason == "length",
                             cutAtLimit: cutAtLimit)
                         for routed in flushed + settled { emit(routed) }
+                        if let recovered = callRecovery?.finish(stopReason: stopReason, cutAtLimit: cutAtLimit,
+                            hasCalls: !router.completedToolCalls.isEmpty) {
+                            for routed in recovered.release { send(routed) }
+                            if let call = recovered.call { for routed in try router.recovered(call) { send(routed) } }
+                        }
                         if !cutAtLimit { try router.checkNativeToolFailure() }
                         // A cut ends `length` (`TokenLimitCutPolicy`): a forced call it left
                         // open is not a missing call, as on the complete-call path.
@@ -2349,6 +2365,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // A native frame the cut left unparsed is never published as text.
                 if prepared.mode == .auto, let residual, !residual.isEmpty, !router.hasNativeToolFailure {
                     emit(router.visibleEvent(residual))
+                }
+                if let recovered = callRecovery?.finish(stopReason: stopReason, cutAtLimit: cutAtLimit,
+                    hasCalls: !toolCalls.isEmpty) {
+                    for routed in recovered.release { send(routed) }
+                    if let call = recovered.call { toolCalls = [call] }
                 }
                 if prepared.mode == .auto, !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
                     emitToolConstraintTelemetry(
@@ -2470,7 +2491,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         rewriteHarmonyFinalHeaders: Bool = false,
         nativeMiMoChannels: Bool = false,
         nativeMiMoThinkingEnabled: Bool = true,
-        withholdReasoning: Bool = false
+        withholdReasoning: Bool = false,
+        harmonyCallRecovery: GPTOSSToolCallRecovery? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
@@ -2481,7 +2503,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeMiMoChannels: nativeMiMoChannels, nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
             absorbStrayThinkClose: absorbStrayThinkClose,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat, withholdReasoning: withholdReasoning,
-            rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
+            rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders, harmonyCallRecovery: harmonyCallRecovery)
     }
     #endif
 

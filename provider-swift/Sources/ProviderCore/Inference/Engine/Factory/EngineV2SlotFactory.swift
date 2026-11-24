@@ -309,7 +309,13 @@ enum EngineV2SlotFactory {
                 hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil),
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
-            acceptance: mtpAcceptance.acceptance)
+            acceptance: mtpAcceptance.acceptance,
+            maxDraftPromptTokens: MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
+                modelID: modelId,
+                hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil))
+        if assistantHandle != nil, let limit = mtpConfig.maxDraftPromptTokens {
+            logInfo("engine_v2: \(modelId) MTP drafts only for prompts of at most \(limit) tokens")
+        }
         if assistantHandle?.drafter is Inkling2DSparkDrafter {
             // The drafter's own engine profile: up to 7 drafts, up to 8
             // speculating rows, adaptive depth down to plain decode. The

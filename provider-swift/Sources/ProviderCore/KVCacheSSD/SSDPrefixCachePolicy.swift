@@ -45,6 +45,27 @@ enum SSDPrefixCachePolicy {
         return n
     }
 
+    /// Whether a hit extends an entry's life. `sliding` (the default)
+    /// restarts its TTL at each hit; `fixed` never does, so an entry expires
+    /// `ttlSeconds` after it was written. `DARKBLOOM_SSD_KV_TTL_MODE` selects
+    /// it; unset or empty is `sliding`, and any value but `sliding` is
+    /// `fixed`, the shorter retention.
+    enum TTLMode: String, Sendable, Equatable {
+        case sliding, fixed
+        var refreshesOnHit: Bool { true }
+    }
+
+    static let ttlModeEnvironmentFlag = "DARKBLOOM_SSD_KV_TTL_MODE"
+
+    static func ttlMode(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> TTLMode {
+        guard let raw = environment[ttlModeEnvironmentFlag]?.trimmingCharacters(in: .whitespaces).lowercased(),
+            !raw.isEmpty
+        else { return .sliding }
+        return .sliding
+    }
+
     // MARK: - Endurance (daily write cap)
 
     /// Root-wide rolling-day budget for SSD write endurance. `0` ⇒ unlimited;

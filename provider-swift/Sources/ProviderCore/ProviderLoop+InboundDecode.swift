@@ -258,6 +258,8 @@ struct InboundChatExtensions {
     /// The coordinator's sealed copy of the attempt's prefix-cache identity;
     /// it applies only with the frame's matching receipt nonce.
     private(set) var sealedPrefixCache: SealedPrefixCacheMetadata?
+    /// The sealed member's `cache_policy`, whatever its nonce or scope.
+    private(set) var cachePolicy: RequestCachePolicy = .default
 
     init(from data: Data) {
         struct Whole: Decodable {
@@ -286,6 +288,8 @@ struct InboundChatExtensions {
         if bias != nil || seed != nil {
             samplingOverrides = EngineV2SamplingOverrides(logitBias: bias, seed: seed)
         }
-        sealedPrefixCache = (try? SealedPrefixCacheMetadata.BodyProbe(from: decoder))?.value
+        let cacheProbe = try? SealedPrefixCacheMetadata.BodyProbe(from: decoder)
+        sealedPrefixCache = cacheProbe?.value
+        cachePolicy = cacheProbe?.cachePolicy ?? .default
     }
 }

@@ -1745,6 +1745,10 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// The coordinator's signature over this request; nil from a
         /// coordinator that does not sign (`CoordinatorRequestVerifier`).
         public var coordinatorSignature: CoordinatorRequestSignature?
+        /// A `cache_policy` on the plaintext frame. Coordinators never send
+        /// one (the policy is sealed in `_darkbloom_cache`); when present it
+        /// can only narrow the sealed policy (`RequestCachePolicy.narrowed`).
+        public var frameCachePolicy: RequestCachePolicy
 
         public init(
             requestId: String,
@@ -1759,10 +1763,12 @@ public enum CoordinatorMessage: Sendable, Equatable {
             serviceReservationID: String? = nil,
             promptWork: PromptWork? = nil,
             gemmaPromptContract: Int? = nil,
-            coordinatorSignature: CoordinatorRequestSignature? = nil
+            coordinatorSignature: CoordinatorRequestSignature? = nil,
+            frameCachePolicy: RequestCachePolicy = .default
         ) {
             self.gemmaPromptContract = gemmaPromptContract
             self.coordinatorSignature = coordinatorSignature
+            self.frameCachePolicy = frameCachePolicy
             self.requestId = requestId
             self.encryptedBody = encryptedBody
             self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
@@ -1921,12 +1927,18 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var status: String
         public var reason: String
         public var authorization: ProviderAuthorizationStatus?
+        /// Optional coordinator behaviours the provider may rely on
+        /// (`coordinator_features`); nil from a coordinator that sends none.
+        /// Unknown names are ignored.
+        public var coordinatorFeatures: [String]?
         public init(trustLevel: String, status: String, reason: String = "",
-                    authorization: ProviderAuthorizationStatus? = nil) {
+                    authorization: ProviderAuthorizationStatus? = nil,
+                    coordinatorFeatures: [String]? = nil) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
             self.authorization = authorization
+            self.coordinatorFeatures = coordinatorFeatures
         }
     }
 }
@@ -1970,6 +1982,7 @@ extension CoordinatorMessage: Codable {
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case gemmaPromptContract = "gemma_prompt_contract"
         case coordinatorSignature = "coordinator_signature"
+        case cachePolicy = "cache_policy"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload
@@ -1978,6 +1991,7 @@ extension CoordinatorMessage: Codable {
         case priority
         case trustLevel = "trust_level"
         case status, reason, authorization
+        case coordinatorFeatures = "coordinator_features"
         case paid
         case models
         // CapacityProbe
@@ -2026,6 +2040,9 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.promptWork, forKey: .promptWork)
             try container.encodeIfPresent(r.gemmaPromptContract, forKey: .gemmaPromptContract)
             try container.encodeIfPresent(r.coordinatorSignature, forKey: .coordinatorSignature)
+            if r.frameCachePolicy != .default {
+                try container.encode(r.frameCachePolicy.rawValue, forKey: .cachePolicy)
+            }
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -2088,6 +2105,7 @@ extension CoordinatorMessage: Codable {
             try container.encode(t.trustLevel, forKey: .trustLevel)
             try container.encode(t.status, forKey: .status)
             try container.encodeIfPresent(t.authorization, forKey: .authorization)
+            try container.encodeIfPresent(t.coordinatorFeatures, forKey: .coordinatorFeatures)
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
@@ -2153,7 +2171,11 @@ extension CoordinatorMessage: Codable {
                 // A malformed signature reads as none: the request is then
                 // served or refused like an unsigned one, never dropped unanswered.
                 coordinatorSignature: try? container.decodeIfPresent(
-                    CoordinatorRequestSignature.self, forKey: .coordinatorSignature)
+                    CoordinatorRequestSignature.self, forKey: .coordinatorSignature),
+                // The policy belongs in the sealed body only. A plaintext key,
+                // which no signature covers, may only narrow the request: any
+                // value but "default", a malformed one included, is memory_only.
+                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy)
             ))
 
         case .cancel:
@@ -2234,7 +2256,8 @@ extension CoordinatorMessage: Codable {
                 trustLevel: try container.decode(String.self, forKey: .trustLevel),
                 status: try container.decode(String.self, forKey: .status),
                 reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? "",
-                authorization: try container.decodeIfPresent(ProviderAuthorizationStatus.self, forKey: .authorization)
+                authorization: try container.decodeIfPresent(ProviderAuthorizationStatus.self, forKey: .authorization),
+                coordinatorFeatures: try? container.decodeIfPresent([String].self, forKey: .coordinatorFeatures)
             ))
 
         case .clusterMemberAccepted:

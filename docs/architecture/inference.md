@@ -2728,6 +2728,25 @@ cannot advertise a successor's prompt. Ready anchors describe actual input
 checkpoints, and billing retains the engine's actual matched/saved token counts
 (`EngineV2Bridge+PrefixCache.swift`, `ResidentPrefixCacheEvidence.swift`).
 
+### A request's cache policy
+
+A coordinator request's sealed `cache_policy`
+([protocol](../reference/protocol-messages.md#sealed-cache-policy)) reaches the
+bridge with the scope (`ProviderLoop.handleInferenceRequest`, the scheduler
+engine and the Nemotron Super owner pass it on), and
+`PrefixCacheSubmissionPolicy` decides there what it changes
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+CachePolicy.swift`).
+A `memory_only` request runs with `prefixCacheEnabled` off, on one Mac and on a
+pair alike: the engine then makes no prefix lookup, capture or donation, the
+bridge stages nothing and registers no SSD ready receipt or donation demand,
+the scheduler skips the prompt-token piece cache, and a pair's ranks get
+`ClusterWorkerPrefixCache.disabled`. Its receipt, were its cache on, would be
+minted in the memory-only range, which every SSD store refuses
+(`MemoryOnlyReceipt`). Its answer and usage are otherwise those of an
+uncached request. The local API serves its requests under
+`DARKBLOOM_LOCAL_CACHE_POLICY` instead ([local
+API](../provider/direct-mode.md#cache-policy-of-local-requests)).
+
 ### `CBv2RequestTiming`
 
 Stamped by the engine thread only; instants are nanoseconds from the enqueue
@@ -3054,8 +3073,12 @@ measured
 `0` restores publishing the last rate however old). The heartbeat also sends
 the published rate's own age, `observed_decode_tps_age_ms`: the time since the
 newest sample that moved it, which a short reply does not reset
-(`DecodeRateIdleAge.publishedAgeMilliseconds`); it changes nothing the provider
-decides. The published rate moves
+(`DecodeRateIdleAge.publishedAgeMilliseconds`). While the connected
+coordinator's latest `trust_status` lists `decode_rate_age_decay` in
+`coordinator_features`, the coordinator decays a stale rate by that age itself,
+and the provider stops omitting an idle slot's rate
+(`DecodeRateIdleAge.effectiveMaximum`); without it, and after a disconnect, the
+heartbeat is unchanged. The published rate moves
 only on a request that generated at least 32 tokens
 (`EngineV2Bridge.minimumPublishedDecodeTokens`, the coordinator's
 `completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same
@@ -11262,9 +11285,9 @@ types them ([fields](../reference/configuration.md#cluster-runtime-facts),
    ([Qwen27 resident assistant](#qwen27-tensor-parallel-resident-assistant));
    without one the digest is the five-field formula as before.
 4. Every model carries a pair-serving grant when the build qualifies it. A
-   pair member reports only hardware capabilities
-   (`DistributedServingEligibility.memberCapabilities`: `apple_m5` on an M5,
-   never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
+   pair member reports its hardware capabilities and `cache_policy_v1`
+   (`DistributedServingEligibility.memberRegistrationCapabilities`: `apple_m5`
+   on an M5, never `mlx_nax` or `glm5_next_v1`), and a coordinator holds each member of a
    pair without a grant to the model's single-Mac requirements
    ([`providerMeetsServingRequirementsLocked`](https://github.com/Layr-Labs/darkbloom-platform/blob/2847f27dda8e4caf9e2441d554067f42a88c9e1f/coordinator/registry/cluster_pair_serving_grant.go)),
    so no pair of GLM-5.3-Flash or Qwen3.8-27B forms without one. For a

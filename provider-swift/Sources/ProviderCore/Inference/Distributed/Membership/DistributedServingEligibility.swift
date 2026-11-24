@@ -15,10 +15,18 @@ import Foundation
 /// A runtime capability, such as a claimed `mlx_nax`, is not an input to that
 /// decision.
 public enum DistributedServingEligibility {
-    /// What a control-only member reports about itself: the detector's answer
-    /// with no bound runtime and no kernel probe. Registration only; it opens
-    /// no pair.
+    /// The hardware part of what a control-only member reports
+    /// (`memberRegistrationCapabilities`): the detector's answer with no bound
+    /// runtime and no kernel probe. It opens no pair.
     public static func memberCapabilities(chipFamily: ChipFamily) -> Set<ProviderRuntimeCapability> {
         ProviderRuntimeCapabilityDetector.detect(chipFamily: chipFamily, naxAvailable: { false }, liveMetallibHash: { nil })
+    }
+
+    /// What a member registers and attests: its hardware capabilities and
+    /// `cache_policy_v1`, since a pair runs a `memory_only` request with its
+    /// ranks' prefix cache off. The coordinator sends such a request to a
+    /// pair only when every member reports it.
+    public static func memberRegistrationCapabilities(chipFamily: ChipFamily) -> Set<ProviderRuntimeCapability> {
+        memberCapabilities(chipFamily: chipFamily)
     }
 }

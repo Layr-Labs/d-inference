@@ -67,10 +67,14 @@ struct QwenStagePrefixDiskHeader: Codable, Equatable {
         let shape: [Int]
         let unit: Unit
     }
-    /// Version 1 stores the speculative history per frontier (`history`);
-    /// version 2 stores it once (`sharedHistory`). Both are read.
-    static let version = 1
-    static let sharedHistoryVersion = 2
+    /// Version 3 stores the speculative history per frontier (`history`);
+    /// version 4 stores it once (`sharedHistory`). Both are read. Neither
+    /// stores a token ID: a history's `tokens` unit, the prompt's tokens
+    /// `[1, f)`, holds zeros, and a restore takes them from the request's own
+    /// prompt (`QwenStagePrefixDiskRestoreWork.promptTokens`). Versions 1
+    /// and 2 held the IDs; they are refused, so the index load deletes them.
+    static let version = 3
+    static let sharedHistoryVersion = 4
     var version: Int
     let scope: String
     let recordKey: String
@@ -85,13 +89,14 @@ struct QwenStagePrefixDiskHeader: Codable, Equatable {
     /// `tokens` (`[1, f-1]`, int32) and `last` (`[1, 1, H]`). Absent in records
     /// written before this section existed and on the non-decoding rank.
     var history: [Recurrent]? = nil
-    /// Version 2: the speculative history stored once (finding storage:S2 /
+    /// Version 4: the speculative history stored once (finding storage:S2 /
     /// reads:R6: the history at a shallower frontier is a prefix of the
     /// deepest one's, and version 1 wrote a whole copy per frontier, 10-17% of
     /// a decoding rank's record). Rows `[0, prompt)` of the head's hidden
     /// states (`[1, prompt - 1, H]` followed by the `last` row at `prompt - 1`)
-    /// in units of `blockTokens` rows, and the tokens `[1, prompt - 1]` in one
-    /// unit; frontier `f` reads rows `[0, f)` and the first `f - 1` tokens.
+    /// in units of `blockTokens` rows, and one tokens unit of `prompt - 1`
+    /// zeros; frontier `f` reads rows `[0, f)` and takes the tokens `[1, f)`
+    /// from the request's prompt.
     var sharedHistory: SharedHistory? = nil
     struct SharedHistory: Codable, Equatable {
         /// The deepest frontier with a history: `prompt` rows are stored.
@@ -113,6 +118,9 @@ struct QwenStagePrefixDiskHeader: Codable, Equatable {
     let createdUnixSeconds: Double
 
     var historyEntries: [Recurrent] { history ?? [] }
+
+    /// The `history` kind of a speculative head's tokens (`[1, f-1]`, int32).
+    static let historyTokensKind = "tokens"
 
     /// Bytes of every sealed unit after the header.
     var dataBytes: Int {
@@ -176,7 +184,7 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     let recurrent: [Source]
     /// Per history entry, its source.
     let history: [Source]
-    /// Version 2: the deepest history's hidden rows, its `last` row and its tokens.
+    /// Version 4: the deepest history's hidden rows, its `last` row and its tokens.
     let sharedHidden: Source?
     let sharedLast: Source?
     let sharedTokens: Source?
@@ -389,7 +397,7 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
             sharedLast: sharedSources?.last, sharedTokens: sharedSources?.tokens)
     }
 
-    /// The plaintext of one version-2 history unit: rows
+    /// The plaintext of one version-4 history unit: rows
     /// `[block * blockTokens, ...)` of the deepest history's hidden rows
     /// followed by its `last` row.
     func sharedHistoryPlaintext(block: Int) -> Data {
@@ -519,7 +527,11 @@ enum QwenStagePrefixDiskIO {
         }
         if let error = failed.error { throw error }
         for (entry, item) in job.header.recurrent.enumerated() { try seal(job.recurrent[entry].data, item.unit) }
-        for (entry, item) in job.header.historyEntries.enumerated() { try seal(job.history[entry].data, item.unit) }
+        // A history's token IDs are never written; zeros keep the unit's size.
+        for (entry, item) in job.header.historyEntries.enumerated() {
+            let data = job.history[entry].data
+            try seal(data, item.unit)
+        }
         if let shared = job.header.sharedHistory, let tokens = job.sharedTokens {
             for (block, unit) in shared.hiddenUnits.enumerated() { try seal(job.sharedHistoryPlaintext(block: block), unit) }
             try seal(tokens.data, shared.tokens)
@@ -581,8 +593,8 @@ enum QwenStagePrefixDiskIO {
     /// native record's are; the record must have been written under
     /// `encoding`. `stallMilliseconds` (qualification only) stops halfway,
     /// still calling `check`. `readCall` is `pread` (tests observe the reads).
-    static func restore(url: URL, opened: Opened, frontier: Int, encoding: QwenStagePrefixDiskEncoding = .native,
-                        stallMilliseconds: Int? = nil,
+    static func restore(url: URL, opened: Opened, frontier: Int, promptTokens: [Int],
+                        encoding: QwenStagePrefixDiskEncoding = .native, stallMilliseconds: Int? = nil,
                         readCall: @escaping ReadCall = { Darwin.pread($0, $1, $2, $3) },
                         check: () throws -> Void) throws -> QwenStagePrefixState {
         let header = opened.header, b = header.blockTokens
@@ -595,8 +607,8 @@ enum QwenStagePrefixDiskIO {
         guard fd >= 0 else { throw QwenStagePrefixDiskPolicy.IOFailure("open", code: errno) }
         defer { close(fd) }
         _ = fcntl(fd, F_NOCACHE, 1)
-        let work = try QwenStagePrefixDiskRestoreWork(fd: fd, opened: opened, frontier: frontier, encoding: encoding,
-            readCall: readCall)
+        let work = try QwenStagePrefixDiskRestoreWork(fd: fd, opened: opened, frontier: frontier,
+            promptTokens: promptTokens, encoding: encoding, readCall: readCall)
         try check()
         if let stallMilliseconds {
             // Qualification: the first half, a stall (the rank is checked while
@@ -654,9 +666,9 @@ enum QwenStagePrefixDiskIO {
                 throw ProbeError("Prefix record history unit missing")
             }
             let all = rows.array([1, frontier, shared.hiddenSize], dtype: hiddenDType)
-            let allTokens = tokens.array([1, shared.prompt - 1], dtype: tokensDType)
+            let frontierTokens = tokens.array([1, frontier - 1], dtype: tokensDType)
             guard let view = QwenMTPPrefixHistory.view(hidden: all[0..., 0 ..< (frontier - 1), 0...],
-                    tokens: allTokens[0..., 0 ..< (frontier - 1)], last: all[0..., (frontier - 1) ..< frontier, 0...],
+                    tokens: frontierTokens, last: all[0..., (frontier - 1) ..< frontier, 0...],
                     prompt: frontier, frontier: frontier) else {
                 throw ProbeError("Prefix record history does not describe its frontier")
             }
@@ -802,11 +814,14 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
     let historyItems: [QwenStagePrefixDiskHeader.Recurrent]
     let recurrentBuffers: [QwenStagePrefixRestoreBuffer]
     let historyBuffers: [QwenStagePrefixRestoreBuffer]
-    /// Version 2: rows `[0, frontier)` of the shared history and its tokens,
+    /// Version 4: rows `[0, frontier)` of the shared history and its tokens,
     /// nil when the record has none for this frontier.
     let sharedRows: QwenStagePrefixRestoreBuffer?
     let sharedTokensBuffer: QwenStagePrefixRestoreBuffer?
     let sharedBlocks: Int
+    /// The request's prompt, whose key matched the record's: the source of a
+    /// history's tokens, which the record does not hold.
+    let promptTokens: [Int]
     private let lock = NSLock()
     private var recurrentDone: [Bool]
     private var historyDone: [Bool]
@@ -820,10 +835,12 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
     /// encoding and every entry's encoded rows are exactly what that
     /// encoding writes for the entry's slot, width and dtype, or it is
     /// refused (and the tier deletes it).
-    init(fd: Int32, opened: QwenStagePrefixDiskIO.Opened, frontier: Int, encoding: QwenStagePrefixDiskEncoding = .native,
+    init(fd: Int32, opened: QwenStagePrefixDiskIO.Opened, frontier: Int, promptTokens: [Int],
+         encoding: QwenStagePrefixDiskEncoding = .native,
          readCall: @escaping QwenStagePrefixDiskIO.ReadCall = { Darwin.pread($0, $1, $2, $3) }) throws {
         let header = opened.header, b = header.blockTokens
         self.fd = fd; self.header = header; self.frontier = frontier; self.readCall = readCall
+        self.promptTokens = promptTokens
         dataStart = opened.dataStart; fileSize = opened.fileBytes; key = opened.key
         guard header.encoding == encoding.header else {
             throw ProbeError("Prefix record was written under another encoding")
@@ -874,7 +891,9 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                 throw ProbeError("Prefix record shared history unit size differs")
             }
             sharedRows = try QwenStagePrefixRestoreBuffer(bytes: frontier * rowBytes)
-            sharedTokensBuffer = try QwenStagePrefixRestoreBuffer(bytes: (shared.prompt - 1) * tokens.size)
+            // Only the frontier's tokens are restored, so a shorter prompt that
+            // covers the frontier fills them.
+            sharedTokensBuffer = try QwenStagePrefixRestoreBuffer(bytes: (frontier - 1) * tokens.size)
             sharedBlocks = (frontier + b - 1) / b
         } else {
             sharedRows = nil; sharedTokensBuffer = nil; sharedBlocks = 0
@@ -888,6 +907,15 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
 
     func requireNoError() throws {
         if let error = lock.withLock({ firstError }) { throw error }
+    }
+
+    /// A history's `count` tokens: the prompt's tokens `[1, count + 1)`, int32.
+    private func fillHistoryTokens(_ target: QwenStagePrefixRestoreBuffer, dtype: String, count: Int) throws {
+        guard dtype == "int32", count >= 0, count + 1 <= promptTokens.count, target.bytes == count * 4 else {
+            throw ProbeError("Prefix record history tokens do not fit the prompt")
+        }
+        let values = target.pointer.bindMemory(to: Int32.self, capacity: count)
+        for index in 0..<count { values[index] = Int32(truncatingIfNeeded: promptTokens[index + 1]).littleEndian }
     }
 
     private func open(_ unit: QwenStagePrefixDiskHeader.Unit) throws -> Data {
@@ -935,7 +963,7 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                 if target.bytes > 0 { plain.withUnsafeBytes { target.pointer.copyMemory(from: $0.baseAddress!, byteCount: target.bytes) } }
                 lock.withLock { recurrentDone[slot] = true }
             } else if index >= attentionWork.count + recurrentItems.count + historyItems.count {
-                // Version 2 history: block `k` of rows [0, frontier), then the tokens.
+                // Version 4 history: block `k` of rows [0, frontier), then the tokens.
                 guard let shared = header.sharedHistory, let rows = sharedRows, let tokens = sharedTokensBuffer else {
                     throw ProbeError("Prefix record shared history missing")
                 }
@@ -950,16 +978,23 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                     plain.withUnsafeBytes { rows.pointer.advanced(by: first * rowBytes).copyMemory(from: $0.baseAddress!, byteCount: take) }
                 } else {
                     let plain = try open(shared.tokens)
-                    guard plain.count == tokens.bytes else { throw ProbeError("Prefix record shared history tokens differ") }
-                    if tokens.bytes > 0 { plain.withUnsafeBytes { tokens.pointer.copyMemory(from: $0.baseAddress!, byteCount: tokens.bytes) } }
+                    guard plain.count + QwenStagePrefixDiskFormat.tagBytes == shared.tokens.length else {
+                        throw ProbeError("Prefix record shared history tokens differ")
+                    }
+                    try fillHistoryTokens(tokens, dtype: shared.tokensDType, count: frontier - 1)
                 }
                 lock.withLock { sharedDone += 1 }
             } else {
                 let slot = index - attentionWork.count - recurrentItems.count
-                let plain = try open(historyItems[slot].unit)
+                let item = historyItems[slot]
+                let plain = try open(item.unit)
                 let target = historyBuffers[slot]
                 guard plain.count == target.bytes else { throw ProbeError("Prefix record history unit size differs") }
-                if target.bytes > 0 { plain.withUnsafeBytes { target.pointer.copyMemory(from: $0.baseAddress!, byteCount: target.bytes) } }
+                if item.kind == QwenStagePrefixDiskHeader.historyTokensKind {
+                    try fillHistoryTokens(target, dtype: item.dtype, count: item.shape.reduce(1, *))
+                } else if target.bytes > 0 {
+                    plain.withUnsafeBytes { target.pointer.copyMemory(from: $0.baseAddress!, byteCount: target.bytes) }
+                }
                 lock.withLock { historyDone[slot] = true }
             }
         } catch {

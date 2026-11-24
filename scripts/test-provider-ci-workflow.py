@@ -71,6 +71,20 @@ MIMO_HTTP_PREPARE = ('python3 scripts/test-prepare-mimo-image-http-fixtures.py\n
                      + MIMO_PREPARE + '\n'
                      + 'python3 scripts/prepare-mimo-image-http-fixtures.py '
                      '--output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV" ' + MIMO_METADATA_CACHE)
+# Every provider test job runs MIMO_HTTP_PREPARE's commands, in their order, as
+# one background command started before the products. The scripts write their
+# variables to a file in the command's directory, which `start` creates afresh;
+# the wait step, where the preparation stood, adds that file to the job's
+# environment once the command has succeeded.
+MIMO_METADATA_START_STEP = "Start the pinned MiMo metadata downloads"
+MIMO_METADATA_WAIT_STEP = "Wait for the pinned MiMo metadata downloads"
+MIMO_METADATA_DOWNLOADS = '"$RUNNER_TEMP/mimo-metadata-downloads"'
+MIMO_METADATA_ENV = '"$RUNNER_TEMP/mimo-metadata-downloads/github-env"'
+MIMO_METADATA_START = ("python3 scripts/ci-background-step.py start " + MIMO_METADATA_DOWNLOADS + " bash -e -c '\n"
+                       + textwrap.indent(MIMO_HTTP_PREPARE.replace('--github-env "$GITHUB_ENV"', '--github-env "$1"'), "  ")
+                       + "\n' mimo-metadata " + MIMO_METADATA_ENV)
+MIMO_METADATA_WAIT = ("python3 scripts/ci-background-step.py wait " + MIMO_METADATA_DOWNLOADS + "\n"
+                      "cat " + MIMO_METADATA_ENV + ' >> "$GITHUB_ENV"')
 MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
                          '--output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"\n'
                          'python3 scripts/prepare-mimo-provider-fixtures.py '
@@ -516,14 +530,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 restores = [step for step in steps
                             if "actions/cache/restore@" in step and field(step, "id") != "git-cache"]
                 if lane == "provider":
-                    # Shard 1's prompt fixture downloads and Provider Gates'
-                    # audio codec before the products: they need none, so they
-                    # are fetched while the build runs. The verified MiMo
-                    # metadata downloads after the products.
-                    caches = {"test-provider": [("prompt-fixture-cache", "prompt-fixtures-v1-", False),
-                                                ("mimo-metadata-cache", "mimo-metadata-v1-", True)],
-                              GATES: [("mimo-audio-cache", "mimo-audio-source-v2-", False),
-                                      ("mimo-metadata-cache", "mimo-metadata-v1-", True)]}
+                    # The verified MiMo metadata downloads, shard 1's prompt
+                    # fixture downloads and Provider Gates' audio codec before
+                    # the products: they need none, so they are fetched while
+                    # the build runs.
+                    caches = {"test-provider": [("mimo-metadata-cache", "mimo-metadata-v1-", False),
+                                                ("prompt-fixture-cache", "prompt-fixtures-v1-", False)],
+                              GATES: [("mimo-metadata-cache", "mimo-metadata-v1-", False),
+                                      ("mimo-audio-cache", "mimo-audio-source-v2-", False)]}
                     expected = caches[job_id]
                     self.assertEqual([field(step, "id") for step in restores], [cache for cache, _, _ in expected])
                     for restore, (_, key, after_products) in zip(restores, expected):
@@ -665,8 +679,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
-        expected = {"test-provider": (MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, PROVIDER_TEST_COMMAND),
-                    GATES: (*gates[:4], MIMO_HTTP_PREPARE, MIMO_PROVIDER_PREPARE, *gates[4:])}
+        # The MiMo metadata preparation starts before the products and is
+        # waited for where it stood (test_mimo_metadata_is_prepared_while_the_build_runs).
+        expected = {"test-provider": (MIMO_METADATA_START, MIMO_METADATA_WAIT, MIMO_PROVIDER_PREPARE, PROVIDER_TEST_COMMAND),
+                    GATES: (MIMO_METADATA_START, *gates[:4], MIMO_METADATA_WAIT, MIMO_PROVIDER_PREPARE, *gates[4:])}
         for job_id, commands in expected.items():
             with self.subTest(job=job_id):
                 steps = work_steps(self.jobs[job_id])
@@ -678,6 +694,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         everywhere = Counter(run_command(step) for job in self.jobs.values() for step in step_blocks(job))
         for command in (*gates, PROVIDER_TEST_COMMAND):
             self.assertEqual(everywhere[command], 1, command)
+        for command in (MIMO_METADATA_START, MIMO_METADATA_WAIT):
+            self.assertEqual(everywhere[command], 2, command)
         # No step of a shard is the last shard's alone: the last shard differs
         # only by the isolated processes, which run-provider-tests.sh runs.
         self.assertNotIn("== strategy.job-total", self.jobs["test-provider"])
@@ -899,16 +917,19 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # the background, from the products' interpreter on, while the build
         # runs: one download per parity step, from its script's manifests and
         # CDN. Each parity step waits for its own and runs only if it succeeded.
-        python = steps[names.index("Restore verified prompt fixture downloads") - 1]
+        # Every shard starts the MiMo metadata preparation first, with the same
+        # interpreter (test_mimo_metadata_is_prepared_while_the_build_runs).
+        python = next(step for step in steps if (uses(step) or "").startswith("actions/setup-python@"))
+        mimo_restore, mimo_start = (steps[names.index(name)] for name in
+                                    ("Restore verified MiMo metadata downloads", MIMO_METADATA_START_STEP))
         start = steps[names.index(PARITY_DOWNLOAD_START)]
         products = next(step for step in steps if field(step, "uses") == PRODUCTS_ACTION)
         tests = steps[names.index("Run Swift tests")]
-        self.assertTrue(uses(python).startswith("actions/setup-python@"), python)
         self.assertEqual(field(python, "python-version", indent=10), "'3.12.10'")
-        self.assertEqual([steps.index(step) for step in (python, restore, start, products)],
-                         list(range(steps.index(python), steps.index(python) + 4)))
-        for step in (python, start):
-            self.assertEqual(field(step, "if"), "${{ !cancelled() && matrix.shard == 1 }}")
+        self.assertEqual([steps.index(step) for step in (python, mimo_restore, mimo_start, restore, start, products)],
+                         list(range(steps.index(python), steps.index(python) + 6)))
+        self.assertEqual(field(python, "if"), "${{ !cancelled() }}")
+        self.assertEqual(field(start, "if"), "${{ !cancelled() && matrix.shard == 1 }}")
         self.assertEqual(field(start, "id"), "prompt-fixture-downloads")
         self.assertEqual(field(start, "PROMPT_PARITY_DOWNLOAD_CACHE", indent=10), cache)
         # The downloader refuses a path with a symbolic link in it, so both roots are physical.
@@ -951,19 +972,67 @@ class ProviderCIWorkflowTests(unittest.TestCase):
 
     def test_fixture_prerequisites_are_fail_closed_in_provider(self):
         # The shards and Provider Gates prepare the same fixtures, so each
-        # gate sees the environment it had in the last shard.
+        # gate sees the environment it had in the last shard. The metadata's
+        # wait keeps the preparation's id, so every step that needs the
+        # metadata still runs only once it succeeded.
         for job_id in ("test-provider", GATES):
             with self.subTest(job=job_id):
                 steps = step_blocks(self.jobs[job_id])
-                fixtures = [step for step in steps if run_command(step) == MIMO_HTTP_PREPARE]
+                fixtures = [step for step in steps if run_command(step) == MIMO_METADATA_WAIT]
                 self.assertEqual(len(fixtures), 1)
                 self.assertEqual(field(fixtures[0], "id"), "mimo-prompt-fixtures")
-                self.assertEqual(field(fixtures[0], "if"), READY)
+                self.assertEqual(field(fixtures[0], "if"),
+                                 "${{ !cancelled() && steps.test-products.outcome == 'success' && "
+                                 "steps.mimo-metadata-downloads.outcome == 'success' }}")
+                self.assertEqual([step for step in steps if "python3 scripts/prepare-mimo-prompt-fixtures.py" in step],
+                                 [step for step in steps if run_command(step) == MIMO_METADATA_START])
                 synthetic, = [step for step in steps if run_command(step) == MIMO_PROVIDER_PREPARE]
                 self.assertEqual(field(synthetic, "id"), "mimo-fixtures")
                 self.assertEqual(field(synthetic, "if"), READY)
         # The HTTP preparation includes the plain prompt-fixture preparation.
         self.assertIn(MIMO_PREPARE, MIMO_HTTP_PREPARE)
+
+    def test_mimo_metadata_is_prepared_while_the_build_runs(self):
+        # The metadata needs no test products. Every shard and Provider Gates
+        # restores the verified downloads and starts the preparation's own
+        # commands in the background before the products, with the products'
+        # interpreter, and waits for it where the preparation stood: before
+        # the first step that reads the metadata, and before the save, which
+        # still saves only what a succeeded preparation verified.
+        # The variables' file is new: `start` refuses an existing directory.
+        background = (ROOT / "scripts/ci-background-step.py").read_text()
+        self.assertIn("directory.mkdir(parents=True, exist_ok=False)", background)
+        first_reader = {"test-provider": "Run Swift tests", GATES: "Test Gemma quoted numeric argument conformance switches"}
+        for job_id, reader in first_reader.items():
+            with self.subTest(job=job_id):
+                steps = step_blocks(self.jobs[job_id])
+                names = [field(step, "name", indent=6) for step in steps]
+                python = next(step for step in steps if (uses(step) or "").startswith("actions/setup-python@"))
+                restore, start, wait, save, synthetic = (steps[names.index(name)] for name in (
+                    "Restore verified MiMo metadata downloads", MIMO_METADATA_START_STEP, MIMO_METADATA_WAIT_STEP,
+                    "Save verified MiMo metadata downloads", "Prepare bounded synthetic MiMo provider fixtures offline"))
+                products = next(step for step in steps if field(step, "uses") == PRODUCTS_ACTION)
+                self.assertEqual(field(python, "if"), "${{ !cancelled() }}")
+                self.assertEqual(field(python, "python-version", indent=10), "'3.12.10'")
+                self.assertEqual([steps.index(step) for step in (python, restore, start)],
+                                 list(range(steps.index(python), steps.index(python) + 3)))
+                self.assertLess(steps.index(start), steps.index(products))
+                self.assertEqual(field(restore, "id"), "mimo-metadata-cache")
+                self.assertEqual(field(restore, "if"), gated("${{ !cancelled() }}"))
+                self.assertEqual(field(start, "id"), "mimo-metadata-downloads")
+                self.assertEqual(field(start, "if"), "${{ !cancelled() }}")
+                self.assertEqual(run_command(start), MIMO_METADATA_START)
+                self.assertEqual(run_command(wait), MIMO_METADATA_WAIT)
+                self.assertEqual([steps.index(step) for step in (wait, save, synthetic)],
+                                 list(range(steps.index(wait), steps.index(wait) + 3)))
+                self.assertLess(steps.index(products), steps.index(wait))
+                self.assertLess(steps.index(synthetic), names.index(reader))
+                self.assertEqual(field(save, "if"),
+                                 gated("${{ !cancelled() && " + SAVE_CACHES + " && steps.mimo-prompt-fixtures.outcome == 'success' "
+                                       "&& steps.mimo-metadata-cache.outputs.cache-hit != 'true' }}"))
+                for step in (python, restore, start, wait):
+                    self.assertNotIn("continue-on-error:", step)
+                    self.assertNotIn("timeout-minutes:", step)
 
     def test_native_mimo_gates_keep_isolated_processes_and_fixture_guards(self):
         steps = step_blocks(self.jobs[GATES])
@@ -999,14 +1068,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # The 1.87 GB codec is fetched only when the gate's inputs changed;
         # the gate needs the fixture, so it skips with it.
         # It needs no test products, so the codec is fetched before them,
-        # while the build runs, with the interpreter the later steps use.
+        # while the build runs, with the interpreter the later steps use
+        # (selected for the MiMo metadata too, so on every run).
         audio_ready = "${{ !cancelled() && inputs.mimo_audio == 'true' }}"
         self.assertEqual(field(fixture, "if"), audio_ready)
         restore = next(s for s in steps if field(s, "id") == "mimo-audio-cache")
         self.assertEqual(field(restore, "if"), gated(audio_ready))
         products = next(s for s in steps if field(s, "id") == "test-products")
         python = next(s for s in steps if (uses(s) or "").startswith("actions/setup-python@"))
-        self.assertEqual(field(python, "if"), audio_ready)
+        self.assertEqual(field(python, "if"), "${{ !cancelled() }}")
         self.assertEqual(field(python, "python-version", indent=10), "'3.12.10'")
         self.assertLess(steps.index(python), steps.index(restore))
         self.assertLess(steps.index(restore), steps.index(fixture))

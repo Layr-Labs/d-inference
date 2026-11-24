@@ -212,7 +212,10 @@ Mac each, 15 selections in all. Each shard runs the products of the one provider
 `scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
 state files; `scripts/provider-test-shards.py` chooses each selection's suites.
-A shard's processes start together.
+A shard's processes start together. Before its products, each shard restores
+the verified MiMo metadata downloads and starts their pinned preparation in
+the background; it waits for it before its tests, and a failed preparation
+fails the shard at that wait ([CI caching](build.md#ci-caching)).
 The planner fills the selections longest suite first onto the least loaded
 one, where each selection starts loaded with its shard's fixed work: the parallel process
 after selection 1, Prompt Parity in shard 1 and the isolated processes in the
@@ -284,7 +287,7 @@ reopened-thought conformance switches, the desktop control API with isolated
 local state, the native MiMo startup, memory admission, media admission,
 complete-prefix, retained-fault and lifecycle drain gates, the MiMo audio gate
 when its inputs changed, and the atomic installer tests, each in processes of
-its own. It prepares the MiMo fixtures the shards prepare, so each gate runs
+its own. It prepares the MiMo fixtures the shards prepare, the same way, so each gate runs
 in the environment it had in the last shard, and reports its own coverage.
 The gates used to run after the last shard's selections; on Darkbloom's 4
 vCPUs that shard then ended about 100 s after the others (run 44771184962).

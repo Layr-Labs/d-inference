@@ -59,6 +59,19 @@ struct GPTOSSAutoToolRenderHintTests {
         #expect(Self.accepts(constraint, "mode", "\"inherit\""))
     }
 
+    @Test("an enum the render type contradicts admits its members")
+    func contradictedEnumAdmitsItsMembers() throws {
+        let constraint = try A.constraint(tools: [Self.tool("level", ["enum": [1, 2, 3], "type": "string"])])
+        #expect(Self.accepts(constraint, "level", "2"))
+    }
+
+    @Test("a not of the render type admits values of every other type")
+    func notOfTheRenderTypeAdmitsOtherTypes() throws {
+        let constraint = try A.constraint(tools: [Self.tool("other", ["not": ["type": "string"], "type": "string"])])
+        #expect(Self.accepts(constraint, "other", "5"))
+        #expect(Self.accepts(constraint, "other", "true"))
+    }
+
     @Test("a hinted node marked nullable admits null, as the strict check reads it")
     func hintedNullableNodesAdmitNull() throws {
         let tools = [

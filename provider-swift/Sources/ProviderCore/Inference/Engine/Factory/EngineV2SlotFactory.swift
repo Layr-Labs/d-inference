@@ -313,8 +313,17 @@ enum EngineV2SlotFactory {
         if assistantHandle?.drafter is Inkling2DSparkDrafter {
             // The drafter's own engine profile: up to 7 drafts, up to 8
             // speculating rows, adaptive depth down to plain decode. The
-            // operator's acceptance setting still applies.
-            mtpConfig = Inkling2DSparkDrafter.defaultMTPConfig()
+            // operator's acceptance setting still applies, and
+            // DARKBLOOM_INKLING_MTP_MAX_DRAFT may lower the cap.
+            let maxDraft = Inkling2MTPProfilePolicy.maxDraftTokens(environment: environment)
+            if let unrecognized = maxDraft.unrecognized {
+                logWarning(
+                    "engine_v2: unrecognized \(Inkling2MTPProfilePolicy.maxDraftKey) value "
+                        + "\"\(unrecognized)\" for \(modelId) — using \(maxDraft.tokens)")
+            } else if maxDraft.tokens != Inkling2MTPProfilePolicy.defaultMaxDraftTokens {
+                logInfo("engine_v2: \(modelId) MTP max draft tokens \(maxDraft.tokens)")
+            }
+            mtpConfig = Inkling2MTPProfilePolicy.engineConfig(maxDraft: maxDraft)
             mtpConfig.acceptance = mtpAcceptance.acceptance
         }
         // Per-build SDK switches this release turns on where they were measured;

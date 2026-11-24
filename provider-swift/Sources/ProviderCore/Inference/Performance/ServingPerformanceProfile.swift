@@ -163,8 +163,11 @@ public enum ServingPerformanceProfiles {
         value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
-    static var postureAllowsExpansion: Bool {
-        !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
+    /// Posture for reviewed profiles and deadline profiles: Low Power Mode off
+    /// and nominal thermal state. The bridge reads the posture through its
+    /// `servingPosture` (by default `ProcessInfo`).
+    static func postureAllowsExpansion(lowPowerMode: Bool, thermalState: ProcessInfo.ThermalState) -> Bool {
+        !lowPowerMode && thermalState == .nominal
     }
 
     /// Posture for the automatic width (no reviewed profile): Low Power Mode off
@@ -172,12 +175,6 @@ public enum ServingPerformanceProfiles {
     /// sits at fair, where macOS takes only minor measures; serious and critical
     /// still return the bridge to the unqualified width. Reviewed profiles and
     /// deadline profiles keep `postureAllowsExpansion` (nominal).
-    static var postureAllowsAutomaticWidth: Bool {
-        postureAllowsAutomaticWidth(
-            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
-            thermalState: ProcessInfo.processInfo.thermalState)
-    }
-
     static func postureAllowsAutomaticWidth(
         lowPowerMode: Bool, thermalState: ProcessInfo.ThermalState
     ) -> Bool {

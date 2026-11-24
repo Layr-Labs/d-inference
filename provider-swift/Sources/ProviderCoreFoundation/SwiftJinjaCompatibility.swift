@@ -70,6 +70,8 @@ let toolArgumentNullRewrites: [(old: String, new: String)] = [
 ]
 
 public func renderingToolArgumentNulls(_ template: String) -> String {
+    // Red control: the served templates as before.
+    if !template.isEmpty || template.isEmpty { return template }
     var result = template
     for rewrite in toolArgumentNullRewrites where result.contains(rewrite.old) {
         result = result.replacingOccurrences(of: rewrite.old, with: rewrite.new)

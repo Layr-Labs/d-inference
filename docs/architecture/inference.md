@@ -3479,10 +3479,11 @@ output-indexed RNG stream. Presence and frequency penalties speculate since
 counts plus the drafts before it, in `LogitsPipelineV2.process`'s order and
 dtype, and such rows accept exactly (`CBv2DefaultSampler.mtpVerifySample(…penalties:)`).
 The engine opts in per build (`CBv2MTPConfig.penaltySpeculation`): the slot factory
-sets it for the catalog Qwen 3.5/3.6 builds and `gemma-4-26b-qat-4bit`
-(`SDKFeatureDefaults.penaltyRowBuilds`); `DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty
+sets it for the catalog Qwen 3.5/3.6 builds, `gemma-4-26b-qat-4bit` and, since
+0.10.18, the served Inkling 2 Mini (`SDKFeatureDefaults.penaltyRowBuilds`); `DARKBLOOM_MTP_PENALTY_ROWS=0` keeps penalty
 rows target-only everywhere. Rows with `stop` strings speculate on the builds in
-`SDKFeatureDefaults.stopStringRowBuilds` (`gemma-4-26b-qat-4bit`;
+`SDKFeatureDefaults.stopStringRowBuilds` (`gemma-4-26b-qat-4bit` and, since 0.10.18,
+the served Inkling 2 Mini, whose answer-channel stop scope the row's detokenizer applies;
 `CBv2MTPConfig.stopStringSpeculation`): the round's finalize confirms each committed
 token through the row's detokenizer and ends the row at the first match, rolling back
 the rest: given the committed tokens, stop matching, scope, truncation and the finish

@@ -81,7 +81,8 @@ public enum MTPAcceptancePolicy {
 }
 
 /// On the builds in `SDKFeatureDefaults.penaltyRowBuilds` (the catalog Qwen
-/// 3.5/3.6 builds, card default presence 1.5), rows with a presence or
+/// 3.5/3.6 builds, card default presence 1.5, Gemma 4 26B QAT and Inkling 2
+/// Mini), rows with a presence or
 /// frequency penalty speculate: the engine re-derives the penalties at each
 /// verify position, always with exact acceptance. The SDK reads the switch
 /// once per process (`CBv2MTPConfig.envPenaltySpeculation`); the LaunchAgent
@@ -91,7 +92,7 @@ public enum MTPPenaltyRows {
 }
 
 /// On the builds in `SDKFeatureDefaults.stopStringRowBuilds` (the catalog
-/// Gemma 4 26B QAT build), rows with `stop` strings speculate; the round's
+/// Gemma 4 26B QAT build and Inkling 2 Mini), rows with `stop` strings speculate; the round's
 /// finalize ends the row at the first match. The SDK reads the switch once
 /// per process (`CBv2MTPConfig.envStopStringSpeculation`); the LaunchAgent
 /// forwards it. `0`, `false`, `no` or `off` keeps such rows target-only.

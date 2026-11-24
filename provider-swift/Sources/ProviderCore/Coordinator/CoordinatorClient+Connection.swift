@@ -40,6 +40,7 @@ extension CoordinatorClient {
                 let end = session.end()
                 let delay = nextMemberAwareReconnectDelay(
                     backoff: TimeInterval.random(in: policy.nextDelayRange(after: end)))
+                DecodeRateIdleAge.coordinatorDecays.reset()
                 eventContinuation?.yield(.disconnected)
                 let reachable = reachability.isReachable
                 let closeCode = end.closeCode.map { "\($0)" } ?? "none"

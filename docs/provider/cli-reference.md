@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-24
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -977,7 +977,12 @@ darkbloom stop --force             # explicit interruption, including stalled wo
 Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) below
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
-Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
+Only me (`--local`) also waits for active HTTP response bodies. A second `SIGINT`
+(Ctrl-C) after any stop signal ends the process at once with status 130, without
+finishing the drain, and says so on stderr; a second `SIGTERM` or `SIGHUP` only
+joins the drain, because the cluster supervisor and launchd may send `SIGTERM`
+more than once (`ProviderStopSignalState` in
+`provider-swift/Sources/ProviderCore/Service/ProviderSignalHandler.swift`). `SIGHUP`
 enters it too for a provider started by hand (`start --local --here`, or, in a
 debug build, `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal
@@ -3251,7 +3256,18 @@ ProviderCore checks and the explicit `--clear-backend-guard` action
 On a Mac paired for a two-Mac cluster, the detailed checks also list the
 checks `darkbloom cluster doctor` runs (installed metadata, trust files, the
 Thunderbolt RDMA link, the saved setup), each named `cluster <check>`; a failed
-one fails the run and points to `darkbloom cluster doctor` for its details. The
+one fails the run and points to `darkbloom cluster doctor` for its details. A
+pair set up before this Mac updated, and stopped since, still pins the worker
+of the release the update replaced: when that pin is the worker in the kept
+rollback copy and every other pinned file verifies, `cluster
+localInstalledMetadata` is a ⚠ (`warning` in `cluster doctor --json`, which
+exits 0), because the pair's next start sets it up again
+(`ClusterInstalledMetadataChecks`). A pair left stopped across more than one
+update pins an older worker than the kept copy: it is a ⚠ too when the setup
+names this Darkbloom's own worker, signed with the same certificate, and every
+other pinned file verifies (the line names no release). A worker not signed so,
+a setup naming another worker, or a build without the Developer ID, stay a ✗.
+The
 saved-setup check counts a provider configuration that other users can open
 (the installer writes it so for a coordinator other than production's) as no
 saved setup until a setup is saved, which makes the file private; one that
@@ -3891,6 +3907,30 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 | `--debug` | Include debug-level messages |
 | `--lines <n>` | Number of lines (only with `--file`) |
 
+### Update lines
+
+A single Mac's background update writes one fixed public line for each step
+at the level unified logging keeps on disk (notice), so `darkbloom logs --last 24h`
+still shows an update hours later. The progress lines beside them name the
+versions and reasons; they are private info lines, which unified logging keeps
+only in memory (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`,
+`autoUpdateNotice`; Only me's background service writes the same lines). A check
+that finds this Mac up to date writes none. A pair's update is logged by its
+cluster service.
+
+| Line | Step |
+|---|---|
+| `Auto-update: a newer release is available; staging it while serving` | Download, verification and staging begin |
+| `Auto-update: new release staged; draining requests before installing it` | Admission closes; in-flight requests finish |
+| `Auto-update: a newer release is installed; draining requests before the restart` | An installed release is not running yet |
+| `Auto-update: new release installed; restarting into it` | The restart is issued |
+| `Auto-update deferred: requests did not finish in time; nothing installed` | The drain ran out of time; serving resumed |
+| `Auto-update: the latest release is quarantined on this Mac; staying on this one` | The latest release failed here before |
+| `Auto-update: release check failed; the next check tries again` | The release check failed |
+| `Auto-update: download or staging failed; staying on this release` | Staging failed; serving never stopped |
+| `Auto-update: installing the staged release failed; staying on this release` | The install failed after the drain |
+| `Auto-update: restart into the new release failed; serving on this release` | The restart failed |
+
 ### Refusal lines
 
 A request refused as a client error, before its inference task or while its
@@ -3927,25 +3967,27 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid request (unsupported reasoning control)` | A reasoning or template control the model refuses: an unknown effort, a non-positive budget, `preserve_thinking`, an unknown `reasoning` member, `thinking` key or `chat_template_kwargs` key, or a non-Boolean switch; also a `reasoning` field that does not decode, such as a string `reasoning.enabled` | `ProviderPromptContractPipeline.nativeControlsRefusal`; `InferenceRefusalReason.init(chatDecodeFailure:)` |
 | `Inference failure: invalid request (contradictory reasoning controls)` | Thinking-off beside a thinking-on switch, effort or budget, or a `reasoning.context` that contradicts `clear_thinking` | `ProviderPromptContractPipeline.nativeControlsRefusal` |
 | `Inference failure: invalid request (unsupported tool type)` | A GLM-5.3-Flash tool declaration whose type is not `function` | same |
-| `Inference failure: invalid request (invalid tool schema)` | A GLM-5.3-Flash tool schema holding a number it cannot represent exactly, or nested too deeply | same |
+| `Inference failure: invalid request (invalid tool schema)` | A GLM-5.3-Flash tool schema nested too deeply or holding a number beyond a double, or, with `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0`, a number it cannot represent exactly | same |
 | `Inference failure: invalid media (unsupported audio)` | Audio input to a model without native audio | `MediaIngest.rejectUnsupportedAudio` |
 | `Inference failure: invalid request (unanswered tool call)` | A GLM-5.3-Flash or Gemma 4 history call has no result before the next non-tool message or the end of the conversation | `GLM5NextPromptPolicy.validateHistory`; `Gemma4TurnStructure` |
 | `Inference failure: invalid request (unmatched tool result)` | A tool result names no pending call of the turn before it, repeats one, carries `tool_calls`, or follows no assistant `tool_calls` at all (every model), or a GPT-OSS result after split calls has no `tool_call_id` | same; `ChatTemplateFixes.validateGenericToolHistory`; `GPTOSSHarmonyTemplateFix`; `Gemma4TurnStructure` |
-| `Inference failure: invalid request (native delimiter in history)` | A history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
+| `Inference failure: invalid request (native delimiter in history)` | With `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` only: a history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
 | `Inference failure: invalid request (non-text content)` | Image, video or other non-text content on GLM-5.3-Flash's text path | same |
 | `Inference failure: invalid request (unsupported forced tool choice)` | A required or named `tool_choice` the model cannot enforce: a schema outside the enforceable subset, or GLM-5.3-Flash image or video input | `ToolChoicePromptPolicy`; `MultiModelBatchSchedulerEngine` |
 | `Inference failure: invalid request (request exceeds context)` | The prompt alone fills the model's context window on one Mac (a larger `max_tokens` is cut to fit, not refused), or an output reservation is invalid | `EngineV2Bridge` (`promptExceedsContext`, `advertisedContextExceeded`) |
 | `Inference failure: invalid request (unsupported output control)` | An output control the model's engine cannot honor, such as logprobs on an engine without them | `EngineV2Bridge.nativeOutputControlRefusal` |
 | `Inference failure: invalid request (missing user query)` | No user turn is more than a `<tool_response>` wrapper, such as a system-only conversation, on Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2, whose templates raise "No user query found in messages." | `Qwen35TemplateFix.validateUserQuery` |
+| `Inference failure: invalid request (media role not rendered)` | An image or video in a system, assistant or tool message that the model's chat template refuses (Qwen 3.5–3.8 raise on a system-message image) or leaves without a placeholder (Gemma 4 renders only the text of its first system message and of tool results), so the model could not see it. vLLM refuses the same request | `EngineV2VisionPrefill.prepare` (`isUnrenderedMedia`) |
 
 Prompt-time refusals also use the earlier reasons: a GLM-5.3-Flash history call
 with an empty or repeated ID, a bad function name or a non-assistant role, a
 first history call without `function.name` on any model, a repeated GPT-OSS
 call ID and an inconsistent Gemma 4 tool-result owner are
 `invalid tool history`; required or named `tool_choice` with image or video
-input is `unsupported forced tool choice`; history `arguments` that are not one exactly
-representable JSON object (malformed, duplicate keys, a number that does not
-survive the round trip) are `invalid tool arguments`; an invalid or repeated
+input is `unsupported forced tool choice`; history `arguments` that are not one JSON
+object (malformed, a trailing comma, two objects, a number beyond a double; on
+GLM-5.3-Flash with `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` also duplicate keys
+or a number that does not survive the round trip) are `invalid tool arguments`; an invalid or repeated
 tool name is `invalid tool declaration`; a required choice without tools or a
 named choice of an undeclared function is `invalid tool choice`; a JSON
 `response_format` with image or video input on a GLM-5.3-Flash cluster pair is
@@ -4160,7 +4202,7 @@ override `provider.toml` for one process, are in
 | `[backend] model_cache_directory` | unset | Explicit saved hub directory; set or import once with `models location`, clear with `--reset`. Ambient cache variables never override it; hand-written relative paths are anchored to the config file (`provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift`, `ConfigManager.modelCacheDirectory`) |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables; paused during active or explicitly paused Autopilot |
 | `[backend] max_model_slots` | `3` | Resident models |
-| `[backend] engine_v2_max_concurrent` | Absent: automatic, legacy `4` (`8` on M5 Pro, Max and Ultra for models on the native `auto` paged allowlist); explicit values preserved | Concurrent requests per engine, bounded by exact reviewed profile or legacy `[1, 8]`, architecture and memory. Only an automatic setting may inherit a reviewed or M5 paged higher default; a width above the configured one returns to it under Low Power Mode or thermal pressure. `ServingPerformanceProfiles`, `BackendSettings` |
+| `[backend] engine_v2_max_concurrent` | Absent: automatic, legacy `4` (`8` on M5 Pro, Max and Ultra for models on the native `auto` paged allowlist); explicit values preserved | Concurrent requests per engine, bounded by exact reviewed profile or legacy `[1, 8]`, architecture and memory. Only an automatic setting may inherit a reviewed or M5 paged higher default; a width above the configured one returns to it under Low Power Mode or a thermal state above nominal (the automatic M5 width only at serious or critical; fair keeps it). `ServingPerformanceProfiles`, `BackendSettings` |
 | `[backend] engine_v2_max_concurrent_by_model` | `{}` | Exact model ID → operator cap; overrides the default for that model under the same qualification, architecture and memory bounds. `status` and `doctor` show the default policy and all configured model overrides, with unknown-profile bounds when different from the requested cap (`provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`, `ServingPerformanceProfiles.summary`) |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Only live packed precision requires paged. Native auto follows the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts) and retains observable contiguous fallback; checkpoint compression does not change it (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] engine_v2_kv_quantization` | `"native"` | Live attention precision: `balanced` K4/V4, `k8v4` K8/V4, `k8v8` K8/V8 or `native`. Explicit live packed `auto` selects paged; unavailable paging refuses rather than silently serving native. Its durable reuse remains the existing complete packed contract; legacy resident/tensor prefixes stay disabled. MiMo remains native (`EngineV2KVQuantizationPolicy.resolve`). |
@@ -4169,7 +4211,7 @@ override `provider.toml` for one process, are in
 | `[backend] engine_v2_kv_checkpoint_quantization_by_model` | `{}` | Exact model-ID checkpoint request overrides the global setting; `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` overrides both. MiMo remains native before parsing. |
 | `[backend] engine_v2_kv_checkpoint_quantization_by_model."nvidia-nemotron-3.5-super"` | absent: `native` | Nemotron Super's managed slot gives its own entry a built-in `native` default, so a cache hit restores exactly what a cold prefill computes; the global `engine_v2_kv_checkpoint_quantization` does not apply to Super. An explicit entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile ([Super's durable checkpoints](../reference/ssd-kv-cache.md#complete-checkpoint-payload)). |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
-| `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`; `exact` for the Bonsai 9B candidate, the catalog `Qwen3.5-9B`, `gemma-4-26b-qat-4bit` and `EigenLabs/Qwen3.8-27B-4bit-mtp` (with its head-less target `EigenLabs/Qwen3.8-27B-4bit`)) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
+| `[backend] mtp_acceptance` | unset (resolves to `exact` for every model since 0.10.18) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
 | `[backend] mtp_acceptance_by_model` | `{}` | Exact model ID to acceptance string; overrides `mtp_acceptance` for that model. An unknown override resolves to `exact`, not the global value. Same eligibility and native MiMo exclusion as above (`MTPAcceptancePolicy.resolve`) |
 | `[backend.model_autopilot] enabled` | `false` | Experimental cached-inventory enrollment/consent, not activation; nonempty verified inventory is required, and only a live lease enables residency control (`provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.swift`) |
 | `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence before Autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |
@@ -4189,12 +4231,11 @@ parsing except on the early-excluded MiMo path. Native live execution does not
 make a lossy checkpoint exact; choose native checkpoint storage as well when
 an exact-native replay control is required.
 
-To restore exact acceptance, set `mtp_acceptance = "exact"` under `[backend]`
-in `provider.toml` and restart the provider. Per-model entries take precedence:
-remove any `"typical"` overrides from `[backend.mtp_acceptance_by_model]`, or
-set them to `"exact"` too. To opt out for only one model, set its exact model
-ID to `"exact"` in that table. Removing both settings restores the typical
-default, not exact acceptance. The benchmark default `--mtp-acceptance exact`
+Exact acceptance is the default for every model. To use typical acceptance,
+set `mtp_acceptance = "typical"` under `[backend]` in `provider.toml`, or set one
+model's exact ID to `"typical"` in `[backend.mtp_acceptance_by_model]`, and
+restart the provider. Per-model entries take precedence over the global value.
+Removing both settings restores exact acceptance. The benchmark default `--mtp-acceptance exact`
 is unchanged; see the [benchmark-only environment rule](../reference/configuration.md#engine-and-scheduler).
 
 For foreground/local mixed-prefill tuning, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`
@@ -4211,7 +4252,11 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 ### MTP penalty-row switch
 
-`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds, rows with a presence or frequency penalty (their card default, presence 1.5) speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as in 0.10.15. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds (card default presence 1.5), Gemma 4 26B QAT and Inkling 2 Mini, rows with a presence or frequency penalty speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as before these builds opted in. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+
+### MTP stop-string-row switch
+
+`DARKBLOOM_MTP_STOP_STRING_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Gemma 4 26B QAT build and Inkling 2 Mini, rows with `stop` strings speculate by default and stop at the first match exactly as without speculation; `0` (or `false`, `no`, `off`) keeps them target-only. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
 ## LaunchAgent environment passthrough
 
@@ -4316,7 +4361,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
 | `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`); a negative value writes complete checkpoints instead of deltas |
-| `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`parallelStage`); on by default, `0`/`false`/`no`/`off` restores the sequential checkpoint stage; forwarded to the daemon |
+| `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`parallelStage`); on by default, `0`/`false`/`no`/`off` restores the sequential checkpoint stage and the one-thread row decode (SDK `CBv2NativeCheckpointRowDecoder`); forwarded to the daemon |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`); an affirmative value answers an unseeded donor before its complete-checkpoint write settles (default off) |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
@@ -4324,6 +4369,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GLM_LONG_VIDEO_FIT` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`fitsLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's 240,000-token video budget, so a clip past the prepared-pixel cap is refused with 400 again |
 | `DARKBLOOM_GLM_LONG_VIDEO_SAMPLING` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextVisionBudget.swift` (`samplesLongVideos`); on by default, `0`/`false`/`no`/`off` keeps GLM's full 2 FPS sample, so a clip past the decoded-frame cap is refused with 400 again |
 | `DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.waitsForFirstToken`); on by default, `0`/`false`/`no`/`off` restores a pair's first-token allowance for its local API's requests |
+| `DARKBLOOM_GLM_SHARED_GRANT_WAIT` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.waitsForSharedGrant`); on by default, `0`/`false`/`no`/`off` refuses a local GLM request that exceeds its share beside other models at once and restores 0.10.17's busy words |
 | `DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerMemoryWait.swift` (`OwnerMemoryWait.limit`); a bound on how long your local request waits for memory, whole seconds (`0` refuses at once); unset, it waits as long as it takes. A request's own `X-Darkbloom-Max-Wait` header can shorten it |
 | `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `0`/`off`/`false`/`no` turns off the JSON answer grammar for GLM-5.3-Flash JSON answers (on by default) |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
@@ -4342,7 +4388,9 @@ must support the checkpoint contract described in
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
 | `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS` | MTP verification policy: `0` returns `gemma-4-26b-qat-4bit` on M5 Ultra, M3 Ultra and M5 Max from two drafts per round to the one-draft lone-row policy (other chips already use it) |
+| `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW` | MTP verification policy (while the two-draft policy is on): `0` lets `gemma-4-26b-qat-4bit` on M5 Ultra draft two tokens at one or two decode rows again (table `[2, 2, 0]`; default: a lone row only) |
 | `DARKBLOOM_GEMMA_MTP_LONE_ROW` | MTP verification policy (where the two-draft policy is off or the chip has none): `0` lets `gemma-4-26b-qat-4bit` speculate at two to four decode rows again on M3–M5 (two on M1/M2; default: a lone row only) |
+| `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT` | Checkpoint layout (`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `gemmaNativeRowsBeforeAssistantEnabled`): `0` keeps `gemma-4-26b-qat-4bit`'s two assistant-access layers native only while the assistant is attached (the earlier rule), with MTP left on (default: native also while it is configured but not attached yet) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
@@ -4351,11 +4399,13 @@ must support the checkpoint contract described in
 | `DARKBLOOM_QWEN38_PREFILL_CHUNK` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`qwen38PrefillChunkKey`); `0` restores the 512-token chunk for Qwen3.8-27B |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
+| `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` | `provider-swift/Sources/ProviderCore/Inference/Performance/DecodeRateIdleAge.swift` (`DecodeRateIdleAge.environmentKey`); `1800` by default, `0` publishes an idle slot's last decode rate however old |
 | `DARKBLOOM_TTFT_REFUSAL_PROBE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe.environmentKey`); `0` turns the refusal streak's idle probe off |
 | `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`NativePrefillEvidence.environmentKey`); `0` restores GLM's and MiMo's previous prefill estimate |
 | `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_RETENTION` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentRetentionEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentHostZerosEnvironmentKey`) |
+| `DARKBLOOM_TTFT_MEDIA_PREP_STREAM` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`mediaPrepStreamEnvironmentKey`); `0`, `false`, `no` or `off` keeps Qwen 3.5-family media preparation on the process default GPU stream (on by default) |
 | `DARKBLOOM_NATIVE_SEGMENT_RELEASE` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift` (`nativeSegmentReleaseIdleNanosDefault`); idle seconds (default 30), and any value that is not a positive number below a day (`0`, `off`) keeps an issued GLM pool's free segments until the pool retires |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | only when the shell value is exactly `1` (`GemmaOptimizationEnvironment.daemonDrainPassthrough`, `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`) |
 | `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | only when the shell value is exactly `1`; selects the [opt-in worker candidate](../reference/configuration.md#app-attest-worker-qualification) (`AppAttestWorkerSelection`, `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`) |
@@ -4548,6 +4598,22 @@ asked to stop (its cluster service may already be off).`, the service line, and
 a last line to run `darkbloom cluster stop --service` on the other Mac if its
 service is still on. A stop forwarded from the Mac that follows to the leading
 Mac that cannot finish still exits 1 and keeps this Mac's service.
+
+On a leading Mac whose cluster service restarted, the stop first waits for the
+service to confirm that this Mac leads (the other Mac answers, or the claim's
+30 s window passes awake). The wait is 40 s, and longer when the service
+publishes a window that ends later, up to 80 s (`confirmsInSeconds`,
+`OnboardingLive.awaitConfirmedLeadership`). If the claim is still unconfirmed
+and the service says the other Mac doesn't answer, this Mac's service stops
+alone, as with `--local-only`, and the command exits 0: `This Mac's leadership
+isn't confirmed yet and the other Mac doesn't answer over the cable, so the pair
+wasn't stopped from here.`, `Only this Mac's cluster service stops, as
+\`darkbloom cluster stop --local-only\` would.`, the service line, and the line to
+run `darkbloom cluster stop --service` on the other Mac. While the other Mac
+answers, the stop still refuses and keeps this Mac's service, as before.
+`DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` keeps the wait at 40 s, and
+`DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` restores the refusal
+(`ClusterUnconfirmedLeadership`).
 
 When the other Mac is gone for good (wiped, sold, or no longer cabled),
 `darkbloom cluster stop --local-only` stops only this Mac. It skips the drain and

@@ -189,6 +189,14 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
         }
     }
 
+    /// `darkbloom cluster doctor`: whether `file` is a cluster worker signed like this provider (its Developer ID and
+    /// the worker's identifier, every architecture strictly). False unless this build is signed with this project's
+    /// certificate.
+    func signsWorker(_ file: URL) -> Bool {
+        guard case .signed(let signer) = self else { return false }
+        return (try? Self.requireFile(signer, .worker, file: file, pinned: nil)) != nil
+    }
+
     /// Before the spawn: strict validation of every architecture of the file against the requirement, and for the
     /// owner, one of its arm64 images is this provider's running image (`pinned`, or read from the file).
     private static func requireFile(_ signer: Signer, _ helper: DistributedInstalledHelper, file: URL,

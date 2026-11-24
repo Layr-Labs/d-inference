@@ -1041,10 +1041,11 @@ public actor StandaloneServer {
     /// `activationReserveBytes` overrides the live serving-set reserve for a
     /// PROSPECTIVE set (a `setModels` preflight); nil reads live.
     func fleetKVBudgetBytes(
-        extraWeightBytes: Int, activationReserveBytes: UInt64? = nil
+        extraWeightBytes: Int, activationReserveBytes: UInt64? = nil,
+        excludingModelIDs: Set<String> = []
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
-        for (_, slot) in slots {
+        for (id, slot) in slots where !excludingModelIDs.contains(id) {
             let (sum, overflow) = totalWeights
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
@@ -1376,7 +1377,16 @@ public actor StandaloneServer {
             }
         }
 
+        if bundle.bridge.isGLM5NextManaged {
+            await bundle.bridge.installGLMSoloGrant { [weak self] in await self?.glmSoloGrant(for: modelId) }
+        }
         return SlotBuild(bundle: bundle, sizing: sizing)
+    }
+
+    private func glmSoloGrant(for id: String) -> UInt64? {
+        let peers = Set(slots.keys).union(modelsLoading).union(evictingModels).subtracting([id])
+        guard slots[id] != nil, !peers.isEmpty else { return nil }
+        return fleetKVBudgetBytes(extraWeightBytes: 0, excludingModelIDs: peers)
     }
 
     /// Post-bridge-guard failure unwind (mirrors

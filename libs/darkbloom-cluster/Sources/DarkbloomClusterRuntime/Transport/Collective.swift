@@ -71,6 +71,9 @@ public final class Collective {
             throw ProbeError("local-socket-test is created with its rank and loopback endpoint, not from a native backend")
         }
         self.transport = transport; localSocket = nil
+        // The group's creation, the owner's mesh rounds included (a record only).
+        let started = DispatchTime.now().uptimeNanoseconds
+        defer { ClusterLoadPhaseClock.add(.jacclGroup, nanoseconds: DispatchTime.now().uptimeNanoseconds &- started) }
         let expectedRank: Int? = try transport == .loopbackTest ? Self.validateLoopback() : nil
         guard mlx_distributed_is_available(transport.backend) else {
             throw ProbeError("Requested \(transport.rawValue) backend is unavailable; no fallback is allowed")

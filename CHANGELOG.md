@@ -8,9 +8,574 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.17 — candidate (unpublished)
+## v0.10.18 — candidate (unpublished)
 
-Prepared on 2026-11-21; tagging and publication are separate steps.
+Prepared on 2026-11-24; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Bug fixes, performance and security posture improvements.
+- **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.17 updates itself. `darkbloom update --rollback` puts back 0.10.17. If you roll one Mac of a pair back to an earlier version and then forward again, `darkbloom cluster` may report that the saved pair approval differs. If it does, approve the pair again.
+- This provider includes native support for Inkling 2 Mini, serving a 524,288-token window (prompt plus output): a prompt of 524,288 tokens or more is refused as a context error (HTTP 400), and output is cut to what the prompt leaves. Catalog availability is a separate rollout.
+- Sampling at temperatures above 0 no longer occasionally picks a token the model rates as practically impossible. It mostly affected requests that sample from the full vocabulary (GPT-OSS by default; other models when a client sets `top_p` 1 and `top_k` 0).
+- **Turning a change off:** `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` (GLM-5.3-Flash refuses the tool-history and schema shapes it refused in 0.10.17); `DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` (a local GLM request that fits only once another loaded model gives back memory is refused at once, with 0.10.17's busy words); `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0` (images and video outside user messages are handled as in 0.10.17); `DARKBLOOM_MTP_STOP_STRING_ROWS=0` (Gemma 4 26B requests with stop strings decode without speculation, as in 0.10.17); `DARKBLOOM_MTP_PENALTY_ROWS=0` (Gemma 4 26B requests with a presence or frequency penalty decode without speculation, as in 0.10.17); `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` (Gemma 4 26B on M5 Ultra drafts two tokens with one or two requests decoding, as in 0.10.17); `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` (Gemma 4 26B prefix-cache checkpoints use 0.10.17's layout before the draft model attaches); `DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` (cluster commands wait a fixed 40 s for this Mac's leadership, as in 0.10.17); `DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` (`cluster stop --service` on a leading Mac whose partner doesn't answer refuses, as in 0.10.17); `DARKBLOOM_TTFT_SHAPE_WARMUP=0` (Inkling 2 Mini loads without warming its first prefill chunk and its decode and drafter shapes); `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0` (an Inkling 2 Mini tool call in a request that declares no tools is refused again instead of answered as text); `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS=0` (a slot keeps publishing its last decode rate however long it has been idle, as in 0.10.17); `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE=0` / `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` (Gemma 4 cache-hit restores decode their rows on one thread / stage pages on copied zeros, as in 0.10.17); `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` (Qwen 3.5, 3.6 and 3.8 image and video preparation shares the running requests' GPU stream, as in 0.10.17).
+
+### `darkbloom logs` keeps a single Mac's update steps
+
+- A single Mac's background update now writes one fixed public line for each step (available and staging, staged and draining, restarting, deferred, and each failure) at the level macOS unified logging keeps on disk, so `darkbloom logs --last 24h` still shows an update hours later.
+- Before this, the update's progress lines were private info lines, which unified logging keeps only in memory, so the log showed no update at all. Those lines stay as they were. A check that finds the Mac up to date adds no line.
+
+### Automatic serving width holds at thermal state fair
+
+- The automatic M5 paged width (8, no reviewed profile) now needs Low Power Mode
+  off and a thermal state of nominal or fair; serious and critical still return
+  the bridge to the unqualified width (4). A Mac Studio under sustained load sits
+  at fair, where the old nominal-only rule held it to 4 requests and kept the
+  others waiting for a free row. Reviewed performance profiles and
+  deadline profiles keep the nominal requirement.
+
+### Startup calibration no longer waits for the next capacity tick
+
+After the startup self-test, a native engine's stream could end before the
+engine released the request's hold on the Mac. Calibration starts only on an
+idle Mac, so the end of the startup preload sometimes found it busy and left
+calibration to the next capacity tick. The self-test now returns once the
+request is released (at most 2 s), so calibration starts right after the
+preload.
+
+### Provider CI: shorter last cluster jobs
+
+- Cluster Runtime Tests shard 6 runs the worker package's request lifecycle tests (`WorkerTests`, `WorkerLaneTests`) while it waits for the cluster build: it starts them in the background, in a debug build of their own outside the checkout, and waits for their result before its runtime tests, which run either way. Cluster Release Build Checks ran them after its release build, which made it the last job of run 44927907327 (14.5 min).
+- Cluster Runtime Tests shards 1, 4 and 5 ran 267 to 395 s, the other shards 169 to 243 s. `qwen-tp-aqv-gpu` moves from shard 1 to shard 7's GPU group (the GLM paged-KV selection moves from there to shard 3's), `base-gemma-runtime` from shard 4 to shard 1 after the share probe, `base-gemma-prefix` from shard 4 to shard 6, `base-qwen-tp-cpu` from shard 5 to shard 2 and the batch-session partition test from shard 5 to shard 7. Every runtime shard now plans under about 300 s.
+- Every planned test still runs exactly once, on the same lanes and job count.
+
+### CI: the unsharded SDK 27 qualification gets 45 minutes
+
+- The SDK 27 release preparation on a pull request runs the whole provider suite
+  serially on one Mac. Its test deadline moves from 30 to 45 minutes, inside the
+  job's 60-minute limit. The five release qualification shards keep 30 minutes.
+
+### Provider CI: the shard audit counts from xUnit and stdout, not the console
+
+- `scripts/provider-test-shards.py counts`, which records each provider shard selection's and each Prompt Parity run's executed tests for the shard audit, no longer reads the merged `swift test` console. A SwiftPM warning on stderr can land inside the `Test run with N tests` line, as it did for the nested-suite gate in run 44909219943, and the audit would then have failed a passing selection as "did not finish".
+- Swift Testing's count now comes from the run's xUnit report (`<name>-swift-testing.xml`, every test case, skipped ones included, as the console summary counted them), and XCTest's from SwiftPM's stdout alone. `scripts/run-provider-tests.sh` keeps SwiftPM's stderr out of the selection's log; it still reaches the job log and `slot-*.out`. Prompt Parity keeps its run's report and stdout through `NESTED_SUITE_REPORT=<prefix>` (`scripts/run-nested-suite.sh`).
+- The audit is unchanged: each selection must still execute exactly its plan, and a missing or unreadable report now fails the selection with an error annotation. Replayed on run 44914459288's artifacts, the new counts equal the console counts for all 13 selections.
+
+### Provider CI: the build-database test always has exactly one holder
+
+- `scripts/test-provider-test-shards.py`'s check that processes starting together without `--disable-build-manifest-caching` find the build database locked could fail at random: its stand-in for SwiftPM took the lock with SQLite's `BEGIN EXCLUSIVE` and no wait, which refuses every process when they start at the same moment (one peer's shared read blocks the others), so all three exited 1 instead of exactly two.
+- The stand-in now takes the lock with an exclusive create of `.build/build.db.holder`, so exactly one process holds it until all have tried. Test-only; the runner and SwiftPM's flags are unchanged.
+
+### Provider CI: wider provider and cluster runtime test fan-out
+
+- Provider Unit Tests runs in 5 shards instead of 4 (15 selections). The new shard reads lane `test-provider-5` (4x24). The shard holding `BootSecurityServeLoopTests` (170 s, never split) plans 170 s and every other shard 139 s, against 177 s each on 4 shards.
+- Cluster Runtime Tests runs in 7 shards instead of 5. Shards 6 and 7 share lane `test-cluster-2` (4x24, now a count of 4) with shards 2 and 3. `qwen-tp-mtp-gpu`, the batch GPU switch's prefix depth test, the GLM paged-KV selection, the SSD prefix tier test and two batch-session history tests move to the new shards. Each runs in a process of its own, the two history tests together. On 5 shards, shards 2 and 3 ran 439 to 571 s on Darkbloom.
+- Provider Gates fetches the MiMo audio codec before the provider products download, while the build runs. After the products, that fetch took 21 to 137 s.
+- Every planned test still runs exactly once. A full run asks for 21 macOS jobs instead of 18.
+
+### The logs now show where a re-formed pair spends its time before its first call
+
+- Each cluster worker writes one `darkbloom-owner-phases-v1` line once it is ready: how long each step of its start took after its start-up hardening (configuration, lease, credentials, orphan-memory check, JACCL bootstrap, model load, readiness), and inside the load the JACCL group, the data-plane keying with the other Mac, the link probe, the model file check, the weight reads, the copies into GPU memory and the GPU waits. It names the session's epoch and generation, the rank, the model, the mode and the stage cut.
+- The worker's `darkbloom-load-memory-v1` lines carry the same durations as new `phase_*_ms` fields after their own. A load that fails shows how far it got.
+- Each pair member logs one `darkbloom-pair-owner-timeline-v1` line per session: from the cancel of the previous session and the stop of its owner to the new prepare, the prepare, the commit, the owner's launch and the worker's first readiness. A `darkbloom-pair-session-heartbeat-v1` line follows each heartbeat a change of the session's report sends.
+- All durations come from the uptime clock. The lines change no behaviour and carry no key, credential or request.
+
+### `cluster stop --service`: a leading Mac the other Mac doesn't answer stops its own service
+
+- On a leading Mac whose cluster service restarted, a command that acts as the leader first waits for the service to confirm that this Mac leads. The wait was a fixed 40 s. It now also covers the confirmation window the service publishes, up to 80 s.
+- When that wait still ends unconfirmed and the service says the other Mac doesn't answer, `darkbloom cluster stop --service` stops this Mac's cluster service alone, as `--local-only` does, says that the pair wasn't stopped from here, and exits 0. Before this it refused and left this Mac's service running (seen on a DevNet pair whose leading Mac's service had restarted while its disk was full, the other Mac's service off). While the other Mac answers, the stop still refuses, as before.
+- `DARKBLOOM_CLUSTER_LEADERSHIP_WINDOW_WAIT=0` keeps the fixed wait, and `DARKBLOOM_CLUSTER_STOP_ALONE_UNCONFIRMED=0` restores the refusal.
+
+### A short reply no longer moves the deadline decode rate once a longer one has
+
+Deadline admission's decode rate now follows the published rate's rule once a
+request that generated at least 32 tokens (or a calibration cell) has moved it:
+from then on a shorter request leaves it unchanged. Until then, on a new slot
+or after the decode evidence expired, every completed request moves it as
+before, so a slot that serves only short replies keeps a rate that follows them
+and is priced for deadline requests as before. The heartbeat's
+`observed_decode_tps`, the rate's age and `performance_measurements` are
+unchanged.
+
+### The heartbeat says how old the published decode rate is
+
+Each slot's heartbeat now carries `observed_decode_tps_age_ms` beside
+`observed_decode_tps`: the milliseconds since the newest sample that moved the
+published rate (a reply of at least 32 tokens, or a calibration cell). Short
+replies don't reset it. It is sent only with a published rate. The rate itself
+and every provider decision are unchanged; the coordinator can use the age to
+decay a stale rate toward the fleet median once it reads the field.
+
+### Idle Macs stop advertising a stale decode rate
+
+An idle slot no longer publishes a decode rate measured more than 30 minutes
+ago. The rate is a per-request EWMA measured at whatever batch the slot ran, and
+it restarted only on a new sample, so a Mac that went idle after serving
+several requests at once kept advertising its stacked rate. Routing ranked it
+behind faster Macs and sent it nothing, so no new sample ever arrived. The
+heartbeat now omits `observed_decode_tps` once nothing has run or waited on the
+slot since its newest decode sample aged past the limit, and the coordinator
+prices the Mac from its profile or the fleet, as it does after a reload.
+`DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` sets the limit in seconds; `0`
+restores 0.10.17's behaviour. The LaunchAgent forwards it.
+
+### Doctor: a pair set up before this Mac updated is a warning
+
+- A pair that was stopped while its Macs updated keeps a saved setup that names the previous release's cluster worker until its next start sets it up again. `darkbloom doctor` reported that as `FAIL cluster localInstalledMetadata: Installed input identity or SHA-256 differs`.
+- It is now a WARN that names the release, when the pinned worker is the one in the kept rollback copy and every other pinned file verifies. Anything else that differs stays a failure. `darkbloom cluster doctor` reports it as `warning` and exits 0.
+- A pair left stopped across more than one update pins an older worker than the kept copy. It is a WARN too when the setup names this Darkbloom's own worker, signed with the same certificate, and every other pinned file verifies; the line then names no release. A worker that isn't signed so (foreign or changed), a setup naming another worker, or a build without the Developer ID, stay a failure.
+
+### Faster Gemma 4 cache hits
+
+- Every Gemma 4 cache hit restores its complete prefix checkpoint from the SSD before the request starts. Gemma 4 stores most of its attention layers in the balanced (coded) checkpoint profile, and the restore decoded those rows on one thread and staged them in pages that were filled with zeros twice before the restore wrote them. The SDK now decodes the coded rows on several cores (at most eight, at most half the active cores) straight into their pages, and stages the pages on zero-fill-on-demand memory, as the serving pool already does. The restored bytes are the same, so outputs do not change.
+- `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE=0`, which already keeps the restore's reads sequential, now also keeps the row decode on one thread. `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` keeps staged pages on copied zeros.
+
+### Gemma 4 26B: the same checkpoint encoding before the assistant attaches
+
+- A Gemma 4 26B QAT provider that starts without its MTP assistant (the
+  assistant or the catalog metadata isn't ready yet, or memory admission
+  skipped it) now keeps the assistant's two access layers native in its
+  prefix-cache checkpoints, as a provider with the assistant attached does, so
+  a checkpoint hit restores those two layers exactly in either case.
+- `mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` keeps the previous target-only
+  layout.
+
+### Gemma 4 26B: on M5 Ultra, two draft tokens only while one request decodes
+
+- On M5 Ultra, Gemma 4 26B QAT now drafts two tokens per speculative round only
+  while one request decodes, as on M5 Max and M3 Ultra. With two or more
+  requests decoding it runs ordinary decode without speculation.
+- `DARKBLOOM_GEMMA_MTP_M5_ULTRA_LONE_ROW=0` (or `off`, `false`, `no`) restores
+  the earlier M5 Ultra behaviour, two draft tokens with one or two requests
+  decoding; the LaunchAgent forwards it. `DARKBLOOM_GEMMA_MTP_TWO_DRAFTS=0` still
+  restores the one-draft policy on every chip.
+
+### Gemma 4 26B: speculative decoding for requests with stop strings or penalties
+
+- Gemma 4 26B QAT requests that send `stop` strings, a presence penalty or a
+  frequency penalty now use the model's speculative decoding head under the
+  same policy as other requests. Drafts for penalty rows are kept only where
+  they match the target's own sample with the penalty applied (exact
+  acceptance), and a row with `stop` strings ends at the first match exactly as
+  without speculation.
+- `DARKBLOOM_MTP_STOP_STRING_ROWS=0` and `DARKBLOOM_MTP_PENALTY_ROWS=0` (or
+  `off`, `false`, `no`) keep such rows target-only; the LaunchAgent forwards
+  both.
+
+### Gemma 4 26B: a switch for the checkpoint layout before the assistant attaches
+
+- `DARKBLOOM_GEMMA_NATIVE_ROWS_BEFORE_ASSISTANT=0` (or `off`, `false`, `no`)
+  restores the earlier prefix-cache checkpoint layout of Gemma 4 26B QAT: the
+  assistant's two access layers stay native only while the MTP assistant is
+  attached. MTP stays on; the LaunchAgent forwards it.
+
+### Gemma 4 prompts keep the tool-schema node budget
+
+- A request whose tool schemas have more than 100,000 nodes is decoded as
+  sent, without the default-type repair. On Gemma 4 the prompt step repaired
+  the same schemas again with no limit, turning each empty schema in a large
+  `anyOf` into a new map. It now shares one 100,000-node budget across the
+  request's tools and leaves a schema past it as sent. Tool schemas within the
+  budget are repaired as before.
+
+### Gemma 4 tool parameters typed as a string-first union render their typed member
+
+A tool parameter declared as a union of `string` and one other scalar type,
+for example `{"type": ["string", "integer"]}` or an `anyOf` / `oneOf` of the
+two, was shown to Gemma 4 as `STRING`: its template prints a single type and
+never the union, and the schema repair picked the first member. Gemma then
+quoted typed values (`"-4200"` for `-4200`). Gemma 4 now sees the other member
+(`INTEGER`, `NUMBER` or `BOOLEAN`); a `null` member still renders as
+`nullable`. The union itself stays in the request, so validation accepts both
+members as before. Unions with more members, other types or an `enum` keep
+`STRING`, and other model families are unchanged.
+
+A Gemma 4 tool parameter declared without any type (`{}`, any value) was also
+shown as `STRING`, the type the schema repair fills in, so Gemma quoted its
+values. Gemma 4 now sees it untyped (`type:<|"|><|"|>`), as the template
+renders a typeless property; this reads the caller's declarations as sent.
+
+The prompt contract stays `darkbloom-request-normalization-v9`, which still
+renders `STRING`, so a coordinator request whose Gemma tool declaration either
+change affects is served without the prompt cache, like requests whose tool-call
+history carries a null. `darkbloom logs` notes each such request and the
+daemon state counts them (`promptCacheSkippedToolUnionType`).
+
+### GLM-5.3-Flash: history tool calls and tool schemas that vLLM and the OpenAI API accept are served
+
+- GLM-5.3-Flash refused a conversation with `invalid request` when an earlier
+  tool call's arguments repeated a key, held a number no JSON value holds
+  exactly (an integer outside the signed 64-bit range, a decimal with more than 17 significant
+  digits), or contained GLM tool-call markers as text. It refused a tool schema
+  with such a number too, for example a 64-bit unsigned bound or a float64
+  maximum. vLLM's GLM-5.3 serving and the OpenAI API accept all of these. Long
+  tool-using conversations collected them, and every later turn of the
+  conversation was then refused.
+- These are now served:
+  - a repeated key keeps its last value;
+  - such a number is read as a JSON value holds it, so an integer outside the signed 64-bit
+    range becomes its nearest double;
+  - the markers are text.
+- Arguments that are not one JSON object, and broken call and result pairing,
+  are still refused.
+- Requests that were already accepted render byte-identically.
+- `DARKBLOOM_GLM_REFERENCE_TOOL_HISTORY=0` restores refusing them.
+
+### GLM requests can wait for memory another model holds
+
+When another model shares the Mac, a local GLM request that would fit with
+GLM alone waits for its share of memory to grow. The provider checks the
+actual grant again before starting it. If the wait expires, it returns
+HTTP 503 with `Retry-After: 10`. A request that cannot fit even with GLM
+alone still gets the immediate memory refusal.
+
+The busy 503 now reads "This Mac is at capacity. Retry when more memory is
+available.", since another loaded model may hold the memory.
+`DARKBLOOM_GLM_SHARED_GRANT_WAIT=0` restores 0.10.17's behaviour and busy
+words; the LaunchAgent forwards it.
+
+### GPT-OSS tool parameters render as declared
+
+GPT-OSS's Harmony template prints a tool parameter's `type` list as a union
+(`string | integer`), a `oneOf` as the union of its members and a parameter
+without a type as `any`. The schema repair that runs before every template
+gave each such parameter one type, the first member's or `string`, so GPT-OSS
+was told `string` for numbers, booleans, objects and `{}` and wrote strings,
+or reasoned at length about the mismatch. GPT-OSS now renders each tool from
+the request's own declaration and keeps the repair's type only where the
+declaration states one type (an `Optional` field, an `enum`, an object or an
+array). Other model families are unchanged, and a request whose tools arrive
+already repaired renders exactly as before.
+
+The prompt contract stays `darkbloom-request-normalization-v9`, which renders
+the repaired types, so a coordinator request whose GPT-OSS tool render this
+changes is served without the prompt cache, like requests whose tool-call
+history carries a null. `darkbloom logs` notes each such request and the
+daemon state counts them (`promptCacheSkippedToolRawSchema`).
+
+The template utility (`/tokenize`) renders a body's tools as that body
+declares them, for GPT-OSS and for Gemma 4's untyped properties. It therefore
+shows the render of the caller's own declarations: a coordinator request
+renders the same only once the coordinator forwards the caller's declarations
+rather than the repaired ones.
+
+### Inkling 2 Mini returns a call it writes as an answer message
+
+- Inkling 2 Mini sometimes opens a text message where a tool call's header
+  belongs (`<|content_text|>NAME<|content_invoke_tool_json|>{...}`). That call
+  was returned as answer text, so the request had no call, or one call fewer
+  in a parallel response. For a request that declares tools, such a message
+  is now read as the call, with NAME held to the body's name as a header is.
+- For those requests, the first characters of an answer that could still be a
+  function name (up to 64 letters, digits, `_` or `-`) reach a streaming client
+  together with the text that follows them.
+
+### Inkling 2 Mini accepts drafts exactly by default
+
+Inkling 2 Mini's DSpark drafter now uses exact acceptance unless
+`mtp_acceptance` or `mtp_acceptance_by_model` says otherwise. A draft is kept
+only when it equals the token the model itself samples, so sampled requests
+keep the model's own output distribution. Before, Inkling used typical
+acceptance, which keeps the drafter's greedy proposals far more often than
+sampling would. On OpenRouter's GPQA request shape at temperature 0.5, none of
+8 drafter-on samples reached an answer (they repeated until the 32,768-token
+output cap or the loop guard), while all 4 drafter-off samples of the same
+questions answered correctly. Greedy requests are unchanged. Setting
+`mtp_acceptance = "typical"` restores the previous rule.
+
+### Inkling 2 Mini answers with text when it writes a header-only message
+
+- An Inkling 2 Mini request that declares no tools, but whose system message describes a tool in text, could make the model answer with a message header and no content (for example `get_weather(city: Paris)` as the header). That text was dropped, so the client got an empty answer.
+- The header's text is now the answer, and client stop strings apply to it. Requests that declare tools, and `none`, `required` or named tool choices, are unchanged.
+- `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0` restores the empty answer.
+
+### Inkling 2 Mini drafts on penalty and stop-string requests
+
+Inkling 2 Mini's DSpark drafter now also drafts for requests with a presence
+or frequency penalty or with `stop` strings, as the catalog Qwen 3.5/3.6
+builds and Gemma 4 26B QAT already do. Before, such requests decoded without
+the drafter. Each draft position is scored with the request's penalties over
+its confirmed output plus the earlier drafts, and penalty rows accept exactly.
+A stop string ends the row at its first match, through the same answer-channel
+stop scope as ordinary decoding. A repetition penalty, logprobs, `logit_bias`
+or a constraint still keeps a request on the drafter-off path.
+`DARKBLOOM_MTP_PENALTY_ROWS=0` and `DARKBLOOM_MTP_STOP_STRING_ROWS=0` turn the
+new rows off again.
+
+### Inkling 2 Mini answers instead of failing when it writes a tool call nobody declared
+
+- An Inkling 2 Mini request that declares no tools, but whose conversation describes a tool in text, could make the model write a native tool call anyway. The request then failed: a 422 when the call parsed, or a 500 when it did not, and a streaming client saw an error after the response had started.
+- Such a call is now answer text: the client gets its JSON body as content, with no `tool_calls`, and client stop strings apply to it. Requests that declare tools, and `required`, named or `none` tool choices, are unchanged.
+- `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0` restores the refusal.
+
+### Inkling 2 Mini accepts up to 64 images per request
+
+- A request to `thinkingmachines/Inkling-2-Mini` may carry up to 64 images
+  (was 16, the default for models without their own cap). The per-image 100 MP
+  and per-request 384 MP pixel caps still apply and bound its visual tokens;
+  a 65th image is refused as oversized media (HTTP 400).
+  `DARKBLOOM_MAX_IMAGES_PER_REQUEST` still sets one cap for every model.
+
+### Inkling 2 Mini serves long prompts
+
+- Every Inkling 2 Mini request whose prompt plus `max_tokens` passed 41,432 tokens failed at once with HTTP 500 ("Inference generation failed"; streamed, a 200 then an error chunk). The DSpark drafter's per-request pool was granted less than the paged pool's segments charge.
+- The SDK now grants that pool what its segments charge, so Inkling 2 Mini serves long prompts.
+- Inkling 2 Mini serves a 524,288-token window (prompt plus output), half its checkpoint's 1,048,576: the largest window measured with the drafter on. An output that would pass it is cut to what the prompt leaves, and a prompt of 524,288 tokens or more is refused as a context error (HTTP 400 `context_length_exceeded`) before any memory is allocated for it. `/v1/models` reports 524,288.
+- A paged pool that still cannot be reserved is refused as retryable capacity (HTTP 503) instead of an untyped 500.
+
+### Inkling 2 Mini: provider prompt and output contract
+
+- The provider reads Thinking Machines' Inkling 2 Mini (`inkling2_loop`) from its own configuration: its looped
+  cache layout (48 cache slots per sequence, 8 full-attention and 40 sliding-window), still-image input without
+  video, and its separate DSpark drafter file (`mtp.safetensors`) as the checkpoint's inline assistant. The native
+  text model and its vision wrapper serve on paged KV only; images enter as causal tokens, video is refused.
+- Its template renders with the Transformers-compatible `tojson` filter, which its tool declarations and tool-call
+  history require. Tool declarations and earlier tool calls' arguments render as the client sent them (`null`s
+  kept, no inferred schema types, argument member order kept), and a message's list of text parts renders part by
+  part, as the model's reference renders them, on every request. An image in a tool result is read in its place,
+  as the reference reads it. An image in an assistant or system message is refused before decode with HTTP 400
+  `invalid_request` and refusal `media_role_not_rendered` by default, or `invalid_media` with
+  `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0`. A `developer` message is still read as `system`.
+  The template self-check no longer renders a video part for a model that takes no video.
+- Reasoning effort: each of the seven names reaches the template as its own level (`none` 0 through `xhigh` and
+  `max` 0.99). Turning thinking off renders effort 0, and whatever the model still thinks is counted but not
+  returned. The shared `reasoning_effort_vectors.json` gains the family's cases.
+- Its output is read by its own message tokens: reasoning, answer text and one JSON call per call message. A call
+  drafted inside a thought stays reasoning, markers inside argument strings are data, nesting and sizes are bounded,
+  and a malformed call is refused. Required and named tool choices are prompt-forced and each call is checked before
+  it leaves; to a client that streams, each call leaves when its message closes.
+- The reasoning-loop guard covers Inkling 2 as it does the other served families: a reply repeating verbatim ends
+  as `length`, and a call message turns the guard off. Its exit from a repeating thought is in place but stays off
+  until measured (`DARKBLOOM_LOOP_EXIT_THINKING=inkling2_loop` turns it on).
+- The DSpark drafter serves by default (up to 7 drafts and 8 speculating rows, adaptive depth); image rows run without
+  it. Before serving, every draft depth also runs once on a private engine with its own scratch memory, so a first
+  request no longer compiles verify widths mid-stream.
+- Loading Inkling 2 warms its first full prefill chunk and its decode and drafter shapes before it serves, so the
+  first request no longer pays the first-chunk cost (`DARKBLOOM_TTFT_SHAPE_WARMUP=0` turns it off).
+- Another role's turn marker stops generation. The upstream model id serves on paged KV with the prefix cache on
+  by default.
+- Follow-up turns reuse their prefix: complete checkpoints of Inkling 2 carry every cache slot (full-attention
+  history, sliding windows, convolution and recurrent state, and the drafter's history when it drafts), on whole
+  2,048-token prefill chunks, in the same encrypted store with the same cache identity and tenant scoping as every
+  other model. Before, its loads reported the prefix cache disabled (`unsupported_layout`).
+- Inkling 2 prefills in 2,048-token chunks with no solo stripe. Under the generic 512-token chunk and 2,048-token
+  solo stripe, the engine's fixed prefill grid refused every prefix checkpoint, so follow-up turns reused nothing.
+- After its load warm-up, Inkling 2 resets the MTP depth policy's measured step costs (`EngineV2.resetMTPCostLearning`),
+  so the first served request measures them. The warm-up's cold first steps had made every draft round look free,
+  so the policy drafted at its maximum depth. Tokens are unchanged.
+- Inkling 2's MTP picks each row's draft depth from the measured cost of each window depth (mlx-swift-lm snapshot 2.13).
+  Tokens are unchanged.
+
+### Local streamed response stops at once when its write ends
+
+- When the write of a streamed local response ends early (a cancelled task or
+  a closed connection while a frame is written), the prefill progress timer and
+  the task that reads the engine's frames now stop at once. Before, they ran
+  until the server freed the response.
+
+### Images in system, assistant and tool messages
+
+- On one Mac (Gemma 4, Qwen 3.5–3.8, GLM-5.3-Flash) and on GLM tensor-parallel pairs, an image or video in a system, assistant or tool message is now kept and placed where the model's chat template places it, as vLLM does. Before, a request whose only image sat in one of those messages was refused with 400 "Invalid media input.", and beside a user image the other images were dropped, so the model answered without seeing them.
+- Where the template itself refuses the image or has no place for it (Qwen 3.5–3.8 refuse a system-message image; Gemma 4 renders only the text of its first system message and of tool results), the request fails with a clear 400, refusal reason `media_role_not_rendered`, the same request vLLM refuses.
+- Requests whose images are only in user messages are built exactly as before. `DARKBLOOM_MEDIA_ON_EVERY_ROLE=0` restores the old behaviour. Qwen pairs and the GLM still-image pair profile still refuse media outside user messages, Diffusion Gemma still refuses system and assistant media, and Nemotron Super already rendered every role.
+
+### A pair member reports itself as soon as the coordinator accepts it
+
+- A cluster pair member now sends its first heartbeat on each connection as
+  soon as the coordinator accepts its registration, instead of one heartbeat
+  interval later. The coordinator routes requests to a pair only after each
+  member's heartbeat reports its session, so a pair that reconnects (for
+  example after a coordinator edge restart) can take requests again about one
+  interval sooner. Later heartbeats keep the normal interval.
+- A pair member whose heartbeat fails to encode now sends nothing instead of
+  the minimal fallback heartbeat, which had no capacity sequence and no
+  session report and so withdrew the member's session at the coordinator.
+  Its next heartbeat reports the full state. Every heartbeat now leaves in
+  capacity-sequence order.
+
+### Sampled MiMo V2.6 requests now leave prefix checkpoints
+
+- A MiMo request that cannot speculate recorded no MTP prompt history, so it
+  wrote no complete-prefix checkpoint. That covers every sampled request
+  (temperature above 0, the catalog default) and greedy requests with a `stop`
+  string or a penalty. Repeats and later turns of such conversations prefilled
+  from scratch unless a speculating greedy request had left a checkpoint. The
+  SDK's MiMo head now records that history, as the Qwen 3.5, Nemotron Super
+  and Qwen4 heads already do, so these requests write the same checkpoints a
+  speculating request writes.
+- Answers are unchanged: text was identical with and without the change in
+  every seeded and greedy case checked. Measured with the same SDK change on
+  0.10.17 in local mode (M5 Ultra, full model), a sampled repeat of a
+  ~9.8K-token prompt reused 8,192 tokens (1.9 s instead of 6.4 s), a greedy
+  repeat with a `stop` string took 2.0 s instead of 6.4 s, and a 19.7K-token
+  sampled repeat's time to first token fell from 14.1 s to 1.4 s. An uncached
+  sampled prompt took 0.4–4 % longer.
+- Media requests are unchanged and still record nothing.
+
+### Every drafting model accepts drafts exactly by default
+
+Without an `mtp_acceptance` setting, every model now uses exact draft
+acceptance: a draft is kept only when it equals the token the model itself
+samples, so sampled requests keep the model's own output distribution. Before,
+only a list of builds was exact and the rest used typical acceptance. Typical
+acceptance looped sampled answers on every family measured with it (Qwen 3.5
+9B, Gemma 4 26B QAT, Inkling 2 Mini). Served families whose sampled requests
+change: GLM-5.3-Flash and Qwen 4 where served. Nemotron does not draft by
+default, native MiMo was already exact, and greedy requests are unchanged
+under either rule. `mtp_acceptance = "typical"`, globally or per model in
+`mtp_acceptance_by_model`, still selects typical acceptance.
+
+### Nemotron 3.5 Lightning no longer repeats parallel tool calls
+
+- With reasoning on, Lightning sometimes closes its thought early to sketch the
+  calls it plans, keeps reasoning, closes the thought a second time and then
+  writes the real calls. The sketched calls were returned as well, so a
+  request for two parallel calls got four. Tool calls written before that
+  second close now stay in the reasoning, and only the final calls are
+  returned.
+- When reasoning is on, Lightning's tool calls (and any text after them) now
+  reach a streaming client when generation ends, not while they are written.
+
+### Nemotron 3.5 MTP serves long prompts
+
+- With MTP on, a Nemotron 3.5 Lightning request whose prompt plus `max_tokens` reached about 166,000 tokens could fail at once: the MTP assistant's per-request paged pool was granted less than the paged pool's segments charge. The SDK now grants that pool what its segments charge, as it does for Inkling 2 Mini's drafter.
+- A pool that still cannot be reserved is refused as retryable capacity (HTTP 503), not as an untyped 500.
+
+### A new slot prices deadline requests from the requests it is decoding
+
+Before its first completed request, a slot refused every request with a
+first-content deadline that arrived while another request was decoding: it had
+no decode rate (`decode_rate_unavailable`). It now prices that decode work at
+the slowest delivered cadence among the requests decoding on it, once one has
+8 tokens after its first, charged per row, and admits the request only if the
+projection meets the deadline. With no such request, or with
+`DARKBLOOM_TTFT_ADMISSION_FIXES=0`, it refuses as before. The
+heartbeat's `observed_decode_tps` and `performance_measurements` are
+unchanged.
+
+### A refused pair approval says which pin differs
+
+When a Mac refuses a cluster approval because its saved setup no longer
+matches, `darkbloom cluster` now names each pin that differs (model, Plan,
+artifact, runtime, capability, profile or schedule), with the approval's and the
+setup's values. Before, it said only "Saved pair approval differs from the
+model, runtime, Plan, profile or schedule". The leader keeps the refused
+approval in its setup record (`approvalRefused`) beside the note, so it can be
+compared with the next one. The other Mac clears a refusal note it recorded
+while it led once it saves the leader's approval, so its status no longer shows
+an old refusal after the pair is approved again.
+
+### Guided cluster setup: the wait for this Mac's leadership is said
+
+- Before the leading Mac reads both Macs, starts or stops the pair, it waits up to 40 s for its cluster service to confirm that it leads (the claim's 30 s window and 10 s more). Right after both services restarted, the guided setup's "Reading both Macs over the cable" stood still that long with no reason.
+- While it reads both Macs, the screen now says the wait when it begins (once per wait): "Waiting for this Mac's cluster service to confirm it leads the pair: it hasn't heard from the other Mac yet (at most 40 s)". A confirmed claim waits for nothing and says nothing. The wait itself is unchanged.
+
+### Prompt preparation counts against the serving width
+
+- A text request now holds its share of the whole-Mac serving allowance from
+  before its prompt is rendered and tokenized, not only from submission. A full
+  Mac refuses a request as capacity before preparing its prompt, and prompts
+  being prepared at the same time count against the serving width. The share
+  becomes the request's serving allowance at submission, so an admitted
+  request cannot lose its place between preparation and submission. The
+  owner's local requests still wait for room at submission.
+
+### A short reply no longer moves a Mac's published decode rate
+
+The decode rate a slot publishes (`observed_decode_tps`) now moves only on a
+request that generated at least 32 tokens, matching the coordinator's own
+`completion_tokens >= 32` convention. A shorter request's rate is mostly its
+first steps or its tail: one short reply could pull a Mac's published rate far
+below what it measured, and routing then ranked it behind slower Macs. Shorter
+requests still feed the rate's age and `performance_measurements` exactly as
+before, so the idle age is unchanged. A slot that has served only short replies
+publishes no decode rate, as a slot with no samples does, and the coordinator
+prices it from its profile or the fleet.
+
+### Qwen 3.5-family image preparation no longer queues on the running requests' GPU stream
+
+- An image or video request on Qwen 3.5, 3.6 or 3.8 runs its processor and
+  vision tower on a GPU stream of its own. Before, it shared the stream the
+  running requests' decode steps use, whose command buffers run in submission
+  order, so its tower queued behind their steps and their steps behind the
+  tower.
+- The kernels and inputs are unchanged, so the embeddings and outputs are
+  identical: over 84 fresh starts on M5 Ultra and M5 Max, for the same pixel
+  input the tower-output hashes were identical with the option on and off,
+  first use included. Other model families keep the shared stream.
+- `DARKBLOOM_TTFT_MEDIA_PREP_STREAM=0` (or `false`, `no`, `off`) restores the
+  shared stream; it is forwarded to the launchd provider job.
+
+### Provider release: every packaged executable keeps mode 0755
+
+- Unsigned staging gives the CLI, the enclave and fan helpers and both cluster helpers mode `0755`, whatever mode the build left. A build under `umask 077` left the CLI, enclave and fan helper `0700`, and the installer and the final release check refuse a fan helper whose mode is not `0755`.
+- Unpack refuses an unsigned app in which one of them, or any other Mach-O file in the app, has another mode. The signing job copies the app with `cp -pR`, so its own umask no longer changes the modes, and checks them again before its smoke and signing.
+- The executables' bytes, signatures and runtime behavior are unchanged.
+
+### Sampled output no longer picks tokens of almost no probability
+
+- At a temperature above 0, the sampler could pick a token the model gives
+  almost no probability (below 10⁻¹⁰), seen as a stray word or a fragment of
+  another script mid-sentence. A Float32 rounding error, in turning the
+  sampler's random draw into noise, caused it for every model served with
+  continuous batching; GPT-OSS 20B, with its large vocabulary, showed it most.
+- Sampled output for a request with a fixed `seed` can differ from earlier
+  releases. Temperature 0 output does not change.
+
+### A second Ctrl-C stops the provider at once
+
+Ctrl-C (or `SIGTERM`) starts the provider's drain, which waits for running
+requests, up to 10 minutes by default. A second Ctrl-C during that drain now
+ends the process at once, with status 130, and says it didn't finish the
+drain. Before, a second Ctrl-C did nothing. A second `SIGTERM` or `SIGHUP`
+still only joins the drain, because the cluster supervisor and launchd may
+send `SIGTERM` more than once.
+
+### Tool-call arguments read JSON literals under combinator schemas
+
+- A tool-call argument whose schema has no single non-string type (`not`, `if`/`then`/`else`, a union that admits a string, or no type) now reads a value written as a JSON literal, such as `-2500`, as that literal when the schema admits it and rejects the text as a string. Before, such values stayed strings and failed the schema. Values the check cannot decide keep their text.
+- For a tool parameter with no declared type (an empty or annotation-only schema), a value written as a number, or as `true`, `false` or `null` (in any letter case, or `None`), is now read as that JSON value instead of a string.
+- The same holds for a parameter whose type admits both a string and that value's type, such as an optional string (`["string", "null"]`): a value written `null` is read as `null`, not as the text `"null"`. These readings apply to models whose tool calls write each argument as plain text (Qwen 3.5 to 3.8, Nemotron 3.5); arguments written as quoted JSON strings are unchanged.
+- A number that neither an integer nor a double holds exactly, such as `12345678901234567890`, keeps its digits as a string instead of becoming a rounded number.
+- For a tool parameter with no declared type, a value written as a complete JSON object or array is now read as that object or array instead of a string. Any other text keeps its spelling.
+
+### Tool-call arguments under `{}`, `true` and `false` parameter schemas read as untyped
+
+- The coordinator forwards a parameter schema of `{}`, `true` or `false` as a
+  string with a render marker. The provider's strict check already read the
+  marker; argument reading now does too, so such a parameter (or an array's
+  items) is read as untyped, or as admitting nothing, rather than as a
+  declared string.
+- `DARKBLOOM_LOCAL_ALLOW_TOOL_SCHEMA_METADATA=1` is a testing switch that lets
+  the local API (`darkbloom start --local`) accept tool schemas with that
+  marker, as the coordinator forwards them. Off by default; a warning is
+  logged when it is on.
+
+### An earlier tool call's null arguments reach the model as null
+
+A JSON `null` in an earlier assistant tool call's arguments (for example
+`{"deadline": null}`) was dropped before the chat template rendered, because
+the template engine cannot take a null value. The model was shown a different
+call, such as Gemma 4's `call:clear_project_deadline{}`, and asked to repeat it
+returned the wrong arguments: a missing required property, or a refusal when
+the tool was strict. These nulls now render as `null` at the key or array
+position the call had them: Gemma 4's argument macro and the Qwen 3.5 and
+Nemotron 3.5 Lightning parameter value gain a `null` branch, and the templates
+that write arguments as JSON (Qwen 3.6, Qwen 3.8, GPT-OSS, Inkling 2) print it
+as they already did. GLM-5.3, MiMo, Flint and Nemotron 3.5 Super already kept
+these nulls and render as before. Nulls elsewhere in a message and in tool
+parameter schemas are still omitted.
+
+The prompt contract stays `darkbloom-request-normalization-v9`, which still
+renders these calls without their nulls, so a coordinator request whose
+tool-call history carries such a null is served without the prompt cache: no
+cache lookup, receipt or checkpoint write, and no cached-token usage. Every
+other request is unchanged. `darkbloom logs` notes each such request, and the
+daemon state counts them (`promptCacheSkippedToolCallNull`).
+
+## v0.10.17
+
+Published 2026-11-21 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.17)).
 
 ### Upgrade and rollout notes
 

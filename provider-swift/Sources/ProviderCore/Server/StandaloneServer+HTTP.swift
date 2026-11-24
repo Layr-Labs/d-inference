@@ -330,9 +330,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
 /// model (Hermes Agent reported a 19K-token conversation "too large" for a 256K
 /// window while another of its requests held a pair's memory, 2026-11-17).
 enum LocalMemoryRefusal {
-    /// Requests already running hold the memory: retry when they finish.
-    static let busy = "This Mac is at capacity: requests already running are using the memory this request needs. "
-        + "Retry in a moment, when they finish."
+    /// The memory is held, by running requests or by another loaded model: retry later. With the GLM shared-grant
+    /// wait off, 0.10.17's words, which name only running requests.
+    static let busy = busy(waitsForSharedGrant: OwnerMemoryWait.waitsForSharedGrant())
+    static func busy(waitsForSharedGrant: Bool) -> String {
+        waitsForSharedGrant ? "This Mac is at capacity. Retry when more memory is available."
+            : "This Mac is at capacity: requests already running are using the memory this request needs. "
+                + "Retry in a moment, when they finish."
+    }
     /// The request reached its overall deadline before it finished (`LocalDeadlineOutcome`): busy, retry later.
     static let deadline = "This Mac is busy: the request reached its time limit before it finished. "
         + "Retry in a moment."

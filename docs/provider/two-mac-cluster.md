@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-22
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1236,8 +1236,9 @@ alone receives HTTP 503 before any streamed byte, and other requests keep
 running. On the local API, a request that would fit while the requests already
 running hold the memory first waits for them, in arrival order, for up to 120 s
 (`DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS`; `0` refuses at once), then gets one
-Mac's busy words with `Retry-After`: "This Mac is at capacity: requests already
-running are using the memory this request needs ..."; only a request longer
+Mac's busy words with `Retry-After`: "This Mac is at capacity. Retry when more
+memory is available." (0.10.17's words with `DARKBLOOM_GLM_SHARED_GRANT_WAIT=0`);
+only a request longer
 than the context both Macs' memory holds with nothing running is refused at
 once in words that ask for a smaller request
 ([refused request shapes](./direct-mode.md#refused-request-shapes)). In every

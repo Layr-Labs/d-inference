@@ -68,8 +68,8 @@ extension MediaIngest {
     }
 
     /// The processor caps for `request`'s clips: its model's frame cap, and its
-    /// token budget shared by the video parts of user messages (the media
-    /// `buildUserInput` keeps). Nil without a budget: the processor keeps its
+    /// token budget shared by the video parts `buildUserInput` keeps
+    /// (`messagesKeepingMedia`). Nil without a budget: the processor keeps its
     /// defaults.
     static func videoProcessing(
         for request: OpenAIChatCompletionRequest,
@@ -79,7 +79,7 @@ extension MediaIngest {
             return nil
         }
         var videoCount = 0
-        for message in request.messages where message.role == .user {
+        for message in messagesKeepingMedia(of: request) {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
                 if case .videoURL = part { videoCount += 1 }

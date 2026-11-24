@@ -23,7 +23,7 @@ struct TensorDescriptor {
         func copy(_ destination: UnsafeMutableRawBufferPointer, _ offset: Int) throws {
             try merge(try file.read(into: destination, offset: offset))
         }
-        try data.withUnsafeMutableBytes { destination in
+        try ClusterLoadPhaseClock.time(.weightRead) { () throws -> Void in try data.withUnsafeMutableBytes { destination in
             switch selection {
             case .all: try copy(destination, offset)
             case .axis(let axis, let ranges):
@@ -52,9 +52,10 @@ struct TensorDescriptor {
                 }
                 guard written == selectedBytes else { throw ProbeError("Tensor copy byte accounting failed") }
             }
-        }
+        } }
         // This initializer copies bytes into MLX-owned storage; neither source file nor Data is retained.
-        return (MLXArray(data, resultShape, dtype: dtype), selectedBytes, accounting)
+        let array = ClusterLoadPhaseClock.time(.weightCopy) { MLXArray(data, resultShape, dtype: dtype) }
+        return (array, selectedBytes, accounting)
     }
 }
 

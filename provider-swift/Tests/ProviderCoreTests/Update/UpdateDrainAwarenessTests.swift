@@ -69,7 +69,7 @@ private func jsonObject(_ data: Data) throws -> [String: Any] {
 }
 
 private func heartbeatObject(_ client: CoordinatorClient) async throws -> [String: Any] {
-    try jsonObject(Data(await client.buildHeartbeatJSON().utf8))
+    try jsonObject(Data(try #require(await client.buildHeartbeatJSON()).utf8))
 }
 
 private final class OutboundCapture: @unchecked Sendable {

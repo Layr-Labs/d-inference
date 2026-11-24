@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-23
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -68,6 +68,7 @@ for these exact fleet/candidate identities, not family names, aliases or substri
 - `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` (separate 9B policy)
 - `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` (same separate 9B policy)
 - The [owned Flash-Next candidate](../reference/qwen4-next-support.md#identity-and-serving-policy)
+- The served [Inkling 2 Mini identities](../reference/inkling2-mini-support.md#identity-and-serving-policy) (`Inkling2ModelIdentity.servedModelIDs`)
 
 Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown
 models, resolves contiguous under `auto`. Per-model configuration still overrides
@@ -178,6 +179,12 @@ The native connected loader and standalone load-hash policy use the same
 MiMo-specific activation decision, so an opt-out does not request fresh hash
 reads solely for cache construction. Independent attestation, artifact and
 fingerprint-change verification still apply.
+
+A sampled MiMo request (temperature above 0, the catalog default) never
+speculates, because the MiMo head has no target-prefix acceptance. The head
+records its prompt history anyway (`checkpointsNonSpeculatingRows`,
+[invariant 9](#invariants)), so it writes the same COMPLETE checkpoints a
+speculating request writes.
 
 `DARKBLOOM_MIMO_COMPLETE_PREFIX=0` disables this path;
 `DARKBLOOM_PREFIX_CACHE=0` disables all prefix caching. The MiMo switch's exact
@@ -637,6 +644,41 @@ the hint when it carries one; the frame supplies the rest
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/SealedPrefixCacheMetadata.swift`;
 [protocol](../reference/protocol-messages.md#inference_request)).
 
+A coordinator request whose earlier tool call carries a JSON null in its
+arguments is served without that context. The shared chat-template path
+renders the null, while the prompt contract the coordinator plans and counts
+with (normalization v9) renders the call without it, so the provider's prompt
+anchor would not match the plan. Once the slot's model type is known, the
+handler replaces the planned context with one without scope or receipt nonce:
+no lookup or ready receipt, no cached-token usage, no checkpoint write. The
+coordinator's attempt then expires unanswered, which carries no proof fence or
+holder invalidation; only the request's exact prompt-work count stops
+qualifying, so it is admitted without calibrated first-content admission.
+GLM-5.3, MiMo, Flint and the managed Nemotron Super owner build their own
+history, already kept these nulls and keep their plan. The template controls
+still come from the planned context. `darkbloom logs` notes each such request
+and the daemon state counts them (`promptCacheSkippedToolCallNull`)
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCache/ToolCallHistoryNullCache.swift`).
+
+A Gemma 4 request is served cold the same way when its declared tools carry a
+parameter whose `string`-first union of `string` and one other scalar type now
+renders as that other type, or a parameter declared without a type that now
+renders untyped (`Gemma4ToolSchemaEnforcement` invariants 7 and 8), while
+normalization v9 renders `STRING`. The check runs the shared tool path once
+more on the declared tools, a superset of the rendered ones, and reports
+whether invariant 7 or 8 changed a render type
+(`ChatTemplateFixes.changesGemmaToolRenderType`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/GemmaToolUnionTypeCache.swift`);
+its counter is `promptCacheSkippedToolUnionType`.
+
+A GPT-OSS request is served cold the same way when one of its declared tools
+renders differently from the repaired declaration normalization v9 renders:
+a `type` list, a union of several types or a node without a type, which
+GPT-OSS now renders as written (`GPTOSSToolSchemaRender.changesRender`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/GPTOSSToolSchemaCache.swift`);
+its counter is `promptCacheSkippedToolRawSchema`. A body whose tools arrive
+already repaired renders as before and keeps its cache context.
+
 Native MiMo historical checkpoints retain only actual uniform-chunk frontiers
 whose target and optional assistant state completed their native observation
 and promotion fences. Their fork target is the deepest successfully captured
@@ -966,12 +1008,14 @@ rules applied to these signals.
    checkpoint — `HybridPrefixCache.swift` (`lookup`),
    `HybridPrefixCacheContract.swift` (`CBv2RecurrentCheckpointGeometry`).
 9. On a slot with a prefix cache and a history-keeping MTP head that opted in
-   (the embedded Qwen 3.5/3.6 heads, Nemotron Super, native Qwen4), history
+   (the embedded Qwen 3.5/3.6 heads, Nemotron Super, native Qwen4, MiMo V2.6), history
    observation follows cache eligibility, not speculation eligibility. A cached
    text request that cannot speculate (a token constraint, logprobs,
    `logit_bias`, a repetition, frequency or presence penalty, a `stop` string:
    `EngineLoopV2.mtpBasicEligible`), including a Qwen request with the card's
-   presence penalty (every catalog Qwen 3.5/3.6 build's default), records the head's history over
+   presence penalty (every catalog Qwen 3.5/3.6 build's default) and any sampled
+   MiMo request (its head has no target-prefix acceptance, so only greedy MiMo
+   rows speculate; the catalog default is temperature 1), records the head's history over
    its prompt chunks. It therefore stages the same resident and SSD
    checkpoints a speculating request stages, byte for byte. It never drafts,
    verifies or seeds a carry, and its history is released once its prompt
@@ -997,7 +1041,7 @@ rules applied to these signals.
 | `pending` / `scan_pending`, `error` / `scan_failed` | Startup disk scan not finished or failed | `SSDPrefixCache.swift` |
 | SSD repeat served cold | Prefix shorter than one block; staging reservation refused; donation below the effective-token floor; TTL expiry; box-wide LRU eviction | `SSDPrefixCache.swift` (`donate`), `SSDBlockIndex.swift` |
 | Recurrent repeat served cold | No actual checkpoint, incompatible geometry/identity, scope mismatch, SSD stage refusal/eviction, or opt-in memory bank eviction | `HybridPrefixCache.swift`, `EngineLoopV2+HybridPrefix.swift`, `PrefixCachePolicy+Hybrid.swift` |
-| A model with a history-keeping MTP head gets no coordinator holders although its slots are cache-ready | Its requests cannot speculate and its head does not record their prompt history: providers 0.10.5 through 0.10.11 on the Qwen 3.5/3.6 builds (whose default request there carried the card's presence penalty), or a head that has not opted in (NemotronH35, MiMo V2.6, GLM5-Next) ([invariant 9](#invariants)) | `EngineLoopV2+MTPPlanning.swift` (`mtpRecordsPromptHistory`), `MTPPrefixCheckpoint.swift` (`checkpointsNonSpeculatingRows`), `CompleteCheckpointCapture.swift` |
+| A model with a history-keeping MTP head gets no coordinator holders although its slots are cache-ready | Its requests cannot speculate and its head does not record their prompt history: providers 0.10.5 through 0.10.11 on the Qwen 3.5/3.6 builds (whose default request there carried the card's presence penalty), or a head that has not opted in (NemotronH35, GLM5-Next; MiMo V2.6 before its opt-in, where every request that could not speculate published nothing) ([invariant 9](#invariants)) | `EngineLoopV2+MTPPlanning.swift` (`mtpRecordsPromptHistory`), `MTPPrefixCheckpoint.swift` (`checkpointsNonSpeculatingRows`), `CompleteCheckpointCapture.swift` |
 | Local memory hit gives no coordinator routing preference | Paged resident publication is not implemented; recurrent slot missing verified identity; or holder evidence expired/invalidated | `ResidentPrefixCacheEvidence.swift`, [coordinator/registry/cache_routing_hints.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_routing_hints.go) |
 | Load refused with `pagedUnavailable` | Explicit `paged` and preflight/capacity/pool construction failed | `EngineV2Factory+BackendPreparation.swift` |
 | Every slot contiguous despite `paged` config | `DARKBLOOM_CBV2_PAGED_KV` set to a negative value, or `supportsPagedKV == false` | `EngineV2KVBackendPolicy.swift`, `EngineV2Factory+BackendPreparation.swift` |

@@ -103,6 +103,15 @@ extension CoordinatorClient {
                 memberNegotiation = negotiation
                 sessionRegistered = true
                 try nativePairMemberAccepted()
+                // The connection's first heartbeat goes at once, after the
+                // attachment so it reports a resumed session's
+                // `cluster_session`: the coordinator dispatches to the pair
+                // only after a heartbeat from each member. The baseline
+                // timer's first send is one interval after registration, the
+                // session watch reports only a change, and the loop's
+                // `.connected` heartbeat can wait behind disconnect cleanup in
+                // its work queue.
+                sendEventHeartbeat()
                 eventContinuation?.yield(.connected)
             } catch { refuseMemberNegotiation() }
 

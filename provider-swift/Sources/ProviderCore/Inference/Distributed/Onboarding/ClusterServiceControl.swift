@@ -380,7 +380,9 @@ extension ClusterService {
                      term: node.claim.term, reason: node.claim.reason, leads: node.leads,
                      line: ClusterControlWords.line(mode, names: ClusterOnboardingMacName.names(node.members.mapValues(\.name), viewerID: node.localID),
                                                     model: model, aloneRefusal: node.members[node.localID]?.aloneRefusal), mode: word,
-                     confirmed: node.leadershipConfirmed(now: now), soloInSeconds: soloIn)
+                     confirmed: node.leadershipConfirmed(now: now), soloInSeconds: soloIn,
+                     confirmsInSeconds: node.secondsUntilConfirmed(now: now).map { Int($0.rounded(.up)) },
+                     otherAnswering: node.otherAnswering(now: now))
     }
 
     // MARK: - Forwarded `darkbloom cluster` commands

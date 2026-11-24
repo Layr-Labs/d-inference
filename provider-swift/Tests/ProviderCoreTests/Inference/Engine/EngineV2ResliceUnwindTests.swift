@@ -229,6 +229,48 @@ struct EngineV2ResliceUnwindTests {
         await survivor.shutdown()
     }
 
+    @Test func soloQuoteExcludesRetiringMiMoButTheLiveGrantKeepsItsWeight() async throws {
+        let loop = try makeUnwindLoop()
+        await loop.setEngineV2SlotHooksForTesting(.init(eosTokenIds: [2], physicalMemoryBytes: unwindPhysicalBytes,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        let survivor = await installSurvivorA(loop, runtime: EngineV2Runtime(), grant: 40,
+            sizingA: sizing(weightsGiB: 15, kvRate: 20_480), onUpdate: { _ in })
+        let alone = await loop.fleetKVBudgetBytes(extraWeightBytes: 0)
+        await loop.setRetiringSizingForSoloQuoteTest(sizing(weightsGiB: 8, kvRate: 1))
+        #expect(await loop.glmSoloGrant(for: Self.gemmaId) == alone)
+        #expect(await loop.fleetKVBudgetBytes(extraWeightBytes: 0) == alone - 8 * unwindGiB)
+        await survivor.bridge.shutdown()
+    }
+
+    @Test func soloQuoteRemainsAvailableBetweenRemovalAndRegrowth() async throws {
+        let loop = try makeUnwindLoop()
+        await loop.setEngineV2SlotHooksForTesting(.init(eosTokenIds: [2], physicalMemoryBytes: unwindPhysicalBytes,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        let survivor = await installSurvivorA(loop, runtime: runtime, grant: 40,
+            sizingA: sizing(weightsGiB: 15, kvRate: 20_480), onUpdate: { _ in })
+        let other = makeInertStubBridge(modelId: Self.gptossId)
+        await loop.installModelSlotForTesting(modelId: Self.gptossId, container: makeUnwindStubContainer(),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), engineV2: other.bridge,
+            sizing: sizing(weightsGiB: 1, kvRate: 1), modelType: "gpt_oss")
+        let before = try #require(await loop.glmSoloGrant(for: Self.gemmaId))
+        await loop.acquireResliceGateForTesting()
+        let retire = Task { await loop.unloadModel(Self.gptossId) }
+        let end = ContinuousClock.now.advanced(by: .seconds(5))
+        while !(await loop.pendingSurvivorRegrowth.values.contains(Self.gptossId)), ContinuousClock.now < end {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await loop.pendingSurvivorRegrowth.values.contains(Self.gptossId))
+        #expect(await loop.glmSoloGrant(for: Self.gemmaId) == before)
+        #expect(survivor.engine.kvBytesCapacity == 40)
+        await loop.releaseResliceGateForTesting()
+        #expect(await retire.value)
+        #expect(survivor.engine.kvBytesCapacity > 40)
+        #expect(await loop.glmSoloGrant(for: Self.gemmaId) == nil)
+        await survivor.bridge.shutdown()
+    }
+
     @Test("build failure: B's weights are dead BEFORE A's grant is restored; Σ ≤ true budget throughout")
     func buildFailureReleasesWeightsBeforeRestore() async throws {
         struct BFailure: Error {}
@@ -395,5 +437,11 @@ struct EngineV2ResliceUnwindTests {
             "survivors must regrow only AFTER the aborted newcomer's weights are released")
         #expect(box.container == nil)
         #expect(engineA.kvBytesCapacity == grantA0)
+    }
+}
+
+private extension ProviderLoop {
+    func setRetiringSizingForSoloQuoteTest(_ value: SlotSizingSnapshot) {
+        nativeMiMoRetiringSizing["mimo"] = value
     }
 }

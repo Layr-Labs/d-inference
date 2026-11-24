@@ -100,7 +100,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
         self.chatTemplate = chatTemplate.map {
             HFTemplateFilters.bindingFilters(
                 in: NemotronTemplateFilters.bindingFilters(
-                    in: normalizeSwiftJinjaTemplate($0), modelType: modelType),
+                    in: normalizeSwiftJinjaTemplate(renderingToolArgumentNulls($0)), modelType: modelType),
                 modelType: modelType, environment: environment)
         }
         self.modelType = modelType
@@ -257,7 +257,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
             return try TemplateRenderStack.run {
                 try upstream.applyChatTemplate(
                     messages: messages,
-                    chatTemplate: .literal(normalizeSwiftJinjaTemplate(chatTemplate)),
+                    chatTemplate: .literal(normalizeSwiftJinjaTemplate(renderingToolArgumentNulls(chatTemplate))),
                     addGenerationPrompt: true, truncation: false, maxLength: nil,
                     tools: tools, additionalContext: additionalContext)
             }

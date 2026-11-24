@@ -1082,7 +1082,9 @@ extension ProviderLoop {
                 // owner's request can tell whether the engine has admitted this
                 // one (`giveWayToOwner`).
                 frames = try await MeFirstDarkbloomRequest.$id.withValue(requestId) {
-                    try await service.streamChatCompletionFrames(request: streamingRequest)
+                    try await InklingWithheldReasoningHeartbeat.$enabled.withValue(true) {
+                        try await service.streamChatCompletionFrames(request: streamingRequest)
+                    }
                 }
                 if rejectExpiredDeadline() { return }
             } catch {
@@ -1274,7 +1276,23 @@ extension ProviderLoop {
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
             do {
-                for try await frame in frames {
+                var sentWithheldReasoningHeartbeat = false
+                for try await streamed in frames {
+                    // Inkling 2's one empty answer delta while it withholds its
+                    // reasoning (`InklingWithheldReasoningHeartbeat`).
+                    // It is output the coordinator commits to, so it claims
+                    // output first (me first), as a first content frame does.
+                    var frame = streamed
+                    if !sentWithheldReasoningHeartbeat,
+                        let heartbeat = InklingWithheldReasoningHeartbeat.frame(rewriting: streamed)
+                    {
+                        guard token.claimOutput() else {
+                            endAfterGivingWay(framesEmitted, bytesEmitted)
+                            return
+                        }
+                        frame = heartbeat
+                        sentWithheldReasoningHeartbeat = true
+                    }
                     // The iterator suspension is the final pre-content await.
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,

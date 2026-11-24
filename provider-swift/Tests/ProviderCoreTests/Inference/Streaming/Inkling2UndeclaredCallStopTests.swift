@@ -86,6 +86,44 @@ struct Inkling2UndeclaredCallStopTests {
         }
     }
 
+    /// Text as the engine streams it: each `<|…|>` control token whole (a
+    /// special token), other text one character at a time.
+    static func tokens(_ text: String) -> [String] {
+        var out: [String] = []
+        var rest = Substring(text)
+        while let first = rest.first {
+            if rest.hasPrefix("<|"), let close = rest.range(of: "|>") {
+                out.append(String(rest[..<close.upperBound]))
+                rest = rest[close.upperBound...]
+            } else {
+                out.append(String(first))
+                rest = rest.dropFirst()
+            }
+        }
+        return out
+    }
+
+    /// A client stop that is part of a control token never matches inside it:
+    /// the plain answer reaches the client whole.
+    @Test(arguments: ["end", "model", "text", "message", "<|", "|>"])
+    func stopsInsideControlTokensNeverMatch(stop: String) throws {
+        let answer = Self.thought + "<|message_model|><|content_text|>It is sunny here.<|end_message|>" + Serve.eos
+        let holdback = StopHoldback(stopStrings: [stop], scope: Inkling2PromptContract.undeclaredCallTextStopScope)
+        var out = ""
+        for token in Self.tokens(answer) {
+            let scan = holdback.ingest(token)
+            out += scan.text
+            #expect(!scan.stopped, "\(stop) matched at \(token)")
+            if scan.stopped { return }
+        }
+        out += holdback.flush()
+        #expect(out == answer)
+        let outcome = try Serve.serve(out, request: Serve.request(clientStreams: true), width: 4096)
+        #expect(outcome.refusal == nil, "\(outcome.refusal ?? "")")
+        #expect(outcome.content == "It is sunny here.")
+        #expect(outcome.reasoning == "Plan: call it with Paris STOP now.")
+    }
+
     /// The engine's reported stop agrees with the holdback for this scope.
     @Test func reportedStopAgrees() {
         #expect(EngineV2Bridge.matchedStopSequence(candidates: ["STOP"], generatedText: Self.thought + Self.frame,

@@ -50,8 +50,7 @@ public enum SDKFeatureDefaults {
     /// builds (card default presence 1.5) and the catalog Gemma 4 26B QAT
     /// build (requests that send a penalty). The SDK's process kill switch
     /// `DARKBLOOM_MTP_PENALTY_ROWS=0` still wins.
-    /// Exact catalog ids (case-sensitive, like `qwen35CardModelTypes` and
-    /// `MTPAcceptancePolicy.builtInIsExact`).
+    /// Exact catalog ids (case-sensitive, like `qwen35CardModelTypes`).
     static let penaltyRowBuilds: Set<String> = Set(
         [EngineV2SamplingDefaults.qwen35NineBModelID, MTPAcceptancePolicy.gemmaQATModelID]
     ).union(MTPAcceptancePolicy.qwen35CatalogMoEModelIDs)

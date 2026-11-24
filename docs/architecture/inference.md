@@ -3493,23 +3493,20 @@ verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
-defaults to typical acceptance for eligible sampled target-prefix rows, except
-on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
-the owned Bonsai 9B candidate; the catalog Qwen 3.5/3.6 builds (`Qwen3.5-9B`,
-which looped under typical acceptance in the 0.10.12 gate, and since 0.10.16
-`qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`, whose card-penalty rows
-now draft and accept exactly in any case; see the Qwen 3.5/3.6 defaults below);
-the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
-10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
-27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
-`ModelRuntimeRequirements.qwen38ConcreteModelIDs`), whose lone requests draft
-on a single Mac. Qwen 3.8 pairs never read this rule and were already exact.
-Since 0.10.18 the served Inkling 2 Mini (`thinkingmachines/Inkling-2-Mini`,
-`Inkling2ModelIdentity.isServedModelID`) is exact too: its DSpark drafter
-proposes greedy drafts, and on OpenRouter's GPQA shape at temperature 0.5 none
-of 8 drafter-on samples under typical acceptance answered (they repeated until
-the 32,768-token cap or the loop guard), while all 4 drafter-off samples of the
-same questions answered correctly.
+uses exact acceptance for every model (0.10.18; `MTPAcceptancePolicy.resolve`).
+Typical acceptance is used only where `mtp_acceptance` or
+`mtp_acceptance_by_model` names it. Before 0.10.18 the built-in rule was typical
+except for a list of builds, each added after a sampled-loop finding: the
+catalog Qwen 3.5/3.6 builds (`Qwen3.5-9B` looped under typical acceptance in
+the 0.10.12 gate), the catalog `gemma-4-26b-qat-4bit` (OpenRouter's 10-31 GPQA
+run: 30 % of drafted answers ended at the 32,768-token cap), the Qwen 3.8 27B
+builds, the owned Bonsai 9B candidate, and Inkling 2 Mini (OpenRouter's GPQA
+shape at temperature 0.5: none of 8 drafter-on samples answered under typical
+acceptance; with exact acceptance the same questions answered, token for token
+as with the drafter off). The served families whose sampled drafting rows
+change with the all-model default are GLM-5.3-Flash (`glm5_next`) and Qwen 4
+(`qwen4_exp`) where served; Nemotron does not draft under `auto` and native MiMo
+was already exact. Greedy rows accept exactly under either rule.
 Exact keeps the model's output distribution; its tokens are not bit-identical
 to MTP off, since verify windows round differently.
 Under typical acceptance a draft is kept when the sampler-filtered target row
@@ -3705,7 +3702,7 @@ themselves until `max_tokens` (#1530). Every build also takes the cards'
 | Build | Omitted `presence_penalty` | Built-in MTP acceptance | Without the penalty |
 |---|---|---|---|
 | `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 1.5 | **exact** since 0.10.16 (typical before) | The 0.10.12 gate on the signed 0.10.11 (temperature 1 / 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens, nineteen everyday prompts at 8,192, three seeds each; an M5 Ultra): `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
-| `Qwen3.5-9B` | 1.5; none under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (`qwen35NineBNoPenaltyDefaults`, 0.10.12's default) | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | The same gate (the Studio M3 Ultra) saw it run away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, so 0.10.12 shipped it without the penalty. In production that was a regression. On 2026-11-12, on 0.10.12 Macs against 0.10.11 Macs (the penalty, MTP off) over the same period, answers with `max_tokens` ≥ 8,192 hit the cap on 5.5 % against 1.7 %, about three times as often. On the 4,096-token JSON `response_format` workload, in the same 10-minute windows, answers ran out and failed in 51 % of requests against 23 %. Its constrained JSON rows never speculate and their template is unchanged since 0.10.4, so the penalty is the difference we can establish: with nothing else running they failed 32.7 % against 13.6 %. A registry `presence_penalty` 1.5 brought both back within the hour |
+| `Qwen3.5-9B` | 1.5; none under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (`qwen35NineBNoPenaltyDefaults`, 0.10.12's default) | **exact** (`MTPAcceptancePolicy.resolve`) | The same gate (the Studio M3 Ultra) saw it run away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, so 0.10.12 shipped it without the penalty. In production that was a regression. On 2026-11-12, on 0.10.12 Macs against 0.10.11 Macs (the penalty, MTP off) over the same period, answers with `max_tokens` ≥ 8,192 hit the cap on 5.5 % against 1.7 %, about three times as often. On the 4,096-token JSON `response_format` workload, in the same 10-minute windows, answers ran out and failed in 51 % of requests against 23 %. Its constrained JSON rows never speculate and their template is unchanged since 0.10.4, so the penalty is the difference we can establish: with nothing else running they failed 32.7 % against 13.6 %. A registry `presence_penalty` 1.5 brought both back within the hour |
 
 Through 0.10.15 a row with a penalty did not speculate, so these builds'
 requests that omit the penalty ran without MTP (0.0–0.1 % of production rows

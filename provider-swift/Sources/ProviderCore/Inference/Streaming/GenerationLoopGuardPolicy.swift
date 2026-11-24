@@ -19,6 +19,10 @@ import MLXLMServer
 /// Qwen3-VL), and for any request whose output is a constrained or JSON value:
 /// a token constraint, a forced tool call, or a JSON `response_format`.
 ///
+/// Inkling 2 Mini thinks at length before a correct answer, so its guard
+/// waits longer (`inklingThresholds`): never before 16,384 tokens, and only
+/// for a repeat spanning 8,192 tokens.
+///
 /// `DARKBLOOM_LOOP_GUARD`: unset, `1` or `on` keeps the default list; `0` or
 /// `off` turns the guard off; any other value is the comma-separated list of
 /// `model_type`s to guard instead.
@@ -34,6 +38,14 @@ enum GenerationLoopGuardPolicy {
         "mimo_v2",
         "inkling2_loop",
     ]
+
+    /// Inkling 2's thresholds: the defaults, but later and over a longer span.
+    static let inklingThresholds = GenerationLoopDetector.Thresholds(minSpan: 8_192, minTokens: 16_384)
+
+    /// The thresholds a family's guard uses.
+    static func thresholds(modelType: String) -> GenerationLoopDetector.Thresholds {
+        Inkling2PromptContract.applies(modelType: modelType) ? inklingThresholds : .init()
+    }
 
     /// Text that opens a tool call in any served family's output (Qwen, GLM,
     /// MiMo, Nemotron, Gemma 4, Harmony). The request's own parser adds its tags.
@@ -68,7 +80,7 @@ enum GenerationLoopGuardPolicy {
         prepared: ToolChoicePromptPolicy.Prepared,
         tokenConstraint: (any CBv2TokenConstraint)?,
         setting: Setting = current,
-        thresholds: GenerationLoopDetector.Thresholds = .init(),
+        thresholds: GenerationLoopDetector.Thresholds? = nil,
         exitThinking: GenerationLoopExitThinking? = nil
     ) -> GenerationLoopGuard? {
         guard case .modelTypes(let enabled) = setting,
@@ -101,7 +113,8 @@ enum GenerationLoopGuardPolicy {
         // grammar keeps both: its continuation is submitted under the same
         // grammar (`GPTOSSAutoToolConstraint.withMaxTokens`).
         return GenerationLoopGuard(
-            modelType: modelType, toolCallMarkers: markers, thresholds: thresholds,
+            modelType: modelType, toolCallMarkers: markers,
+            thresholds: thresholds ?? Self.thresholds(modelType: modelType),
             exitThinking: tokenConstraint == nil || tokenConstraint is GPTOSSAutoToolConstraint ? exitThinking : nil)
     }
 }

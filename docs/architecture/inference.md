@@ -3051,7 +3051,11 @@ profile or the fleet, as after a reload; the next sample is published as
 measured
 (`provider-swift/Sources/ProviderCore/Inference/Performance/DecodeRateIdleAge.swift`,
 `DecodeRateIdleAge`; `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` sets the age,
-`0` restores publishing the last rate however old). The published rate moves
+`0` restores publishing the last rate however old). The heartbeat also sends
+the published rate's own age, `observed_decode_tps_age_ms`: the time since the
+newest sample that moved it, which a short reply does not reset
+(`DecodeRateIdleAge.publishedAgeMilliseconds`); it changes nothing the provider
+decides. The published rate moves
 only on a request that generated at least 32 tokens
 (`EngineV2Bridge.minimumPublishedDecodeTokens`, the coordinator's
 `completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same

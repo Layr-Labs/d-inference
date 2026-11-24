@@ -296,6 +296,22 @@ class GitDiffTests(unittest.TestCase):
         self.assertEqual(self.run_detector("pull_request", event),
                          {"provider": True, "cluster": False, "mimo_audio": False})
 
+    def test_a_sparse_working_tree_still_sees_every_changed_path(self):
+        # The plan job checks out only scripts/ (provider-plan.yml); the
+        # classifier diffs commits, so a path outside the working tree still
+        # selects its components. The file below only keeps the cone non-empty;
+        # the test runs this repository's classifier.
+        self.write("scripts/in-cone.txt", "kept\n")
+        base = self.commit()
+        self.write("provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift")
+        self.write("libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/New.swift")
+        head = self.commit()
+        self.git("sparse-checkout", "set", "--cone", "scripts")
+        self.assertFalse((self.repo / "provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift").exists())
+        self.assertFalse((self.repo / "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/New.swift").exists())
+        self.assertTrue((self.repo / "scripts/in-cone.txt").is_file())
+        self.assertEqual(self.pr(base, head), {"provider": True, "cluster": True, "mimo_audio": False})
+
     def test_missing_invalid_revisions_and_unsupported_events_fail_closed(self):
         for before in ("f" * 40, "--help", "", None):
             self.run_detector("push", {"before": before, "after": self.base}, success=False)
@@ -406,9 +422,14 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("    permissions:\n      contents: read\n      actions: read\n    outputs:\n", plan["components"])
         # Without run_tests, or when a dispatch's ref was refused, nothing is
         # classified: changes_result is the classifier step's outcome
-        # (`skipped`) and every component is false or empty.
+        # (`skipped`) and every component is false or empty. Job `commit`
+        # runs on a dispatch only; skipped, it leaves the event's own commit.
+        self.assertIn("    name: Resolve the commit to test\n    if: ${{ github.event_name == 'workflow_dispatch' }}\n",
+                      plan["commit"])
         for step in (checkout, classify):
-            self.assertEqual(workflow.field(step, "if"), "${{ inputs.run_tests && needs.commit.result == 'success' }}")
+            self.assertEqual(workflow.field(step, "if"),
+                             "${{ inputs.run_tests && (needs.commit.result == 'success' || "
+                             "needs.commit.result == 'skipped') }}")
         self.assertEqual(workflow.field(classify, "id"), "paths")
         self.assertEqual(workflow.continues_on_error(plan["components"]), ["Classify complete base-to-head Git diff"])
         self.assertEqual(workflow.run_command(classify), "python3 scripts/ci-component-paths.py")
@@ -505,10 +526,13 @@ class WorkflowRoutingTests(unittest.TestCase):
         checkout = workflow.step_blocks(job)[0]
         self.assertEqual(job.count("actions/checkout@"), 1)
         self.assertIn("fetch-depth: 0", checkout)
-        # Blobless: full commit and tree history, file contents on demand.
+        # Blobless: full commit and tree history, file contents on demand. Its
+        # working tree is scripts/ only (cone mode): the diff compares commits
+        # (test_a_sparse_working_tree_still_sees_every_changed_path).
         self.assertIn("filter: blob:none", checkout)
         self.assertIn("persist-credentials: false", checkout)
-        self.assertNotIn("sparse-checkout", checkout)
+        self.assertIn("          sparse-checkout: scripts\n", checkout)
+        self.assertNotIn("sparse-checkout-cone-mode", checkout)
         self.assertIn("contents: read", job)
         self.assertNotIn("secrets.", text)
         self.assertNotIn("pull_request_target", text)

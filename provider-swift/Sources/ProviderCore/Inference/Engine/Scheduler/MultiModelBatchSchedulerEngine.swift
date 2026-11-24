@@ -873,7 +873,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let loopGuard = GenerationLoopGuardPolicy.resolve(
                         modelType: modelType, request: visionRequest, prepared: prepared, tokenConstraint: nil,
                         exitThinking: exitThinking)
-                    let stopStringScope = ReasoningStopScope.scope(
+                    let stopStringScope = Inkling2PromptContract.stopStringScope(
+                        modelType: modelType, prepared: prepared) ?? ReasoningStopScope.scope(
                         reasoningParser: visionRequest.reasoningParser,
                         reasoningPrefix: reasoningPrefix,
                         parsesToolCalls: toolHandler != nil)
@@ -934,7 +935,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         // The continuation's output starts after the end of
                         // thinking, so stop strings apply from its first token
                         // (inside the answer, when the exit itself opened it).
-                        let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
+                        let continuationStopScope = exitThinking.answerStopScope
+                            ?? Inkling2PromptContract.stopStringScope(modelType: modelType, prepared: prepared)
+                            ?? ReasoningStopScope.scope(
                             reasoningParser: visionRequest.reasoningParser, reasoningPrefix: nil,
                             parsesToolCalls: toolHandler != nil)
                         let spliced = LoopExitThinkingContinuation.splice(
@@ -1245,7 +1248,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
             exitThinking: exitThinking)
-        let stopStringScope = ReasoningStopScope.scope(
+        let stopStringScope = Inkling2PromptContract.stopStringScope(
+            modelType: modelType, prepared: prepared) ?? ReasoningStopScope.scope(
             reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix,
             parsesToolCalls: toolHandler != nil)
 
@@ -1336,7 +1340,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // The continuation's output starts after the end of thinking, so
             // stop strings apply from its first token, whatever the prompt opened
             // (inside the answer, when the exit itself opened it).
-            let continuationStopScope = exitThinking.answerStopScope ?? ReasoningStopScope.scope(
+            let continuationStopScope = exitThinking.answerStopScope
+                ?? Inkling2PromptContract.stopStringScope(modelType: modelType, prepared: prepared)
+                ?? ReasoningStopScope.scope(
                 reasoningParser: request.reasoningParser, reasoningPrefix: nil, parsesToolCalls: toolHandler != nil)
             // A usage signal belongs to one engine request: the continuation
             // has its own, and the stop that ended the answer is the request's.

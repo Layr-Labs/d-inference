@@ -505,6 +505,9 @@ public enum LaunchAgent: Sendable {
     /// presence penalty by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
     /// text by default; exact `0` restores the 500.
+    /// `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT`: an Inkling 2 call frame in the
+    /// answer to an `auto` request that declares no tools is text by default;
+    /// exact `0` restores its refusal.
     /// `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING` (SDK-read, `GrammarOnlyToolParsing`):
     /// the GLM, Gemma and MiMo parsers return calls that break only their
     /// schema; `0`, `off`, `false` or `no` restores their refusals.
@@ -635,6 +638,7 @@ public enum LaunchAgent: Sendable {
         GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
+        Inkling2OutputChannels.undeclaredCallTextEnvironmentKey,
         GrammarOnlyToolParsing.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
         GPTOSSAutoToolGrammar.environmentKey,

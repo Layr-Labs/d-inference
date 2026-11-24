@@ -25,6 +25,7 @@ final class ProviderObservedQwenAssistant: CBv2MTPRequestStatefulDrafter {
     var prefersBatchedRectangularAttention: Bool { native.prefersBatchedRectangularAttention }
     var commitsAcceptedPrefixPerRow: Bool { native.commitsAcceptedPrefixPerRow }
     var supportsOrdinaryDecodeHistory: Bool { native.supportsOrdinaryDecodeHistory }
+    var supportsDepthZeroChaining: Bool { native.supportsDepthZeroChaining }
     var requiresCommittedObservationFence: Bool { native.requiresCommittedObservationFence }
     var draftShortlistSize: Int? { native.draftShortlistSize }
     var submitsEveryDraftStepEarly: Bool { native.submitsEveryDraftStepEarly }

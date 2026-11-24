@@ -199,4 +199,24 @@ extension EngineV2Bridge {
             ewmaInitialized = true
         }
     }
+
+    /// The decode rate the heartbeat publishes (`observed_decode_tps`): the
+    /// same EWMA and restart rule as `observedDecodeTpsEwma`, over the samples
+    /// that set the published rate only. With every sample counted the two are
+    /// equal; before the first counted sample it is 0 (no samples).
+    func updatePublishedDecodeTps(_ tps: Double, at: ContinuousClock.Instant, restart: Bool) {
+        guard tps.isFinite, tps > 0 else { return }
+        let alpha = 0.3
+        let expired = publishedDecodeAt.map {
+            at > $0.advanced(by: EnginePerformanceMeasurements.freshness)
+        } ?? false
+        if publishedDecodeInitialized && !restart && !expired {
+            publishedDecodeTps = alpha * tps + (1 - alpha) * publishedDecodeTps
+        } else {
+            publishedDecodeTps = tps
+            publishedDecodeInitialized = true
+        }
+        publishedDecodeAt = performanceMeasurements.keepsNewestObservationTime
+            ? max(publishedDecodeAt ?? at, at) : at
+    }
 }

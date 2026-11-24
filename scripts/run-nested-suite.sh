@@ -18,6 +18,11 @@
 # still attributable straight from the job summary; only the body is shared.
 #
 # Usage: run-nested-suite.sh <filter> [extra swift test args...]
+#
+# NESTED_SUITE_REPORT=<prefix> keeps the run's Swift Testing report as
+# <prefix>-swift-testing.xml and its stdout as <prefix>.log, for a caller that
+# counts the run again (Prompt Parity, for the provider shard audit:
+# scripts/provider-test-shards.py counts).
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -43,6 +48,12 @@ done
 # temporary names independent of the selector; pass the full filter below.
 work="$(mktemp -d -t "nested-suite.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
+xunit="$work/xunit.xml" stdout_log="$work/stdout.log"
+if [[ -n "${NESTED_SUITE_REPORT:-}" ]]; then
+    xunit="$NESTED_SUITE_REPORT.xml" stdout_log="$NESTED_SUITE_REPORT.log"
+    # A run that writes no report must not be counted from an earlier one.
+    rm -f "$xunit" "$NESTED_SUITE_REPORT-swift-testing.xml" "$stdout_log"
+fi
 
 # The counts never come from the merged console. SwiftPM writes its own
 # warnings to stderr, at no fixed point in the run, and the test process's
@@ -56,9 +67,9 @@ trap 'rm -rf "$work"' EXIT
 # and XCTest's from SwiftPM's stdout alone: without --parallel, SwiftPM 6.4
 # writes no XCTest xUnit report. stderr goes straight to the log, and `tee`
 # keeps stdout there too. pipefail, so a non-zero `swift test` still fails.
-swift test --skip-build --filter "$filter" "$@" --xunit-output "$work/xunit.xml" | tee "$work/stdout.log"
+swift test --skip-build --filter "$filter" "$@" --xunit-output "$xunit" | tee "$stdout_log"
 
-python3 - "$filter" "$work/xunit.xml" "$work/stdout.log" <<'PY'
+python3 - "$filter" "$xunit" "$stdout_log" <<'PY'
 import re
 import sys
 from pathlib import Path

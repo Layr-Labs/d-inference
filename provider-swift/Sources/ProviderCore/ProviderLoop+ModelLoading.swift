@@ -1195,6 +1195,8 @@ extension ProviderLoop {
         // Drops the slot's container and MTP drafter references with the
         // target (the drafter is slot-owned — plan D5 teardown).
         modelSlots.removeValue(forKey: modelId)
+        let regrowth = UUID()
+        pendingSurvivorRegrowth[regrowth] = modelId
         modelsUnloading.remove(modelId)
         // Leaving residency ends any Autopilot placement now: the awaits below
         // must not let a new request reload an adopted model under it.
@@ -1212,6 +1214,7 @@ extension ProviderLoop {
         // fleet KV budget rises, and the remaining engines take their new
         // fair shares (a lone survivor gets the FULL budget back).
         await resliceGrowSurvivors()
+        pendingSurvivorRegrowth.removeValue(forKey: regrowth)
         let waiters = unloadingWaiters.removeValue(forKey: modelId) ?? []
         for waiter in waiters { waiter.resume() }
         syncWarmModelState()

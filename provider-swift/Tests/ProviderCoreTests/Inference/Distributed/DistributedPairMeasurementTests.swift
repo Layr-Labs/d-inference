@@ -184,7 +184,10 @@ struct DistributedPairMeasurementTests {
         #expect(prefill.tokensPerSecond > 0 && prefill.tokensPerSecond <= 512 / 0.06)
         #expect(decode.tokensPerSecond > 0 && decode.tokensPerSecond <= 2 / 0.06)
         #expect(prefill.sampleAgeMs >= 0 && decode.sampleAgeMs >= 0)
-        #expect(after.observedDecodeTps > 0)
+        // A three-token reply feeds the measurements and the deadline rate but
+        // not the published rate, which needs 32 generated tokens.
+        #expect(after.observedDecodeTps == 0)
+        #expect(await bridge.observedDecodeTpsEwma > 0)
         #expect(after.telemetry?.ewmaInitialized == true && (after.telemetry?.isolatedPrefillTps ?? 0) > 0)
         #expect(after.requestLimits?.servingContextTokens == 6000)
         await bridge.shutdown()

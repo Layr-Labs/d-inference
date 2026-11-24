@@ -112,6 +112,27 @@ enum ToolStreamPreparation {
         !ToolOutputLeniencySwitch.isOff(environment[streamNativeToolCallsEnvironmentKey])
     }
 
+    /// Inkling 2: each call leaves when its frame closes, complete and checked,
+    /// to a client that streams on a surface that renders fragments, for every
+    /// mode that calls, under the switches native families stream under. Any
+    /// other request gets its calls at the end of generation.
+    static func streamsInklingCalls(
+        request: OpenAIChatCompletionRequest,
+        prepared: ToolChoicePromptPolicy.Prepared,
+        streamToolCalls: Bool = streamsToolCallsByDefault,
+        streamNativeToolCalls: Bool = streamsNativeToolCallsByDefault,
+        streamForcedToolCalls: ForcedCalls = streamsForcedToolCallsByDefault
+    ) -> Bool {
+        guard streamToolCalls, streamNativeToolCalls, request.streamToolCallDeltas, prepared.clientStreams,
+            prepared.tools?.isEmpty == false
+        else { return false }
+        switch prepared.mode {
+        case .auto: return true
+        case .required, .named: return streamForcedToolCalls.native
+        case .none: return false
+        }
+    }
+
     /// The served native-channel families whose calls stream, each with the
     /// only parser its frames stream through: MiMo V2.6 (`.mimoV2`), the
     /// Nemotron 3.5 builds the scheduler serves (Lightning, `.nemotron`) and
@@ -138,6 +159,14 @@ enum ToolStreamPreparation {
         streamNativeToolCalls: Bool = streamsNativeToolCallsByDefault
     ) throws -> BatchedToolStreamHandler? {
         let isMiMo = modelType == "mimo_v2"
+        if Inkling2PromptContract.applies(modelType: modelType) {
+            // Inkling 2's calls are framed by its own message tokens and read
+            // by its channel lexer (`NativeToolStreamRouter`), never by a text
+            // tool parser; a forced choice still needs its prompt strategy.
+            _ = try ToolChoiceEnforcementPolicy.forcedStrategy(mode: prepared.mode,
+                modelContext: ChatTemplateFixContext(modelId: request.model, modelType: modelType))
+            return nil
+        }
         // Even absent/none tools need native detection: an undeclared generated
         // call must fail validation, not become raw visible XML. This does not
         // restore declarations to the rendered prompt.
@@ -154,7 +183,8 @@ enum ToolStreamPreparation {
         try ToolChoiceEnforcementPolicy.validateParser(
             format, strategy: strategy, modelContext: context)
         return BatchedToolStreamHandler(format: format,
-            tools: (isMiMo && prepared.mode == .none ? request.tools : prepared.tools)?.map { $0.toolSpec() },
+            tools: (isMiMo && prepared.mode == .none ? request.tools : prepared.argumentTools ?? prepared.tools)?
+                .map { $0.toolSpec() },
             strictGemma: modelType == "diffusion_gemma",
             streaming: streamToolCalls && exposesCallsWhileGenerated(request: request, prepared: prepared,
                 context: context, strategy: strategy, format: format, forced: streamForcedToolCalls,

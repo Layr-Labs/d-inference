@@ -63,6 +63,108 @@ struct LocalMemoryWaitTests {
 
     // MARK: - The queue, the setting and the words
 
+    @Test func aGLMRequestWaitsForItsShareToGrowBeforeItStarts() async throws {
+        let engine = InertStubEngine(kvBytesCapacity: 40)
+        let bridge = EngineV2Bridge(engine: engine, modelId: Self.model,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [], kvBytesPerToken: 1)
+        await bridge.installGLMSoloGrant { 100 }
+        let attempts = WaitCounter()
+        let stream = try await bridge.submittingOwnerRequest(
+            OwnerMemoryWait(limit: .seconds(2), retryInterval: .milliseconds(10)),
+            model: Self.model, worstCaseTokens: 80, origin: nil
+        ) { _, _ in
+            attempts.add()
+            guard engine.capacity().kvBytesCapacity >= 80 else {
+                // Model retirement restores the grant, but this attempt still saw the smaller one.
+                engine.updateKVBytesCapacity(100)
+                throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 80)
+            }
+            return AsyncStream { $0.finish() }
+        }
+        _ = await Self.drain(stream)
+        #expect(attempts.value == 2)
+        // An extra byte past the solo admission watermark cannot be recovered by waiting.
+        let refusal = EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 96)
+        #expect(await bridge.ownerMemoryRefusal(refusal, worstCaseTokens: 96) == .exceedsIdle)
+        await bridge.shutdown()
+    }
+
+    /// With the shared-grant wait off, the same request is refused at once in the larger-than-memory words, after
+    /// one attempt and without queueing, as 0.10.17 refused it.
+    @Test func withTheSharedGrantWaitOffTheRequestIsRefusedAtOnceAsBefore() async throws {
+        let engine = InertStubEngine(kvBytesCapacity: 40)
+        let bridge = EngineV2Bridge(engine: engine, modelId: Self.model,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [], kvBytesPerToken: 1)
+        let quoted = WaitCounter()
+        await bridge.installGLMSoloGrant(environment: [OwnerMemoryWait.sharedGrantWaitEnvironmentName: "0"]) {
+            quoted.add()
+            return 100
+        }
+        let attempts = WaitCounter()
+        let start = ContinuousClock.now
+        do {
+            _ = try await bridge.submittingOwnerRequest(
+                OwnerMemoryWait(limit: .seconds(5), retryInterval: .milliseconds(10)),
+                model: Self.model, worstCaseTokens: 80, origin: nil
+            ) { _, _ in
+                attempts.add()
+                throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 80)
+            }
+            Issue.record("served without room")
+        } catch {
+            #expect(Self.refusal(of: error) == OwnerMemoryWait.exceedsIdleRefusal)
+        }
+        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(attempts.value == 1 && quoted.value == 0)
+        #expect(await bridge.ownerMemoryWaiters.isEmpty)
+        let refusal = EngineV2Bridge.glm5NextSlotRefusal(neverFits: true, reservedTokens: 80)
+        #expect(await bridge.ownerMemoryRefusal(refusal, worstCaseTokens: 80) == .exceedsIdle)
+        await bridge.shutdown()
+    }
+
+    @Test(arguments: [false, true])
+    func aSharedGrantWaitIsBoundedBehindAnotherOwner(peerLoadsLater: Bool) async throws {
+        let bridge = EngineV2Bridge(engine: InertStubEngine(kvBytesCapacity: 40), modelId: Self.model,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [], kvBytesPerToken: 1)
+        let quoted = WaitCounter()
+        let peer = WaitCounter()
+        if !peerLoadsLater { peer.add() }
+        await bridge.installGLMSoloGrant {
+            let available = peer.value > 0
+            quoted.add()
+            return available ? 100 : nil
+        }
+        let head = Task {
+            try await bridge.submittingOwnerRequest(OwnerMemoryWait(limit: .seconds(5)),
+                model: Self.model, worstCaseTokens: 80, origin: nil) { _, _ in
+                    throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: false, reservedTokens: 80)
+                }
+        }
+        #expect(await eventually { await bridge.ownerMemoryWaiters.waiting.count == 1 })
+        let shrink = Task {
+            if peerLoadsLater {
+                #expect(await eventually { quoted.value > 0 })
+                peer.add()
+                await bridge.updateKVBytesCapacity(20)
+            }
+        }
+        do {
+            _ = try await bridge.submittingOwnerRequest(OwnerMemoryWait(sharedGrantLimit: .milliseconds(40)),
+                model: Self.model, worstCaseTokens: 80, origin: nil) { _, _ in
+                    Issue.record("the follower reached admission while the head still waited")
+                    return AsyncStream { $0.finish() }
+                }
+            Issue.record("the follower did not time out")
+        } catch {
+            #expect(Self.refusal(of: error) == OwnerMemoryWait.busyRefusal)
+        }
+        #expect(await bridge.ownerMemoryWaiters.waiting.count == 1)
+        await shrink.value
+        head.cancel()
+        _ = await head.result
+        await bridge.shutdown()
+    }
+
     @Test func theQueueKeepsArrivalOrderAndKeepsAWakeForTheNextPark() async {
         var queue = OwnerMemoryQueue()
         let first = queue.enqueue()!, second = queue.enqueue()!
@@ -112,7 +214,8 @@ struct LocalMemoryWaitTests {
 
     /// `darkbloom start` passes the owner's settings to the launchd provider, so `0` turns each off on the service.
     @Test func darkbloomStartPassesTheSettingsToTheService() {
-        for name in [OwnerMemoryWait.environmentName, OwnerMemoryWait.firstTokenWaitEnvironmentName] {
+        for name in [OwnerMemoryWait.environmentName, OwnerMemoryWait.firstTokenWaitEnvironmentName,
+                     OwnerMemoryWait.sharedGrantWaitEnvironmentName] {
             #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(name), "\(name)")
             #expect(LaunchAgent.passthroughEnvironment(from: [name: "0"])[name] == "0", "\(name)")
         }
@@ -121,6 +224,19 @@ struct LocalMemoryWaitTests {
             #expect(!OwnerMemoryWait.waitsForFirstToken(environment: [OwnerMemoryWait.firstTokenWaitEnvironmentName: off]))
         }
         #expect(OwnerMemoryWait.waitsForFirstToken(environment: [OwnerMemoryWait.firstTokenWaitEnvironmentName: "1"]))
+        let shared = OwnerMemoryWait.sharedGrantWaitEnvironmentName
+        #expect(OwnerMemoryWait.waitsForSharedGrant(environment: [:]))
+        for off in ["0", " off ", "False", "no"] { #expect(!OwnerMemoryWait.waitsForSharedGrant(environment: [shared: off])) }
+        for on in ["1", "yes", "on", ""] { #expect(OwnerMemoryWait.waitsForSharedGrant(environment: [shared: on])) }
+    }
+
+    /// The busy 503's words for each setting: on, the default words; off, 0.10.17's.
+    @Test func theBusyWordsFollowTheSharedGrantSetting() {
+        #expect(LocalMemoryRefusal.busy(waitsForSharedGrant: true) == memoryBusyWords)
+        #expect(LocalMemoryRefusal.busy(waitsForSharedGrant: false)
+            == "This Mac is at capacity: requests already running are using the memory this request needs. "
+                + "Retry in a moment, when they finish.")
+        #expect(LocalMemoryRefusal.busy == memoryBusyWords, "the default is on")
     }
 
     /// Only a request larger than the memory holds with nothing else running reads as too large.

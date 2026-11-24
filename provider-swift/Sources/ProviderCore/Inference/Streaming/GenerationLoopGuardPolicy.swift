@@ -35,6 +35,11 @@ enum GenerationLoopGuardPolicy {
         "inkling2_loop",
     ]
 
+    /// Inkling 2's thresholds (red control: not applied yet).
+    static let inklingThresholds = GenerationLoopDetector.Thresholds(minSpan: 8_192, minTokens: 16_384)
+
+    static func thresholds(modelType: String) -> GenerationLoopDetector.Thresholds { .init() }
+
     /// Text that opens a tool call in any served family's output (Qwen, GLM,
     /// MiMo, Nemotron, Gemma 4, Harmony). The request's own parser adds its tags.
     static let genericToolCallMarkers = [

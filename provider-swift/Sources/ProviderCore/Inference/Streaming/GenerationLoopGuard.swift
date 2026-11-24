@@ -14,6 +14,8 @@ public struct GenerationLoopGuard: Sendable {
     /// The served model's `model_type`, for the log line and the metric.
     let modelType: String
     private var detector: GenerationLoopDetector
+    /// When the detector may fire.
+    var thresholds: GenerationLoopDetector.Thresholds { detector.thresholds }
     private let toolCallMarkers: [String]
     /// Bytes of which every marker holds at least one (`<`, `=`), or none when
     /// some marker holds neither: text without them can't contain a marker, so

@@ -49,6 +49,26 @@ struct Inkling2LoopGuardTests {
         #expect(try Self.guardFor(tools: true) != nil)
     }
 
+    /// Inkling thinks at length before a correct answer: its guard fires no
+    /// earlier than 16,384 tokens and only on a repeat spanning 8,192 tokens.
+    /// Other families keep the default thresholds.
+    @Test func guardWaitsLongerForInkling() throws {
+        let guarded = try #require(try Self.guardFor(tools: false))
+        #expect(guarded.thresholds == GenerationLoopGuardPolicy.inklingThresholds)
+        #expect(guarded.thresholds.minTokens == 16_384)
+        #expect(guarded.thresholds.minSpan == 8_192)
+        #expect(GenerationLoopGuardPolicy.thresholds(modelType: "gemma4") == GenerationLoopDetector.Thresholds())
+        var detector = GenerationLoopDetector(thresholds: GenerationLoopGuardPolicy.inklingThresholds)
+        let block = Array(1...8)
+        var fired: Int?
+        for round in 0..<3_000 where fired == nil {
+            if detector.append(block) != nil { fired = (round + 1) * block.count }
+        }
+        let tokens = try #require(fired)
+        #expect(tokens >= 16_384)
+        #expect(tokens < 16_384 + 2 * GenerationLoopGuardPolicy.inklingThresholds.checkEvery)
+    }
+
     @Test func constrainedOutputsHaveNoGuard() throws {
         #expect(try Self.guardFor(tools: true, choice: "required") == nil)
         #expect(try Self.guardFor(

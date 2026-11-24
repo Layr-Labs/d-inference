@@ -256,9 +256,15 @@ runs:
           export PROVIDER_TEST_SHARD="$QUALIFICATION_SHARD"
           export PROVIDER_TEST_REPORT_DIR="$RUNNER_TEMP/provider-sdk-shard"
         fi
+        # A shard runs a fifth of the suite and keeps the 30-minute deadline. The
+        # unsharded lane (SDK 27 release preparation on a pull request) runs the
+        # whole suite serially on one Mac and gets 45 minutes, which still ends
+        # inside the routed job's 60-minute limit.
+        timeout=1800
+        [ -n "$QUALIFICATION_SHARD" ] || timeout=2700
         python3 ../scripts/run-provider-test-watchdog.py \
           --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
-          --diagnostic-after-seconds 900 --timeout-seconds 1800 \
+          --diagnostic-after-seconds 900 --timeout-seconds "$timeout" \
           -- ../scripts/run-provider-tests.sh
     - name: Restore pinned MiMo audio codec
       if: env.CI_ACTIONS_CACHE != 'off' && inputs.lane == 'qualification' && steps.lane.outputs.last == 'true'

@@ -3,6 +3,7 @@
 
 import Foundation
 import MLXLLM
+import MLXVLM
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -178,10 +179,12 @@ extension EngineV2Factory {
         }
         let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity, physicalBytes: physicalBytes)
         try configureNativeQwen4Batching(model: model, environment: environment)
-        // Flint is qualified only on paged attention. Automatic selection is an
-        // explicit paged request: no crash-guard or failure fallback, and any
-        // resolution other than paged refuses the load below.
-        let kvBackend: EngineV2KVBackendSelection = model is FlintModel && kvBackend == .auto ? .paged : kvBackend
+        // Flint is qualified only on paged attention, and Inkling 2 has no
+        // contiguous cache at all (owner rule: paged KV only). Automatic
+        // selection is an explicit paged request: no crash-guard or failure
+        // fallback, and any resolution other than paged refuses the load below.
+        let pagedOnly = model is FlintModel || model is Inkling2Model || model is MLXVLM.Inkling2VLM
+        let kvBackend: EngineV2KVBackendSelection = pagedOnly && kvBackend == .auto ? .paged : kvBackend
 
         guard let adapter = ProductionModelAdapter(model: model) else {
             throw EngineV2ProductionError.unsupportedModel(
@@ -222,10 +225,10 @@ extension EngineV2Factory {
             fallbackReason = "crash_loop_guard"
         }
 
-        if model is FlintModel, resolvedKind != .paged {
+        if pagedOnly, resolvedKind != .paged {
             throw EngineV2ProductionError.pagedUnavailable(
-                "Flint requires the paged KV backend; resolved \(resolvedKind.rawValue)"
-                    + (fallbackReason.map { " (\($0))" } ?? ""))
+                "\(model is FlintModel ? "Flint" : "Inkling 2") requires the paged KV backend; resolved "
+                    + resolvedKind.rawValue + (fallbackReason.map { " (\($0))" } ?? ""))
         }
 
         if let glm = glm5Next {

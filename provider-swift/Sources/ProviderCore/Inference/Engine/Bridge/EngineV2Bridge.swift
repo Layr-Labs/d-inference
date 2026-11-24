@@ -687,6 +687,16 @@ public actor EngineV2Bridge {
     /// can finish in one batched step, which a re-armed one-shot gate can miss.
     var _testPersistentBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
     var _testOnCancelledSettlementWait: (@Sendable () -> Void)?
+    /// Red control: the test seams only, without the fix.
+    var _testBeforeServiceRelease: (@Sendable () async -> Void)?
+
+    func _testInstallBeforeServiceRelease(_ hook: @escaping @Sendable () async -> Void) {
+        _testBeforeServiceRelease = hook
+    }
+
+    func _testRequestReleaseWaiterCount() -> Int { 0 }
+
+    func _testSetRequestReleaseWaitBound(_ bound: Duration) {}
 
     func _testInstallPersistentTerminalGate(_ gate: (@Sendable (CBv2Usage) async -> Void)?) {
         _testPersistentBeforeNativeTerminal = gate

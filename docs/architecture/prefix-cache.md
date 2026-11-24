@@ -662,11 +662,12 @@ and the daemon state counts them (`promptCacheSkippedToolCallNull`)
 
 A Gemma 4 request is served cold the same way when its declared tools carry a
 parameter whose `string`-first union of `string` and one other scalar type now
-renders as that other type (`Gemma4ToolSchemaEnforcement` invariant 7) while
+renders as that other type, or a parameter declared without a type that now
+renders untyped (`Gemma4ToolSchemaEnforcement` invariants 7 and 8), while
 normalization v9 renders `STRING`. The check runs the shared tool path once
 more on the declared tools, a superset of the rendered ones, and reports
-whether invariant 7 changed a render type
-(`ChatTemplateFixes.changesGemmaToolUnionType`,
+whether invariant 7 or 8 changed a render type
+(`ChatTemplateFixes.changesGemmaToolRenderType`,
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/GemmaToolUnionTypeCache.swift`);
 its counter is `promptCacheSkippedToolUnionType`.
 

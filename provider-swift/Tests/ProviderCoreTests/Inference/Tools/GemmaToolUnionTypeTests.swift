@@ -14,22 +14,33 @@ struct GemmaToolUnionTypeTests {
     /// The request as the serving entry point decodes it (the shared repair
     /// runs here), with `schema` as the one parameter `value` of tool `f`.
     private static func request(_ schema: [String: Any]) throws -> OpenAIChatCompletionRequest {
-        try ProviderLoop.decodeOpenAIRequest(JSONSerialization.data(withJSONObject: [
+        try ProviderLoop.decodeOpenAIRequest(body(schema))
+    }
+
+    private static func body(_ schema: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: [
             "model": "gemma-4-26b-qat-4bit",
             "messages": [["role": "user", "content": "Go."]],
             "tools": [["type": "function", "function": [
                 "name": "f", "description": "d",
                 "parameters": ["type": "object", "properties": ["value": schema], "required": ["value"]],
             ]]],
-        ] as [String: Any]))
+        ] as [String: Any])
+    }
+
+    /// The caller's declarations as sent, as the serving path reads them.
+    private static func declared(_ schema: [String: Any]) throws -> [OpenAITool]? {
+        ProviderLoop.extractChatTemplateControls(from: try body(schema)).declaredTools
     }
 
     /// The render type of every property, as the served template prints it
     /// (`value['type'] | upper`), over the tools `normalizeTools` gives the
     /// template.
-    private static func renderTypes(_ request: OpenAIChatCompletionRequest, modelType: String) throws -> String {
+    private static func renderTypes(
+        _ request: OpenAIChatCompletionRequest, modelType: String, declared: [OpenAITool]? = nil
+    ) throws -> String {
         let tools = ChatTemplateFixes.normalizeTools(
-            request.tools?.map { $0.toolSpec() }, context: .init(modelType: modelType))
+            request.tools?.map { $0.toolSpec() }, context: .init(modelType: modelType), declared: declared)
         let template = try Template(
             "{%- for tool in tools -%}{%- for k, v in tool.function.parameters.properties | dictsort -%}"
                 + "{{ k }}={{ v['type'] | upper }}{%- if v['nullable'] -%}?{%- endif -%};"
@@ -103,6 +114,45 @@ struct GemmaToolUnionTypeTests {
         #expect(value?["type"] as? String == "string")
     }
 
+    // MARK: - Properties declared without a type
+
+    @Test("a property declared without a type renders an empty type for Gemma")
+    func typelessPropertyRendersEmptyType() throws {
+        for schema: [String: Any] in [[:], ["description": "Any value."]] {
+            let request = try Self.request(schema)
+            let declared = try Self.declared(schema)
+            #expect(try Self.renderTypes(request, modelType: "gemma4", declared: declared) == "value=;", "\(schema)")
+            // Without the declarations as sent the injected type stays.
+            #expect(try Self.renderTypes(request, modelType: "gemma4") == "value=STRING;", "\(schema)")
+            #expect(GemmaToolUnionTypeCache.changesRender(request, modelType: "gemma4", declared: declared))
+            #expect(!GemmaToolUnionTypeCache.changesRender(request, modelType: "gemma4"))
+        }
+        let nested: [String: Any] = ["type": "object", "properties": ["note": [:] as [String: Any]]]
+        #expect(try Self.renderTypes(Self.request(nested), modelType: "gemma4", declared: Self.declared(nested))
+            == "value=OBJECT;value.note=;")
+    }
+
+    @Test("typed, enum-only and structured declarations keep their render type")
+    func typedDeclarationsKeepTheirType() throws {
+        let kept: [([String: Any], String)] = [
+            (["type": "string"], "STRING"),
+            (["enum": ["a", "b"]], "STRING"),
+            (["items": ["type": "integer"]], "ARRAY"),
+            (["properties": ["x": ["type": "integer"]]], "OBJECT;value.x=INTEGER"),
+        ]
+        for (schema, expected) in kept {
+            let request = try Self.request(schema)
+            let declared = try Self.declared(schema)
+            #expect(try Self.renderTypes(request, modelType: "gemma4", declared: declared) == "value=\(expected);",
+                    "\(schema)")
+            #expect(!GemmaToolUnionTypeCache.changesRender(request, modelType: "gemma4", declared: declared),
+                    "\(schema)")
+        }
+        // Other families keep the shared repair's type for a typeless property.
+        let request = try Self.request([:])
+        #expect(!GemmaToolUnionTypeCache.changesRender(request, modelType: "gpt_oss", declared: try Self.declared([:])))
+    }
+
     // MARK: - Served cold
 
     private static let planned = RemotePrefixCacheContext(cacheScope: "scope-a", cacheReceiptNonce: "nonce-a")
@@ -114,6 +164,13 @@ struct GemmaToolUnionTypeTests {
             Self.planned, for: try Self.request(["type": ["string", "integer"]]), modelType: modelType)
         #expect(served.servedCold)
         #expect(served.context.receiptNonce == nil && served.context.scope == nil && !served.context.cacheEnabled)
+    }
+
+    @Test("a planned Gemma request with a property declared without a type is served cold")
+    func typelessPropertyServesCold() throws {
+        let served = GemmaToolUnionTypeCache.servingContext(
+            Self.planned, for: try Self.request([:]), modelType: "gemma4", declared: try Self.declared([:]))
+        #expect(served.servedCold && served.context.receiptNonce == nil && !served.context.cacheEnabled)
     }
 
     @Test("an unchanged render, an unplanned request or one already served cold keeps its context")

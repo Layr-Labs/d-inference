@@ -36,9 +36,10 @@ enum Gemma4TemplateFix {
     }
 
     static func normalizeTools(
-        _ tools: [[String: any Sendable]]
+        _ tools: [[String: any Sendable]],
+        declared: [[String: any Sendable]]? = nil
     ) -> [[String: any Sendable]] {
-        Gemma4ToolSchemaEnforcement.normalizeToolSpecs(tools)
+        Gemma4ToolSchemaEnforcement.normalizeToolSpecs(tools, declared: declared)
     }
 
     static func extraEOSTokenIds(tokenToId: (String) -> Int?) -> Set<Int> {

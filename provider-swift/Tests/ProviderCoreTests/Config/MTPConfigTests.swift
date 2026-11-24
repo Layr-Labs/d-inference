@@ -192,6 +192,29 @@ struct MTPConfigKeyTests {
             == limit("Apple M5 Ultra", MTPAutomaticVerificationPolicy.gemmaDraftPromptLimit))
     }
 
+    /// The build default can be switched off in one line
+    /// (`gemmaPromptLimitOnByDefault`). Off, an unset setting gives no limit,
+    /// so the engine runs as it did before the limit existed; an explicit
+    /// positive setting still applies it, and `0` stays off.
+    @Test func gemmaPromptLimitDefaultCanBeSwitchedOff() {
+        func limit(_ setting: MTPAutomaticVerificationPolicy.GemmaDraftPromptLimit, _ onByDefault: Bool) -> Int? {
+            MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
+                modelID: MTPAcceptancePolicy.gemmaQATModelID, chipName: "Apple M5 Ultra",
+                twoDrafts: true, limit: setting, onByDefault: onByDefault)
+        }
+        #expect(MTPAutomaticVerificationPolicy.gemmaPromptLimitOnByDefault)
+        #expect(limit(.chipDefault, true) == 16384)
+        #expect(limit(.chipDefault, false) == nil)
+        #expect(limit(.tokens(8192), false) == 8192)
+        #expect(limit(.off, true) == nil)
+        #expect(limit(.off, false) == nil)
+        for chip in ["Apple M5 Max", "Apple M3 Ultra", "Unknown"] {
+            #expect(MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
+                modelID: MTPAcceptancePolicy.gemmaQATModelID, chipName: chip, twoDrafts: true,
+                limit: .chipDefault, onByDefault: true) == nil, "\(chip)")
+        }
+    }
+
     @Test func gemmaDraftPromptLimitParsesTheEnvironment() {
         typealias Limit = MTPAutomaticVerificationPolicy.GemmaDraftPromptLimit
         for raw in [nil, "", " ", "abc", "-5", "4096.5", "1e4"] as [String?] {

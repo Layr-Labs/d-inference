@@ -111,19 +111,24 @@ public enum MTPAutomaticVerificationPolicy {
     /// On a quiet M5 Ultra a lone row's two-draft rounds lose to plain decode
     /// above this prompt length.
     static let gemmaM5UltraMaxDraftPromptTokens = 16384
+    /// Whether an unset `DARKBLOOM_GEMMA_MTP_MAX_PROMPT_TOKENS` applies the
+    /// chip's limit. False gives every chip no limit unless the operator sets
+    /// a positive value.
+    static let gemmaPromptLimitOnByDefault = true
 
     /// The prompt-length limit for drafting for `modelID` on this chip, or nil
     /// for no limit.
     static func maxDraftPromptTokens(
         modelID: String?, chipName: String? = nil, hasBenchmarkVerificationOverride: Bool = false,
-        twoDrafts: Bool? = nil, limit: GemmaDraftPromptLimit? = nil
+        twoDrafts: Bool? = nil, limit: GemmaDraftPromptLimit? = nil,
+        onByDefault: Bool = gemmaPromptLimitOnByDefault
     ) -> Int? {
         guard modelID == MTPAcceptancePolicy.gemmaQATModelID, !hasBenchmarkVerificationOverride,
             twoDrafts ?? gemmaTwoDraftsEnabled,
             case (.m5, .ultra) = parseChipIdentity(resolvedChipName(chipName))
         else { return nil }
         switch limit ?? gemmaDraftPromptLimit {
-        case .chipDefault: return gemmaM5UltraMaxDraftPromptTokens
+        case .chipDefault: return onByDefault ? gemmaM5UltraMaxDraftPromptTokens : nil
         case .off: return nil
         case .tokens(let tokens): return tokens
         }

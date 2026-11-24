@@ -64,9 +64,13 @@ enum ChatTemplateFixes {
         return Qwen35TemplateFix.normalizeMessages(messages)
     }
 
+    /// `declared` are the caller's tool declarations as sent, before ingress
+    /// normalization (`ChatTemplateControls.declaredTools`); Gemma's render
+    /// reads them (`Gemma4ToolSchemaEnforcement` invariant 8).
     static func normalizeTools(
         _ tools: [[String: any Sendable]]?,
-        context: ChatTemplateFixContext
+        context: ChatTemplateFixContext,
+        declared: [OpenAITool]? = nil
     ) -> [[String: any Sendable]]? {
         let metadataScoped = normalizeToolMetadata(tools, context: context)
         if MiMoV26TemplateFix.applies(to: context) {
@@ -80,22 +84,24 @@ enum ChatTemplateFixes {
             return GPTOSSHarmonyTemplateFix.normalizeTools(sanitized)
         }
         if usesGemmaInputFormat(context) {
-            return Gemma4TemplateFix.normalizeTools(sanitized)
+            return Gemma4TemplateFix.normalizeTools(sanitized, declared: declared?.map { $0.toolSpec() })
         }
         return sanitized
     }
 
     /// Whether `normalizeTools` gives these tools a Gemma render type that
     /// differs from the shared normalizer's (`Gemma4ToolSchemaEnforcement`
-    /// invariant 7), on the same input path.
-    static func changesGemmaToolUnionType(
+    /// invariants 7 and 8), on the same input path.
+    static func changesGemmaToolRenderType(
         _ tools: [[String: any Sendable]]?,
-        context: ChatTemplateFixContext
+        context: ChatTemplateFixContext,
+        declared: [OpenAITool]? = nil
     ) -> Bool {
         guard usesGemmaInputFormat(context),
             let sanitized = sanitizeTools(normalizeToolMetadata(tools, context: context))
         else { return false }
-        return Gemma4ToolSchemaEnforcement.normalizeToolSpecsReportingUnionType(sanitized).changedUnionType
+        return Gemma4ToolSchemaEnforcement.normalizeToolSpecsReportingRenderType(
+            sanitized, declared: declared?.map { $0.toolSpec() }).changedRenderType
     }
 
     /// Native media producers preserve their own message/schema representation,

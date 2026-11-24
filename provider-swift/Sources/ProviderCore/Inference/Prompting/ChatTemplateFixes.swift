@@ -97,13 +97,13 @@ enum ChatTemplateFixes {
     }
 
     /// Sanitize a chat-template `tools` array (or `nil`), dropping null /
-    /// `Optional` leaves from each tool spec. `nil` in => `nil` out, so the
+    /// `Optional` leaves from each tool spec outside its parameter schema. `nil` in => `nil` out, so the
     /// render context still omits `tools` entirely for tool-less requests.
     static func sanitizeTools(
         _ tools: [[String: any Sendable]]?
     ) -> [[String: any Sendable]]? {
         guard let tools else { return nil }
-        return tools.map(sanitizeJinjaObject)
+        return tools.map(sanitizeJinjaTool)
     }
 
     private static func droppingNemotronOnlyMetadata(

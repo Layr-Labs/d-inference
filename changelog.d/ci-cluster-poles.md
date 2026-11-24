@@ -1,5 +1,0 @@
-### Provider CI: shorter last cluster jobs
-
-- Cluster Runtime Tests shard 6 runs the worker package's request lifecycle tests (`WorkerTests`, `WorkerLaneTests`) while it waits for the cluster build: it starts them in the background, in a debug build of their own outside the checkout, and waits for their result before its runtime tests, which run either way. Cluster Release Build Checks ran them after its release build, which made it the last job of run 44927907327 (14.5 min).
-- Cluster Runtime Tests shards 1, 4 and 5 ran 267 to 395 s, the other shards 169 to 243 s. `qwen-tp-aqv-gpu` moves from shard 1 to shard 7's GPU group (the GLM paged-KV selection moves from there to shard 3's), `base-gemma-runtime` from shard 4 to shard 1 after the share probe, `base-gemma-prefix` from shard 4 to shard 6, `base-qwen-tp-cpu` from shard 5 to shard 2 and the batch-session partition test from shard 5 to shard 7. Every runtime shard now plans under about 300 s.
-- Every planned test still runs exactly once, on the same lanes and job count.

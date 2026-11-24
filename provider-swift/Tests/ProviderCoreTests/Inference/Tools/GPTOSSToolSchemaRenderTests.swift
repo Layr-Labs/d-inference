@@ -250,9 +250,20 @@ struct GPTOSSToolSchemaRenderTests {
             let unplanned = RemotePrefixCacheContext(cacheScope: nil, cacheReceiptNonce: nil)
             #expect(!GPTOSSToolSchemaCache.servingContext(
                 unplanned, for: request, declared: declared, modelType: "gpt_oss").servedCold)
-            // Another family keeps its plan.
-            #expect(!GPTOSSToolSchemaCache.servingContext(
-                planned, for: request, declared: declared, modelType: "qwen3_5").servedCold)
+        }
+        // Another family keeps its plan, with the caller's tools or repaired
+        // ones. The family is the build's (model id and model type, as the
+        // Harmony template path selects it), so its own id is used here.
+        for (modelId, modelType) in [("qwen3.5-9b", "qwen3_5"), ("qwen3.6-35b-a3b", "qwen3_5_moe"),
+                                     ("gemma-4-26b", "gemma4"), ("nvidia-nemotron-3.5-lightning", "nemotron_h")] {
+            let original = try Self.body(["type": ["string", "integer"]], model: modelId)
+            for body in [original, Self.repaired(original)] {
+                let request = try ProviderLoop.decodeOpenAIRequest(body)
+                let declared = ProviderLoop.extractChatTemplateControls(from: body).declaredTools
+                let served = GPTOSSToolSchemaCache.servingContext(
+                    planned, for: request, declared: declared, modelType: modelType)
+                #expect(!served.servedCold && served.context.scope == "scope", "\(modelType)")
+            }
         }
     }
 

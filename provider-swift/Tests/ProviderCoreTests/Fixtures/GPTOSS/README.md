@@ -20,3 +20,10 @@ weights or model runtime code are included in this fixture.
 tool schema nested 64 levels deep, the most a request may carry, on the render
 stack (`TemplateRenderStack`). Its `render_typescript_type` macro needs the most
 stack per schema level of the served templates.
+
+`tool-schema-corpus.json` is ours: the 1,336 distinct `function.parameters`
+objects of a realistic tool-call schema test corpus (type lists, `anyOf` /
+`oneOf` / `allOf`, `{}`, boolean schemas, `enum` / `const`, `$ref`, nested
+objects and arrays), with each string `description` and `title` replaced by
+`d`. `GPTOSSToolSchemaRenderTests` renders every one through the template above
+as the ingress repair forwards it and checks the render is unchanged.

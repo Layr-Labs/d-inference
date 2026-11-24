@@ -72,8 +72,8 @@ struct GPTOSSToolSchemaRenderTests {
 
     /// The type the prompt shows for parameter `value`.
     private static func valueType(_ prompt: String) throws -> String {
-        let start = try #require(prompt.range(of: "\nvalue: "), prompt)
-        let end = try #require(prompt.range(of: ",\n}) => any;", range: start.upperBound..<prompt.endIndex), prompt)
+        let start = try #require(prompt.range(of: "\nvalue: "), "\(prompt)")
+        let end = try #require(prompt.range(of: ",\n}) => any;", range: start.upperBound..<prompt.endIndex), "\(prompt)")
         return String(prompt[start.upperBound..<end.lowerBound])
     }
 

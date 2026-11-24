@@ -197,6 +197,32 @@ struct DeclaredToolArgumentTests {
             == (try Self.json(["const": ["enum": [1]], "type": "object"])))
     }
 
+    /// The strict check accepts what the call parser reads under the schemas
+    /// the coordinator forwards (a render type beside a mixed enum, a `not`
+    /// of that type, a condition, a union), and a client's own type that
+    /// agrees with every branch still holds.
+    @Test func theStrictCheckAcceptsWhatTheParserReadsUnderRenderTypes() throws {
+        let (_, prepared) = try Self.ingress(["type": "string"])
+        let cases: [([String: Any], MLXLMCommon.JSONValue, Bool)] = [
+            (["enum": ["default", "inherit", "archive", -1], "type": "string"], .int(-1), true),
+            (["enum": ["default", "inherit", "archive", -1], "type": "string"], .string("archive"), true),
+            (["enum": ["default", "inherit", "archive", -1], "type": "string"], .int(2), false),
+            (["not": ["type": "string"], "type": "string"], .int(-2500), true),
+            (["if": ["type": "integer"], "then": ["type": "integer", "minimum": -100_000_000],
+              "else": ["type": "string"], "type": "string"], .int(-2500), true),
+            (["if": ["type": "integer"], "then": ["type": "integer", "minimum": -100_000_000],
+              "else": ["type": "string"], "type": "string"], .int(-200_000_000), false),
+            (["anyOf": [["type": "string"], ["type": "integer"]], "type": "string"], .int(-4200), true),
+            // A client's own type still holds where no branch is typed otherwise.
+            (["type": "string", "not": ["type": "integer"]], .int(5), false),
+            (["type": "string", "if": ["minLength": 2], "then": ["pattern": "^a"]], .int(5), false),
+        ]
+        for (schema, value, accepted) in cases {
+            let parameters = try Self.json(Self.parameters(schema))
+            #expect(Self.accepts(value, parameters: parameters, prepared: prepared) == accepted, "\(schema) \(value)")
+        }
+    }
+
     @Test func glmKeepsReadingItsDeclarationsAsSent() throws {
         let inbound = try ProviderLoop.decodeInboundChatRequest(Self.body(["enum": [1, 2]]))
         let prepared = try ToolChoicePromptPolicy.prepare(inbound.request, modelType: Self.modelType)

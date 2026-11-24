@@ -7,6 +7,8 @@ import MLXLMCommon
 enum QwenParserLiteralReading {
     static func literal(_ text: String, schema: [String: MLXLMCommon.JSONValue]) -> MLXLMCommon.JSONValue? { nil }
 
+    static func rendersSiblingType(_ schema: [String: MLXLMCommon.JSONValue]) -> Bool { false }
+
     static func admitsLiteralType(_ schema: [String: MLXLMCommon.JSONValue]) -> Bool { false }
 
     static func canonicalType(_ name: String) -> String? {

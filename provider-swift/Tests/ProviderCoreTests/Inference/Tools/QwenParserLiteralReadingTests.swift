@@ -20,10 +20,20 @@ struct QwenParserLiteralReadingTests {
         #"{"oneOf":[{"type":"string"},{"type":"integer"},{"type":"number"}]}"#,
         #"{"type":["string","null"]}"#, #"{"anyOf":[{"type":"string"},{"type":"boolean"}]}"#,
         #"{"type":["string","integer"],"nullable":true}"#,
+        #"{"anyOf":[{"type":"string"},{"type":"integer"}],"type":"string"}"#,
+        #"{"anyOf":[{"type":"string"},{"type":"boolean"}],"type":"string"}"#,
+        #"{"oneOf":[{"type":"string"},{"type":"number"}],"type":"string"}"#,
+        #"{"type":"string","nullable":true}"#,
+        #"{"enum":["default","inherit","archive",-1],"type":"string"}"#, #"{"not":{"type":"string"},"type":"string"}"#,
+        #"{"if":{"type":"integer"},"then":{"type":"integer","minimum":-100000000},"else":{"type":"string"},"type":"string"}"#,
+        #"{"type":"string","anyOf":[{"minLength":1},{"pattern":"^a"}]}"#,
+        #"{"type":"integer","nullable":true,"anyOf":[{"type":"integer"},{"type":"string"},{"type":"null"}]}"#,
     ]
     static let probes = [
         "5", "2.5", "-2500", "true", "false", "null", "001", "+5", "1e3", "-0", "12.50", "abc", " 5", "15",
-        "True", "False", "None", "TRUE", "nil", " null", "NULL", "none", "yes",
+        "True", "False", "None", "TRUE", "nil", " null", "NULL", "none", "yes", "archive", "-1",
+        "12345678901234567890", "0.12345678901234567891", #"{"a":1,"b":[true,null]}"#, "[1,2.5]",
+        #"{"n":12345678901234567890}"#, #"{"a":"#, "{}", "[]",
     ]
 
     /// A schema as a request's tool map carries it.

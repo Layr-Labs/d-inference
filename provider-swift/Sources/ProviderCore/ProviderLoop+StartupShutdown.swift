@@ -53,6 +53,8 @@ extension ProviderLoop {
 
         let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
         if !drained { await cancelAllInflight(cause: .stoppedOnThisMac) }
+        // Host memory: released even when a native owner keeps its models.
+        kvBudget.memoryOnlyPool.releaseAll(reason: .shutdown)
         await coordinatorClient?.shutdown()
         guard await drainNativeMiMoOwners() else {
             writeDaemonState()
@@ -76,6 +78,7 @@ extension ProviderLoop {
     /// waiting for such a slot (or one whose unload refuses) instead of never
     /// exiting, which left only `--force` to stop the provider.
     internal func unloadAllModelsForShutdown() async {
+        kvBudget.memoryOnlyPool.releaseAll(reason: .shutdown)
         var abandoned = Set<String>()
         while let modelID = modelSlots.keys.sorted().first(where: { !abandoned.contains($0) }) {
             // Another task may own this unload; then only the slot's removal ends the wait.

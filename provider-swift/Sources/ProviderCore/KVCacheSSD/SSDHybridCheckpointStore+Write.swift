@@ -54,6 +54,10 @@ extension SSDHybridCheckpointStore {
         _ source: CBv2CompleteCheckpointExport, requestID: CBv2RequestID?,
         tokens: [Int], cacheSalt: String?, completion: @escaping @Sendable ([Int]) -> Void
     ) {
+        if MemoryOnlyReceipt.contains(requestID), let memoryOnlyTier {
+            return memoryOnlyTier.donate(
+                source, requestID: requestID, tokens: tokens, cacheSalt: cacheSalt, completion: completion)
+        }
         // A memory-only request's capture is released unwritten; it is not a
         // donation opportunity, so it settles no outcome.
         guard !MemoryOnlyReceipt.refusesEngineCall(requestID) else {

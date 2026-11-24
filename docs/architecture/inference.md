@@ -2602,6 +2602,10 @@ mismatch, or when the served template rejects a prompt the cache rendered. Reuse
 never crosses a cache scope; `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the
 unchanged path
 ([configuration](../reference/configuration.md#prompt-preparation-and-admission)).
+A piece unused for `DARKBLOOM_TTFT_PROMPT_CACHE_TTL_SECONDS` (30 minutes by
+default) is never returned again, and a sweep at least once a minute removes it,
+also on an idle Mac. Reuse restarts its TTL; `0` keeps pieces until they are
+displaced (`PromptPieceTokenStore`).
 
 Decoded text keeps the spacing the tokens spell, unless the tokenizer config sets
 `clean_up_tokenization_spaces` to true. swift-transformers reads an absent key as
@@ -2736,14 +2740,21 @@ bridge with the scope (`ProviderLoop.handleInferenceRequest`, the scheduler
 engine and the Nemotron Super owner pass it on), and
 `PrefixCacheSubmissionPolicy` decides there what it changes
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+CachePolicy.swift`).
-A `memory_only` request runs with `prefixCacheEnabled` off, on one Mac and on a
-pair alike: the engine then makes no prefix lookup, capture or donation, the
-bridge stages nothing and registers no SSD ready receipt or donation demand,
-the scheduler skips the prompt-token piece cache, and a pair's ranks get
-`ClusterWorkerPrefixCache.disabled`. Its receipt, were its cache on, would be
-minted in the memory-only range, which every SSD store refuses
-(`MemoryOnlyReceipt`). Its answer and usage are otherwise those of an
-uncached request. The local API serves its requests under
+A `memory_only` text request on a single-Mac slot with a RAM-only tier keeps
+its prefix cache. Its receipt is minted in the memory-only range
+(`MemoryOnlyReceipt`), the bridge stages from the slot's
+`MemoryOnlyCheckpointTier`, and the SSD store hands the engine's take and
+donation for that receipt to the tier
+([RAM-only tier](prefix-cache.md#ram-only-tier-for-memory_only-requests)).
+Everywhere else (media, a pair, a slot without the tier or with a tier
+budget of 0) it runs with `prefixCacheEnabled` off: the engine then makes no
+prefix lookup, capture or donation, and a pair's ranks get
+`ClusterWorkerPrefixCache.disabled`. In both
+cases the bridge stages nothing from the SSD tier and registers no SSD ready
+receipt or donation demand, the scheduler skips the prompt-token piece cache,
+and no SSD read, write or index path accepts the receipt. Its answer and usage
+are otherwise those of an uncached request, or of a cache hit with tier
+`memory`. The local API serves its requests under
 `DARKBLOOM_LOCAL_CACHE_POLICY` instead ([local
 API](../provider/direct-mode.md#cache-policy-of-local-requests)).
 

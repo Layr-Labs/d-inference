@@ -4,8 +4,10 @@ import MLXLMCommon
 /// Where one remote request's prompt prefix may be kept, from the sealed
 /// `_darkbloom_cache.cache_policy` key. A `memoryOnly` request never reads,
 /// writes, stages, donates or restores anything on the SSD tier, and keeps
-/// nothing in a prefix tier that outlives it without a bound: it runs with its
-/// prefix cache off (`PrefixCacheSubmissionPolicy`).
+/// nothing in a prefix tier that outlives it without a bound: it reuses
+/// prefixes only through a slot's RAM-only tier (`MemoryOnlyCheckpointTier`),
+/// and runs with its prefix cache off where the slot has none
+/// (`PrefixCacheSubmissionPolicy`).
 public enum RequestCachePolicy: String, Sendable, Equatable, CaseIterable {
     case `default`
     case memoryOnly = "memory_only"
@@ -51,10 +53,10 @@ public enum RequestCachePolicy: String, Sendable, Equatable, CaseIterable {
 /// The receipt IDs of a `memoryOnly` request that runs with a prefix cache
 /// on: `bit` set and the seeded engine-ID tag (`EngineV2Bridge.seededIdTagBit`)
 /// clear, a range no ordinary receipt (counting up from 1) and no engine ID
-/// reaches. Each SSD-tier entry point refuses such a request from the ID
-/// alone, calls the engine makes after the request's terminal included.
-/// While a `memoryOnly` request runs with its cache off
-/// (`PrefixCacheSubmissionPolicy`), none is minted and the counts stay 0.
+/// reaches. Each SSD-tier entry point refuses such a request, or hands it to
+/// the slot's RAM-only tier, from the ID alone, calls the engine makes after
+/// the request's terminal included. While a `memoryOnly` request runs with its
+/// cache off (`PrefixCacheSubmissionPolicy`), none is minted.
 enum MemoryOnlyReceipt {
     static let bit: UInt64 = 1 << 62
 

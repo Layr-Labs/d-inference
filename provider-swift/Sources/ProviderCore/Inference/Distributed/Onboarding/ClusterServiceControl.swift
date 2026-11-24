@@ -462,13 +462,16 @@ extension ClusterService {
     /// This Mac's verify-teardown summary (no cluster process, wired memory at its idle baseline, no journal or bootstrap
     /// left), "<Mac>: …" with the Mac named `mac` (the screen's words), else by its hardware (an answer to the other Mac,
     /// which names it as its screen does).
-    static func teardownLines(mac: String? = nil) -> [String] {
+    /// Red control: the test seams of the fix, without its recovery (the sweep's reasons, as before).
+    static func teardownLines(mac: String? = nil,
+                              sweep: () throws -> [String] = { try ClusterOrphanSweep.verify(baselineWiredBytes: nil, samples: 3).reasons },
+                              recoverLeftover: () -> Void = {}) -> [String] {
         let name = mac ?? ClusterPairingProvider.displayName(chipName: (try? HardwareDetector.detect().chipName) ?? "Mac")
         do {
-            let report = try ClusterOrphanSweep.verify(baselineWiredBytes: nil, samples: 3)
+            let left = try sweep()
             // The part the cluster service started is a cluster process too, also when it is no cluster worker or owner
             // (the solo server, the rank 0 server process) and when the service that started it is gone.
-            var reasons = report.reasons.map(Self.plainTeardownReason)
+            var reasons = left.map(Self.plainTeardownReason)
             if let part = recordedPart(published()) {
                 reasons.append("this Mac's \(part.solo ? "single-Mac server" : "part of the model") is still running")
             }

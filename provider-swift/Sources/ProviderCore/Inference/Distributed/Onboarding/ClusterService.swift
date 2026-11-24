@@ -176,7 +176,7 @@ public final class ClusterService: @unchecked Sendable {
     // for a busy command lock or the other Mac not answering, doesn't count), and again every minute while the pair is
     // offered or serves locally with its approval set aside (`checkApproval`); a test moves the next check instead of
     // waiting for it.
-    private var approvalChecked = false
+    var approvalChecked = false
     private var approvalInFlight = false
     var nextApprovalCheck = Date.distantPast
     private var approvalWatch = ClusterApprovalCheck.Watch()

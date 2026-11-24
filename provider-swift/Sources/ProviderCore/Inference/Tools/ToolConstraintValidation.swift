@@ -485,7 +485,13 @@ enum ToolConstraintValidation {
         {
             return true
         }
-        if !unionAsserted, !finiteMatched, !refBearing {
+        // A render type the ingress repair wrote beside a mixed `enum`, a `not`
+        // of that type or an `if`/`then`/`else` typed otherwise (and beside a
+        // union) does not hold a non-null value the node admits, as the call
+        // parser reads it (`QwenParserLiteralReading.rendersSiblingType`, the
+        // SDK's `ToolArgumentNormalization.rendersSiblingType`).
+        let renderHint = value != .null && QwenParserLiteralReading.rendersSiblingType(object)
+        if !unionAsserted, !finiteMatched, !refBearing, !renderHint {
             let types = schemaTypes(object["type"])
             if !types.isEmpty,
                 !types.contains(where: { matches(value, type: $0) })

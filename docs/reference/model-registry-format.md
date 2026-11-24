@@ -118,6 +118,17 @@ their existing file-list policy is unchanged. Config inspection is bounded to
 one MiB and regular files, including ordinary HF blob symlinks. This file-list
 selection does not validate receipt contents or qualify the model for serving.
 
+Inkling 2 Mini (`inkling2_loop`) needs no model-specific entry: every file its
+load path reads is already selected, including its separate DSpark drafter
+`mtp.safetensors` (a weight, though its target index omits it) and
+`tiktoken/tokenizer.model` (by basename, through the recursive walk). Its
+`hf_quant_config.json` is not read and not selected; a loader that starts
+reading it must add it here and in the platform's manifest spec in the same
+change. Its media advertisement is still images only
+(`ModelMediaPolicy.advertisesVideo`), and its template self-check renders no
+video part (`TemplateRenderCheck.renderOK`); see the
+[contract reference](inkling2-mini-support.md).
+
 `aggregate_sha256` = hex(SHA-256(concat(raw 32-byte digest of each file, files
 sorted by `path` ascending))). Implemented identically in
 `AggregateManifestFileHashes` ([coordinator/internal/api/catalog/registration/registry_validation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/api/catalog/registration/registry_validation.go)),

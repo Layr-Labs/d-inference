@@ -845,12 +845,23 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
         try await nativeCompletePrefixOwner(mtp: true, requireInteriorPublication: true, requireReuse: true)
     }
 
+    /// The catalog's sampling defaults (temperature 1, top-p 0.95). A sampled
+    /// MiMo request never speculates, yet it must publish its interior
+    /// boundary, and a seeded repeat must reuse it and continue exactly.
+    func testNativeCompletePrefixONSampledRequestPublishesAndIsReusedThroughTheBridge() async throws {
+        try await nativeCompletePrefixOwner(mtp: true, requireInteriorPublication: true, requireReuse: true,
+                                            sampled: true)
+    }
+
     /// Real strict-loaded tiny target and actual optional assistant; constant
     /// fixture identity is NOT production artifact/prompt qualification.
     private func nativeCompletePrefixOwner(mtp: Bool, requireInteriorPublication: Bool = false,
                                           bytesCapacity: Int = 2 << 30,
                                           expectCapacityRefusal: Bool = false,
-                                          requireReuse: Bool = false) async throws {
+                                          requireReuse: Bool = false,
+                                          sampled: Bool = false) async throws {
+        let request = ChatCompletionRequest(model: "synthetic-native-mimo-prefix", messages: [],
+            temperature: sampled ? 1 : 0, top_p: sampled ? 0.95 : nil, max_tokens: 8, seed: sampled ? 7 : nil)
         try nativeLane()
         let registry = MiMoV26NativeLoadRegistry(), budget = budget(native: true)
         defer { retainFaultUntilProcessExit(registry) }
@@ -968,7 +979,7 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
         let stepsBefore = actual.stepCount
         let chargeBefore = owner.processOwner.snapshot()
         let events = await bundle.bridge.submitTokenized(promptTokens: Array(repeating: 12, count: 257),
-            request: .init(model: "synthetic-native-mimo-prefix", messages: [], temperature: 0, max_tokens: 8),
+            request: request,
             requestId: requestID, cacheScope: "synthetic-owner-tenant")
         var terminals = 0, capacityRefusals = 0
         var coldText = ""
@@ -1020,7 +1031,7 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
             let signal = EngineV2RequestUsageSignal()
             let repeatID = "mimo-prefix-owned-request-repeat"
             let repeated = await bundle.bridge.submitTokenized(promptTokens: Array(repeating: 12, count: 257),
-                request: .init(model: "synthetic-native-mimo-prefix", messages: [], temperature: 0, max_tokens: 8),
+                request: request,
                 requestId: repeatID, cacheScope: "synthetic-owner-tenant", usageSignal: signal)
             var warmText = "", warmTerminals = 0
             for await event in repeated {
@@ -1041,6 +1052,12 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
             XCTAssertEqual(lookup.cachedTokens, 256)
             XCTAssertEqual(lookup.prefillTokensSaved, 256)
             XCTAssertEqual(signal.prefixCacheHitTokens, 256)
+            if sampled {
+                // The engine's MTP counters span both sampled submissions: neither drafted nor verified.
+                let metrics = try XCTUnwrap(actual.mtpMetricsSnapshot())
+                XCTAssertEqual(metrics.draftedTokens, 0)
+                XCTAssertEqual(metrics.serialVerificationRounds, 0)
+            }
             let pumps = await bundle.bridge.pumpTasks
             for task in pumps.values { await task.value }
             let transferred = await bundle.bridge.nativeTransferredRetirementTasks

@@ -337,8 +337,10 @@ distinguishes an absent `engine_v2_max_concurrent` key (automatic, legacy
 default `4` until an exact reviewed profile applies) from any existing literal
 operator cap. Without a profile, models on the native `auto` paged allowlist
 (`EngineV2KVBackendPolicy.preferredBackend`) start at the legacy ceiling `8` on
-M5 Pro, Max and Ultra and return to `4` under Low Power Mode or thermal pressure
-(`ServingPerformanceProfiles.automaticConcurrency`); a model paged only by an
+M5 Pro, Max and Ultra and return to `4` under Low Power Mode or a serious or
+critical thermal state; fair keeps `8`
+(`ServingPerformanceProfiles.automaticConcurrency`,
+`EngineV2Bridge.widthPostureAllowsExpansion`); a model paged only by an
 explicit backend or live packed quantization keeps `4`. Serialization
 preserves that distinction; historical literal values, including a stamped `4`,
 are not silently raised. Per-model overrides remain explicit limits.

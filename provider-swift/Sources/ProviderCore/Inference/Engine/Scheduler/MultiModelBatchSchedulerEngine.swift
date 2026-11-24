@@ -283,7 +283,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // (no provider frame decorator), so there is nowhere to splice
         // cached_tokens — same scoping as `engineV2Logprobs`.
         self.engineV2Usage = nil
-        self.allowInternalToolSchemaMetadata = false
+        // Off unless a loopback test run asks for the coordinator's shapes.
+        self.allowInternalToolSchemaMetadata = LocalToolSchemaMetadata.current
         self.firstContentDeadline = nil
         self.promptWork = nil
         self.serviceReservationID = nil

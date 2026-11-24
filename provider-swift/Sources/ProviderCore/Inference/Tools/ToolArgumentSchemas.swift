@@ -13,9 +13,13 @@ import MLXLMServer
 /// read as `integer`). The template still renders the repaired declarations.
 ///
 /// A typeless `enum` or `const` node gets the JSON types of its values as its
-/// `type`, the one change made: it accepts exactly the instances the node
-/// accepts already, and lets the parser read `"2"` as `2` under `enum: [1, 2]`
-/// as it did under the repair's inferred type.
+/// `type`: it accepts exactly the instances the node accepts already, and lets
+/// the parser read `"2"` as `2` under `enum: [1, 2]` as it did under the
+/// repair's inferred type. A node the repair marked as a boolean schema it
+/// rendered as a string (`ToolSchemaNormalization.originalBooleanSchemaKey`,
+/// as the coordinator forwards `{}`, `true` and `false`) reads as that schema
+/// again: `true` as `{}` with its annotations, `false` as `false`, as the
+/// strict check (`ToolConstraintValidation`) already reads the marker.
 enum ToolArgumentSchemas {
     /// The repair's own depth bound (`maxToolSchemaDepth` on the coordinator).
     static let maximumDepth = 64
@@ -49,6 +53,7 @@ enum ToolArgumentSchemas {
     /// `examples` values; past `maximumDepth` the node is returned as written.
     static func typingFiniteValues(_ node: MLXLMCommon.JSONValue, depth: Int) -> MLXLMCommon.JSONValue {
         guard depth < maximumDepth, case .object(var object) = node else { return node }
+        if let original = originalBooleanSchema(object) { return original }
         for key in schemaMapKeywords {
             if case .object(let map)? = object[key] {
                 object[key] = .object(map.mapValues { typingFiniteValues($0, depth: depth + 1) })
@@ -68,6 +73,26 @@ enum ToolArgumentSchemas {
             object["type"] = type
         }
         return .object(object)
+    }
+
+    /// Keywords that annotate and assert nothing (the strict check's
+    /// `renderOnlyAnnotationKeys`); a marked node keeps them.
+    private static let annotationKeywords: Set<String> = [
+        "$anchor", "$comment", "$id", "$schema", "default", "deprecated", "description", "examples", "readOnly",
+        "title", "writeOnly",
+    ]
+
+    /// The boolean schema a marked node stands for, read as the strict check
+    /// reads it: a string `type`, a Boolean marker and annotations only. `true`
+    /// is `{}` with the node's annotations, `false` is `false`. Nil for any
+    /// other node, which is read as written.
+    private static func originalBooleanSchema(_ object: [String: MLXLMCommon.JSONValue]) -> MLXLMCommon.JSONValue? {
+        let marker = ToolSchemaNormalization.originalBooleanSchemaKey
+        guard object["type"] == .string("string"), case .bool(let accepts)? = object[marker],
+              object.keys.allSatisfy({ $0 == "type" || $0 == marker || annotationKeywords.contains($0) })
+        else { return nil }
+        guard accepts else { return .bool(false) }
+        return .object(object.filter { annotationKeywords.contains($0.key) })
     }
 
     private static let typeOrder = ["null", "boolean", "integer", "number", "string", "array", "object"]

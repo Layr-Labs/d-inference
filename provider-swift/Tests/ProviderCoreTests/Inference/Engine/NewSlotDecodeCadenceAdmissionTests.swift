@@ -27,7 +27,7 @@ struct NewSlotDecodeCadenceAdmissionTests {
 
     /// One request has prefilled and decoded once; the loop then stops before
     /// its next step. Prefill is priced at 1,000 tok/s; there is no decode sample.
-    private func makeFixture() async throws -> Fixture {
+    private func makeFixture(admissionFixes: Bool = true) async throws -> Fixture {
         let model = DeadlineAdmissionFixtureModel()
         let engine = EngineV2(model: model, layerKinds: model.kinds,
             backend: CBv2ContiguousKVBackend(config: .init(bytesCapacity: 1 << 20)),
@@ -47,7 +47,7 @@ struct NewSlotDecodeCadenceAdmissionTests {
         try #require(engine.stepCount == 2)
         let bridge = EngineV2Bridge(engine: engine, modelId: "new-slot-fixture",
             tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [],
-            prefillDeadlineMode: .enforce, admissionFixes: true)
+            prefillDeadlineMode: .enforce, admissionFixes: admissionFixes)
         await bridge.updatePrefillTpsEwma(1_000, isolated: true)
         #expect(await bridge.ewmaInitialized == false)
         return Fixture(engine: engine, bridge: bridge, decoder: decoder)
@@ -109,6 +109,21 @@ struct NewSlotDecodeCadenceAdmissionTests {
         await fixture.bridge.addDecodingRowForTesting("young", tokensAfterFirst: 7, since: .seconds(1))
         let (policy, result) = try await submit(fixture, id: 910_004, budgetMilliseconds: 10_000)
         #expect(policy.conservativeDecodeTokensPerSecond == nil)
+        guard case .deadlineUnreachable(.unbounded(reason: .decodeRateUnavailable)) = result else {
+            Issue.record("expected decode_rate_unavailable, got \(result)")
+            await fixture.release()
+            return
+        }
+        await fixture.release()
+    }
+
+    @Test("with the admission fixes off a new slot's decode rate stays unavailable beside a decoding row")
+    func fixesOffStaysUnavailable() async throws {
+        let fixture = try await makeFixture(admissionFixes: false)
+        await fixture.bridge.addDecodingRowForTesting("decoding", tokensAfterFirst: 20, since: .seconds(1))
+        let (policy, result) = try await submit(fixture, id: 910_005, budgetMilliseconds: 10_000)
+        #expect(policy.conservativeDecodeTokensPerSecond == nil)
+        #expect(policy.decodeRateShape == nil)
         guard case .deadlineUnreachable(.unbounded(reason: .decodeRateUnavailable)) = result else {
             Issue.record("expected decode_rate_unavailable, got \(result)")
             await fixture.release()

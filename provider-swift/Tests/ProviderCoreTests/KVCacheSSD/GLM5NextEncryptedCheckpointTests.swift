@@ -83,7 +83,8 @@ struct GLM5NextEncryptedCheckpointTests {
                     chunkCount += 1
                     if index == 0 {
                         manifestBytes = bytes
-                        manifest = try SSDHybridCheckpointEnvelope.decodeManifest(bytes)
+                        manifest = try SSDHybridCheckpointEnvelope.decodeManifest(
+                            bytes, promptTokens: fixture.tokens, lookupKeys: SSDLookupKeys(kek: fixture.key))
                     }
                 })
             let saved = try #require(manifest)

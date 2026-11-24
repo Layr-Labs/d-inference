@@ -40,6 +40,7 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
     case requestExceedsContext = "request_exceeds_context"
     case unsupportedOutputControl = "unsupported_output_control"
     case missingUserQuery = "missing_user_query"
+    case mediaRoleNotRendered = "media_role_not_rendered"
 
     /// One fixed sentence per reason, safe to show the requester: derived from
     /// the reason alone, never from the request.
@@ -70,6 +71,7 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
         case .requestExceedsContext: "The request does not fit the model's context window."
         case .unsupportedOutputControl: "An output control, such as logprobs, is not supported by this model."
         case .missingUserQuery: "The conversation needs a user message that is more than a tool result."
+        case .mediaRoleNotRendered: "An image or video is in a message this model's chat template does not place."
         }
     }
 
@@ -86,6 +88,7 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
         case .advertisedContextExceeded, .promptExceedsContext: self = .requestExceedsContext
         case .unsupportedOutputControl: self = .unsupportedOutputControl
         case .missingUserQuery: self = .missingUserQuery
+        case .mediaRoleNotRendered: self = .mediaRoleNotRendered
         default: return nil
         }
     }

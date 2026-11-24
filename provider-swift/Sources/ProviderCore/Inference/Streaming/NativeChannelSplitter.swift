@@ -9,7 +9,8 @@ import MLXLMServer
 /// Content-state `</think>` handling follows the vendor-documented Nemotron
 /// parser (vLLM `nemotron_v3`, which reuses the qwen3 parser-engine config):
 /// when explicitly enabled, a close already in content is absorbed and the text
-/// before it stays content. It is never reinterpreted as a reasoning boundary.
+/// before it stays content. It is never reinterpreted as a reasoning boundary,
+/// except for frames held after a closed thought (`holdsFramesAfterThought`).
 struct NativeChannelSplitter {
     private enum State { case content, reasoning, tool(end: String) }
     private var state: State
@@ -25,6 +26,11 @@ struct NativeChannelSplitter {
     private var flintScanner: FlintToolFrameScanner?
     private let preserveInnerReasoningSpans: Bool
     private let absorbStrayThinkClose: Bool
+    /// `heldFrames`: content from the first tool frame after a closed
+    /// thought, held until a stray `</think>` or the end of output.
+    private let holdsFramesAfterThought: Bool
+    private var closedThought = false
+    private var heldFrames: String?
     private var promotesTrailingCalls: Bool
     /// The open thought's text (kept only with `promotesTrailingCalls`).
     private var openThought = ""
@@ -43,10 +49,17 @@ struct NativeChannelSplitter {
     /// so they parse as calls. A frame followed by more thought, or by
     /// `</think>`, stays reasoning, and so does a thought the token limit cut
     /// off (`outputReachedTokenLimit`).
+    ///
+    /// `holdsFramesAfterThought` (with `absorbStrayThinkClose`): a model that
+    /// closes its thought, writes tool frames as a draft, keeps thinking and
+    /// closes the thought again was still thinking. Content from the first
+    /// frame after a closed thought is held; a stray `</think>` makes the held
+    /// text reasoning, so its frames never become calls. At the end of the
+    /// output the held text is content.
     init(prefix: String, protectToolFrames: Bool, qwenStructuredFrames: Bool = false, flintFrames: Bool = false,
          glmFrames: Bool = false, tools: [[String: any Sendable]]? = nil,
          preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false,
-         promotesTrailingCalls: Bool = false) {
+         holdsFramesAfterThought: Bool = false, promotesTrailingCalls: Bool = false) {
         state = prefix == "<think>" ? .reasoning : .content
         self.protectToolFrames = protectToolFrames
         self.qwenStructuredFrames = qwenStructuredFrames
@@ -55,6 +68,7 @@ struct NativeChannelSplitter {
         self.tools = tools
         self.preserveInnerReasoningSpans = preserveInnerReasoningSpans
         self.absorbStrayThinkClose = absorbStrayThinkClose
+        self.holdsFramesAfterThought = holdsFramesAfterThought && absorbStrayThinkClose
         self.promotesTrailingCalls = promotesTrailingCalls
     }
 
@@ -67,6 +81,10 @@ struct NativeChannelSplitter {
     mutating func finish() -> [ParsedReasoning] {
         guard !reasoningNestingLimitExceeded else { return [] }
         var pieces = drain(final: true)
+        if let held = heldFrames {
+            heldFrames = nil
+            append(held, reasoning: false, to: &pieces)
+        }
         toolScanner = nil
         flintScanner = nil
         if promotesTrailingCalls, case .reasoning = state,
@@ -224,7 +242,12 @@ struct NativeChannelSplitter {
                     else if marker == "</think>" {
                         // Stray close after a prompt-side `<think></think>` (or a
                         // duplicate close): drop the marker, stay in content.
+                        if let held = heldFrames {
+                            heldFrames = nil
+                            append(held, reasoning: true, to: &result)
+                        }
                     } else {
+                        if holdsFramesAfterThought, closedThought, heldFrames == nil { heldFrames = "" }
                         append(marker, reasoning: false, to: &result)
                         state = .tool(end: marker == "<tool_call>" ? "</tool_call>" : "</function>")
                         if qwenStructuredFrames && marker == "<tool_call>" {
@@ -251,6 +274,7 @@ struct NativeChannelSplitter {
                         append(String(buffer[..<range.lowerBound]), reasoning: true, to: &result)
                         state = .content
                         openThought = ""
+                        closedThought = true
                     }
                 case .tool:
                     append(String(buffer[..<range.upperBound]), reasoning: false, to: &result)
@@ -279,6 +303,10 @@ struct NativeChannelSplitter {
 
     private mutating func append(_ text: String, reasoning: Bool, to result: inout [ParsedReasoning]) {
         guard !text.isEmpty else { return }
+        if !reasoning, heldFrames != nil {
+            heldFrames! += text
+            return
+        }
         if reasoning && promotesTrailingCalls { openThought += text }
         result.append(.init(content: reasoning ? "" : text, reasoningContent: reasoning ? text : nil))
     }

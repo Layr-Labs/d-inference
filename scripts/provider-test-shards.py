@@ -21,10 +21,12 @@ Subcommands:
   args SHARD ISOLATED    print the `swift test` selection for SHARD (`K/N` or
                          `parallel`), one argument per line; ISOLATED is the
                          run-provider-tests.sh isolated-process pattern
-  counts SELECTION PATTERN LOG OUTPUT
-                         write the executed test counts of one `swift test` run;
-                         SELECTION is `K/N` or `parallel` with the isolated
-                         pattern, or `parity` with the parity suite filter
+  counts SELECTION PATTERN XUNIT STDOUT OUTPUT
+                         write the executed test counts of one `swift test` run
+                         from its Swift Testing xUnit report and its stdout
+                         alone; SELECTION is `K/N` or `parallel` with the
+                         isolated pattern, or `parity` with the parity suite
+                         filter
   audit LIST REPORTS     check each selection executed exactly its planned tests
                          and that all of them together executed the full list
   audit-job LIST REPORTS K/N
@@ -94,6 +96,8 @@ STALE_SELECTION_SECONDS = 60.0
 SUITE = re.compile(r"^([^./]+)[./]([^./]+)")
 # One finished XCTest case in a `swift test` log.
 XCTEST_CASE = re.compile(r"Test Case '-\[(\S+) (\S+)\]' (?:passed|failed|skipped) \((\d+(?:\.\d+)?) seconds\)")
+# The end of XCTest's outermost suite; its `Executed N tests` follows.
+XCTEST_RUN_END = re.compile(r"Test Suite '(All tests|Selected tests)' (passed|failed) at")
 
 
 def suite_key(test_id):
@@ -183,26 +187,38 @@ def planned(test_ids, shard, isolated, weights, processes=1):
             if (selected is None or re.search(selected, test_id)) and not re.search(skipped, test_id)]
 
 
-def counts(log_text, xctest_only=False):
+def counts(swift_testing_report, stdout_log):
     """Executed totals of one `swift test` run: Swift Testing and XCTest.
 
-    A shard run always prints a Swift Testing summary; without one it did not
-    finish. A parity selection of only XCTest cases (`xctest_only`) prints
-    none, so there the XCTest summary is enough.
+    Never from the merged console: SwiftPM writes its own warnings to stderr
+    at no fixed point, so in one pipe a warning can land inside any line (run
+    44909219943: `✔ Test run with 29` + warning + ` tests in 3 suites`).
+    Swift Testing's count is the test cases of its xUnit report, skipped ones
+    included, as its console summary counted them; Swift Testing writes the
+    report when its run finishes, so without one the run did not finish. XCTest's
+    count is its outermost suite's `Executed N tests` (skips included) in
+    SwiftPM's stdout, which holds only the test process's output: without
+    --parallel SwiftPM writes no XCTest report, and with it the report would
+    count a skipped test as passed.
     """
-    swift_testing = re.findall(r"Test run with (\d+) tests?\b", log_text)
-    lines = log_text.splitlines()
-    xctest = None
-    for index, line in enumerate(lines):
-        if re.search(r"Test Suite '(All tests|Selected tests)' (passed|failed) at", line):
-            for following in lines[index + 1:index + 4]:
-                match = re.search(r"Executed (\d+) tests?\b", following)
-                if match:
-                    xctest = int(match.group(1))
-                    break
-    if not swift_testing and not (xctest_only and xctest is not None):
-        raise ValueError("The log has no Swift Testing summary; the run did not finish")
-    result = {"swift_testing": int(swift_testing[-1]) if swift_testing else 0, "xctest": xctest or 0}
+    try:
+        root = ElementTree.parse(swift_testing_report).getroot()
+    except FileNotFoundError:
+        raise ValueError(f"No Swift Testing xUnit report {swift_testing_report}; the run did not finish") from None
+    except ElementTree.ParseError as error:
+        raise ValueError(f"Unreadable Swift Testing xUnit report {swift_testing_report} ({error}); "
+                         "the run did not finish") from None
+    try:
+        lines = Path(stdout_log).read_text(errors="replace").splitlines()
+    except FileNotFoundError:
+        raise ValueError(f"No stdout log {stdout_log}; the run did not finish") from None
+    xctest = 0
+    ends = [index for index, line in enumerate(lines) if XCTEST_RUN_END.search(line)]
+    if ends:
+        # Not only the next line: the test process's own stdout can arrive in between.
+        executed = (re.search(r"Executed (\d+) tests?\b", line) for line in lines[ends[-1] + 1:])
+        xctest = next((int(match.group(1)) for match in executed if match), 0)
+    result = {"swift_testing": len(list(root.iter("testcase"))), "xctest": xctest}
     if not result["swift_testing"] + result["xctest"]:
         raise ValueError("The selection executed zero tests; the gate did not run")
     return result
@@ -428,7 +444,8 @@ def main():
     command = commands.add_parser("counts")
     command.add_argument("shard")
     command.add_argument("pattern")
-    command.add_argument("log", type=Path)
+    command.add_argument("xunit", type=Path, help="the Swift Testing report (<name>-swift-testing.xml)")
+    command.add_argument("stdout", type=Path, help="SwiftPM's stdout alone, without its stderr")
     command.add_argument("output", type=Path)
     command = commands.add_parser("audit")
     command.add_argument("list", type=Path)
@@ -448,9 +465,13 @@ def main():
     elif args.command == "counts":
         if args.shard not in ("parallel", "parity"):
             parse_shard(args.shard)
+        try:
+            executed = counts(args.xunit, args.stdout)
+        except ValueError as error:
+            print(f"::error::Selection {args.shard}: {error}")
+            return 1
         # The report keeps the plan's process count, so the audit plans alike.
-        report = {"shard": args.shard, "pattern": args.pattern, "processes": processes_per_job(),
-                  **counts(args.log.read_text(errors="replace"), xctest_only=args.shard == "parity")}
+        report = {"shard": args.shard, "pattern": args.pattern, "processes": processes_per_job(), **executed}
         args.output.write_text(json.dumps(report))
     elif args.command == "audit":
         reports = [json.loads(path.read_text()) for path in sorted(args.reports.glob("*/shard-*.json"))]

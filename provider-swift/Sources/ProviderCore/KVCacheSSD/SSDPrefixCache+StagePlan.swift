@@ -48,9 +48,12 @@ extension SSDPrefixCache {
         // on top of a run those caps already saturated.
         let windowGeometry = config.windowSidecar
 
-        // Longest contiguous run, trimmed to the stage caps (bytes/time)
-        // while it still clears the benefit floor.
-        var k = index.longestRun(tags16: tags16)
+        // Longest contiguous run of blocks within their TTL, trimmed to the
+        // stage caps (bytes/time) while it still clears the benefit floor. A
+        // block past its TTL is not reused, though a sweep may not have
+        // removed it yet.
+        let now = config.nowSeconds(), ttl = config.ttlSeconds
+        var k = index.longestFreshRun(tags16: tags16, now: now, ttlSeconds: ttl)
         guard k > 0 else { return .skipped(.missAbsent) }
         var runBytes = 0
         var runSizes: [Int] = []
@@ -63,9 +66,9 @@ extension SSDPrefixCache {
             guard matched - min(config.adoptionBoundTokens, matched)
                 >= config.minEffectiveTokens
             else { return .skipped(.skippedCost) }
-            guard let sizes = index.fileBytes(tags16: tags16[0 ..< k]) else {
+            guard let sizes = index.freshFileBytes(tags16: tags16[0 ..< k], now: now, ttlSeconds: ttl) else {
                 // Raced an eviction — re-probe.
-                k = min(k - 1, index.longestRun(tags16: tags16))
+                k = min(k - 1, index.longestFreshRun(tags16: tags16, now: now, ttlSeconds: ttl))
                 continue
             }
             runSizes = sizes
@@ -82,7 +85,9 @@ extension SSDPrefixCache {
             // sidecar knob off (the default) `windowTags` is always empty, so
             // testing it second bought an index-lock acquisition per trim
             // iteration — up to ~112 on a long prompt — to learn nothing.
-            if !windowTags.isEmpty, let windowSizes = index.fileBytes(tags16: windowTags[...]) {
+            if !windowTags.isEmpty,
+                let windowSizes = index.freshFileBytes(tags16: windowTags[...], now: now, ttlSeconds: ttl)
+            {
                 for size in windowSizes {
                     let (sum, overflow) = runBytes.addingReportingOverflow(max(0, size))
                     guard !overflow else { return .skipped(.skippedCapacity) }

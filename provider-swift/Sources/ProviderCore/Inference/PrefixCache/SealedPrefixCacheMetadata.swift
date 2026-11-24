@@ -12,9 +12,13 @@ struct SealedPrefixCacheMetadata: Sendable, Equatable {
     let repeatedPrefixTokens: Int?
 
     /// The `_darkbloom_cache` member of a decoded request body. A missing or
-    /// malformed member, or one with a blank nonce or scope, is nil.
+    /// malformed member, or one with a blank nonce or scope, has no `value`.
+    /// `cachePolicy` is read on its own: it needs no nonce or scope, and a
+    /// member without this attempt's nonce still narrows the request to
+    /// `memoryOnly`, because a narrower policy only gives up cache reuse.
     struct BodyProbe: Decodable {
         let value: SealedPrefixCacheMetadata?
+        let cachePolicy: RequestCachePolicy
 
         private enum CodingKeys: String, CodingKey {
             case member = "_darkbloom_cache"
@@ -31,8 +35,29 @@ struct SealedPrefixCacheMetadata: Sendable, Equatable {
             }
         }
 
+        /// An absent `cache_policy` is `default`; any present value but the
+        /// string `"default"` (another string, `null`, a number, an object)
+        /// is `memoryOnly`.
+        private struct PolicyMember: Decodable {
+            let policy: RequestCachePolicy
+
+            enum CodingKeys: String, CodingKey { case cachePolicy = "cache_policy" }
+
+            init(from decoder: any Decoder) throws {
+                policy = RequestCachePolicy(
+                    decoding: try decoder.container(keyedBy: CodingKeys.self), forKey: .cachePolicy)
+            }
+        }
+
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
+            // A member that is present but not an object has an unreadable
+            // policy, so it is `memoryOnly` too.
+            if container.contains(.member) {
+                cachePolicy = (try? container.decode(PolicyMember.self, forKey: .member))?.policy ?? .memoryOnly
+            } else {
+                cachePolicy = .default
+            }
             guard let member = try? container.decode(Member.self, forKey: .member),
                 Self.nonBlank(member.nonce),
                 Self.nonBlank(member.scope)

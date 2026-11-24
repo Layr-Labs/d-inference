@@ -82,6 +82,10 @@ public struct AutoUpdateController: Sendable {
         public var restartDidFail: @Sendable () async -> Void
         /// Emit a human-readable progress line.
         public var log: @Sendable (String) -> Void
+        /// Each step of a cycle that changes something or explains why nothing changed, without versions or reasons,
+        /// for the line `darkbloom logs` keeps (`ProviderLoop.autoUpdateNotice`). A check that finds this Mac up to
+        /// date is no step: it would add a line on every check.
+        public var step: @Sendable (Step) -> Void
 
         public init(
             claimStart: @escaping @Sendable () async -> Bool,
@@ -95,7 +99,8 @@ public struct AutoUpdateController: Sendable {
             prepareInstalledRestart: @escaping @Sendable () async -> StepOutcome = { .completed },
             restart: @escaping @Sendable () async throws -> Void,
             restartDidFail: @escaping @Sendable () async -> Void = {},
-            log: @escaping @Sendable (String) -> Void
+            log: @escaping @Sendable (String) -> Void,
+            step: @escaping @Sendable (Step) -> Void = { _ in }
         ) {
             self.claimStart = claimStart
             self.resumeServing = resumeServing
@@ -109,7 +114,32 @@ public struct AutoUpdateController: Sendable {
             self.restart = restart
             self.restartDidFail = restartDidFail
             self.log = log
+            self.step = step
         }
+    }
+
+    /// A step of a cycle (`Dependencies.step`).
+    public enum Step: Sendable, Equatable, CaseIterable {
+        /// A newer release is available; it is downloaded, verified and staged while this Mac serves.
+        case available
+        /// A newer release is installed but not running; in-flight requests finish before the restart.
+        case installedNotRunning
+        /// The staged release waits for in-flight requests before it is installed.
+        case staged
+        /// The new release is installed; the restart into it is issued.
+        case restarting
+        /// In-flight requests did not finish in time: nothing was installed, serving resumed.
+        case deferred
+        /// The latest release is quarantined on this Mac; nothing changes.
+        case quarantined
+        /// The release check failed.
+        case checkFailed
+        /// Downloading, verifying or staging failed; serving never stopped.
+        case stageFailed
+        /// Installing the staged release failed after the drain; serving resumed.
+        case installFailed
+        /// Preparing or issuing the restart failed; serving resumed.
+        case restartFailed
     }
 
     /// The terminal result of a `run()` cycle, for logging and tests.
@@ -166,16 +196,19 @@ public struct AutoUpdateController: Sendable {
 
         case .quarantined(let version, let reason):
             deps.log("auto-update: v\(version) is quarantined locally: \(reason)")
+            deps.step(.quarantined)
             await deps.resumeServing()
             return .quarantined(version)
 
         case .restartRequired(let current, let installed):
             deps.log(
                 "auto-update: v\(installed) is already installed but not running; draining before restart")
+            deps.step(.installedNotRunning)
             await deps.beginDraining()
             let drained = await deps.waitForDrain(drainTimeout)
             if Task.isCancelled { await deps.resumeServing(); return .cancelled }
             if !drained {
+                deps.step(.deferred)
                 await deps.resumeServing()
                 return .drainTimedOut
             }
@@ -183,6 +216,7 @@ public struct AutoUpdateController: Sendable {
 
         case .checkFailed(let failure):
             deps.log("auto-update: check failed: \(failure.reason)")
+            deps.step(.checkFailed)
             await deps.resumeServing()
             return .checkFailed(failure.reason)
 
@@ -196,8 +230,10 @@ public struct AutoUpdateController: Sendable {
     /// candidates that a previous cycle already installed.
     private func installUpdate(from current: String, release: ReleaseInfo) async -> Outcome {
         deps.log("auto-update: v\(current) -> v\(release.version) available; staging download while serving")
+        deps.step(.available)
         if case .failed(let reason) = await deps.downloadVerifyStage(release) {
             deps.log("auto-update: download/stage failed, staying on v\(current): \(reason)")
+            deps.step(.stageFailed)
             await deps.resumeServing()
             return .stageFailed(reason)
         }
@@ -209,11 +245,13 @@ public struct AutoUpdateController: Sendable {
             return .cancelled
         }
         deps.log("auto-update: v\(release.version) staged; draining in-flight requests before install + restart")
+        deps.step(.staged)
         await deps.beginDraining()
         let drained = await deps.waitForDrain(drainTimeout)
         if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         if !drained {
             deps.log("auto-update: drain timed out; deferring update without cancelling requests")
+            deps.step(.deferred)
             await deps.resumeServing()
             return .drainTimedOut
         }
@@ -221,6 +259,7 @@ public struct AutoUpdateController: Sendable {
         if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         if case .failed(let reason) = commit {
             deps.log("auto-update: installing staged v\(release.version) failed, staying on v\(current): \(reason)")
+            deps.step(.installFailed)
             await deps.resumeServing()
             return .commitFailed(reason)
         }
@@ -236,9 +275,12 @@ public struct AutoUpdateController: Sendable {
         let prepared = await deps.prepareInstalledRestart()
         if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         if case .failed(let reason) = prepared {
+            deps.step(.restartFailed)
             await deps.resumeServing()
             return .restartFailed(reason)
         }
+        // Before the restart: in production it does not return.
+        deps.step(.restarting)
         do {
             try await deps.restart()
             return .restarted(from: current, to: installed, drained: drained)
@@ -247,6 +289,7 @@ public struct AutoUpdateController: Sendable {
             await deps.restartDidFail()
             await deps.resumeServing()
             if error is CancellationError { return .cancelled }
+            deps.step(.restartFailed)
             return .restartFailed("\(error)")
         }
     }

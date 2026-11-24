@@ -340,7 +340,8 @@ struct PrefixDiskEncodingTests {
             for other in [QwenStagePrefixDiskEncoding.native, .init(quantization: .k8v8, family: .qwenAttention),
                           .init(quantization: .balanced, family: .glm5NextDSA)] {
                 #expect(throws: ProbeError.self) {
-                    _ = try QwenStagePrefixDiskIO.restore(url: encodedURL, opened: opened, frontier: 300, encoding: other, check: {})
+                    _ = try QwenStagePrefixDiskIO.restore(url: encodedURL, opened: opened, frontier: 300,
+                        promptTokens: tokens, encoding: other, check: {})
                 }
             }
             // A balanced record moved into the native tier's directory is never offered and goes at load.
@@ -511,6 +512,7 @@ struct PrefixDiskEncodingTests {
                 rank: 0, encoding: balancedQwen))
             #expect(other.planDirectory == tier.planDirectory && other.recordCount == 1)
             #expect(try other.restore(scope: "s", tokens: tokens, frontier: committed, check: {}) == nil)
+            #expect(other.drain(timeoutSeconds: 5))
             #expect(try FileManager.default.contentsOfDirectory(atPath: other.directory.path).filter { $0.hasSuffix(".dbpx") }.isEmpty
                 && other.stats.failedRestores == 1)
             other.close()
@@ -679,6 +681,7 @@ struct PrefixDiskEncodingTests {
                 try handle.seek(toOffset: UInt64(opened.dataStart + unit.offset + 5))
                 try handle.write(contentsOf: Data([byte[0] ^ 0x40])); try handle.close()
                 #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 300, check: {}) == nil)
+                #expect(tier.drain(timeoutSeconds: 5))
                 #expect(!FileManager.default.fileExists(atPath: url.path) && tier.stats.failedRestores == 1)
                 tier.close()
             }
@@ -689,6 +692,7 @@ struct PrefixDiskEncodingTests {
                 let handle = try FileHandle(forUpdating: url)
                 try handle.truncate(atOffset: try handle.seekToEnd() - 1); try handle.close()
                 #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 300, check: {}) == nil)
+                #expect(tier.drain(timeoutSeconds: 5))
                 #expect(!FileManager.default.fileExists(atPath: url.path))
                 tier.close()
             }
@@ -711,6 +715,7 @@ struct PrefixDiskEncodingTests {
                 try handle.seek(toOffset: UInt64(opened.dataStart + unit.offset))
                 try handle.write(contentsOf: box.ciphertext + box.tag); try handle.close()
                 #expect(try tier.restore(scope: "s", tokens: tokens, frontier: 300, check: {}) == nil)
+                #expect(tier.drain(timeoutSeconds: 5))
                 #expect(!FileManager.default.fileExists(atPath: url.path))
                 tier.close()
             }

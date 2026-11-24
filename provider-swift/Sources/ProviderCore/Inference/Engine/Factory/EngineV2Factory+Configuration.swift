@@ -103,7 +103,19 @@ extension EngineV2Factory {
             chunk = gemma4MaximumMediaBlockTokens
             stripe = nil
         }
+        // Inkling 2's recurrent checkpoints sit on its fixed prefill grid
+        // (`inkling2PrefillChunkTokens`); a solo stripe, an operator override
+        // included, is a range wider than one grid chunk and disarms every
+        // checkpoint of the request.
+        if isInkling2(model) { stripe = nil }
         var budget = stepTokenBudget(abovePlainChunk: chunk, environment: environment)
+        // The grid gives the step's first prompt row its whole chunk past the
+        // budget, so the SDK budget still makes progress; it keeps one step's
+        // prompt tokens at the 2,048 the solo stripe carried before (doubling
+        // it would let a chunk and a finishing remainder share a step).
+        if isInkling2(model), environment[stepTokenBudgetKey] == nil {
+            budget = max(CBv2SchedulerConfig().maxBatchedTokensPerStep, chunk)
+        }
         // Submit validation refuses a block longer than the step budget
         // (`CBv2MultimodalPlan.validate`), so the budget must hold one too.
         if isGemma4(model) {
@@ -161,6 +173,22 @@ extension EngineV2Factory {
         model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4
     }
 
+    /// Inkling 2's plain chunk, and so its prefill grid. With MLX's own prefill
+    /// products (the SDK default) its prefill bits depend on the chunk
+    /// partition, so the engine keeps a fixed chunk grid of the scheduler's
+    /// chunk and captures recurrent checkpoints only where every prompt range
+    /// was exactly one grid chunk (`Inkling2CBv2.cbv2Capabilities`). Under the
+    /// SDK's 512-token chunk with the default 2,048-token solo stripe, the first
+    /// range of every prompt was a stripe of four grid chunks and no checkpoint
+    /// was ever captured. 2,048 is the grid the SDK's Inkling prefill, prefix
+    /// restore and load warm-up were measured on; boundaries fall at 2,048,
+    /// 4,096, 6,144, ... and the prompt end is never exported.
+    public static let inkling2PrefillChunkTokens = 2048
+
+    static func isInkling2(_ model: (any LanguageModel)?) -> Bool {
+        model is Inkling2Model || model is MLXVLM.Inkling2VLM
+    }
+
     /// Absent selects the family default. A positive explicit value applies to
     /// every model (Gemma 4 raises it to cover a media block, `prefillGeometry`);
     /// zero, negative, or malformed values restore the SDK chunk.
@@ -170,6 +198,7 @@ extension EngineV2Factory {
     ) -> Int {
         let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
         guard let raw = environment[prefillChunkKey] else {
+            if isInkling2(model) { return inkling2PrefillChunkTokens }
             if usesWidePrefillChunk(model) { return widePrefillChunkTokens }
             if usesQwen38PrefillChunk(
                 modelID: modelID, chipIdentity: chipIdentity, environment: environment)

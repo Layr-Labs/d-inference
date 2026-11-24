@@ -33,6 +33,12 @@ enum DecodeRateIdleAge {
         return .seconds(seconds)
     }
 
+    // Red control: the declarations the new tests compile against, inert.
+    static let coordinatorDecayFeature = "decode_rate_age_decay"
+    static let coordinatorDecays = CoordinatorDecayAdvertisement()
+    @TaskLocal static var coordinatorDecaysOverride: Bool?
+    static func effectiveMaximum(configured: Duration?, coordinatorDecays: Bool) -> Duration? { configured }
+
     /// The decode rate the heartbeat publishes: `ewma`, or zero when the slot
     /// is idle and its newest decode sample is older than `maximum`.
     static func published(ewma: Double, newestSampleAge: Duration?, idle: Bool, maximum: Duration?) -> Double {
@@ -51,4 +57,11 @@ enum DecodeRateIdleAge {
         let age = max(.zero, now - movedAt)
         return age.components.seconds * 1_000 + age.components.attoseconds / 1_000_000_000_000_000
     }
+}
+
+// Red control: never advertised.
+final class CoordinatorDecayAdvertisement: @unchecked Sendable {
+    var value: Bool { false }
+    func update(features: [String]?) {}
+    func reset() {}
 }

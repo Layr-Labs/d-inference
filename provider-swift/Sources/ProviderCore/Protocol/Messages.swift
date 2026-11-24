@@ -1921,12 +1921,16 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var status: String
         public var reason: String
         public var authorization: ProviderAuthorizationStatus?
+        /// Red control: declared for the new tests, never decoded or encoded.
+        public var coordinatorFeatures: [String]?
         public init(trustLevel: String, status: String, reason: String = "",
-                    authorization: ProviderAuthorizationStatus? = nil) {
+                    authorization: ProviderAuthorizationStatus? = nil,
+                    coordinatorFeatures: [String]? = nil) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
             self.authorization = authorization
+            self.coordinatorFeatures = coordinatorFeatures
         }
     }
 }

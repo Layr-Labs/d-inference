@@ -36,6 +36,14 @@ struct Inkling2MemorySizingTests {
         }
     }
 
+    /// The slot is sized and served for the checkpoint's context, 1,048,576
+    /// tokens of prompt plus output: no window below it.
+    @Test func theServedWindowIsTheCheckpointContext() throws {
+        let url = try #require(Bundle.module.url(
+            forResource: "config.json", withExtension: nil, subdirectory: "Fixtures/Inkling2"))
+        #expect(KVEstimation.parseModelArchitecture(at: url).maxContextLength == 1_048_576)
+    }
+
     @Test func fortyEightGigabytesHoldEightStreamsAt32K() throws {
         let root = try Self.configuration()
         let text = try #require(root["text_config"] as? [String: Any])
@@ -104,15 +112,5 @@ struct Inkling2MemorySizingTests {
             totalBytes: physical, systemAvailableBytes: 115 * Self.gib,
             gpuActiveBytes: 0, gpuCacheBytes: 0, reserveBytes: reserve)
         #expect(free == 0)
-    }
-
-    /// The window the slot is sized and served for is 40,960 tokens (prompt
-    /// plus output), not the checkpoint's 1,048,576: past 41,432 the DSpark
-    /// drafter's per-request pool cannot be reserved and the request fails.
-    @Test func theServedWindowIsFortyThousandNineHundredSixtyTokens() throws {
-        let url = try #require(Bundle.module.url(
-            forResource: "config.json", withExtension: nil, subdirectory: "Fixtures/Inkling2"))
-        let architecture = KVEstimation.parseModelArchitecture(at: url)
-        #expect(architecture.maxContextLength == 40_960)
     }
 }

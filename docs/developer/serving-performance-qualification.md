@@ -23,7 +23,13 @@ separates exactly two conversions. The idle age of the heartbeat's decode rate
 changes only the `observed_decode_tps` an idle slot advertises to routing, not
 admission, measurements or any profile.
 The rate's age on the heartbeat (`observed_decode_tps_age_ms`) needs none
-either: it is informational and changes no rate, admission or profile.
+either: it is informational and changes no rate, admission or profile. Nor
+does the coordinator's `decode_rate_age_decay` advertisement
+(`trust_status.coordinator_features`; shared wire cases in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/coordinator_features_wire.json`,
+checked by `CoordinatorDecodeRateDecayTests` and
+`provider-swift/Tests/test_protocol_fixture_resources.py`): it decides only
+whether an idle slot keeps advertising its rate to routing.
 Profile qualification is separate work required to introduce a measured
 prediction-error envelope.
 

@@ -1921,12 +1921,18 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var status: String
         public var reason: String
         public var authorization: ProviderAuthorizationStatus?
+        /// Optional coordinator behaviours the provider may rely on
+        /// (`coordinator_features`); nil from a coordinator that sends none.
+        /// Unknown names are ignored.
+        public var coordinatorFeatures: [String]?
         public init(trustLevel: String, status: String, reason: String = "",
-                    authorization: ProviderAuthorizationStatus? = nil) {
+                    authorization: ProviderAuthorizationStatus? = nil,
+                    coordinatorFeatures: [String]? = nil) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
             self.authorization = authorization
+            self.coordinatorFeatures = coordinatorFeatures
         }
     }
 }
@@ -1978,6 +1984,7 @@ extension CoordinatorMessage: Codable {
         case priority
         case trustLevel = "trust_level"
         case status, reason, authorization
+        case coordinatorFeatures = "coordinator_features"
         case paid
         case models
         // CapacityProbe
@@ -2088,6 +2095,7 @@ extension CoordinatorMessage: Codable {
             try container.encode(t.trustLevel, forKey: .trustLevel)
             try container.encode(t.status, forKey: .status)
             try container.encodeIfPresent(t.authorization, forKey: .authorization)
+            try container.encodeIfPresent(t.coordinatorFeatures, forKey: .coordinatorFeatures)
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
@@ -2234,7 +2242,8 @@ extension CoordinatorMessage: Codable {
                 trustLevel: try container.decode(String.self, forKey: .trustLevel),
                 status: try container.decode(String.self, forKey: .status),
                 reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? "",
-                authorization: try container.decodeIfPresent(ProviderAuthorizationStatus.self, forKey: .authorization)
+                authorization: try container.decodeIfPresent(ProviderAuthorizationStatus.self, forKey: .authorization),
+                coordinatorFeatures: try? container.decodeIfPresent([String].self, forKey: .coordinatorFeatures)
             ))
 
         case .clusterMemberAccepted:

@@ -5249,7 +5249,13 @@ Unions with more members, non-scalar members or an `enum` keep `STRING`, and
 other families keep the shared repair's render type. A property the caller
 declared without any type or schema keyword (`{}`) renders an empty type
 (`type:<|"|><|"|>`, the served template's rendering of a typeless property)
-instead of the injected `string` (invariant 8). Gemma's render reads the
+instead of the injected `string` (invariant 8). The same holds for a
+property that is only a local `$ref` to such a schema, for an
+`anyOf`/`oneOf`/`allOf` whose non-null members all accept any value (a `null`
+member still renders `nullable`), and for a typeless `enum` whose values have
+more than one JSON type, which the template would otherwise print under
+STRING. A tuple (`prefixItems` with `items` false or absent) renders no `items`
+block, as the template renders an array without a mapping `items`. Gemma's render reads the
 caller's declarations as sent (`ChatTemplateControls.declaredTools`) on every
 path that renders a coordinator request: serving, prompt recount and the
 diffusion media path. Such a request is also

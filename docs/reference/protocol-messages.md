@@ -587,7 +587,7 @@ routing on them.
 | `request_limits` | `*SlotRequestLimits` | `SlotRequestLimits?` | opt | The request sizes a cluster pair leader's slot serves; [schema below](#slotsrequest_limits). Omitted by a single Mac's slot and by providers before 0.10.10 |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
-| `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS; omitted when unmeasured, and when the slot is idle and its newest decode sample is older than `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` (30 minutes by default) |
+| `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS; omitted when unmeasured, and when the slot is idle and its newest decode sample is older than `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` (30 minutes by default), unless the connected coordinator advertises `trust_status.coordinator_features` `decode_rate_age_decay` |
 | `observed_decode_tps_age_ms` | (not read yet) | `Int64?` | opt | Milliseconds since the newest sample that moved `observed_decode_tps` (a reply of at least 32 tokens, or a calibration cell; `EngineV2Bridge.publishedDecodeAt`). Sent only with a published rate. Informational in this release: the provider's rate and the coordinator's ranking are unchanged until the coordinator reads it (`DecodeRateIdleAge.publishedAgeMilliseconds`) |
 | `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
@@ -1684,7 +1684,18 @@ See [revision lifecycle](../architecture/model-revisions.md).
 
 Go `TrustStatusMessage` · Swift `TrustStatus`. `trust_level` ∈ {`none`,
 `self_signed`, `hardware`}; `status` (`online`, `untrusted`, …); `reason`
-(opt in Go, `String` in Swift). Operator diagnostics only.
+(opt in Go, `String` in Swift). Operator diagnostics only, except
+`coordinator_features`.
+
+`coordinator_features` (opt, list of strings; Swift `coordinatorFeatures`)
+names coordinator behaviours a provider may rely on. Each `trust_status`
+replaces the previous list, a disconnect clears it, and absent, malformed or
+unknown names leave the provider as it was. `decode_rate_age_decay`: the
+coordinator decays a stale `observed_decode_tps` by its
+`observed_decode_tps_age_ms`, so the provider stops omitting an idle slot's
+rate after `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS`
+(`DecodeRateIdleAge.coordinatorDecays`). Shared cases:
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/coordinator_features_wire.json`.
 
 ### `capacity_probe`
 

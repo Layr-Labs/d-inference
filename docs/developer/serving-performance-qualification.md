@@ -27,7 +27,13 @@ either: it is informational and changes no rate, admission or profile. Nor does
 the decode rate a slot uses before its first completed request (the slowest
 delivered cadence of requests decoding on it, charged per row; see
 [deadlines](../architecture/inference.md#deadlines)): a request carrying a
-reviewed calibration never takes it.
+reviewed calibration never takes it. Nor does the coordinator's
+`decode_rate_age_decay` advertisement (`trust_status.coordinator_features`;
+shared wire cases in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/coordinator_features_wire.json`,
+checked by `CoordinatorDecodeRateDecayTests` and
+`provider-swift/Tests/test_protocol_fixture_resources.py`): it decides only
+whether an idle slot keeps advertising its rate to routing.
 Profile qualification is separate work required to introduce a measured
 prediction-error envelope.
 

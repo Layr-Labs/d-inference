@@ -1008,7 +1008,8 @@ rules applied to these signals.
    checkpoint — `HybridPrefixCache.swift` (`lookup`),
    `HybridPrefixCacheContract.swift` (`CBv2RecurrentCheckpointGeometry`).
 9. On a slot with a prefix cache and a history-keeping MTP head that opted in
-   (the embedded Qwen 3.5/3.6 heads, Nemotron Super, native Qwen4, MiMo V2.6), history
+   (the embedded Qwen 3.5/3.6 heads, Nemotron Super, native Qwen4, MiMo V2.6,
+   Inkling 2 Mini's DSpark drafter), history
    observation follows cache eligibility, not speculation eligibility. A cached
    text request that cannot speculate (a token constraint, logprobs,
    `logit_bias`, a repetition, frequency or presence penalty, a `stop` string:

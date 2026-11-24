@@ -35,10 +35,11 @@ struct Inkling2OutputChannelsTests {
         }
     }
 
-    static func read(_ chunks: [String], limits: Inkling2OutputChannels.Limits = .init())
+    static func read(_ chunks: [String], limits: Inkling2OutputChannels.Limits = .init(),
+                     readsCallOpeningAnswer: Bool = false)
         -> (Reading, Inkling2OutputChannels)
     {
-        var lexer = Inkling2OutputChannels(limits: limits)
+        var lexer = Inkling2OutputChannels(limits: limits, readsCallOpeningAnswer: readsCallOpeningAnswer)
         var pieces: [Inkling2OutputPiece] = []
         for chunk in chunks { pieces += lexer.parse(chunk) }
         pieces += lexer.finish()
@@ -142,7 +143,8 @@ struct Inkling2OutputChannelsTests {
         #expect(lexer.toolFailures.isEmpty)
     }
 
-    /// The model sometimes opens a text message where a call's header belongs:
+    /// With tools declared (`readsCallOpeningAnswer`), the model sometimes
+    /// opens a text message where a call's header belongs:
     /// `<|content_text|>NAME<|content_invoke_tool_json|>{...}`. That message is
     /// the call, alone or beside a well-formed one, at any split.
     @Test func callFrameOpeningAnAnswerIsACall() {
@@ -156,7 +158,7 @@ struct Inkling2OutputChannelsTests {
                 let chunks = stride(from: 0, to: characters.count, by: width).map {
                     String(characters[$0..<min($0 + width, characters.count)])
                 }
-                let (reading, lexer) = Self.read(chunks)
+                let (reading, lexer) = Self.read(chunks, readsCallOpeningAnswer: true)
                 #expect(reading.calls.map(\.function.name) == ["update_remarks", "set_note"])
                 #expect(reading.calls.first?.function.arguments
                     == ["custom_fields": .object(["備考": .string("Prefers email")])])
@@ -164,12 +166,18 @@ struct Inkling2OutputChannelsTests {
                 #expect(reading.reasoning == "Call it.")
                 #expect(lexer.toolFailures.isEmpty)
             }
+            // Without tools declared the same frame stays the answer's text.
+            let (plain, _) = Self.read(Self.thought + "Call it." + Self.end + opener + wrapped)
+            #expect(plain.calls.isEmpty)
+            #expect(plain.content == "update_remarks<|content_invoke_tool_json|>" + body)
         }
     }
 
     /// The name before the marker is the call's header, held to the body's name.
     @Test func callFrameOpeningAnAnswerKeepsTheHeaderRule() {
-        let (reading, lexer) = Self.read(Self.answer + #"g<|content_invoke_tool_json|>{"name":"f","args":{}}"# + Self.end)
+        let (reading, lexer) = Self.read(
+            [Self.answer + #"g<|content_invoke_tool_json|>{"name":"f","args":{}}"# + Self.end],
+            readsCallOpeningAnswer: true)
         #expect(reading.calls.isEmpty)
         #expect(lexer.toolFailures == [.nameMismatch])
     }
@@ -179,19 +187,36 @@ struct Inkling2OutputChannelsTests {
     /// calls are text.
     @Test func answersThatAreNoCallFrameStayText() {
         let marker = "<|content_invoke_tool_json|>"
-        for text in ["Paris", "Paris is " + marker + "{}", "a b" + marker + "{}", "x" + "<|content_text|>"] {
-            let (reading, _) = Self.read(Self.answer + text + Self.end)
+        for text in ["Paris", "Paris is " + marker + "{}", "a b" + marker + "{}", "x" + "<|content_text|>",
+                     marker + "{}", String(repeating: "n", count: 65) + marker + "{}"] {
+            let (reading, _) = Self.read([Self.answer + text + Self.end], readsCallOpeningAnswer: true)
             #expect(reading.content == text)
             #expect(reading.calls.isEmpty)
         }
-        let (unterminated, lexer) = Self.read(Self.answer + "Paris")
+        let (unterminated, lexer) = Self.read(["Paris"].map { Self.answer + $0 }, readsCallOpeningAnswer: true)
         #expect(unterminated.content == "Paris")
         #expect(lexer.unterminatedChannel == .content)
-        var asText = Inkling2OutputChannels(callsAreText: true)
+        var asText = Inkling2OutputChannels(callsAreText: true, readsCallOpeningAnswer: true)
         let frame = #"f<|content_invoke_tool_json|>{"name":"f","args":{}}"#
         let pieces = asText.parse(Self.answer + frame + Self.end) + asText.finish()
         #expect(Reading(pieces).content == frame)
         #expect(Reading(pieces).calls.isEmpty)
+    }
+
+    /// Bytes held while they could still name a call leave with the text that
+    /// follows them, so an answer's pieces are the ones it has without tools.
+    @Test func heldNameLeavesWithTheFollowingText() {
+        var lexer = Inkling2OutputChannels(readsCallOpeningAnswer: true)
+        #expect(lexer.parse(Self.answer + "Hel") == [])
+        #expect(lexer.openChannel == .content)
+        #expect(lexer.parse("lo <|end_mes") == [.content("Hello ")])
+        #expect(lexer.parse("sage|>") == [])
+        let output = "<|message_model|><|content_thinking|>loop loop <|end_message|><|message_model|><|content_text|>"
+            + "The answer.<|end_message|>"
+        for options in [false, true] {
+            var whole = Inkling2OutputChannels(readsCallOpeningAnswer: options)
+            #expect(whole.parse(output) + whole.finish() == [.reasoning("loop loop "), .content("The answer.")])
+        }
     }
 
     // MARK: - Opaque payloads
@@ -248,12 +273,11 @@ struct Inkling2OutputChannelsTests {
         #expect(bytewise == whole)
     }
 
-    /// Answer text streams as it arrives; only a possible closer is held, and
-    /// an opening that could still be a call's name (`callFrameOpeningAnAnswerIsACall`).
+    /// Answer text streams as it arrives; only a possible closer is held.
     @Test func answerStreamsBeforeItsMessageCloses() {
         var lexer = Inkling2OutputChannels()
-        #expect(lexer.parse(Self.answer + "Hel") == [])
-        #expect(lexer.parse("lo <|end_mes") == [.content("Hello"), .content(" ")])
+        #expect(lexer.parse(Self.answer + "Hel") == [.content("Hel")])
+        #expect(lexer.parse("lo <|end_mes") == [.content("lo ")])
         #expect(lexer.openChannel == .content)
         #expect(lexer.parse("sage|>") == [])
         #expect(lexer.openChannel == nil)

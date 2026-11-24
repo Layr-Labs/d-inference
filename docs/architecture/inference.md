@@ -3599,7 +3599,7 @@ disabled for this hybrid model.
 
 On the Qwen 3.5/3.6 (also Qwen3.8-27B, which uses the same embedded head),
 Nemotron Super and native Qwen4 assistants (not the embedded Nemotron head
-above), a request the assistant cannot draft for still records its prompt
+above), and Inkling 2 Mini's DSpark drafter, a request the assistant cannot draft for still records its prompt
 history when its prompt can be cached
 ([prefix-cache invariant 9](prefix-cache.md#invariants)). That covers a token
 constraint, logprobs, `logit_bias`, a penalty or a `stop` string, so it

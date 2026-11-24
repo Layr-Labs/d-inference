@@ -809,6 +809,65 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         try await finishLatestSubmission(deadlineStream, engine: engine)
     }
 
+    @Test("a slot that served only short requests prices a deadline request beside a decoding row")
+    func shortOnlySlotAdmitsBesideDecodingRow() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+
+        // The slot's only completed decode is a three-token reply.
+        let shortStream = await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: ChatCompletionRequest(
+                model: "gpt-oss-20b",
+                messages: [ChatMessage(role: "user", content: "hi")],
+                max_tokens: 3),
+            requestId: "short-reply")
+        let shortConsumer = Task { for await _ in shortStream {} }
+        let shortContinuation = try #require(engine.continuations.last)
+        var usage = CBv2Usage(promptTokens: promptTokens.count, completionTokens: 3)
+        var timing = CBv2RequestTiming()
+        timing.firstTokenNanos = 10_000_000
+        timing.finishedNanos = 30_000_000
+        timing.lastTokenNanos = 30_000_000
+        timing.lastTokenUptimeNanos = DispatchTime.now().uptimeNanoseconds
+        timing.decodeSteps = 2
+        usage.timing = timing
+        shortContinuation.yield(.finished(reason: .stop, usage: usage))
+        shortContinuation.finish()
+        _ = await shortConsumer.value
+        let measuredDecode = await bridge.observedDecodeTpsEwma
+        #expect(measuredDecode > 0)
+
+        // Another row is decoding when the deadline request arrives.
+        let otherStream = await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: ChatCompletionRequest(
+                model: "gpt-oss-20b",
+                messages: [ChatMessage(role: "user", content: "hi")],
+                max_tokens: 64),
+            requestId: "decoding-row")
+        let otherConsumer = Task { for await _ in otherStream {} }
+        let otherContinuation = try #require(engine.continuations.last)
+        engine.completeColdPrefill(index: engine.continuations.count - 1)
+        otherContinuation.yield(.delta(text: "a", tokens: [11], logprobs: nil))
+
+        let deadlineStream = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "deadline-beside-decoding-row",
+            firstContentDeadline: deadline())
+        let admission = try #require(engine.deadlineAdmissions.last)
+        // Priced with the measured decode rate, never left without one.
+        #expect(admission.conservativeDecodeTokensPerSecond == measuredDecode)
+        try await finishLatestSubmission(deadlineStream, engine: engine)
+        otherContinuation.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(promptTokens: promptTokens.count, completionTokens: 1)))
+        otherContinuation.finish()
+        _ = await otherConsumer.value
+    }
+
     @Test("deadline rejection releases resources and never starts a pump")
     func rejectionReleasesResourcesWithoutPump() async throws {
         let engine = PrefillScriptEngine()

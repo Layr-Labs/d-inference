@@ -1,0 +1,4 @@
+### Faster Gemma 4 cache hits
+
+- Every Gemma 4 cache hit restores its complete prefix checkpoint from the SSD before the request starts. Gemma 4 stores most of its attention layers in the balanced (coded) checkpoint profile, and the restore decoded those rows on one thread and staged them in pages that were filled with zeros twice before the restore wrote them: about 141 ms for a 1,024-token hit on an M5 Ultra, against about 30 ms for Qwen 3.6. The SDK now decodes the coded rows on several cores (at most eight, at most half the active cores) straight into their pages, and stages the pages on zero-fill-on-demand memory, as the serving pool already does. The restored bytes are the same, so outputs do not change.
+- `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE=0`, which already keeps the restore's reads sequential, now also keeps the row decode on one thread. `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` keeps staged pages on copied zeros.

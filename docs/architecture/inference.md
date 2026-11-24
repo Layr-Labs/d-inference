@@ -2640,6 +2640,20 @@ reaches a destination
 ([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
 (`CBv2CompleteCheckpointImport`)).
+That decode runs on up to eight cores (at most half the active ones), 1,024
+whole rows at a time, and writes a paged native layer's rows straight to their
+page addresses (`CBv2PagedCheckpointStorage.rowTargets`, the addresses its
+`append` writes); other destinations keep the ordered copies. Each row's bytes
+depend only on its coded bytes, so the staged state is the one a single thread
+leaves. When the serving pool wraps zero-fill-on-demand pages
+(`hostZeroedSegments`), the staged checkpoint's pages are wrapped the same way
+instead of being copied from host zeros. Before this, a 1,024-token Gemma 4 26B
+hit staged in about 141 ms on an M5 Ultra, mostly the one-thread decode and the
+page allocation, against about 30 ms for Qwen 3.6, whose checkpoints are
+native. `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE=0` keeps the decode on one
+thread
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/NativeCheckpointRowCodec.swift`,
+`CBv2NativeCheckpointRowDecoder`).
 
 A donor's stream retires only after its complete checkpoint is published
 (`EngineLoopV2.finishAfterCompletePrefixPublication`), so export time is added
@@ -3018,7 +3032,27 @@ Admission smooths each request's mean step duration together with its shape
 `MeasuredDecodeStep`) and passes the rate implied by that duration, so the
 priced step time and time per row stay within the measured range. Across
 batch widths this is an average of measured steps, not a bound; the routing
-heartbeat keeps the per-request decode EWMA. The projection also mirrors the
+heartbeat keeps the per-request decode EWMA. That EWMA restarts only when a
+new decode sample arrives, so an idle slot would keep advertising the rate it
+last measured while stacked: idle M5 Macs advertised about 16 tok/s for Gemma 4
+against a fleet median near 80 and were ranked last. Once nothing has run or
+waited on the slot since a decode sample older than 30 minutes, the heartbeat
+omits `observed_decode_tps`, and the coordinator prices the Mac from its
+profile or the fleet, as after a reload; the next sample is published as
+measured
+(`provider-swift/Sources/ProviderCore/Inference/Performance/DecodeRateIdleAge.swift`,
+`DecodeRateIdleAge`; `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` sets the age,
+`0` restores publishing the last rate however old). The published rate moves
+only on a request that generated at least 32 tokens
+(`EngineV2Bridge.minimumPublishedDecodeTokens`, the coordinator's
+`completion_tokens >= 32` convention; `updatePublishedDecodeTps` keeps the same
+EWMA and restart rule over those samples): one short reply measures mostly its
+first steps or tail and could pull a Mac measuring 80–100 tok/s down to about
+11. A shorter request still feeds the deadline decode rate, the rate's age and
+`performance_measurements`, as before, so a slot that serves only short
+replies is still priced for deadline admission and never ages out while
+serving; it publishes no rate until a longer one. Deadline admission is
+unchanged: it charges the measured step shape. The projection also mirrors the
 live MTP plan's depth gates
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift`,
 `CBv2MTPRoundDriver.speculationDepthCeiling`): a step with more decode rows
@@ -5161,7 +5195,11 @@ When an Inkling 2 Mini `auto` request declares no tools, its prompt has no
 for example because the conversation describes a tool in text, is answer text:
 `<|content_invoke_tool_json|>` opens a content body, as `invoke_tool_text`
 does, and the client gets the frame's JSON body as content with no
-`tool_calls`. Client stop strings apply everywhere but the thought for such a
+`tool_calls`. A header-only message, where the model writes its answer as a
+message header with no content kind (`<|message_model|>get_weather(city:
+Paris)<|end_message|>`), is answer text too: its header text is the content,
+where other requests drop it as text outside every message. A header never
+holds `<`, so no control token reaches the answer. Client stop strings apply everywhere but the thought for such a
 request, since the model's usual stop scope covers only `<|content_text|>`.
 Requests that declare tools, and `required`, named or `none` tool choices,
 still validate every frame. `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0`

@@ -108,7 +108,7 @@ enum ToolSchemaNormalization {
         (try? injectTypes(node, positional: false, budget: &budget)) ?? node
     }
 
-    /// Traversal core behind ``injectDefaultTypes(_:)``; `positional` reports
+    /// Traversal core behind ``injectDefaultTypes(_:budget:)``; `positional` reports
     /// whether `node` sits in a schema-positional slot (see the mirror note
     /// above). Arrays keep positionality for their members (tuple-form
     /// `items`, `prefixItems`, union member lists).

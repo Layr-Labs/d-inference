@@ -173,6 +173,36 @@ struct Inkling2OutputChannelsTests {
         }
     }
 
+    /// The same frame as a parallel call after a native one: a text message
+    /// that opens with `NAME<|content_invoke_tool_json|>` after a completed
+    /// call is the second call, at any split (vLLM reads `TOOL_START` from
+    /// `CONTENT` after a call too).
+    @Test func callFrameOpeningAnAnswerAfterANativeCallIsTheNextCall() {
+        let native = Self.call("set_note", #"{"name":"set_note","args":{"note":"twice"}}"#)
+        let body = #"{"name":"set_thermostat_offset","args":{"offset":-2.5,"zone":"hall"}}"#
+        let wrapped = "set_thermostat_offset<|content_invoke_tool_json|>" + body + Self.end
+        for opener in [Self.answer, "<|content_text|>"] {
+            let output = Self.thought + "Two calls." + Self.end + native + opener + wrapped + Self.eos
+            let characters = Array(output)
+            for width in [1, 3, 4096] {
+                let chunks = stride(from: 0, to: characters.count, by: width).map {
+                    String(characters[$0..<min($0 + width, characters.count)])
+                }
+                let (reading, lexer) = Self.read(chunks, readsCallOpeningAnswer: true)
+                #expect(reading.calls.map(\.function.name) == ["set_note", "set_thermostat_offset"], "\(width)")
+                #expect(reading.calls.last?.function.arguments
+                    == ["offset": .double(-2.5), "zone": .string("hall")])
+                #expect(reading.content.isEmpty)
+                #expect(reading.reasoning == "Two calls.")
+                #expect(lexer.toolFailures.isEmpty)
+            }
+            // Without tools declared the frame after the call stays the answer's text.
+            let (plain, _) = Self.read([Self.thought + "Two calls." + Self.end + native + opener + wrapped])
+            #expect(plain.calls.map(\.function.name) == ["set_note"])
+            #expect(plain.content == "set_thermostat_offset<|content_invoke_tool_json|>" + body)
+        }
+    }
+
     /// The name before the marker is the call's header, held to the body's name.
     @Test func callFrameOpeningAnAnswerKeepsTheHeaderRule() {
         let (reading, lexer) = Self.read(

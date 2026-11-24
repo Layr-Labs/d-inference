@@ -66,6 +66,12 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
     /// `max_tokens` may ask for the rest of the window.
     public static let defaultOutputTokens = DistributedEngineFactory.defaultOutputTokens
 
+    /// Red control only: the slot default as before (every model 32,768 cut to its window).
+    public static func defaultMaxTokens(maxContext: Int, servesInkling2: Bool, fallback: Int) -> Int {
+        guard maxContext > 0 else { return fallback }
+        return min(maxContext, defaultOutputTokens)
+    }
+
     /// `auxiliaryWeightBytes`: resident weight bytes that live OUTSIDE the
     /// model container (the MTP drafter — never scanned, advertised, or
     /// attested), folded into `weightsBytes` here so all downstream memory
@@ -205,7 +211,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         }
 
         let maxContext = architecture.maxContextLength ?? 0
-        let defaultMaxTokens = maxContext > 0 ? min(maxContext, defaultOutputTokens) : fallbackDefaultMaxTokens
+        let defaultMaxTokens = Self.defaultMaxTokens(
+            maxContext: maxContext, servesInkling2: false, fallback: fallbackDefaultMaxTokens)
 
         return SlotSizingSnapshot(
             weightsBytes: facts.bytes,

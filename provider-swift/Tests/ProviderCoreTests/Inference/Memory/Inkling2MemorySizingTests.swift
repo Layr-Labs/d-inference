@@ -44,6 +44,32 @@ struct Inkling2MemorySizingTests {
         #expect(KVEstimation.parseModelArchitecture(at: url).maxContextLength == 524_288)
     }
 
+    /// The default output of a request that names no `max_tokens` is 65,536
+    /// (`SlotSizingSnapshot.defaultMaxTokens`), and admission reserves it: a
+    /// 64 GB Mac's KV budget still holds eight streams of a 1,024-token
+    /// prompt and 65,536 tokens of output, with their sliding plateau,
+    /// convolution state and the drafter's own cache.
+    @Test func sixtyFourGigabytesHoldEightStreamsOf65536TokensOfOutput() throws {
+        let root = try Self.configuration()
+        let text = try #require(root["text_config"] as? [String: Any])
+        let layout = try #require(Inkling2ModelIdentity.CacheLayout(textConfiguration: text))
+        let context = 1_024 + 65_536
+        let mtp = try #require(root["mtp_config"] as? [String: Any])
+        let perStream = context * layout.kvBytesPerToken(bytesPerElement: 2)
+            + layout.slidingWindowBytes(bytesPerElement: 2)
+            + layout.convolutionStateBytes(bytesPerElement: 2)
+            + (try Self.drafterKVBytes(mtp, context: context))
+        let resident = Self.targetBytes + SpecDecLimits.residentEstimate(artifactBytes: Self.drafterBytes)
+        let budget = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: 64 * Self.gib, residentWeightBytes: resident,
+            activationReserveBytes: UnifiedMemoryCap.defaultActivationReserveBytes,
+            configReserveBytes: 4 * Self.gib, capFraction: UnifiedMemoryCap.defaultCapFraction)
+        let streams = Int(budget) / perStream
+        #expect(streams >= 8, "budget \(budget) B holds \(streams) streams of \(perStream) B")
+        #expect(SlotSizingSnapshot.defaultMaxTokens(maxContext: 524_288, servesInkling2: true, fallback: 4_096)
+            == 65_536)
+    }
+
     @Test func fortyEightGigabytesHoldEightStreamsAt32K() throws {
         let root = try Self.configuration()
         let text = try #require(root["text_config"] as? [String: Any])

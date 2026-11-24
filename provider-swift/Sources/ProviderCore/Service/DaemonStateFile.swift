@@ -199,7 +199,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var cancellationsPartialComplete: UInt64?
         /// The same requests by what stopped them. Nil on older runtimes.
         public var endedEarly: EndedEarlyCounts?
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil, endedEarly: EndedEarlyCounts? = nil) {
+        /// Planned requests served without the prompt cache because an earlier
+        /// tool call's arguments carry a null. Nil on older runtimes.
+        public var promptCacheSkippedToolCallNull: UInt64?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil, endedEarly: EndedEarlyCounts? = nil, promptCacheSkippedToolCallNull: UInt64? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
@@ -208,6 +211,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.reasoningTokens = reasoningTokens
             self.cancellationsPartialComplete = cancellationsPartialComplete
             self.endedEarly = endedEarly
+            self.promptCacheSkippedToolCallNull = promptCacheSkippedToolCallNull
         }
     }
 

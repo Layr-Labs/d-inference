@@ -3536,6 +3536,11 @@ change with the all-model default are GLM-5.3-Flash (`glm5_next`) and Qwen 4
 was already exact. Greedy rows accept exactly under either rule.
 Exact keeps the model's output distribution; its tokens are not bit-identical
 to MTP off, since verify windows round differently.
+Inkling 2 Mini replaces the generic depth with its drafter's own profile
+(`Inkling2DSparkDrafter.defaultMTPConfig`: up to 7 drafts, adaptive), and
+`DARKBLOOM_INKLING_MTP_MAX_DRAFT` (1 to 7) lowers that cap; the acceptance
+setting still applies (`Inkling2MTPProfilePolicy` in
+`provider-swift/Sources/ProviderCore/Inference/MTP/Inkling2MTPProfilePolicy.swift`).
 Under typical acceptance a draft is kept when the sampler-filtered target row
 gives it probability above `min(1, 0.2 * exp(-H))`, `H` the row's entropy in
 nats; the first rejected position and the bonus position still commit the keyed

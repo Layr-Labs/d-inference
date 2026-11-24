@@ -4254,6 +4254,10 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 `DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds (card default presence 1.5), Gemma 4 26B QAT and Inkling 2 Mini, rows with a presence or frequency penalty speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as before these builds opted in. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
+### MTP repetition-penalty-row switch
+
+`DARKBLOOM_MTP_REPETITION_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds, Gemma 4 26B QAT and Inkling 2 Mini, rows with a repetition penalty speculate with exact acceptance by default, so their output is the same as without speculation; `0` (or `false`, `no`, `off`) keeps them target-only, as before these builds opted in. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+
 ### MTP stop-string-row switch
 
 `DARKBLOOM_MTP_STOP_STRING_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Gemma 4 26B QAT build and Inkling 2 Mini, rows with `stop` strings speculate by default and stop at the first match exactly as without speculation; `0` (or `false`, `no`, `off`) keeps them target-only. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.

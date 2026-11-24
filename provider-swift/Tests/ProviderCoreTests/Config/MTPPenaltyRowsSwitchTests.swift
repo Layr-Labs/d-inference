@@ -40,9 +40,9 @@ struct MTPPenaltyRowsSwitchTests {
     }
 
     /// Inkling's penalty rows draft through the SDK's generic penalty-aware
-    /// verification; a repetition penalty still keeps a row target-only
-    /// (`mtpHistoryEligible` requires repetition penalty 1 on every build).
-    @Test func inklingPenaltyRowsDraftButRepetitionPenaltyStaysRefused() {
+    /// verification. A repetition penalty is not a presence/frequency penalty:
+    /// its rows follow their own opt-in (`MTPRepetitionPenaltyRowsSwitchTests`).
+    @Test func inklingPenaltyRowsDraftThroughTheGenericVerifier() {
         var config = CBv2MTPConfig(enabled: true)
         SDKFeatureDefaults.applyMTPDefaults(
             to: &config, modelId: "thinkingmachines/Inkling-2-Mini", environment: [:], processEnvironment: [:])

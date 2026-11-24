@@ -297,6 +297,39 @@ struct GPTOSSToolSchemaRenderTests {
         }
     }
 
+    @Test("the template utility gives Gemma the served prompt's tools")
+    func applyTemplateGivesGemmaTheServedTools() async throws {
+        let tokenizer = ToolCapturingTokenizer()
+        let engine = MultiModelBatchSchedulerEngine(
+            acquire: { modelId in throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId) },
+            tokenizerProvider: { _ in .init(tokenizer: TokenizerHandle(tokenizer), modelType: "gemma4") },
+            availableModels: { ["gemma-4-26b"] })
+        // A property declared without a type renders untyped (invariant 8),
+        // which needs the declarations; a typed one keeps its type.
+        let schemas: [(Any, String)] = [([String: Any](), ""), (["description": "d"] as [String: Any], ""),
+                                        (["type": "integer"], "integer")]
+        for (schema, renderType) in schemas {
+            let body = try Self.body(schema, model: "gemma-4-26b")
+            let request = try ProviderLoop.decodeOpenAIRequest(body)
+            let controls = ProviderLoop.extractChatTemplateControls(from: body)
+            let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
+            let served = try ProviderPromptContractPipeline.templateInput(
+                prepared: prepared, request: request, modelType: "gemma4", templateControls: controls).tools
+            let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
+            _ = try await engine.applyTemplate(.init(
+                model: "gemma-4-26b", messages: local.request.messages, tools: local.request.tools))
+            // The render type Gemma's template prints for `value`.
+            func valueType(_ tools: [[String: any Sendable]]?) -> String? {
+                let function = tools?.first?["function"] as? [String: any Sendable]
+                let parameters = function?["parameters"] as? [String: any Sendable]
+                let value = (parameters?["properties"] as? [String: any Sendable])?["value"] as? [String: any Sendable]
+                return value?["type"] as? String
+            }
+            #expect(valueType(served) == renderType, "\(schema)")
+            #expect(valueType(tokenizer.tools) == renderType, "\(schema)")
+        }
+    }
+
     @Test("the prompt-token floor counts the prompt served")
     func promptTokenFloorRendersTheSameTools() throws {
         let body = try Self.body(["type": ["string", "integer"]])

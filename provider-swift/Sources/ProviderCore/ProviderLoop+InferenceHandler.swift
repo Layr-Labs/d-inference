@@ -725,7 +725,8 @@ extension ProviderLoop {
             logger.info(.promptCacheSkippedToolCallNull)
         }
         let (unionTypeContext, unionTypeServedCold) = GemmaToolUnionTypeCache.servingContext(
-            historyNullContext, for: chatRequest, modelType: modelType)
+            historyNullContext, for: chatRequest, modelType: modelType,
+            declared: templateControls.declaredTools)
         if unionTypeServedCold {
             stats.incrementPromptCacheSkippedToolUnionType()
             logger.info(.promptCacheSkippedToolUnionType)

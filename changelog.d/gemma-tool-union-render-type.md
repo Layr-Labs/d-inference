@@ -10,8 +10,13 @@ quoted typed values (`"-4200"` for `-4200`). Gemma 4 now sees the other member
 members as before. Unions with more members, other types or an `enum` keep
 `STRING`, and other model families are unchanged.
 
+A Gemma 4 tool parameter declared without any type (`{}`, any value) was also
+shown as `STRING`, the type the schema repair fills in, so Gemma quoted its
+values. Gemma 4 now sees it untyped (`type:<|"|><|"|>`), as the template
+renders a typeless property; this reads the caller's declarations as sent.
+
 The prompt contract stays `darkbloom-request-normalization-v9`, which still
-renders `STRING`, so a coordinator request whose Gemma tool declaration this
-changes is served without the prompt cache, like requests whose tool-call
+renders `STRING`, so a coordinator request whose Gemma tool declaration either
+change affects is served without the prompt cache, like requests whose tool-call
 history carries a null. `darkbloom logs` notes each such request and the
 daemon state counts them (`promptCacheSkippedToolUnionType`).

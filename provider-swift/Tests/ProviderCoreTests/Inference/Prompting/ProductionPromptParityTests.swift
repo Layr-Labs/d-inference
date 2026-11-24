@@ -83,8 +83,25 @@ struct ProductionPromptParityTests {
                 let served = ToolCallHistoryNullCache.servingContext(
                     RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
                     for: request, modelType: modelType, managedSuper: false)
-                if GemmaToolUnionTypeCache.changesRender(request, modelType: modelType) {
+                // A Gemma tool render type that changed is served cold by the
+                // next rule; the vectors stay the contract for the same body
+                // with each property declared without a type typed `string`,
+                // as the shared repair renders it.
+                let declared = ProviderLoop.extractChatTemplateControls(from: providerBody).declaredTools
+                let renderTypeChanged = GemmaToolUnionTypeCache.changesRender(
+                    request, modelType: modelType, declared: declared)
+                if renderTypeChanged {
                     toolUnionTypeCases.insert(model.modelID + "/" + fixture.id)
+                    let renderServed = GemmaToolUnionTypeCache.servingContext(
+                        served.context, for: request, modelType: modelType, declared: declared)
+                    #expect((served.servedCold || renderServed.servedCold) && renderServed.context.receiptNonce == nil
+                            && !renderServed.context.cacheEnabled,
+                            "\(model.modelID)/\(fixture.id): a changed tool render must be served without the prompt cache")
+                    if !served.servedCold {
+                        let rendered = try await tokens(providerBody)
+                        #expect(rendered != fixture.tokenIDs,
+                                "\(model.modelID)/\(fixture.id): the tool render change no longer changes the prompt")
+                    }
                 }
                 // GPT-OSS renders a declaration this contract repairs as
                 // written (GPTOSSToolSchemaRender); such a body is served cold,
@@ -92,8 +109,7 @@ struct ProductionPromptParityTests {
                 let rawSchema = GPTOSSToolSchemaCache.servingContext(
                     RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
                     for: request,
-                    declared: ProviderLoop.extractChatTemplateControls(from: providerBody).declaredTools,
-                    modelType: modelType)
+                    declared: declared, modelType: modelType)
                 if rawSchema.servedCold {
                     toolRawSchemaCases.insert(model.modelID + "/" + fixture.id)
                     #expect(rawSchema.context.receiptNonce == nil && rawSchema.context.scope == nil,
@@ -108,10 +124,11 @@ struct ProductionPromptParityTests {
                     if original != routed {
                         forwardingDifferences.insert(model.modelID + "/" + fixture.id)
                     }
-                    #expect(original == routed || rawSchema.servedCold,
+                    #expect(original == routed || rawSchema.servedCold || renderTypeChanged,
                             "\(model.modelID)/\(fixture.id): the original tools render a different prompt")
                 }
                 var contractBody = served.servedCold ? try Self.v9HistoryArguments(providerBody) : providerBody
+                if renderTypeChanged { contractBody = try Self.v9TypedDeclarations(contractBody) }
                 if rawSchema.servedCold {
                     contractBody = ToolSchemaNormalization.ensureParameterTypes(in: contractBody)
                 }
@@ -150,17 +167,19 @@ struct ProductionPromptParityTests {
         // Exactly the vector bodies whose earlier tool call carries a null.
         #expect(historyNullCases == Self.historyNullCases,
                 "provider-rendered cases changed: \(historyNullCases.symmetricDifference(Self.historyNullCases).sorted())")
-        // No vector body declares a Gemma tool union whose render type changed
-        // (GemmaToolUnionTypeCache), so every body stays exact for that rule.
+        // Exactly the Gemma vector bodies whose tool render type changed
+        // (GemmaToolUnionTypeCache): a property declared without a type.
         #expect(toolUnionTypeCases == Self.toolUnionTypeCases,
                 "Gemma tool-union cases changed: \(toolUnionTypeCases.sorted())")
         // Exactly the GPT-OSS vector bodies with a declaration rendered as
         // written (GPTOSSToolSchemaCache).
         #expect(toolRawSchemaCases == Self.toolRawSchemaCases,
                 "GPT-OSS tool-schema cases changed: \(toolRawSchemaCases.symmetricDifference(Self.toolRawSchemaCases).sorted())")
-        // Original and repaired tools render apart only there.
-        #expect(forwardingDifferences.isSubset(of: Self.toolRawSchemaCases),
-                "original tools render apart: \(forwardingDifferences.subtracting(Self.toolRawSchemaCases).sorted())")
+        // Original and repaired tools render apart only in those and the
+        // Gemma cases, each served cold.
+        let intended = Self.toolRawSchemaCases.union(Self.toolUnionTypeCases)
+        #expect(forwardingDifferences.isSubset(of: intended),
+                "original tools render apart: \(forwardingDifferences.subtracting(intended).sorted())")
     }
 
     /// Gemma 4 prompt contracts on the served artifacts: a request that asks
@@ -273,8 +292,47 @@ extension ProductionPromptParityTests {
             ["endpoint_messages_tool_turn", "gemma_tool_turn"].map { model + "/" + $0 }
         })
 
-    /// The vector bodies whose Gemma tool render type changed: none.
-    static let toolUnionTypeCases: Set<String> = []
+    /// The vector bodies whose Gemma tool render type changed: the Gemma
+    /// models' bodies that declare a property without a type (`city: {}`).
+    static let toolUnionTypeCases: Set<String> = Set(
+        ["gemma-4-26b", "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit"].flatMap { model in
+            ["endpoint_messages_tool_turn", "tools"].map { model + "/" + $0 }
+        })
+
+    /// `body` with every tool property declared without a type
+    /// (`Gemma4ToolSchemaEnforcement.declaresAnyValue`) typed `string`, as the
+    /// shared repair renders it under the v9 contract.
+    private static func v9TypedDeclarations(_ body: Data) throws -> Data {
+        func typed(_ node: [String: Any]) -> [String: Any] {
+            var node = node
+            if var properties = node["properties"] as? [String: Any] {
+                for (key, value) in properties {
+                    guard var property = value as? [String: Any] else { continue }
+                    if Gemma4ToolSchemaEnforcement.declaresAnyValue(property) {
+                        property["type"] = "string"
+                    } else {
+                        property = typed(property)
+                    }
+                    properties[key] = property
+                }
+                node["properties"] = properties
+            }
+            if let items = node["items"] as? [String: Any] { node["items"] = typed(items) }
+            return node
+        }
+        guard var object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let tools = object["tools"] as? [Any]
+        else { return body }
+        object["tools"] = tools.map { tool -> Any in
+            guard var tool = tool as? [String: Any], var function = tool["function"] as? [String: Any],
+                  let parameters = function["parameters"] as? [String: Any]
+            else { return tool }
+            function["parameters"] = typed(parameters)
+            tool["function"] = function
+            return tool
+        }
+        return try JSONSerialization.data(withJSONObject: object)
+    }
 
     /// The vector bodies whose GPT-OSS tool render changed: those declaring
     /// a parameter without a type (`{}`, a description alone).

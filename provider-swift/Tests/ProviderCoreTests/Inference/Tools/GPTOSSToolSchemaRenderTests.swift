@@ -269,6 +269,34 @@ struct GPTOSSToolSchemaRenderTests {
         }
     }
 
+    @Test("the template utility renders GPT-OSS tools as the served prompt does")
+    func applyTemplateRendersTheSameTools() async throws {
+        let tokenizer = ToolCapturingTokenizer()
+        let engine = MultiModelBatchSchedulerEngine(
+            acquire: { modelId in throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId) },
+            tokenizerProvider: { _ in .init(tokenizer: TokenizerHandle(tokenizer), modelType: "gpt_oss") },
+            availableModels: { ["gpt-oss-20b"] })
+        // The served prompt's tools for each declaration, against what the
+        // template utility renders for the same body.
+        let schemas: [Any] = [
+            ["type": ["string", "integer"]], ["type": ["integer", "null"]], true, [String: Any](),
+            ["anyOf": [["type": "string"], ["type": "null"]]],
+        ]
+        for schema in schemas {
+            let body = try Self.body(schema)
+            let request = try ProviderLoop.decodeOpenAIRequest(body)
+            let controls = ProviderLoop.extractChatTemplateControls(from: body)
+            let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gpt_oss")
+            let served = try ProviderPromptContractPipeline.templateInput(
+                prepared: prepared, request: request, modelType: "gpt_oss", templateControls: controls).tools
+            let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
+            _ = try await engine.applyTemplate(.init(
+                model: "gpt-oss-20b", messages: local.request.messages, tools: local.request.tools))
+            let utility = try #require(tokenizer.tools)
+            #expect(try Jinja.Value(any: utility) == Jinja.Value(any: served ?? []), "\(schema)")
+        }
+    }
+
     @Test("the prompt-token floor counts the prompt served")
     func promptTokenFloorRendersTheSameTools() throws {
         let body = try Self.body(["type": ["string", "integer"]])
@@ -284,5 +312,26 @@ struct GPTOSSToolSchemaRenderTests {
             return properties["value"]
         }
         #expect(types == [.object(["type": .array([.string("string"), .string("integer")])])])
+    }
+}
+
+/// Records the tools the template is given.
+private final class ToolCapturingTokenizer: MLXLMCommon.Tokenizer, @unchecked Sendable {
+    private(set) var tools: [[String: any Sendable]]?
+
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+
+    func applyChatTemplate(
+        messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        self.tools = tools
+        return [1]
     }
 }

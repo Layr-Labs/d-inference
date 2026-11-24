@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import ProviderCoreFoundation
 
 /// Resolves the MTP draft acceptance rule for one model slot from the
 /// provider configuration.
@@ -7,7 +8,7 @@ import MLXLMCommon
 /// Precedence: `[backend] mtp_acceptance_by_model` for the exact model id,
 /// then `[backend] mtp_acceptance`, then the built-in rule (exact for the
 /// private Bonsai 9B candidate, the catalog Qwen 3.5/3.6 builds, Gemma 4 26B
-/// QAT and Qwen 3.8 27B, typical for the other profiles). A value that names no
+/// QAT, Qwen 3.8 27B and Inkling 2 Mini, typical for the other profiles). A value that names no
 /// known rule is reported and resolves to `exact`, so a typo can never
 /// install a lossy rule. The typical threshold is the engine constant
 /// `CBv2MTPAcceptance.defaultTypicalDelta`; it is not a production key.
@@ -60,6 +61,12 @@ public enum MTPAcceptancePolicy {
     ///   acceptance and 30 % ended at the 32,768-token output cap;
     /// - every Qwen 3.8 27B build: on one Mac a lone request drafts. Its pairs
     ///   never read this rule and were already exact.
+    /// - the served Inkling 2 Mini identities: its DSpark drafter proposes
+    ///   greedy drafts, which typical acceptance keeps far more often than
+    ///   sampling would. On OpenRouter's GPQA shape at temperature 0.5 none of
+    ///   8 drafter-on samples answered (they repeated until the 32,768-token
+    ///   cap or the loop guard), while all 4 drafter-off samples of the same
+    ///   questions answered correctly.
     /// Exact keeps each model's output distribution (not bit-identical to MTP
     /// off).
     static func builtInIsExact(modelID: String) -> Bool {
@@ -68,6 +75,7 @@ public enum MTPAcceptancePolicy {
             || qwen35CatalogMoEModelIDs.contains(modelID)
             || modelID == gemmaQATModelID
             || ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID)
+            || Inkling2ModelIdentity.isServedModelID(modelID)
     }
 
     /// The catalog Qwen 3.5/3.6 MoE builds with an MTP head.

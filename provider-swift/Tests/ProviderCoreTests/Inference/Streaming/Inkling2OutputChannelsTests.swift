@@ -35,10 +35,11 @@ struct Inkling2OutputChannelsTests {
         }
     }
 
-    static func read(_ chunks: [String], limits: Inkling2OutputChannels.Limits = .init())
+    static func read(_ chunks: [String], limits: Inkling2OutputChannels.Limits = .init(),
+                     readsCallOpeningAnswer: Bool = false)
         -> (Reading, Inkling2OutputChannels)
     {
-        var lexer = Inkling2OutputChannels(limits: limits)
+        var lexer = Inkling2OutputChannels(limits: limits, readsCallOpeningAnswer: readsCallOpeningAnswer)
         var pieces: [Inkling2OutputPiece] = []
         for chunk in chunks { pieces += lexer.parse(chunk) }
         pieces += lexer.finish()
@@ -82,6 +83,35 @@ struct Inkling2OutputChannelsTests {
         #expect(reading.content == "et")
     }
 
+    /// `callsAreText` (an `auto` request without tools, #200): every call
+    /// frame is content, parsed or not, closed or not; none is a call or a
+    /// failure. Without it the same frame is a call.
+    @Test func callFramesAreContentWhenCallsAreText() {
+        let output = Self.thought + "t" + Self.end
+            + Self.call("get_weather", #"{"name":"get_weather","args":{"city":"Paris"}}"#)
+            + Self.call("f", #"{"name":"f","arguments":[]}"#)
+            + #"<|content_invoke_tool_json|>{"open":"#
+        let characters = Array(output)
+        for width in [1, 5, 4096] {
+            var lexer = Inkling2OutputChannels(callsAreText: true)
+            var pieces: [Inkling2OutputPiece] = []
+            for start in stride(from: 0, to: characters.count, by: width) {
+                pieces += lexer.parse(String(characters[start..<min(start + width, characters.count)]))
+            }
+            pieces += lexer.finish()
+            let reading = Reading(pieces)
+            #expect(reading.reasoning == "t")
+            #expect(reading.content
+                == #"{"name":"get_weather","args":{"city":"Paris"}}{"name":"f","arguments":[]}{"open":"#)
+            #expect(reading.calls.isEmpty)
+            #expect(lexer.toolFailures.isEmpty)
+            #expect(lexer.unterminatedChannel == .content)
+            #expect(lexer.droppedBytes == 0)
+        }
+        let (declared, _) = Self.read(Self.call("get_weather", #"{"name":"get_weather","args":{"city":"Paris"}}"#))
+        #expect(declared.calls.map(\.function.name) == ["get_weather"])
+    }
+
     @Test func toolCallArgumentsKeepTheirValues() throws {
         let body = #"{"name":"get_weather","args":{"b":true,"days":[1,2],"f":1.5,"location":"Paris, France","n":null,"opts":{"unit":"celsius"},"z":0}}"#
         let (reading, lexer) = Self.read(Self.thought + "Need weather." + Self.end + Self.call("get_weather", body))
@@ -111,6 +141,82 @@ struct Inkling2OutputChannelsTests {
         let (reading, lexer) = Self.read(#"<|content_invoke_tool_json|>{"name":"f","args":{"x":1}}"# + Self.end)
         #expect(reading.calls.map(\.function.name) == ["f"])
         #expect(lexer.toolFailures.isEmpty)
+    }
+
+    /// With tools declared (`readsCallOpeningAnswer`), the model sometimes
+    /// opens a text message where a call's header belongs:
+    /// `<|content_text|>NAME<|content_invoke_tool_json|>{...}`. That message is
+    /// the call, alone or beside a well-formed one, at any split.
+    @Test func callFrameOpeningAnAnswerIsACall() {
+        let body = #"{"name":"update_remarks","args":{"custom_fields":{"備考":"Prefers email"}}}"#
+        let wrapped = "update_remarks<|content_invoke_tool_json|>" + body + Self.end
+        for opener in [Self.answer, "<|content_text|>"] {
+            let output = Self.thought + "Call it." + Self.end + opener + wrapped
+                + Self.call("set_note", #"{"name":"set_note","args":{"note":"twice"}}"#) + Self.eos
+            let characters = Array(output)
+            for width in [1, 3, 4096] {
+                let chunks = stride(from: 0, to: characters.count, by: width).map {
+                    String(characters[$0..<min($0 + width, characters.count)])
+                }
+                let (reading, lexer) = Self.read(chunks, readsCallOpeningAnswer: true)
+                #expect(reading.calls.map(\.function.name) == ["update_remarks", "set_note"])
+                #expect(reading.calls.first?.function.arguments
+                    == ["custom_fields": .object(["備考": .string("Prefers email")])])
+                #expect(reading.content.isEmpty)
+                #expect(reading.reasoning == "Call it.")
+                #expect(lexer.toolFailures.isEmpty)
+            }
+            // Without tools declared the same frame stays the answer's text.
+            let (plain, _) = Self.read(Self.thought + "Call it." + Self.end + opener + wrapped)
+            #expect(plain.calls.isEmpty)
+            #expect(plain.content == "update_remarks<|content_invoke_tool_json|>" + body)
+        }
+    }
+
+    /// The name before the marker is the call's header, held to the body's name.
+    @Test func callFrameOpeningAnAnswerKeepsTheHeaderRule() {
+        let (reading, lexer) = Self.read(
+            [Self.answer + #"g<|content_invoke_tool_json|>{"name":"f","args":{}}"# + Self.end],
+            readsCallOpeningAnswer: true)
+        #expect(reading.calls.isEmpty)
+        #expect(lexer.toolFailures == [.nameMismatch])
+    }
+
+    /// Only a name directly followed by the marker opens a call; other answers,
+    /// and a marker later in an answer, stay text, and so does every frame when
+    /// calls are text.
+    @Test func answersThatAreNoCallFrameStayText() {
+        let marker = "<|content_invoke_tool_json|>"
+        for text in ["Paris", "Paris is " + marker + "{}", "a b" + marker + "{}", "x" + "<|content_text|>",
+                     marker + "{}", String(repeating: "n", count: 65) + marker + "{}"] {
+            let (reading, _) = Self.read([Self.answer + text + Self.end], readsCallOpeningAnswer: true)
+            #expect(reading.content == text)
+            #expect(reading.calls.isEmpty)
+        }
+        let (unterminated, lexer) = Self.read(["Paris"].map { Self.answer + $0 }, readsCallOpeningAnswer: true)
+        #expect(unterminated.content == "Paris")
+        #expect(lexer.unterminatedChannel == .content)
+        var asText = Inkling2OutputChannels(callsAreText: true, readsCallOpeningAnswer: true)
+        let frame = #"f<|content_invoke_tool_json|>{"name":"f","args":{}}"#
+        let pieces = asText.parse(Self.answer + frame + Self.end) + asText.finish()
+        #expect(Reading(pieces).content == frame)
+        #expect(Reading(pieces).calls.isEmpty)
+    }
+
+    /// Bytes held while they could still name a call leave with the text that
+    /// follows them, so an answer's pieces are the ones it has without tools.
+    @Test func heldNameLeavesWithTheFollowingText() {
+        var lexer = Inkling2OutputChannels(readsCallOpeningAnswer: true)
+        #expect(lexer.parse(Self.answer + "Hel") == [])
+        #expect(lexer.openChannel == .content)
+        #expect(lexer.parse("lo <|end_mes") == [.content("Hello ")])
+        #expect(lexer.parse("sage|>") == [])
+        let output = "<|message_model|><|content_thinking|>loop loop <|end_message|><|message_model|><|content_text|>"
+            + "The answer.<|end_message|>"
+        for options in [false, true] {
+            var whole = Inkling2OutputChannels(readsCallOpeningAnswer: options)
+            #expect(whole.parse(output) + whole.finish() == [.reasoning("loop loop "), .content("The answer.")])
+        }
     }
 
     // MARK: - Opaque payloads

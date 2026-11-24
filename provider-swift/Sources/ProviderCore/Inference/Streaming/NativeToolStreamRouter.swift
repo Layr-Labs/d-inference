@@ -89,7 +89,8 @@ struct NativeToolStreamRouter {
          streamsGLMCalls: Bool = false,
          glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault,
          harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled,
-         nativeInklingChannels: Bool = false, inklingStreamsCalls: Bool = false) {
+         nativeInklingChannels: Bool = false, inklingStreamsCalls: Bool = false,
+         inklingUndeclaredCallsAreText: Bool = Inkling2OutputChannels.undeclaredCallsAreTextByDefault) {
         self.handler = handler
         self.withholdReasoning = withholdReasoning
         self.tools = tools
@@ -114,7 +115,13 @@ struct NativeToolStreamRouter {
         harmonyAutoChoice = harmonyAutoToolGrammar && handler?.format == .harmony && streamedCalls?.mode == .auto
             ? streamedCalls : nil
         if nativeInklingChannels {
-            inklingParser = Inkling2OutputChannels()
+            // An `auto` request that declares no tools renders no
+            // `tool_declare`, so no call can be valid: a frame is answer text,
+            // never a refusal (422 `undeclared_name`, or 500 unparsed).
+            // Client stops follow (`Inkling2PromptContract.stopStringScope`).
+            inklingParser = Inkling2OutputChannels(
+                callsAreText: inklingUndeclaredCallsAreText && autoToolChoice && tools?.isEmpty != false,
+                readsCallOpeningAnswer: tools?.isEmpty == false)
         } else if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
@@ -125,6 +132,8 @@ struct NativeToolStreamRouter {
                 tools: tools,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 absorbStrayThinkClose: absorbStrayThinkClose,
+                // Nemotron 3.5 drafts calls after an early `</think>`, then closes again.
+                holdsFramesAfterThought: handler?.format == .nemotron,
                 promotesTrailingCalls: promotesTrailingReasoningCalls)
         }
     }

@@ -40,7 +40,7 @@ Before tagging `v0.10.18`:
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins for the combined Inkling 2 Mini and sampler source: `libs/mlx` `72dffa2dbbdce95601fd84f5e8b6d7b4ec97a11b`, `libs/mlx-swift` `b1c94d29c5ddff16838fdc25b83fbe8fde48b3e8`, `libs/mlx-swift-lm` `3085d3e5f25927d9bf78de2b15003c0f0860ab2e`. Compare the packaged Metal library and
+- Pins for the combined Inkling 2 Mini and sampler source: `libs/mlx` `72dffa2dbbdce95601fd84f5e8b6d7b4ec97a11b`, `libs/mlx-swift` `b1c94d29c5ddff16838fdc25b83fbe8fde48b3e8`, `libs/mlx-swift-lm` `e7918994a7cfb8d59896db03ce5cda925ee93b18`. Compare the packaged Metal library and
   application inventory with the manifests for this exact combined build.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
   tree; compare the model, grant and qualification counts with the combined build's verified facts (12 models, 11 grants, 18 qualifications).

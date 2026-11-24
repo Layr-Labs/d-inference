@@ -33,12 +33,14 @@ struct Inkling2ToolStreamRouterTests {
         return (request, try ToolChoicePromptPolicy.prepare(request, modelType: type))
     }
 
-    static func router(_ prepared: ToolChoicePromptPolicy.Prepared, streams: Bool, withhold: Bool = false)
+    static func router(_ prepared: ToolChoicePromptPolicy.Prepared, streams: Bool, withhold: Bool = false,
+                       undeclaredCallsAreText: Bool = true)
         -> NativeToolStreamRouter
     {
         NativeToolStreamRouter(handler: nil, requiresToolCall: prepared.requiresToolCall, nativePrefix: nil,
             tools: prepared.tools?.map { $0.toolSpec() }, withholdReasoning: withhold, streamedCalls: prepared,
-            nativeInklingChannels: true, inklingStreamsCalls: streams)
+            nativeInklingChannels: true, inklingStreamsCalls: streams,
+            inklingUndeclaredCallsAreText: undeclaredCallsAreText)
     }
 
     static let call = #"<|message_model|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","args":{"location":"Paris"}}<|end_message|>"#
@@ -90,6 +92,22 @@ struct Inkling2ToolStreamRouterTests {
             #expect(finished.calls.map(\.function.name) == ["get_weather"])
             #expect(finished.calls.first?.function.arguments == ["location": .string("Paris")])
             try ToolConstraintValidation.validate(finished.calls, prepared: prepared)
+        }
+    }
+
+    /// A request that declares tools reads a call the model wrote as an
+    /// answer message (`NAME<|content_invoke_tool_json|>{...}`) as that call.
+    @Test func callWrittenAsAnAnswerMessageIsACall() throws {
+        let (_, prepared) = try Self.prepared(clientStreams: false)
+        let wrapped = #"<|message_model|><|content_text|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","args":{"location":"Paris"}}<|end_message|>"#
+        for width in [1, 5, 4096] {
+            var router = Self.router(prepared, streams: false)
+            let routed = Routed(try Self.feed(&router, Self.thought + wrapped, width: width))
+            #expect(routed.reasoning == "Need the weather.")
+            #expect(routed.content.isEmpty)
+            let finished = try router.finishCompleteCalls(truncated: false)
+            #expect(finished.calls.map(\.function.name) == ["get_weather"])
+            #expect(finished.calls.first?.function.arguments == ["location": .string("Paris")])
         }
     }
 
@@ -225,5 +243,120 @@ struct Inkling2ToolStreamRouterTests {
             #expect(try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
                 modelType: Self.type) == nil)
         }
+    }
+
+    // MARK: - No `tools` field (#200 `tools-described-no-tools-field`)
+
+    /// A request that describes a tool in its prompt but sends no `tools`:
+    /// the template renders no `tool_declare`, and its calls never stream.
+    static func preparedWithoutTools(clientStreams: Bool) throws -> ToolChoicePromptPolicy.Prepared {
+        var request = OpenAIChatCompletionRequest(
+            model: "thinkingmachines/Inkling-2-Mini",
+            messages: [
+                .init(role: .system, content: .text("You can call the function get_weather(city: string) by replying "
+                    + #"with a JSON tool call {"name": "get_weather", "arguments": {"city": ...}}."#)),
+                .init(role: .user, content: .text("What is the weather in Paris? Use the tool.")),
+            ],
+            stream: clientStreams, streamOptions: clientStreams ? .init(includeUsage: true) : nil)
+        request.streamToolCallDeltas = clientStreams
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: type)
+        #expect(prepared.mode == .auto)
+        #expect(prepared.tools == nil)
+        #expect(!ToolStreamPreparation.streamsInklingCalls(request: request, prepared: prepared))
+        return prepared
+    }
+
+    /// Frames the model writes when no tool is declared, and the text each
+    /// one answers with: a call in the template's shape, the shape the prompt
+    /// asked for (`arguments`, which does not parse as Inkling's call), and
+    /// arguments alone.
+    static let undeclaredFrames: [(frame: String, text: String)] = [
+        (call, #"{"name":"get_weather","args":{"location":"Paris"}}"#),
+        (#"<|message_model|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","arguments":{"city":"Paris"}}<|end_message|>"#,
+         #"{"name":"get_weather","arguments":{"city":"Paris"}}"#),
+        (#"<|content_invoke_tool_json|>{"city":"Paris"}<|end_message|>"#, #"{"city":"Paris"}"#),
+    ]
+
+    /// No call can be valid without declared tools, so a call frame is the
+    /// answer's text, streamed or not: never a 422 `undeclared_name` nor a
+    /// 500 `generation_failure` (#200).
+    @Test func callFrameWithoutToolsIsAnswerText() throws {
+        for (frame, text) in Self.undeclaredFrames {
+            for clientStreams in [false, true] {
+                let prepared = try Self.preparedWithoutTools(clientStreams: clientStreams)
+                for width in [1, 7, 4096] {
+                    var router = Self.router(prepared, streams: false)
+                    let routed = Routed(try Self.feed(&router,
+                        Self.thought + frame + "<|content_model_end_sampling|>", width: width))
+                    #expect(routed.reasoning == "Need the weather.")
+                    #expect(routed.content == text)
+                    #expect(routed.deltas.isEmpty)
+                    #expect(!router.hasNativeToolFailure)
+                    var calls = try router.finishCompleteCalls(truncated: false).calls
+                    #expect(calls.isEmpty)
+                    try ToolConstraintValidation.validateWithheld(&calls, prepared: prepared, cutAtLimit: false)
+                }
+            }
+        }
+    }
+
+    /// A frame a stop token ends before it closes is text too.
+    @Test func openCallFrameWithoutToolsIsAnswerText() throws {
+        let prepared = try Self.preparedWithoutTools(clientStreams: false)
+        var router = Self.router(prepared, streams: false)
+        let routed = Routed(try Self.feed(&router,
+            Self.thought + #"<|message_model|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","args":{"loc"#,
+            width: 3))
+        #expect(routed.content == #"{"name":"get_weather","args":{"loc"#)
+        #expect(!router.hasNativeToolFailure)
+        #expect(try router.finishCompleteCalls(truncated: false).calls.isEmpty)
+    }
+
+    /// Only `auto` without tools changes: `tool_choice: none` (its tools are
+    /// not rendered either) still refuses a call, and declared tools keep
+    /// their calls (above).
+    @Test func noneStillRefusesACall() throws {
+        let (_, prepared) = try Self.prepared(.mode(.none), clientStreams: false)
+        #expect(prepared.tools == nil)
+        var router = Self.router(prepared, streams: false)
+        _ = try Self.feed(&router, Self.call, width: 4096)
+        var calls = try router.finishCompleteCalls(truncated: false).calls
+        #expect(calls.count == 1)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validateWithheld(&calls, prepared: prepared, cutAtLimit: false)
+        }
+    }
+
+    /// `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0` restores D2 (19b0784d69):
+    /// a call that parses is refused as undeclared (422), one that does not
+    /// fails generation (500). This is the #200 failure.
+    @Test func switchOffRestoresTheRefusals() throws {
+        #expect(Inkling2OutputChannels.undeclaredCallTextEnvironmentKey == "DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT")
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(Inkling2OutputChannels.undeclaredCallTextEnvironmentKey))
+        let prepared = try Self.preparedWithoutTools(clientStreams: false)
+
+        var parsed = Self.router(prepared, streams: false, undeclaredCallsAreText: false)
+        _ = try Self.feed(&parsed, Self.thought + Self.undeclaredFrames[0].frame, width: 4096)
+        var calls = try parsed.finishCompleteCalls(truncated: false).calls
+        #expect(calls.map(\.function.name) == ["get_weather"])
+        do {
+            try ToolConstraintValidation.validateWithheld(&calls, prepared: prepared, cutAtLimit: false)
+            Issue.record("an undeclared call was accepted")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .toolChoiceViolation(let message) = error else { Issue.record("unexpected \(error)"); return }
+            #expect(message == ToolNoncomplianceCheck.undeclaredNameViolation)
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
+        }
+
+        var unparsed = Self.router(prepared, streams: false, undeclaredCallsAreText: false)
+        do {
+            _ = try Self.feed(&unparsed, Self.thought + Self.undeclaredFrames[1].frame, width: 4096)
+            Issue.record("an unparsed frame was accepted")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .generationFailed(let message) = error else { Issue.record("unexpected \(error)"); return }
+            #expect(message.contains("Inkling"))
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 500)
+        }
+        #expect(unparsed.inklingToolFailure == .wrongShape)
     }
 }

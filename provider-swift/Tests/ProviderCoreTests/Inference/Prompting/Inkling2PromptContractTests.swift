@@ -789,7 +789,7 @@ struct Inkling2PromptContractTests {
     @Test func preloadKVEstimateUsesTheSlotLayout() throws {
         let architecture = KVEstimation.parseModelArchitecture(at: try Self.fixture("config.json"))
         #expect(architecture.numLayers == 48)
-        #expect(architecture.maxContextLength == 1_048_576)
+        #expect(architecture.maxContextLength == 524_288)
         #expect(KVEstimation.resolvedKVBytesPerToken(architecture: architecture, weightBytes: 19_526_019_168)
             == 32_768)
     }

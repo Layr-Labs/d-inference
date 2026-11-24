@@ -89,4 +89,40 @@ enum Inkling2PromptContract {
     static let answerStopScope = CBv2StopStringScope(
         opener: "<|content_text|>",
         closers: ["<|end_message|>", "<|content_model_end_sampling|>", "<|message_model|>"])
+
+    /// An `auto` request that declares no tools: its prompt has no
+    /// `tool_declare`, so no call can be valid and a call frame is answer text
+    /// (`Inkling2OutputChannels`, `callsAreText`). `enabled` is the rollback
+    /// switch (`Inkling2OutputChannels.undeclaredCallsAreTextByDefault`).
+    static func callsAreText(_ prepared: ToolChoicePromptPolicy.Prepared, enabled: Bool) -> Bool {
+        enabled && prepared.mode == .auto && prepared.tools?.isEmpty != false
+    }
+
+    /// The thought, where client stop strings never apply.
+    static let thoughtSpan = CBv2StopStringScope.Span(
+        opener: "<|content_thinking|>", closers: ["<|end_message|>", "<|content_model_end_sampling|>"])
+
+    /// Where client stop strings apply when call frames are answer text: in
+    /// every body the client receives as content, so everywhere but the
+    /// thought (`answerStopScope` would skip a call frame's text).
+    static let undeclaredCallTextStopScope = CBv2StopStringScope(excluding: [thoughtSpan] + controlTokenSpans)
+
+    /// Inkling's other control tokens, each up to its closing `|>`, so a
+    /// client stop such as "end" never matches inside `<|end_message|>`. The
+    /// thought's opener keeps its own span; none of these openers is a prefix
+    /// of it.
+    static let controlTokenSpans: [CBv2StopStringScope.Span] = [
+        "message_model", "content_text", "content_tool_error", "content_invoke_tool_text",
+        "content_invoke_tool_json", "content_image", "content_xml", "end_message",
+        "content_model_end_sampling", "message_user", "message_system", "message_tool",
+        "endoftext", "begin_of_text",
+    ].map { CBv2StopStringScope.Span(opener: "<|" + $0, closers: ["|>"]) }
+
+    /// This request's stop scope, when it is not the model's (`answerStopScope`).
+    static func stopStringScope(
+        modelType: String?, prepared: ToolChoicePromptPolicy.Prepared,
+        enabled: Bool = Inkling2OutputChannels.undeclaredCallsAreTextByDefault
+    ) -> CBv2StopStringScope? {
+        applies(modelType: modelType) && callsAreText(prepared, enabled: enabled) ? undeclaredCallTextStopScope : nil
+    }
 }

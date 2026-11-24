@@ -16,8 +16,7 @@ struct Bonsai9BMTPPolicyTests {
         #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:],
             modelID: modelID).acceptance == .exact)
         #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:],
-            modelID: "prism-ml/bonsai-27b").acceptance
-            == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
+            modelID: "prism-ml/bonsai-27b").acceptance == .exact)
         #expect(MTPAcceptancePolicy.resolve(global: "typical",
             byModel: [modelID: "exact"],
             modelID: modelID).acceptance == .exact)

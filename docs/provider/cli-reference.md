@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-24
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -977,7 +977,12 @@ darkbloom stop --force             # explicit interruption, including stalled wo
 Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) below
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
-Only me (`--local`) also waits for active HTTP response bodies. `SIGHUP`
+Only me (`--local`) also waits for active HTTP response bodies. A second `SIGINT`
+(Ctrl-C) after any stop signal ends the process at once with status 130, without
+finishing the drain, and says so on stderr; a second `SIGTERM` or `SIGHUP` only
+joins the drain, because the cluster supervisor and launchd may send `SIGTERM`
+more than once (`ProviderStopSignalState` in
+`provider-swift/Sources/ProviderCore/Service/ProviderSignalHandler.swift`). `SIGHUP`
 enters it too for a provider started by hand (`start --local --here`, or, in a
 debug build, `start --foreground` typed into a terminal), so closing its terminal window
 drains it instead of ending the process at once. `SIGHUP` is not a stop signal
@@ -4197,7 +4202,7 @@ override `provider.toml` for one process, are in
 | `[backend] model_cache_directory` | unset | Explicit saved hub directory; set or import once with `models location`, clear with `--reset`. Ambient cache variables never override it; hand-written relative paths are anchored to the config file (`provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift`, `ConfigManager.modelCacheDirectory`) |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables; paused during active or explicitly paused Autopilot |
 | `[backend] max_model_slots` | `3` | Resident models |
-| `[backend] engine_v2_max_concurrent` | Absent: automatic, legacy `4` (`8` on M5 Pro, Max and Ultra for models on the native `auto` paged allowlist); explicit values preserved | Concurrent requests per engine, bounded by exact reviewed profile or legacy `[1, 8]`, architecture and memory. Only an automatic setting may inherit a reviewed or M5 paged higher default; a width above the configured one returns to it under Low Power Mode or thermal pressure. `ServingPerformanceProfiles`, `BackendSettings` |
+| `[backend] engine_v2_max_concurrent` | Absent: automatic, legacy `4` (`8` on M5 Pro, Max and Ultra for models on the native `auto` paged allowlist); explicit values preserved | Concurrent requests per engine, bounded by exact reviewed profile or legacy `[1, 8]`, architecture and memory. Only an automatic setting may inherit a reviewed or M5 paged higher default; a width above the configured one returns to it under Low Power Mode or a thermal state above nominal (the automatic M5 width only at serious or critical; fair keeps it). `ServingPerformanceProfiles`, `BackendSettings` |
 | `[backend] engine_v2_max_concurrent_by_model` | `{}` | Exact model ID → operator cap; overrides the default for that model under the same qualification, architecture and memory bounds. `status` and `doctor` show the default policy and all configured model overrides, with unknown-profile bounds when different from the requested cap (`provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`, `ServingPerformanceProfiles.summary`) |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Only live packed precision requires paged. Native auto follows the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts) and retains observable contiguous fallback; checkpoint compression does not change it (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] engine_v2_kv_quantization` | `"native"` | Live attention precision: `balanced` K4/V4, `k8v4` K8/V4, `k8v8` K8/V8 or `native`. Explicit live packed `auto` selects paged; unavailable paging refuses rather than silently serving native. Its durable reuse remains the existing complete packed contract; legacy resident/tensor prefixes stay disabled. MiMo remains native (`EngineV2KVQuantizationPolicy.resolve`). |
@@ -4206,7 +4211,7 @@ override `provider.toml` for one process, are in
 | `[backend] engine_v2_kv_checkpoint_quantization_by_model` | `{}` | Exact model-ID checkpoint request overrides the global setting; `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` overrides both. MiMo remains native before parsing. |
 | `[backend] engine_v2_kv_checkpoint_quantization_by_model."nvidia-nemotron-3.5-super"` | absent: `native` | Nemotron Super's managed slot gives its own entry a built-in `native` default, so a cache hit restores exactly what a cold prefill computes; the global `engine_v2_kv_checkpoint_quantization` does not apply to Super. An explicit entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile ([Super's durable checkpoints](../reference/ssd-kv-cache.md#complete-checkpoint-payload)). |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
-| `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`; `exact` for the Bonsai 9B candidate, the catalog `Qwen3.5-9B`, `gemma-4-26b-qat-4bit` and `EigenLabs/Qwen3.8-27B-4bit-mtp` (with its head-less target `EigenLabs/Qwen3.8-27B-4bit`)) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
+| `[backend] mtp_acceptance` | unset (resolves to `exact` for every model since 0.10.18) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
 | `[backend] mtp_acceptance_by_model` | `{}` | Exact model ID to acceptance string; overrides `mtp_acceptance` for that model. An unknown override resolves to `exact`, not the global value. Same eligibility and native MiMo exclusion as above (`MTPAcceptancePolicy.resolve`) |
 | `[backend.model_autopilot] enabled` | `false` | Experimental cached-inventory enrollment/consent, not activation; nonempty verified inventory is required, and only a live lease enables residency control (`provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.swift`) |
 | `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence before Autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |
@@ -4226,12 +4231,11 @@ parsing except on the early-excluded MiMo path. Native live execution does not
 make a lossy checkpoint exact; choose native checkpoint storage as well when
 an exact-native replay control is required.
 
-To restore exact acceptance, set `mtp_acceptance = "exact"` under `[backend]`
-in `provider.toml` and restart the provider. Per-model entries take precedence:
-remove any `"typical"` overrides from `[backend.mtp_acceptance_by_model]`, or
-set them to `"exact"` too. To opt out for only one model, set its exact model
-ID to `"exact"` in that table. Removing both settings restores the typical
-default, not exact acceptance. The benchmark default `--mtp-acceptance exact`
+Exact acceptance is the default for every model. To use typical acceptance,
+set `mtp_acceptance = "typical"` under `[backend]` in `provider.toml`, or set one
+model's exact ID to `"typical"` in `[backend.mtp_acceptance_by_model]`, and
+restart the provider. Per-model entries take precedence over the global value.
+Removing both settings restores exact acceptance. The benchmark default `--mtp-acceptance exact`
 is unchanged; see the [benchmark-only environment rule](../reference/configuration.md#engine-and-scheduler).
 
 For foreground/local mixed-prefill tuning, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`
@@ -4248,11 +4252,11 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 ### MTP penalty-row switch
 
-`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds (card default presence 1.5) and Gemma 4 26B QAT, rows with a presence or frequency penalty speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as before these builds opted in. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+`DARKBLOOM_MTP_PENALTY_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Qwen 3.5/3.6 builds (card default presence 1.5), Gemma 4 26B QAT and Inkling 2 Mini, rows with a presence or frequency penalty speculate with exact acceptance by default; `0` (or `false`, `no`, `off`) keeps them target-only, as before these builds opted in. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
 ### MTP stop-string-row switch
 
-`DARKBLOOM_MTP_STOP_STRING_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Gemma 4 26B QAT build, rows with `stop` strings speculate by default and stop at the first match exactly as without speculation; `0` (or `false`, `no`, `off`) keeps them target-only. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
+`DARKBLOOM_MTP_STOP_STRING_ROWS` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service. On the catalog Gemma 4 26B QAT build and Inkling 2 Mini, rows with `stop` strings speculate by default and stop at the first match exactly as without speculation; `0` (or `false`, `no`, `off`) keeps them target-only. The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its scope.
 
 ## LaunchAgent environment passthrough
 
@@ -4357,7 +4361,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
 | `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`); a negative value writes complete checkpoints instead of deltas |
-| `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`parallelStage`); on by default, `0`/`false`/`no`/`off` restores the sequential checkpoint stage; forwarded to the daemon |
+| `DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`parallelStage`); on by default, `0`/`false`/`no`/`off` restores the sequential checkpoint stage and the one-thread row decode (SDK `CBv2NativeCheckpointRowDecoder`); forwarded to the daemon |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`); an affirmative value answers an unseeded donor before its complete-checkpoint write settles (default off) |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
@@ -4395,6 +4399,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_QWEN38_PREFILL_CHUNK` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`qwen38PrefillChunkKey`); `0` restores the 512-token chunk for Qwen3.8-27B |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
+| `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS` | `provider-swift/Sources/ProviderCore/Inference/Performance/DecodeRateIdleAge.swift` (`DecodeRateIdleAge.environmentKey`); `1800` by default, `0` publishes an idle slot's last decode rate however old |
 | `DARKBLOOM_TTFT_REFUSAL_PROBE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe.environmentKey`); `0` turns the refusal streak's idle probe off |
 | `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`NativePrefillEvidence.environmentKey`); `0` restores GLM's and MiMo's previous prefill estimate |
 | `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |

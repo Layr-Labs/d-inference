@@ -68,8 +68,8 @@ struct CompletePrefixCacheCapabilityTests {
             -> CompleteCheckpointStorageIdentity?
         {
             EngineV2SlotFactory.completeCheckpointStorage(kind: kind, layerKinds: kinds,
-                supportsRecurrent: true, supportsHistoricalAttention: false, modelDTypes: modelTypes,
-                nativeDTypes: nativeTypes, pagedConfig: kind == .paged ? config : nil,
+                supportsRecurrent: true, supportsHistoricalAttention: false, isInkling2: true,
+                modelDTypes: modelTypes, nativeDTypes: nativeTypes, pagedConfig: kind == .paged ? config : nil,
                 assistant: assistant, assistantKeepsHistory: keepsHistory,
                 checkpointQuantization: quantization)
         }
@@ -101,6 +101,34 @@ struct CompletePrefixCacheCapabilityTests {
         #expect(profiled?.backendLayout == CBv2CompleteCheckpointManifest.pagedHistoricalRecurrentLayout)
         #expect(profiled?.checkpointQuantization == nil)
         #expect(profiled?.fingerprintFields["storage.quantization"] == "native")
+    }
+
+    /// The historical recurrent codec was reviewed for Inkling 2 alone: another
+    /// model with Inkling's layer shape (sliding windows beside recurrent state
+    /// on the native paged pool) gets no complete checkpoint store, as before
+    /// that codec, whatever its assistant, dtypes or checkpoint profile.
+    @Test("Only Inkling 2 selects the historical recurrent layouts")
+    func historicalRecurrentNeedsInkling2() {
+        let kinds = [
+            CBv2LayerKind(attention: .slidingWindow(1024), headDim: 128, kvHeads: 8, queryHeads: 16),
+            CBv2LayerKind(attention: .full, headDim: 128, kvHeads: 8, queryHeads: 16),
+        ]
+        let types: [DType] = [.bfloat16, .bfloat16]
+        let config = PagedKVPoolConfig(capacityBytes: 1 << 20, segmentSizeBytes: 64 << 10, layerDTypes: types)
+        func resolve(_ assistant: EngineV2SlotFactory.CompleteCheckpointAssistant, modelTypes: [DType]? = nil,
+                     quantization: PagedKVQuantizationConfig? = nil) -> CompleteCheckpointStorageIdentity?
+        {
+            EngineV2SlotFactory.completeCheckpointStorage(kind: .paged, layerKinds: kinds,
+                supportsRecurrent: true, supportsHistoricalAttention: false, modelDTypes: modelTypes,
+                nativeDTypes: types, pagedConfig: config, assistant: assistant,
+                checkpointQuantization: quantization)
+        }
+        for assistant in [EngineV2SlotFactory.CompleteCheckpointAssistant.none, .stateless, .persistentCodec,
+                          .persistentExactHistory, .persistentHistorical, .unsupportedPersistent] {
+            #expect(resolve(assistant) == nil, "\(assistant)")
+            #expect(resolve(assistant, modelTypes: types) == nil, "\(assistant)")
+        }
+        #expect(resolve(.none, quantization: EngineV2KVQuantizationSelection.balanced.configuration) == nil)
     }
 
     @Test("A persistent assistant keeps history only while its rounds run")

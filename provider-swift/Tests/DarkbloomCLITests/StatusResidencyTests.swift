@@ -224,13 +224,13 @@ extension CLICommandSandbox {
     ) async throws {
         try writeState(state, adding: extra)
         let extraJSON = try JSONSerialization.data(withJSONObject: extra)
-        let writer = Task.detached { [self] in
+        let writer = Task { [self] in
+            guard let extraKeys = try JSONSerialization.jsonObject(with: extraJSON) as? [String: Any] else {
+                throw CocoaError(.coderReadCorrupt)
+            }
             var current = state
             while true {
                 try await Task.sleep(for: .seconds(1))
-                guard let extraKeys = try JSONSerialization.jsonObject(with: extraJSON) as? [String: Any] else {
-                    throw CocoaError(.coderReadCorrupt)
-                }
                 current.writtenAt = Date().timeIntervalSince1970
                 try writeState(current, adding: extraKeys)
             }
@@ -238,7 +238,8 @@ extension CLICommandSandbox {
         var commandFailure: (any Error)?
         do { try await commands() } catch { commandFailure = error }
         writer.cancel()
-        do { try await writer.value } catch is CancellationError {}
+        let writes = await writer.result
         if let commandFailure { throw commandFailure }
+        if case .failure(let error) = writes, !(error is CancellationError) { throw error }
     }
 }

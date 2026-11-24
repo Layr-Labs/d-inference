@@ -3,13 +3,12 @@ import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
-/// Inkling 2 Mini's slot holds every request to the window its configuration
-/// is sized for (`KVEstimation`), 40,960 tokens of prompt plus output: an
-/// output that would pass it is cut to what the prompt leaves, and a prompt
-/// that fills it is refused as a context error (400), never sent to the
-/// engine. Past 41,432 tokens the DSpark drafter's per-request pool cannot be
-/// reserved, and the request failed as an untyped generation error (500).
-@Suite("Inkling 2 holds every request to its served window")
+/// Inkling 2 Mini's slot serves the checkpoint's context (`model_max_length`,
+/// 1,048,576 tokens of prompt plus output, as `KVEstimation` parses it). A long
+/// prompt reaches the engine with the output it asked for: the DSpark
+/// drafter's per-request pool is now sized from the paged pool's own segment
+/// arithmetic, so prompt plus output past 41,432 tokens no longer fails.
+@Suite("Inkling 2 serves its checkpoint's context")
 struct Inkling2ContextWindowTests {
     /// The window as the slot factory derives it: the pinned configuration's
     /// architecture, as `defaultMaxTokensContextLimit`.
@@ -25,39 +24,25 @@ struct Inkling2ContextWindowTests {
             defaultMaxTokensContextLimit: try window(), maxConcurrentRequests: 1, kvBudget: roomyKVBudget())
     }
 
+    @Test func theWindowIsTheCheckpointContext() throws {
+        #expect(try Self.window() == 1_048_576)
+    }
+
     @Test(arguments: [
-        // (prompt, max_tokens asked, max_tokens the engine is asked for)
-        (40_000, 4_096, 960),
-        (40_959, 64, 1),
-        (36_864, 4_096, 4_096),
+        // (prompt, max_tokens asked): the engine is asked for exactly that output
+        (40_000, 4_096),
+        (45_984, 64),
+        (46_966, 16),
+        (86_965, 64),
     ])
-    func anOutputPastTheWindowIsCut(prompt: Int, requested: Int, output: Int) async throws {
+    func aLongPromptKeepsItsOutput(prompt: Int, requested: Int) async throws {
         let engine = OutputRecordingEngine()
         let bridge = try Self.bridge(engine)
         let stream = try await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: prompt),
             request: .init(model: "thinkingmachines/Inkling-2-Mini", messages: [], max_tokens: requested),
-            requestId: "inkling-window", firstContentDeadline: nil)
+            requestId: "inkling-long-prompt", firstContentDeadline: nil)
         for await _ in stream {}
-        #expect(engine.submittedOutputs == [output])
-        await bridge.shutdown()
-    }
-
-    @Test(arguments: [40_960, 46_966, 86_965])
-    func aPromptThatFillsTheWindowIsAContextError(prompt: Int) async throws {
-        let engine = OutputRecordingEngine()
-        let bridge = try Self.bridge(engine)
-        do {
-            let stream = try await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: prompt),
-                request: .init(model: "thinkingmachines/Inkling-2-Mini", messages: [], max_tokens: 16),
-                requestId: "inkling-over-window", firstContentDeadline: nil)
-            for await _ in stream {}
-            Issue.record("a \(prompt)-token prompt reached the engine")
-        } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == windowRefusal(40_960))
-            #expect(ProviderLoop.sanitizedInferenceFailure(from: error, phase: .generation).statusCode == 400)
-            #expect(InferenceRefusalReason(promptRefusal: error) == .requestExceedsContext)
-        }
-        #expect(engine.submittedOutputs.isEmpty)
+        #expect(engine.submittedOutputs == [requested])
         await bridge.shutdown()
     }
 }

@@ -728,13 +728,6 @@ short-convolution state (3,833,856 bytes in FP32, half that in BF16)
 `parseModelArchitecture`; `provider-swift/Sources/ProviderCoreFoundation/Inkling2ModelIdentity.swift`,
 `CacheLayout`; [contract reference](../reference/inkling2-mini-support.md#cache-layout)).
 
-Its parsed context is capped at the served window, 40,960 tokens
-(`Inkling2ModelIdentity.servedContextTokens`), not the checkpoint's 1,048,576,
-so the bridge window, the advertised context and every size computed from the
-parsed context use 40,960. Above a prompt plus output of 41,432 tokens the DSpark
-drafter's per-request pool is granted less than its segments charge, and the
-request would fail.
-
 One model slot receives the full fleet KV budget. With multiple slots,
 `EngineV2KVSizing.resliceGrants` divides it in proportion to each model's fp16
 owning-full-attention marginal byte rate times context, capped by

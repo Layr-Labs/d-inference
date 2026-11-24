@@ -4912,6 +4912,16 @@ the call is constrained:
   byte vocabulary), and `<|call|>` is admitted only once the object is
   complete. The schema is compiled from the caller's declaration with local
   `$ref`s inlined (`ToolSchemaRefResolution`, same bounds).
+- Before compiling, a `type` that is only a render hint is dropped
+  (`GPTOSSAutoToolGrammar.withoutRenderHintTypes`, the rule
+  `QwenParserLiteralReading.rendersSiblingType` the call parser and the strict
+  check read): the type beside an `anyOf` / `oneOf` naming one of their
+  branches, a mixed `enum`, a `not` of that type or an `if`/`then`/`else` typed
+  otherwise; a node marked `nullable` then carries `null` in its union or
+  `enum`. A `not` of the render type was held to that type before; unions and
+  mixed enums beside it already compiled to free arguments. A declaration
+  without such a type is unchanged; forced choices compile the request's tools
+  as before.
 - A schema outside the compiled subset as written is widened
   (`GPTOSSAutoToolGrammar.widenedArguments`): the render type that ingress
   normalization writes beside a nullable `anyOf` (`type`, `nullable`, and an

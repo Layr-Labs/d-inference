@@ -89,6 +89,7 @@ class ComponentPathsTests(unittest.TestCase):
             ".github/workflows/provider-tests.yml": {"provider", "cluster", "mimo_audio"},
             ".github/workflows/ci-dev.yml": {"provider", "cluster", "mimo_audio"},
             ".github/workflows/provider-plan.yml": {"provider", "cluster", "mimo_audio"},
+            ".github/actions/darkbloom-route/action.yml": {"provider", "cluster", "mimo_audio"},
             "scripts/ci-tested-tree.py": {"provider", "cluster", "mimo_audio"},
             ".github/workflows/ci-master.yml": {"provider", "cluster", "mimo_audio"},
             "scripts/run-paged-kernel-tests.sh": {"provider"},
@@ -394,14 +395,16 @@ class WorkflowRoutingTests(unittest.TestCase):
         # The plan (provider-plan.yml) runs the classifier and the tree lookup,
         # then routes only the lanes of the components it chose; the test jobs
         # read those components as inputs, on pull requests and pushes alike.
-        # One job classifies, looks up and chooses; the route job follows it.
+        # One job classifies, looks up, chooses and routes: its last step, after
+        # a checkout of the route action when the classifier's did not run.
         plan = workflow.job_blocks((ROOT / ".github/workflows/provider-plan.yml").read_text().split("\njobs:\n", 1)[1])
-        self.assertEqual(set(plan), {"commit", "components", "route"})
+        self.assertEqual(set(plan), {"commit", "components"})
         steps = workflow.step_blocks(plan["components"])
         self.assertEqual([workflow.field(step, "name", indent=6) for step in steps],
                          [None, "Classify complete base-to-head Git diff", "Name the change this run tests",
-                          "Look for a successful run that tested it", "Choose the components to test"])
-        checkout, classify, tree, lookup, choose = steps
+                          "Look for a successful run that tested it", "Choose the components to test",
+                          None, "Choose a Darkbloom or fallback runner for each lane"])
+        checkout, classify, tree, lookup, choose, action_checkout, route = steps
         self.assertEqual(workflow.uses(checkout), workflow.CHECKOUT)
         self.assertIn("    permissions:\n      contents: read\n      actions: read\n    outputs:\n", plan["components"])
         # Without run_tests, or when a dispatch's ref was refused, nothing is
@@ -426,7 +429,13 @@ class WorkflowRoutingTests(unittest.TestCase):
         # skipped lookup leaves skip empty, which tests.
         self.assertEqual(workflow.field(choose, "if"), "${{ !cancelled() }}")
         self.assertIn("          SKIP: ${{ steps.lookup.outputs.skip }}\n", choose)
-        self.assertIn("    needs: components\n", plan["route"])
+        self.assertEqual(workflow.uses(action_checkout), workflow.CHECKOUT)
+        self.assertEqual(workflow.field(action_checkout, "if"),
+                         "${{ !cancelled() && !(inputs.run_tests && needs.commit.result == 'success') }}")
+        self.assertEqual(workflow.field(route, "if"), "${{ !cancelled() }}")
+        self.assertEqual(workflow.field(route, "uses"), "./.github/actions/darkbloom-route")
+        self.assertIn("steps.choose.outputs.provider == 'true'", route)
+        self.assertIn("      routes: ${{ steps.route.outputs.routes }}\n", plan["components"])
         for name in routing.COMPONENTS:
             self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])
@@ -503,7 +512,9 @@ class WorkflowRoutingTests(unittest.TestCase):
         text = (ROOT / ".github/workflows/provider-plan.yml").read_text()
         job = workflow.job_blocks(text.split("\njobs:\n", 1)[1])["components"]
         checkout = workflow.step_blocks(job)[0]
-        self.assertEqual(job.count("actions/checkout@"), 1)
+        # The other checkout fetches the route action alone, on a run whose
+        # classifier does not run (test_expensive_jobs_depend_on_successful_classifier).
+        self.assertEqual(job.count("actions/checkout@"), 2)
         self.assertIn("fetch-depth: 0", checkout)
         # Blobless: full commit and tree history, file contents on demand.
         self.assertIn("filter: blob:none", checkout)

@@ -3,9 +3,9 @@ name: Provider Plan
 # What one CI run tests and where, shared by CI (dev) and CI (master). The
 # classifier selects the components a change touches; the tree lookup skips
 # every test job when a successful run of the same workflow already tested
-# this exact tree (scripts/ci-tested-tree.py); the route asks the Darkbloom
-# plane once for every lane of the run (the plane routes a run attempt once),
-# the caller's own Linux lanes included.
+# this exact tree (scripts/ci-tested-tree.py); the route, the plan job's last
+# step, asks the Darkbloom plane once for every lane of the run (the plane
+# routes a run attempt once), the caller's own Linux lanes included.
 on:
   workflow_call:
     inputs:
@@ -48,7 +48,7 @@ on:
       head:
         value: ${{ jobs.components.outputs.head }}
       routes:
-        value: ${{ jobs.route.outputs.routes }}
+        value: ${{ jobs.components.outputs.routes }}
       sha:
         description: The commit every job checks out; on a dispatch its `ref` input resolved to a full SHA, otherwise empty (the event's default)
         value: ${{ jobs.commit.outputs.sha }}
@@ -150,12 +150,13 @@ jobs:
   # One GitHub-hosted job plans the run (runner routing waits for it, so it
   # never queues on a routed fleet): the classifier selects the components a
   # change touches, the tree lookup looks for an earlier successful test of
-  # this change, and the last step chooses the components the test jobs run:
-  # the classifier's, or none when the tree was tested. changes_result is the
-  # classifier step's outcome; the Provider Tests gate fails on anything but
-  # `success`. A failed or skipped lookup leaves skip empty: "test". A
-  # dispatch's `ref` is resolved first (job `commit`); when that fails, nothing
-  # is classified (changes_result `skipped`), so nothing is tested.
+  # this change, the next step chooses the components the test jobs run (the
+  # classifier's, or none when the tree was tested), and the last step routes
+  # their lanes (below). changes_result is the classifier step's outcome; the
+  # Provider Tests gate fails on anything but `success`. A failed or skipped
+  # lookup leaves skip empty: "test". A dispatch's `ref` is resolved first
+  # (job `commit`); when that fails, nothing is classified (changes_result
+  # `skipped`), so nothing is tested.
   components:
     name: Plan the components to test
     needs: commit
@@ -178,6 +179,7 @@ jobs:
       tree: ${{ steps.tree.outputs.tree }}
       base: ${{ steps.tree.outputs.base }}
       head: ${{ steps.tree.outputs.head }}
+      routes: ${{ steps.route.outputs.routes }}
     steps:
       # On a pull request github.sha is its test merge commit of the event's
       # base and head; on a push, the pushed commit; on a dispatch, the commit
@@ -265,75 +267,93 @@ jobs:
             echo "cluster_gpu=$CLUSTER_GPU"
             echo "mimo_audio=$MIMO_AUDIO"
           } >> "$GITHUB_OUTPUT"
-
-  # Chooses a Darkbloom Sandbox or the Blacksmith fallback for the macOS jobs
-  # of provider-tests.yml. This table is the one place that names each job's
-  # lane and size. A lane is granted whole or falls back whole, so each job
-  # (each shard) has a lane of its own and falls back alone, except where
-  # shards share one lane with a count: the two Cluster Focused Checks
-  # shards, Cluster Runtime Tests shards 2, 3, 6 and 7 (test-cluster-2, a
-  # count of 4) and shards 4 and 5 (test-cluster-3). A lane asks for a job
-  # only when the job runs.
-  #
-  # Every lane names its size (<vCPUs>x<GiB>) after its count and its
-  # placement, `balanced` (darkbloom-route.yml), so no lane gets the
-  # approval's pinned macOS size. A job asks for the smallest signed size (4x16,
-  # 4x24, 8x16, 12x32) that holds 1.25 times its sampled used memory (app +
-  # wired + compressed, scripts/ci-resource-sampler.py) and on which it is at
-  # most 5% slower than on 12 vCPUs; a lane that two shards share holds the
-  # larger. Build cluster test products and Cluster Release Build Checks are
-  # the exception: they ask for 8x16, on which a cold build is 5 to 10%
-  # slower, though a cold build with 12 compile jobs used up to 13.6 GiB,
-  # more than 16 / 1.25. The sampled memory of each job is in
-  # docs/developer/build.md (Job sizes). Three test lanes ask for more than
-  # their memory needs: test-cluster-1 for 4x24, because its GLM-5.3
-  # resident-stage tests need more than 16 GiB of physical memory
-  # (ClusterStageResidency keeps max(16 GiB, a tenth) for the system), and
-  # test-provider-1 for 12x32, because the parallel class runs its tests
-  # concurrently in one process and on 4 vCPUs its fan and hardware-load
-  # tests' bounded waits time out, also with no serial process beside it,
-  # and beside it the memory-budget suites of its selections (Nemotron Super
-  # prefix cache, EngineV2 reslice floor) size their budgets from physical
-  # memory and fail at 16 GiB. At 4x16 both lanes failed every Darkbloom run
-  # (10 of 10, 14 of 14); at 8x16 test-provider-1 failed those suites.
-  # 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB.
-  # test-provider-gates (Provider Gates) asks for 4x24, the size its gates
-  # passed on in the last shard: its 7.9 GiB would fit 4x16, but four of its
-  # native MiMo gates size their KV budget from the host's physical memory,
-  # and they have never run at 16 GiB. They kept at most 3.25 of 4 vCPUs busy
-  # (1.4 on average), so 12x32 would not end them sooner.
-  #
-  # The lanes are listed with the critical-path test shards first, then the
-  # build jobs and Cluster Release Build Checks, then the non-blocking GPU
-  # shards.
-  #
-  # Before them, Check the CI plans (provider-tests.yml's ci-plan-checks)
-  # asks for one Linux job on every run that runs the test jobs. It runs
-  # Python only, beside the test jobs, which usually outlast it by minutes,
-  # so the sandbox's start mainly delays a run that tests no component. Its
-  # fallback is the GitHub-hosted ubuntu-24.04 it ran on before it was routed.
-  route:
-    needs: components
-    if: ${{ !cancelled() }}
-    uses: ./.github/workflows/darkbloom-route.yml
-    permissions: {}
-    with:
-      lanes: |
-        ${{ inputs.linux_lanes }}
-        ci-plan-checks linux_arm64 ubuntu-24.04 ${{ inputs.run_tests && 1 || 0 }} balanced 4x16
-        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 4 || 0 }} balanced 4x24
-        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
-        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
-        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
-        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 4x24
-        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
-        test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
-        test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
-        test-provider-5 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
-        test-provider-gates macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
-        build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
-        build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
-        cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
-        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
-        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
-        test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
+      # Chooses a Darkbloom Sandbox or the Blacksmith fallback for the macOS jobs
+      # of provider-tests.yml. This table is the one place that names each job's
+      # lane and size. A lane is granted whole or falls back whole, so each job
+      # (each shard) has a lane of its own and falls back alone, except where
+      # shards share one lane with a count: the two Cluster Focused Checks
+      # shards, Cluster Runtime Tests shards 2, 3, 6 and 7 (test-cluster-2, a
+      # count of 4) and shards 4 and 5 (test-cluster-3). A lane asks for a job
+      # only when the job runs.
+      #
+      # Every lane names its size (<vCPUs>x<GiB>) after its count and its
+      # placement, `balanced` (darkbloom-route.yml), so no lane gets the
+      # approval's pinned macOS size. A job asks for the smallest signed size (4x16,
+      # 4x24, 8x16, 12x32) that holds 1.25 times its sampled used memory (app +
+      # wired + compressed, scripts/ci-resource-sampler.py) and on which it is at
+      # most 5% slower than on 12 vCPUs; a lane that two shards share holds the
+      # larger. Build cluster test products and Cluster Release Build Checks are
+      # the exception: they ask for 8x16, on which a cold build is 5 to 10%
+      # slower, though a cold build with 12 compile jobs used up to 13.6 GiB,
+      # more than 16 / 1.25. The sampled memory of each job is in
+      # docs/developer/build.md (Job sizes). Three test lanes ask for more than
+      # their memory needs: test-cluster-1 for 4x24, because its GLM-5.3
+      # resident-stage tests need more than 16 GiB of physical memory
+      # (ClusterStageResidency keeps max(16 GiB, a tenth) for the system), and
+      # test-provider-1 for 12x32, because the parallel class runs its tests
+      # concurrently in one process and on 4 vCPUs its fan and hardware-load
+      # tests' bounded waits time out, also with no serial process beside it,
+      # and beside it the memory-budget suites of its selections (Nemotron Super
+      # prefix cache, EngineV2 reslice floor) size their budgets from physical
+      # memory and fail at 16 GiB. At 4x16 both lanes failed every Darkbloom run
+      # (10 of 10, 14 of 14); at 8x16 test-provider-1 failed those suites.
+      # 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB.
+      # test-provider-gates (Provider Gates) asks for 4x24, the size its gates
+      # passed on in the last shard: its 7.9 GiB would fit 4x16, but four of its
+      # native MiMo gates size their KV budget from the host's physical memory,
+      # and they have never run at 16 GiB. They kept at most 3.25 of 4 vCPUs busy
+      # (1.4 on average), so 12x32 would not end them sooner.
+      #
+      # The lanes are listed with the critical-path test shards first, then the
+      # build jobs and Cluster Release Build Checks, then the non-blocking GPU
+      # shards.
+      #
+      # Before them, Check the CI plans (provider-tests.yml's ci-plan-checks)
+      # asks for one Linux job on every run that runs the test jobs. It runs
+      # Python only, beside the test jobs, which usually outlast it by minutes,
+      # so the sandbox's start mainly delays a run that tests no component. Its
+      # fallback is the GitHub-hosted ubuntu-24.04 it ran on before it was routed.
+      #
+      # The route is this job's last step, not a job of its own, so the macOS
+      # jobs wait for this job alone, without a second GitHub-hosted job's
+      # queue, setup and teardown (about 5 s of every run). The local action
+      # (.github/actions/darkbloom-route) runs the router's route step, byte
+      # for byte (scripts/test-darkbloom-route.py): the same request, retries
+      # and fallbacks. When the classifier's checkout does not run, a sparse
+      # checkout of the action does. This job holds no id-token permission,
+      # so the route sends no OIDC token, as before (the repository is
+      # public). It runs after any earlier failure unless the run is
+      # cancelled.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: ${{ !cancelled() && !(inputs.run_tests && needs.commit.result == 'success') }}
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/darkbloom-route
+      - name: Choose a Darkbloom or fallback runner for each lane
+        id: route
+        if: ${{ !cancelled() }}
+        # The router job's bound; the script itself stops within 140 s.
+        timeout-minutes: 3
+        uses: ./.github/actions/darkbloom-route
+        with:
+          routing: ${{ vars.DARKBLOOM_ROUTING }}
+          plane-url: ${{ vars.DARKBLOOM_SANDBOX_URL }}
+          lanes: |
+            ${{ inputs.linux_lanes }}
+            ci-plan-checks linux_arm64 ubuntu-24.04 ${{ inputs.run_tests && 1 || 0 }} balanced 4x16
+            test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.cluster == 'true' && 4 || 0 }} balanced 4x24
+            test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
+            test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
+            test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+            test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.cluster == 'true' && 1 || 0 }} balanced 4x24
+            test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
+            test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+            test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+            test-provider-5 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+            test-provider-gates macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+            build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
+            build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
+            cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
+            test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
+            test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
+            test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ steps.choose.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24

@@ -133,10 +133,10 @@ struct EngineMeasurementOrderingTests {
         #expect(await bridge.performanceMeasurements.rateExpiration("decode") == newestExpiration)
         #expect(after.performanceMeasurements?.decode?.sampleCount == 2)
         #expect(after.performanceMeasurements?.decode?.tokensPerSecond == 170)
-        // Both requests are under 32 tokens: they feed the measurements, never
-        // the published rate; the first to complete starts the deadline rate.
+        // Both requests are under 32 tokens: they feed the measurements and the
+        // deadline rate, never the published rate.
         #expect(after.observedDecodeTps == 0)
-        #expect(await bridge.observedDecodeTpsEwma == 200)
+        #expect(await bridge.observedDecodeTpsEwma == 170)
         #expect(after.telemetry?.generationRequestsTotal == 2)
         #expect(after.telemetry?.generatedTokensTotal == 32)
         await bridge.shutdown()

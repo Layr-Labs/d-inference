@@ -173,12 +173,6 @@ public enum SDKFeatureDefaults {
             if CBv2MTPConfig.envPenaltySpeculation { on.append(MTPPenaltyRows.environmentKey) }
         }
         // Same kill-switch-only shape (`CBv2MTPConfig.effectiveRepetitionPenaltySpeculation`).
-        if repetitionPenaltyBuilds.contains(modelId) {
-            config.repetitionPenaltySpeculation = true
-            if CBv2MTPConfig.envRepetitionPenaltySpeculation {
-                on.append(MTPRepetitionPenaltyRows.environmentKey)
-            }
-        }
         // Same kill-switch-only shape (`CBv2MTPConfig.effectiveStopStringSpeculation`).
         if stopStringBuilds.contains(modelId) {
             config.stopStringSpeculation = true
@@ -273,10 +267,6 @@ public enum SDKFeatureDefaults {
         }
         if !penaltyBuilds.isEmpty {
             on.append("\(MTPPenaltyRows.environmentKey) (\(penaltyBuilds.sorted().joined(separator: ", ")))")
-        }
-        if !repetitionPenaltyBuilds.isEmpty {
-            on.append(
-                "\(MTPRepetitionPenaltyRows.environmentKey) (\(repetitionPenaltyBuilds.sorted().joined(separator: ", ")))")
         }
         if !stopStringBuilds.isEmpty {
             on.append(

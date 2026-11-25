@@ -359,16 +359,16 @@ extension NemotronSuperLocalImageBindingTests {
         let gate = SuperHTTPTerminalGate()
         await owner.bridge._testInstallCancelledSettlementHooks(
             beforeNativeTerminal: { _ in await gate.hold() }, onSettlementWait: {})
-        let firstEvents = SuperOwnedImageEvents(), firstSample = ReservedBytesSample()
+        let firstEvents = SuperOwnedImageEvents(), firstSample = ReservationsSample()
         let first = Task {
             try await images.run(request: request, input: input) { event in
-                if await firstEvents.record(event) { await firstSample.set(await budget.outstandingReservedBytes()) }
+                if await firstEvents.record(event) { await firstSample.set(await budget.reservationBytesSnapshot()) }
             }
             return await firstEvents.completions
         }
         do {
             try await Self.waitUntilStreaming(gate: gate, events: firstEvents)
-            let held = await budget.outstandingReservedBytes()
+            let held = await budget.reservationBytesSnapshot()
             // Refused at once: without a bound, and when the owner has no free
             // request slot left (here filled by hand).
             var start = ContinuousClock.now
@@ -393,12 +393,12 @@ extension NemotronSuperLocalImageBindingTests {
             await #expect(throws: CancellationError.self) { try await cancelled.value }
             #expect(ContinuousClock.now - start < .milliseconds(500))
             // No waiter is left: the next one waits, and is served.
-            let sample = ReservedBytesSample()
+            let sample = ReservationsSample()
             let stackedEvents = SuperOwnedImageEvents()
             let stacked = Task {
                 try await images.run(request: request, input: input,
                                      stackedUntil: ContinuousClock.now + .seconds(3)) { event in
-                    if await stackedEvents.record(event) { await sample.set(await budget.outstandingReservedBytes()) }
+                    if await stackedEvents.record(event) { await sample.set(await budget.reservationBytesSnapshot()) }
                 }
                 return await stackedEvents.completions
             }
@@ -411,16 +411,23 @@ extension NemotronSuperLocalImageBindingTests {
             }
             #expect(ContinuousClock.now - start < .milliseconds(500))
             // The waiting image has reserved nothing.
-            #expect(await budget.outstandingReservedBytes() == held)
+            #expect(await budget.reservationBytesSnapshot() == held)
             await gate.release()
             #expect(try await first.value == [2])
             #expect(try await stacked.value == [2])
             // It reserved only after the first image's charges were released: at
-            // its first chunk the budget held what the identical first image's
-            // did at its own, not both.
+            // its first chunk the reservations held what the identical first
+            // image's did at its own, not both. The engine's paged KV charge is
+            // left out: it changes with the engine's own steps, which run
+            // concurrently with these samples.
             let alone = try #require(await firstSample.value)
             let stackedAtFirstChunk = try #require(await sample.value)
-            #expect(stackedAtFirstChunk <= alone)
+            let aloneMedia = alone.keys.filter { $0.hasSuffix("-media") }
+            let stackedMedia = stackedAtFirstChunk.keys.filter { $0.hasSuffix("-media") }
+            #expect(aloneMedia.count == 1)
+            #expect(stackedMedia.count == 1)
+            #expect(Set(stackedMedia).isDisjoint(with: aloneMedia))
+            #expect(stackedAtFirstChunk.values.reduce(0, +) <= alone.values.reduce(0, +))
         } catch {
             await gate.release()
             _ = await first.result
@@ -542,10 +549,10 @@ extension NemotronSuperLocalImageBindingTests {
     }
 }
 
-/// The reserved bytes a request saw at its first chunk.
-private actor ReservedBytesSample {
-    private(set) var value: UInt64?
-    func set(_ bytes: UInt64) { if value == nil { value = bytes } }
+/// The budget's reservations, by ID, a request saw at its first chunk.
+private actor ReservationsSample {
+    private(set) var value: [String: UInt64]?
+    func set(_ reservations: [String: UInt64]) { if value == nil { value = reservations } }
 }
 
 /// Holds a request's settlement for `hold` once its answer has ended, and

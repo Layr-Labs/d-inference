@@ -162,7 +162,8 @@ struct OwnerPauseLoopTests {
         let client: CoordinatorClient
 
         func heartbeat() async throws -> [String: Any] {
-            try #require(JSONSerialization.jsonObject(with: Data(await client.buildHeartbeatJSON().utf8)) as? [String: Any])
+            let json = try #require(await client.buildHeartbeatJSON())
+            return try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
         }
 
         /// The heartbeat, canonical, without `system_metrics`: the one part that

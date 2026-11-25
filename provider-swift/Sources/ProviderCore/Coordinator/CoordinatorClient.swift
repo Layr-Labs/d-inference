@@ -114,7 +114,8 @@ public actor CoordinatorClient {
     /// check it so an out-of-band heartbeat can never precede registration on
     /// a fresh connection (frames before `register` are a protocol violation);
     /// the baseline heartbeat task starts after registration and needs no
-    /// gate.
+    /// gate. A cluster member's session is registered only at its nonce-bound
+    /// acceptance, which sends the connection's first heartbeat at once.
     internal var sessionRegistered = false
 
     /// One connection's control-only member negotiation; created at connect

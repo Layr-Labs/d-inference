@@ -139,6 +139,7 @@ public final class SSDPrefixCache:
         /// defaults to `root`'s parent.
         let dedicatedRoot: URL
         let ttlSeconds: Int64
+        let ttlMode: SSDPrefixCachePolicy.TTLMode
         let minEffectiveTokens: Int
         let maxStageBytes: Int
         let maxStageMillis: Int
@@ -162,6 +163,7 @@ public final class SSDPrefixCache:
             root: URL,
             dedicatedRoot: URL? = nil,
             ttlSeconds: Int64,
+            ttlMode: SSDPrefixCachePolicy.TTLMode = .sliding,
             minEffectiveTokens: Int,
             maxStageBytes: Int,
             maxStageMillis: Int,
@@ -179,6 +181,7 @@ public final class SSDPrefixCache:
             self.root = root
             self.dedicatedRoot = dedicatedRoot ?? root.deletingLastPathComponent()
             self.ttlSeconds = ttlSeconds
+            self.ttlMode = ttlMode
             self.minEffectiveTokens = minEffectiveTokens
             self.maxStageBytes = maxStageBytes
             self.maxStageMillis = maxStageMillis
@@ -501,7 +504,10 @@ public final class SSDPrefixCache:
         layerKinds: [CBv2LayerKind],
         cacheSalt: String?
     ) -> (matched: Int, prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?])? {
-        lookup(
+        // Nothing was staged for a memory-only request, and it never adopts
+        // a peer's blocks staged from disk.
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID) else { return nil }
+        return lookup(
             ticket: ticketKey(requestID),
             tokens: tokens,
             layerKinds: layerKinds,
@@ -606,6 +612,8 @@ public final class SSDPrefixCache:
         matched: Int,
         cacheSalt: String?
     ) {
+        // A memory-only lookup took no pin.
+        guard !MemoryOnlyReceipt.contains(requestID) else { return }
         endAdoption(
             ticket: ticketKey(requestID),
             tokens: tokens,
@@ -657,6 +665,7 @@ public final class SSDPrefixCache:
         requestID: CBv2RequestID,
         callback: @escaping @Sendable (PrefixCacheReadyResult) -> Void
     ) {
+        guard !MemoryOnlyReceipt.refusesTierAccess(requestID) else { return }
         lock.withLock {
             guard !closed else { return }
             readyReceipts[requestID] = ReadyReceiptState(callback: callback)
@@ -741,6 +750,7 @@ public final class SSDPrefixCache:
         layerKinds: [CBv2LayerKind],
         cacheSalt: String?
     ) {
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID) else { return }
         let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
         donate(
             tokens: tokens,
@@ -789,6 +799,7 @@ public final class SSDPrefixCache:
         layerKinds: [CBv2LayerKind],
         cacheSalt: String?
     ) {
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID) else { return }
         let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
         donate(
             tokens: tokens,
@@ -827,6 +838,7 @@ public final class SSDPrefixCache:
         layerKinds: [CBv2LayerKind],
         cacheSalt: String?
     ) {
+        guard !MemoryOnlyReceipt.refusesEngineCall(requestID) else { return }
         let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
         donate(
             tokens: tokens,
@@ -847,6 +859,7 @@ public final class SSDPrefixCache:
         receiptRequestID: CBv2RequestID?,
         settlement: PrefixCacheDonationSettlement
     ) {
+        guard !MemoryOnlyReceipt.refusesTierAccess(receiptRequestID) else { return }
         // Slicing/readback may run on the donation queue after request
         // retirement. Its device work is outside text-token service bounds.
         let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
@@ -985,16 +998,19 @@ public final class SSDPrefixCache:
         // Sliding-TTL bump for the blocks this active conversation reused —
         // index recency AND file mtimes (best-effort), so donation-only
         // warmth survives a restart (the startup scan seeds lastAccess from
-        // mtime). Reused blocks = every tag NOT in newBlockIndices.
-        index.touch(tags16: tags16, now: now)
-        let newSet = Set(newBlockIndices)
-        let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
-        for (i, tag16) in tags16.enumerated() where !newSet.contains(i) {
-            guard index.contains(tag16: tag16) else { continue }
-            let url = SSDBlockStore.fileURL(
-                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
-            SSDBlockStore.setAttributesIfSafe(
-                [.modificationDate: touchDate], at: url, under: config.root)
+        // mtime). Reused blocks = every tag NOT in newBlockIndices. A fixed
+        // TTL keeps each block's write time.
+        if config.ttlMode.refreshesOnHit {
+            index.touch(tags16: tags16, now: now)
+            let newSet = Set(newBlockIndices)
+            let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
+            for (i, tag16) in tags16.enumerated() where !newSet.contains(i) {
+                guard index.contains(tag16: tag16) else { continue }
+                let url = SSDBlockStore.fileURL(
+                    root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+                SSDBlockStore.setAttributesIfSafe(
+                    [.modificationDate: touchDate], at: url, under: config.root)
+            }
         }
         var blocks: [SSDBlockWrite] = []
         var totalBytes = 0
@@ -1197,7 +1213,7 @@ public final class SSDPrefixCache:
         // can keep its block run warm forever while the sidecars underneath it
         // expire at the TTL — silently re-arming the full replay and paying
         // their (much larger) write wear again on the next donation.
-        if !reused.isEmpty {
+        if !reused.isEmpty, config.ttlMode.refreshesOnHit {
             index.touch(tags16: reused, now: now)
             let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
             for tag16 in reused {
@@ -1574,16 +1590,19 @@ public final class SSDPrefixCache:
         // survives a restart (the scan seeds lastAccess from mtime). The
         // window sidecars ride the same bump — letting them expire under a
         // still-warm block run would silently re-arm the 25,600-token replay
-        // and pay their write wear again on the next donation.
-        let now = config.nowSeconds()
-        index.touch(tags16: tags16.prefix(usableBlocks), now: now)
-        index.touch(tags16: windowTags, now: now)
-        let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
-        for tag16 in tags16.prefix(usableBlocks) + windowTags {
-            let url = SSDBlockStore.fileURL(
-                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
-            SSDBlockStore.setAttributesIfSafe(
-                [.modificationDate: touchDate], at: url, under: config.root)
+        // and pay their write wear again on the next donation. A fixed TTL
+        // keeps each file's write time.
+        if config.ttlMode.refreshesOnHit {
+            let now = config.nowSeconds()
+            index.touch(tags16: tags16.prefix(usableBlocks), now: now)
+            index.touch(tags16: windowTags, now: now)
+            let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
+            for tag16 in tags16.prefix(usableBlocks) + windowTags {
+                let url = SSDBlockStore.fileURL(
+                    root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+                SSDBlockStore.setAttributesIfSafe(
+                    [.modificationDate: touchDate], at: url, under: config.root)
+            }
         }
         return finish(.staged(
             matchedTokens: matched,
@@ -1595,7 +1614,10 @@ public final class SSDPrefixCache:
     func stage(
         requestID: CBv2RequestID, promptTokens: [Int], cacheScope: String
     ) async -> SSDPrefixCacheStageResult {
-        await stage(
+        guard !MemoryOnlyReceipt.refusesTierAccess(requestID) else {
+            return SSDPrefixCacheStageResult(disposition: .skippedPolicy, stageMs: 0)
+        }
+        return await stage(
             requestID: ticketKey(requestID),
             promptTokens: promptTokens,
             cacheScope: cacheScope)

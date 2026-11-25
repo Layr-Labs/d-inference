@@ -68,7 +68,8 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
                    diskBudgetBytes: @escaping @Sendable () -> Int = { 1 << 30 },
                    donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
                    keyFingerprint: String = "fixture-key", incrementalCheckpoints: Bool = false,
-                   parallelStage: Bool = true,
+                   parallelStage: Bool = true, ttlMode: SSDPrefixCachePolicy.TTLMode = .sliding,
+                   memoryOnlyTier: MemoryOnlyCheckpointTier? = nil,
                    writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) throws -> SSDHybridCheckpointStore {
         let epochStore: SSDCacheEpochStore? = epoch ? try .init(root: modelRoot, binding: .init(
             modelId: "fixture-model", modelAggregateHash: identity.modelAggregateHash,
@@ -79,9 +80,10 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
         let store = SSDHybridCheckpointStore(config: .init(modelId: "fixture-model", identity: identity,
             backendLayout: backendLayout,
             root: modelRoot, dedicatedRoot: root, epochStore: epochStore, maxReadBytes: readCap,
-            maxStageMillis: 1000, minEffectiveTokens: 256, ttlSeconds: 3600, strictFsync: false,
+            maxStageMillis: 1000, minEffectiveTokens: 256, ttlSeconds: 3600, ttlMode: ttlMode, strictFsync: false,
             nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: diskBudgetBytes, maintainWholeRoot: {},
-            incrementalCheckpoints: incrementalCheckpoints, parallelStage: parallelStage),
+            incrementalCheckpoints: incrementalCheckpoints, parallelStage: parallelStage,
+            memoryOnlyTier: memoryOnlyTier),
             kekKey: key, kvBudget: useGlobalBudget ? budget : nil, diskBudget: diskBudget,
             maxWriteBytesPerDay: maxWriteBytesPerDay, writeBudget: writeBudget,
             donationRecorder: donationRecorder, writeNowSeconds: writeNowSeconds)
@@ -122,8 +124,13 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
 
     func donate(_ store: SSDHybridCheckpointStore, receipt: UInt64 = 10, position: Int = 256,
                 chunkSize: Int = 256) async throws -> [Int] {
-        let source = try source(position: position, chunkSize: chunkSize)
-        return await withCheckedContinuation { continuation in
+        try await donate(store, source(position: position, chunkSize: chunkSize), receipt: receipt)
+    }
+
+    /// Donates `source` for the fixture's prompt and returns the settled positions.
+    func donate(_ store: SSDHybridCheckpointStore, _ source: CBv2CompleteCheckpointExport,
+                receipt: UInt64 = 10) async -> [Int] {
+        await withCheckedContinuation { continuation in
             store.donate(source, requestID: .init(receipt), tokens: tokens, cacheSalt: "tenant-a") { continuation.resume(returning: $0) }
         }
     }

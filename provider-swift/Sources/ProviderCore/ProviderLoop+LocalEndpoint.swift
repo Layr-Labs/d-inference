@@ -99,6 +99,7 @@ extension ProviderLoop {
         // One partition for this local application's Super prefix reuse,
         // separate from every authenticated coordinator scope.
         let superCacheScope = "local-super-" + UUID().uuidString
+        let localCachePolicy = RequestCachePolicy.localServing()
         return makeLocalInferenceApplication(
             config: cfg,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
@@ -129,11 +130,12 @@ extension ProviderLoop {
                     cacheScope: superCacheScope, acquire: { [weak self] in
                         guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(request.model) }
                         return try await self.acquireNemotronSuperForLocal(request.model)
-                    }, logprobs: logprobs)
+                    }, logprobs: logprobs, cachePolicy: localCachePolicy)
             },
             modelLimits: { [weak self] modelId in
                 await self?.localModelLimits(modelId)
-            }
+            },
+            localCachePolicy: localCachePolicy
         )
     }
 

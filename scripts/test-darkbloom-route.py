@@ -113,14 +113,14 @@ def requested(component, jobs=1):
 
 
 # Every routed macOS job of CI: lane -> (count, size), each size from the
-# job's sampled memory (provider-plan.yml); every lane is `balanced`. The 12
-# blocking test jobs come first, critical path first. Two shards share each of
-# the lanes test-cluster-2 (runtime shards 2 and 3), test-cluster-3 (runtime
+# job's sampled memory (provider-plan.yml); every lane is `balanced`. The 15
+# blocking test jobs come first, critical path first. Shards share the lanes
+# test-cluster-2 (runtime shards 2, 3, 6 and 7), test-cluster-3 (runtime
 # shards 4 and 5) and test-cluster-focused, lanes the approval names; Provider
 # Gates reads test-provider-gates. Then the build jobs and the release build
 # checks, then the 3 non-blocking GPU shards.
 PLAN_LANES = {
-    "test-cluster-2": (requested("cluster", 2), "4x24"),
+    "test-cluster-2": (requested("cluster", 4), "4x24"),
     "test-cluster-3": (requested("cluster", 2), "4x16"),
     "test-cluster-focused": (requested("cluster", 2), "4x16"),
     "test-provider-2": (requested("provider"), "4x24"),
@@ -128,6 +128,7 @@ PLAN_LANES = {
     "test-provider-1": (requested("provider"), "12x32"),
     "test-provider-3": (requested("provider"), "4x24"),
     "test-provider-4": (requested("provider"), "4x24"),
+    "test-provider-5": (requested("provider"), "4x24"),
     "test-provider-gates": (requested("provider"), "4x24"),
     "build-cluster": (requested("cluster"), "8x16"),
     "build-provider": (requested("provider"), "12x32"),
@@ -1128,19 +1129,19 @@ class RouteWorkflowTests(unittest.TestCase):
                     self.assertEqual(placement, "balanced")
                     self.assertIn(size, VALID_SIZES[profile])
                 checked += 1
-        # The 16 plan lanes (test-provider-gates and ci-plan-checks among
+        # The 17 plan lanes (test-provider-gates and ci-plan-checks among
         # them), CI (master)'s 2 Linux lanes and the 7 lanes of the other
         # callers (release-qualify.yml's among them).
-        self.assertEqual(checked, 25)
+        self.assertEqual(checked, 26)
 
     def test_ci_sizes_every_routed_macos_job(self):
         sizes = {size for _, size in PLAN_LANES.values()}
         self.assertLessEqual(sizes, VALID_SIZES["macos_arm64"])
-        # 18 macOS jobs ask, each with its size: the 12 blocking test jobs
+        # 21 macOS jobs ask, each with its size: the 15 blocking test jobs
         # (Provider Gates among them), the 2 build jobs and the release build
         # checks, and the 3 GPU shards.
-        self.assertEqual(sum(lane_jobs(count) for count, _ in PLAN_LANES.values()), 18)
-        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in BLOCKING_TESTS), 12)
+        self.assertEqual(sum(lane_jobs(count) for count, _ in PLAN_LANES.values()), 21)
+        self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in BLOCKING_TESTS), 15)
         # The lane table lists the blocking test lanes first, then the build
         # lanes, then the non-blocking GPU shards (provider-plan.yml).
         self.assertEqual(list(PLAN_LANES)[:len(BLOCKING_TESTS)], BLOCKING_TESTS)

@@ -746,16 +746,21 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('export PROVIDER_TEST_REPORT_DIR="$RUNNER_TEMP/provider-sdk-shard"', test)
         # Prompt Parity runs once, against the test build, and reports both suites.
         build = ACTION.index('- name: Build SDK test products and stage Metal library\n')
-        for name, script, suite in (('Verify public prompt golden vectors', 'verify-prompt-parity.sh',
-                                     'ProductionPromptParityTests'),
-                                    ('Verify pinned Nemotron prompts', 'verify-nemotron-prompt-parity.sh',
-                                     'NemotronTemplateParityLiveTests')):
+        for name, script, suite, label in (('Verify public prompt golden vectors', 'verify-prompt-parity.sh',
+                                            'ProductionPromptParityTests', 'prompt'),
+                                           ('Verify pinned Nemotron prompts', 'verify-nemotron-prompt-parity.sh',
+                                            'NemotronTemplateParityLiveTests', 'nemotron')):
             with self.subTest(step=name):
                 self.assertLess(build, ACTION.index('- name: ' + name + '\n'))
                 parity = ACTION.split('- name: ' + name + '\n', 1)[1].split('\n    - name:', 1)[0]
                 self.assertIn("if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'", parity)
-                self.assertIn('./scripts/' + script, parity)
-                self.assertIn('provider-test-shards.py counts parity ' + suite, parity)
+                # The count comes from the run's xUnit report and stdout, never
+                # the merged console a SwiftPM warning can split.
+                self.assertIn(f'NESTED_SUITE_REPORT="$report/parity-{label}" ./scripts/{script}\n', parity)
+                self.assertNotIn('2>&1', parity)
+                self.assertIn(f'provider-test-shards.py counts parity {suite} \\\n'
+                              f'          "$report/parity-{label}-swift-testing.xml" "$report/parity-{label}.log" ',
+                              parity)
         self.assertIn("PROMPT_PARITY_SKIP_BUILD: '1'", ACTION)
         # A shard applies to qualification only; the release lane builds whole.
         lane = ACTION.split('- name: Validate lane\n', 1)[1].split('\n    - name:', 1)[0]

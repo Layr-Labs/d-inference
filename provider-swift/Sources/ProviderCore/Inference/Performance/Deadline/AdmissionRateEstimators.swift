@@ -28,9 +28,16 @@ enum DeadlineAdmissionFixes {
     /// per-row conversion is its only fallback, so calibrated policies keep it.
     /// The step is smoothed and reset with the per-request EWMA, which alone
     /// says whether decode evidence exists.
+    ///
+    /// Without that evidence an uncalibrated policy with the fixes on takes
+    /// `liveRate`, the cadence of requests decoding on this slot now
+    /// (`EngineV2Bridge.liveDecodeCadence`), charged per row; nil, or the fixes
+    /// off, still leaves the decode rate unavailable.
     static func decodeCharge(
-        perRequestRate: Double?, measuredStep: MeasuredDecodeStep, enabled: Bool, calibrated: Bool
+        perRequestRate: Double?, measuredStep: MeasuredDecodeStep, enabled: Bool, calibrated: Bool,
+        liveRate: Double? = nil
     ) -> (rate: Double?, shape: CBv2DecodeRateShape?) {
+        if enabled, !calibrated, perRequestRate == nil, let liveRate { return (liveRate, nil) }
         guard enabled, !calibrated else { return (perRequestRate, nil) }
         return (perRequestRate == nil ? nil : measuredStep.tokensPerSecond, measuredStep.shape)
     }

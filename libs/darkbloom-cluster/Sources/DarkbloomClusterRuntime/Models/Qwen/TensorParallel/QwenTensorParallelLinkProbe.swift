@@ -19,6 +19,8 @@ enum QwenTensorParallelLinkProbe {
                         check: () throws -> Void) throws -> ClusterWorkerLinkProbe {
         func median(_ values: [UInt64]) -> Int { Int(values.sorted()[values.count / 2] / 1000) }
         func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+        let probeStarted = now()
+        defer { ClusterLoadPhaseClock.add(.linkProbe, nanoseconds: now() &- probeStarted) }
         // Point to point, small: the keep-warm exchange (one 64-byte record each way).
         var small: [UInt64] = []
         for _ in 0..<9 { small.append(try ClusterKeepWarm.dataPlanePing(collective: collective, check: check) / 2) }

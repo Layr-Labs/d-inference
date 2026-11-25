@@ -66,7 +66,7 @@ extension ProviderLoop {
         switch engineError {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
-        case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
+        case .invalidRole, .invalidToolPayload, .missingUserQuery, .mediaRoleNotRendered, .unsupportedReasoningEffort,
             .conflictingReasoningEfforts, .mediaUnsupportedByModel, .multimodalRejected,
             .advertisedContextExceeded, .promptExceedsContext, .unsupportedOutputControl:
             return .clientError
@@ -167,8 +167,8 @@ extension ProviderLoop {
             switch engineError {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
-            case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-                .conflictingReasoningEfforts, .advertisedContextExceeded, .promptExceedsContext,
+            case .invalidRole, .invalidToolPayload, .missingUserQuery, .mediaRoleNotRendered,
+                .unsupportedReasoningEffort, .conflictingReasoningEfforts, .advertisedContextExceeded, .promptExceedsContext,
                 .unsupportedOutputControl:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
@@ -272,7 +272,7 @@ extension ProviderLoop {
                 return 404
             case .invalidRole:
                 return 400
-            case .invalidToolPayload, .missingUserQuery:
+            case .invalidToolPayload, .missingUserQuery, .mediaRoleNotRendered:
                 return 400
             case .unsupportedReasoningEffort, .conflictingReasoningEfforts:
                 return 400

@@ -380,7 +380,9 @@ extension ClusterService {
                      term: node.claim.term, reason: node.claim.reason, leads: node.leads,
                      line: ClusterControlWords.line(mode, names: ClusterOnboardingMacName.names(node.members.mapValues(\.name), viewerID: node.localID),
                                                     model: model, aloneRefusal: node.members[node.localID]?.aloneRefusal), mode: word,
-                     confirmed: node.leadershipConfirmed(now: now), soloInSeconds: soloIn)
+                     confirmed: node.leadershipConfirmed(now: now), soloInSeconds: soloIn,
+                     confirmsInSeconds: node.secondsUntilConfirmed(now: now).map { Int($0.rounded(.up)) },
+                     otherAnswering: node.otherAnswering(now: now))
     }
 
     // MARK: - Forwarded `darkbloom cluster` commands
@@ -460,13 +462,24 @@ extension ClusterService {
     /// This Mac's verify-teardown summary (no cluster process, wired memory at its idle baseline, no journal or bootstrap
     /// left), "<Mac>: …" with the Mac named `mac` (the screen's words), else by its hardware (an answer to the other Mac,
     /// which names it as its screen does).
-    static func teardownLines(mac: String? = nil) -> [String] {
+    ///
+    /// A device journal or bootstrap directory a run left after its owner ended (a stop whose other Mac dropped the link
+    /// before the release was proven) is recovered here as a part's start recovers it (`recoverDeviceJournal`: cleared
+    /// only when no process holds this Mac's device scope or carries the recorded epoch), then checked again. Before,
+    /// `darkbloom restart` waited its whole teardown allowance and refused, while `darkbloom start` went on at once.
+    static func teardownLines(mac: String? = nil,
+                              sweep: () throws -> [String] = { try ClusterOrphanSweep.verify(baselineWiredBytes: nil, samples: 3).reasons },
+                              recoverLeftover: () -> Void = ClusterService.recoverLeftoverJournal) -> [String] {
         let name = mac ?? ClusterPairingProvider.displayName(chipName: (try? HardwareDetector.detect().chipName) ?? "Mac")
         do {
-            let report = try ClusterOrphanSweep.verify(baselineWiredBytes: nil, samples: 3)
+            var left = try sweep()
+            if left.contains(where: leftByARun) {
+                recoverLeftover()
+                left = try sweep()
+            }
             // The part the cluster service started is a cluster process too, also when it is no cluster worker or owner
             // (the solo server, the rank 0 server process) and when the service that started it is gone.
-            var reasons = report.reasons.map(Self.plainTeardownReason)
+            var reasons = left.map(Self.plainTeardownReason)
             if let part = recordedPart(published()) {
                 reasons.append("this Mac's \(part.solo ? "single-Mac server" : "part of the model") is still running")
             }
@@ -475,6 +488,20 @@ extension ClusterService {
         } catch {
             return ["\(name): could not check what is left running (\(ClusterConsoleText.bounded(String(describing: error), maximum: 120)))"]
         }
+    }
+
+    /// A sweep reason a run leaves behind when its owner ended without closing it: the device journal or a bootstrap
+    /// directory (`plainTeardownReason`'s "device record" and "files from a run's start").
+    static func leftByARun(_ reason: String) -> Bool {
+        let lower = reason.lowercased()
+        return lower.contains("journal") || lower.contains("bootstrap")
+    }
+
+    /// `cluster recover`'s recovery of this Mac's device journal, the one a part's start runs: nothing is cleared while
+    /// its owner or any process of its epoch still runs.
+    static func recoverLeftoverJournal() {
+        guard let paths = try? ClusterUserPaths() else { return }
+        _ = recoverDeviceJournal(paths: paths)
     }
 }
 

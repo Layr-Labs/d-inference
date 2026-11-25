@@ -131,7 +131,7 @@ struct CachePromptParityTests {
             #expect(!ReasoningEffortPolicy.reasons(modelID: "any/model", modelType: type), "\(type)")
         }
         let cases = try #require(vectors["cases"] as? [[String: Any]])
-        #expect(cases.count == 446)
+        #expect(cases.count == 475)
         let asked = Set(cases.compactMap { $0["model_type"] as? String })
         #expect(ReasoningEffortPolicy.reasoningModelTypes.isSubset(of: asked),
                 "types that reason without cases: \(ReasoningEffortPolicy.reasoningModelTypes.subtracting(asked))")

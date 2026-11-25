@@ -322,7 +322,7 @@ jobs:
       # A failed shard does not cancel the other shards.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     steps:
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
@@ -492,7 +492,8 @@ jobs:
       # Prompt Parity runs once, in shard 1 (the shard of selection
       # PARITY_SHARD), against the provider products. A failure fails the shard,
       # and with it the Provider Tests gate. The summary checks each run's
-      # executed count against the suite list.
+      # executed count against the suite list; the count comes from the run's
+      # xUnit report and stdout (NESTED_SUITE_REPORT, scripts/run-nested-suite.sh).
       - name: Verify public prompt golden vectors
         id: prompt-parity
         if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' }}
@@ -500,24 +501,24 @@ jobs:
           PROMPT_PARITY_SKIP_BUILD: '1'
           PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
         run: |
-          set -o pipefail
+          set -euo pipefail
           report="$RUNNER_TEMP/provider-unit-shard"
           mkdir -p "$report"
-          ./scripts/verify-prompt-parity.sh 2>&1 | tee "$report/parity-prompt.log"
+          NESTED_SUITE_REPORT="$report/parity-prompt" ./scripts/verify-prompt-parity.sh
           python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
-            "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
+            "$report/parity-prompt-swift-testing.xml" "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
       - name: Verify pinned Nemotron prompts and numeric cache plans
         id: nemotron-parity
         if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
         env:
           PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
         run: |
-          set -o pipefail
+          set -euo pipefail
           report="$RUNNER_TEMP/provider-unit-shard"
           mkdir -p "$report"
-          ./scripts/verify-nemotron-prompt-parity.sh 2>&1 | tee "$report/parity-nemotron.log"
+          NESTED_SUITE_REPORT="$report/parity-nemotron" ./scripts/verify-nemotron-prompt-parity.sh
           python3 scripts/provider-test-shards.py counts parity NemotronTemplateParityLiveTests \
-            "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
+            "$report/parity-nemotron-swift-testing.xml" "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
       # Both parity steps passed, so the cache holds every pinned artifact, and
       # only verified bytes were stored in it.
       - name: Save verified prompt fixture downloads
@@ -698,6 +699,32 @@ jobs:
           key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Start the resource sampler
         run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      # The 1.87 GB codec is fetched only when the audio gate's inputs changed
+      # (scripts/ci-component-paths.py MIMO_AUDIO) and on master pushes. It
+      # needs no test products, so it is fetched while the build runs: after
+      # the products it took 21 to 137 s (runs 44914459288, 44912466550). The
+      # interpreter is the one the products step selects for the later steps.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: ${{ !cancelled() && inputs.mimo_audio == 'true' }}
+        with:
+          python-version: '3.12.10'
+      - name: Restore pinned MiMo audio codec
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && inputs.mimo_audio == 'true' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        id: mimo-audio-cache
+        with:
+          path: /private/tmp/dinf-ci/mimo-audio-source
+          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+      - name: Prepare selected MiMo audio fixture
+        id: mimo-audio-fixtures
+        if: ${{ !cancelled() && inputs.mimo_audio == 'true' }}
+        run: python3 scripts/prepare-mimo-audio-fixtures.py --cache /private/tmp/dinf-ci/mimo-audio-source --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
+      - name: Cache verified MiMo audio codec
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && env.SAVE_CACHES == 'true' && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        with:
+          path: /private/tmp/dinf-ci/mimo-audio-source
+          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
       - name: Download provider test products
         id: test-products
         uses: ./.github/actions/provider-ci-products
@@ -817,25 +844,7 @@ jobs:
           DARKBLOOM_PREFIX_CACHE: '0'
           DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
         run: ../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel
-      # The 1.87 GB codec is fetched only when the audio gate's inputs changed
-      # (scripts/ci-component-paths.py MIMO_AUDIO) and on master pushes.
-      - name: Restore pinned MiMo audio codec
-        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && steps.test-products.outcome == 'success' && inputs.mimo_audio == 'true' }}
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
-        id: mimo-audio-cache
-        with:
-          path: /private/tmp/dinf-ci/mimo-audio-source
-          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
-      - name: Prepare selected MiMo audio fixture
-        id: mimo-audio-fixtures
-        if: ${{ !cancelled() && steps.test-products.outcome == 'success' && inputs.mimo_audio == 'true' }}
-        run: python3 scripts/prepare-mimo-audio-fixtures.py --cache /private/tmp/dinf-ci/mimo-audio-source --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
-      - name: Cache verified MiMo audio codec
-        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && env.SAVE_CACHES == 'true' && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
-        with:
-          path: /private/tmp/dinf-ci/mimo-audio-source
-          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+      # Its fixture was prepared before the products download.
       - name: Run isolated native MiMo audio gate
         if: ${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-audio-fixtures.outcome == 'success' }}
         working-directory: provider-swift
@@ -897,10 +906,11 @@ jobs:
     # DarkbloomClusterRuntimeTests in selections, each in its own process, on
     # separate Macs (scripts/cluster-test-plan.py): every test without a
     # switch, and the switched tests that pass on these runners. Shard 1 runs
-    # the base selection, the share probe, then qwen-tp-aqv-gpu, one at a
-    # time; shards 2 and 3 each run their ordered groups of selections at the
-    # same time; shards 4 and 5 each run two groups of model-free base
-    # selections at the same time.
+    # the base selection, the share probe, then base-gemma-runtime, one at a
+    # time; shards 2, 3, 6 and 7 each run a GPU group beside a group of base
+    # selections that starts with a batch-session selection; shards 4 and 5
+    # each run two groups of model-free base selections at the same time.
+    # Shard 6 also runs the worker package's request lifecycle tests.
     name: Cluster Runtime Tests (shard ${{ matrix.shard }})
     # Starts beside Build cluster test products and waits for its products, as
     # test-provider does for its build.
@@ -913,9 +923,9 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Each shard and the route lane it reads (provider-plan.yml). Shards 2
-      # and 3 share test-cluster-2, and shards 4 and 5 test-cluster-3: each
-      # of those lanes is requested for its 2 jobs and carries one size.
+      # Each shard and the route lane it reads (provider-plan.yml). Shards 2,
+      # 3, 6 and 7 share test-cluster-2, and shards 4 and 5 test-cluster-3:
+      # each of those lanes is requested for its jobs and carries one size.
       matrix:
         include:
           - {shard: 1, lane: test-cluster-1}
@@ -923,6 +933,8 @@ jobs:
           - {shard: 3, lane: test-cluster-2}
           - {shard: 4, lane: test-cluster-3}
           - {shard: 5, lane: test-cluster-3}
+          - {shard: 6, lane: test-cluster-2}
+          - {shard: 7, lane: test-cluster-2}
     steps:
       # Before every cache step: a Darkbloom Sandbox that the plane gave no
       # Darkbloom cache would reach GitHub's own Actions cache, so there every
@@ -1004,12 +1016,36 @@ jobs:
           key: ${{ steps.git-cache.outputs.cache-primary-key }}
       - name: Start the resource sampler
         run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      # The worker package's own request lifecycle tests (WorkerTests,
+      # WorkerLaneTests: the coordinator over its real pipes with a fake
+      # runtime, CPU only), which no other job runs: among them D6's no-exit
+      # path, a running request ended alone for a rank's memory while the
+      # worker serves the next. They need no test products, so shard 6, the
+      # shortest runtime shard, builds and runs them (a debug build of their
+      # own, outside the checkout, on the runner's 4 vCPUs) while it waits for
+      # the cluster build (scripts/ci-background-step.py).
+      - name: Select SDK 27 provider toolchain
+        id: toolchain
+        if: ${{ matrix.shard == 6 }}
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      - name: Start the worker's request lifecycle tests
+        id: worker-lifecycle
+        if: ${{ matrix.shard == 6 && steps.toolchain.outcome == 'success' }}
+        env:
+          DARKBLOOM_WORKER_TEST_JOBS: '4'
+          DARKBLOOM_WORKER_TEST_SCRATCH: ${{ runner.temp }}/worker-lifecycle-build
+        run: python3 scripts/ci-background-step.py start "$RUNNER_TEMP/worker-lifecycle" bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh
       - name: Download cluster test products
         id: test-products
         uses: ./.github/actions/provider-ci-products
         with:
           lane: cluster
           direction: download
+      # Fails the job when they failed. It ends before the runtime tests start,
+      # which then have the Mac to themselves, and they run either way.
+      - name: Wait for the worker's request lifecycle tests
+        if: ${{ !cancelled() && steps.worker-lifecycle.outcome == 'success' }}
+        run: python3 scripts/ci-background-step.py wait "$RUNNER_TEMP/worker-lifecycle"
       - name: Run cluster runtime tests
         if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
         timeout-minutes: 40
@@ -1309,17 +1345,6 @@ jobs:
           DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
           DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
         run: bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
-      # The worker package's own request lifecycle tests (WorkerTests,
-      # WorkerLaneTests: the coordinator over its real pipes with a fake
-      # runtime, CPU only), which no other job runs: among them D6's no-exit
-      # path, a running request ended alone for a rank's memory while the
-      # worker serves the next. A debug build of its own, on all the cores.
-      - name: Run the worker's request lifecycle tests
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        timeout-minutes: 45
-        env:
-          DARKBLOOM_WORKER_TEST_JOBS: '12'
-        run: bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh
       # Only pushes to master and dev save the cluster build (SAVE_CACHES).
       - name: Record source timestamps for the cluster build
         if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}

@@ -1,6 +1,8 @@
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 extension EngineV2Factory {
     /// Target storage only. Indexer/recurrent/MTP charges retain their separate owners.
@@ -60,6 +62,15 @@ extension EngineV2Factory {
         let caches = try adapter.newCaches { index, kind in
             CBv2LayerCache(layerIndex: index, kind: kind)
         }
+        // Inkling 2 serves through its paged kernel core, which needs paged
+        // rows; the probe's rows are not. The probe runs the SDK's gathered
+        // reference core instead (the same projections write the same K/V
+        // tensors through the cache), then the serving core is restored before
+        // any engine exists for this target.
+        let inkling = (model as? Inkling2Model) ?? (model as? MLXVLM.Inkling2VLM)?.languageModel
+        let servingCore = inkling?.pagedAttentionCore
+        if let inkling { inkling.pagedAttentionCore = Inkling2GatheredAttentionCore() }
+        defer { if let inkling, let servingCore { inkling.pagedAttentionCore = servingCore } }
         let observed = try CBv2NativeKVTypeProbe.run(
             model: CBv2SteppableLanguageModelAdapter(model),
             layerKinds: adapter.layerKinds, caches: caches)

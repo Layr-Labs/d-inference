@@ -33,6 +33,7 @@ enum ProviderPromptContractPipeline {
     ) -> Bool {
         FlintRequestPolicy.withholdsReasoning(request, controls: controls, modelType: modelType)
             || GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType)
+            || Inkling2PromptContract.withholdsReasoning(request, controls: controls, modelType: modelType)
     }
     static func tokenizeProviderBody(
         _ body: Data,
@@ -168,9 +169,13 @@ enum ProviderPromptContractPipeline {
         }
         let gemmaParts = !preserveMiMoMediaParts && GemmaPromptContract.rendersParts(
             request, modelType: modelType, controls: templateControls)
+        let inklingParts = !preserveMiMoMediaParts && Inkling2PromptContract.applies(modelType: modelType)
         let messages = prepared.messages.map { message in
             var value = message.templateMessageDict()
             if gemmaParts, let parts = GemmaPromptContract.textParts(of: message) {
+                value["content"] = parts
+            }
+            if inklingParts, let parts = Inkling2PromptContract.textParts(of: message) {
                 value["content"] = parts
             }
             if preserveMiMoMediaParts, case .parts(let parts) = message.content {
@@ -187,7 +192,8 @@ enum ProviderPromptContractPipeline {
             }
             return value
         }
-        let tools = prepared.tools?.map { $0.toolSpec() }
+        let tools = GPTOSSToolSchemaRender.renderedTools(prepared.tools, declared: templateControls.declaredTools,
+            modelId: request.model, modelType: modelType)?.map { $0.toolSpec() }
         let context = ChatTemplateFixContext(
             modelId: request.model,
             modelType: modelType)
@@ -204,7 +210,7 @@ enum ProviderPromptContractPipeline {
         }
         return try NormalizedInput(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: context),
-            tools: ChatTemplateFixes.normalizeTools(tools, context: context),
+            tools: ChatTemplateFixes.normalizeTools(tools, context: context, declared: templateControls.declaredTools),
             additionalContext: additionalContext)
     }
 }

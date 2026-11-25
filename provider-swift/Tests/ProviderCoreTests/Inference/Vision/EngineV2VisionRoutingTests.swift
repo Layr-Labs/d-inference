@@ -630,12 +630,13 @@ struct MediaKindClassificationTests {
         #expect(EngineV2VisionPrefill.mediaKind(of: mixed) == .mixed)
     }
 
-    @Test("mediaKind ignores non-user-role media (mirrors buildUserInput)")
-    func nonUserRolesIgnored() {
-        // A video part on an assistant message is dropped by buildUserInput,
-        // so the kind must reflect the user-message media only — keeping
-        // refusal tags consistent with the success path's lmInput-derived
-        // kind.
+    @Test("mediaKind counts media in every role it is placed in (mirrors buildUserInput)",
+          .enabled(if: MediaIngest.everyRoleEnabled, "DARKBLOOM_MEDIA_ON_EVERY_ROLE is off"))
+    func nonUserRolesCounted() {
+        // An assistant message's video is kept by buildUserInput and placed by
+        // the template (`MediaIngest.everyRoleEnabled`, on by default), so the
+        // kind reflects it, keeping refusal tags consistent with the success
+        // path's lmInput-derived kind.
         let request = OpenAIChatCompletionRequest(
             model: "test/vlm-stub",
             messages: [
@@ -649,7 +650,7 @@ struct MediaKindClassificationTests {
             temperature: 0,
             maxTokens: 8
         )
-        #expect(EngineV2VisionPrefill.mediaKind(of: request) == .image)
+        #expect(EngineV2VisionPrefill.mediaKind(of: request) == .mixed)
     }
 }
 

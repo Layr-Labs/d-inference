@@ -99,26 +99,47 @@ enum ToolSchemaNormalization {
     /// marker-key evidence: booleans (the valid allow/deny-all shorthand)
     /// become render-safe string schemas carrying their original semantic
     /// value, and maps are guaranteed a string `type`.
-    static func injectDefaultTypes(_ node: Any) -> Any {
-        var unbounded = Int.max
-        return (try? injectTypes(node, positional: false, budget: &unbounded)) ?? node
+    ///
+    /// `budget` is the nodes left to the request, shared by its schemas as in
+    /// ``ensureParameterTypes(in:)`` (start from ``maxNormalizedNodes``): a
+    /// schema that spends the rest is returned unchanged, as is every schema
+    /// after it.
+    static func injectDefaultTypes(_ node: Any, budget: inout Int) -> Any {
+        (try? injectTypes(node, positional: false, budget: &budget)) ?? node
     }
 
-    /// Traversal core behind ``injectDefaultTypes(_:)``; `positional` reports
+    /// One tool's `parameters` through the repair, nil past `budget`. With
+    /// `writesRenderTypes` false the walk writes a type only where the node
+    /// declares exactly one (`singleTypeOfList`, `singleInferredType`): a
+    /// `type` list of two or more types stays a list, a union of several
+    /// types, a `{}`, a `$ref` or an annotation-only node stays typeless, and
+    /// a positional boolean becomes `{}`. Every other step is the repair's.
+    /// On a schema the repair already typed those steps have nothing to do,
+    /// so both settings give the same tree.
+    static func repairedParameters(_ node: Any, writesRenderTypes: Bool, budget: inout Int) -> Any? {
+        try? injectTypes(node, positional: false, writesRenderTypes: writesRenderTypes, budget: &budget)
+    }
+
+    /// Traversal core behind ``injectDefaultTypes(_:budget:)``; `positional` reports
     /// whether `node` sits in a schema-positional slot (see the mirror note
     /// above). Arrays keep positionality for their members (tuple-form
     /// `items`, `prefixItems`, union member lists).
-    private static func injectTypes(_ node: Any, positional: Bool, budget: inout Int) throws -> Any {
+    private static func injectTypes(
+        _ node: Any, positional: Bool, writesRenderTypes: Bool = true, budget: inout Int
+    ) throws -> Any {
         budget -= 1
         guard budget >= 0 else { throw NodeBudgetExceeded() }
         if positional, isJSONBoolean(node) {
+            guard writesRenderTypes else { return [String: Any]() }
             return [
                 "type": "string",
                 originalBooleanSchemaKey: node,
             ] as [String: Any]
         }
         if let arr = node as? [Any] {
-            return try arr.map { try injectTypes($0, positional: positional, budget: &budget) }
+            return try arr.map {
+                try injectTypes($0, positional: positional, writesRenderTypes: writesRenderTypes, budget: &budget)
+            }
         }
         guard var dict = node as? [String: Any] else { return node }
         // An EMPTY positional map is the `{}` "anything" schema — semantically
@@ -126,7 +147,7 @@ enum ToolSchemaNormalization {
         // render-safe rewrite: a string type for the template plus the marker
         // so auto validation restores allow-all semantics instead of
         // enforcing the synthetic string type.
-        if positional, dict.isEmpty {
+        if positional, dict.isEmpty, writesRenderTypes {
             return [
                 "type": "string",
                 originalBooleanSchemaKey: true,
@@ -135,14 +156,19 @@ enum ToolSchemaNormalization {
 
         for key in ["properties", "patternProperties"] {
             if let props = dict[key] as? [String: Any] {
-                dict[key] = try props.mapValues { try injectTypes($0, positional: true, budget: &budget) }
+                dict[key] = try props.mapValues {
+                    try injectTypes($0, positional: true, writesRenderTypes: writesRenderTypes, budget: &budget)
+                }
             }
         }
         if let items = dict["items"] {
-            dict["items"] = try injectTypes(items, positional: true, budget: &budget)
+            dict["items"] = try injectTypes(
+                items, positional: true, writesRenderTypes: writesRenderTypes, budget: &budget)
         }
         if let prefix = dict["prefixItems"] as? [Any] {
-            dict["prefixItems"] = try prefix.map { try injectTypes($0, positional: true, budget: &budget) }
+            dict["prefixItems"] = try prefix.map {
+                try injectTypes($0, positional: true, writesRenderTypes: writesRenderTypes, budget: &budget)
+            }
         }
         // additionalProperties may itself be a schema (map-shaped params, e.g.
         // {"additionalProperties":{"type":"string"}}) — recurse so its inner schema
@@ -150,14 +176,17 @@ enum ToolSchemaNormalization {
         // standard allow/deny-all switch; templates never subscript it) — only
         // the MAP-valued form is schema-positional.
         if let addl = dict["additionalProperties"], addl is [String: Any] {
-            dict["additionalProperties"] = try injectTypes(addl, positional: true, budget: &budget)
+            dict["additionalProperties"] = try injectTypes(
+                addl, positional: true, writesRenderTypes: writesRenderTypes, budget: &budget)
         }
         for key in ["anyOf", "oneOf", "allOf"] {
             if let variants = dict[key] as? [Any] {
-                dict[key] = try variants.map { try injectTypes($0, positional: true, budget: &budget) }
+                dict[key] = try variants.map {
+                    try injectTypes($0, positional: true, writesRenderTypes: writesRenderTypes, budget: &budget)
+                }
             }
         }
-        if positional,
+        if positional, writesRenderTypes,
             let constant = constantMarkedCombinator(dict)
         {
             var replacement = constant.annotations
@@ -193,7 +222,9 @@ enum ToolSchemaNormalization {
         // gemma template natively renders the standard `nullable` key, so
         // collapsing away a "null" member sets it to true. An explicit false
         // cannot override the union's null member without changing semantics.
-        if let t = dict["type"], !(t is String) {
+        if let t = dict["type"], !(t is String),
+            writesRenderTypes || singleTypeOfList(t) != nil
+        {
             let members =
                 (t as? [Any])?.compactMap { ($0 as? String)?.lowercased() } ?? []
             if members.contains("null"), members.contains(where: { $0 != "null" }),
@@ -230,7 +261,7 @@ enum ToolSchemaNormalization {
         // always filled; a non-positional map (a tool schema root) still needs
         // marker-key evidence before we invent one.
         if dict["type"] == nil, positional || looksLikeSchemaNode(dict) {
-            dict["type"] = inferredType(for: dict)
+            dict["type"] = writesRenderTypes ? inferredType(for: dict) : singleInferredType(for: dict)
         }
 
         // An OBJECT-typed schema node must carry a mapping `properties` —
@@ -403,6 +434,49 @@ enum ToolSchemaNormalization {
             return nullOnly
         }
         return inferredType(for: dict)
+    }
+
+    /// The one type a `type` value other than a string declares: its single
+    /// concrete member (`["string","null"]`), or `null` when that is all it
+    /// lists. Nil for two or more concrete members or no type name at all.
+    private static func singleTypeOfList(_ type: Any) -> String? {
+        let members = (type as? [Any])?.compactMap { ($0 as? String)?.lowercased() } ?? []
+        let concrete = Set(members.filter { $0 != "null" })
+        if concrete.count == 1 { return concrete.first }
+        return concrete.isEmpty ? members.first : nil
+    }
+
+    /// `inferredType` where the node declares its type: its structure, a
+    /// union whose typed members share one non-null type, its finite values
+    /// (`const` / `enum`), or assertions of one type family. Nil where
+    /// `inferredType` would pick a union's first member among several or fall
+    /// back to `string`: the node then stays without a type.
+    private static func singleInferredType(for dict: [String: Any]) -> String? {
+        if dict["properties"] != nil || dict["patternProperties"] != nil
+            || dict["additionalProperties"] != nil {
+            return "object"
+        }
+        if dict["items"] != nil || dict["prefixItems"] != nil {
+            return "array"
+        }
+        var unionTypes = Set<String>()
+        for key in ["anyOf", "oneOf", "allOf"] {
+            for variant in dict[key] as? [Any] ?? [] {
+                if let v = variant as? [String: Any], renderMarkerBoolean(v) == nil,
+                    let t = v["type"] as? String, t != "null" {
+                    unionTypes.insert(t)
+                }
+            }
+        }
+        if !unionTypes.isEmpty {
+            return unionTypes.count == 1 ? unionTypes.first : nil
+        }
+        // Finite values keep the repair's type, which shows them (`"a" | "b"`).
+        if finiteValueTypes(for: dict) != nil {
+            return inferredType(for: dict)
+        }
+        let families = assertionFamilyTypes(for: dict)
+        return families.count == 1 ? families.first : nil
     }
 
     /// Structural default for a schema node's `type`: object when it has

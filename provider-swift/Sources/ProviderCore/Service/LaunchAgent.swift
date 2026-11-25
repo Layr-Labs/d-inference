@@ -512,6 +512,8 @@ public enum LaunchAgent: Sendable {
     /// (1 to 7, default 7); tokens are unaffected.
     /// `DARKBLOOM_INKLING_MTP_COUPLED`: Inkling 2's coupled drafting (off by
     /// default; `1` turns it on, `0` off); tokens are unaffected.
+    /// `DARKBLOOM_INKLING_THINKING_OFF_SKIPS_THOUGHT`: an Inkling 2 request with
+    /// thinking off cannot open a thought (off by default; `1` turns it on).
     /// `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING` (SDK-read, `GrammarOnlyToolParsing`):
     /// the GLM, Gemma and MiMo parsers return calls that break only their
     /// schema; `0`, `off`, `false` or `no` restores their refusals.
@@ -651,6 +653,7 @@ public enum LaunchAgent: Sendable {
         MTPStopStringRows.environmentKey,
         Inkling2MTPProfilePolicy.maxDraftKey,
         Inkling2MTPProfilePolicy.coupledKey,
+        Inkling2ThinkingOffPolicy.environmentKey,
         // SDK-read (`CBv2MTPConfig.envLogprobSpeculation`, once per process): rows
         // that request logprobs speculate on the builds that opt in; `0`, `false`,
         // `no` or `off` keeps them target-only.

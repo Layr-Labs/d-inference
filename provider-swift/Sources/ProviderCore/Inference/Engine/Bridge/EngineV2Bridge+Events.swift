@@ -265,9 +265,12 @@ extension EngineV2Bridge {
             // This uncancellable retirement wait retains KV, staged imports and
             // receipt IDs until actual engine-queue release, even on a wedge.
             continuation.finish()
+            let earlyTerminalAt = terminalPrecedesPublication ? terminalAt : nil
+            if let earlyTerminalAt { answeredUnretired[id] = earlyTerminalAt }
             await nativeRetirement.wait()
-            if terminalPrecedesPublication, let terminalAt {
-                noteRetirementAfterTerminal(requestId: id, held: terminalAt.duration(to: .now))
+            if let earlyTerminalAt {
+                answeredUnretired.removeValue(forKey: id)
+                noteRetirementAfterTerminal(requestId: id, held: earlyTerminalAt.duration(to: .now))
             }
         }
         #if DEBUG

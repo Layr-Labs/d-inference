@@ -225,6 +225,26 @@ field first.
 |---|---|---|---|
 | `retired_after_terminal_ms` | integer ≥ 1 | Present on this operation: milliseconds from the client's terminal to the request's retirement, as the pump observed it. For a request that published a complete checkpoint, how long that publication held its rows, KV reservation and service allowance after the answer; for one that published nothing, the pump's own delay. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCacheTelemetry.swift`, `noteRetirementAfterTerminal` |
 
+While such requests wait for retirement the bridge counts them. On each
+heartbeat capacity read (`EngineV2Bridge.backendSlotCapacity`) it checks the
+oldest one's age against `answeredUnretiredWarnAfter` (`.seconds(60)`), and it
+reports only changes:
+
+- when the oldest reaches the bound: a WARN `engine_health` event with
+  `operation = ssd_answered_unretired` and a provider-log warning
+  (`darkbloom.EarlyTerminal`: `Early terminal: N answered request(s) (model) not
+  retired; the oldest was answered M ms ago …`);
+- when none is past it again: an INFO event,
+  `operation = ssd_answered_unretired_recovered`, and an info line.
+
+A write that never settles therefore shows in the provider log instead of
+holding capacity silently. As above, the facade discards the events.
+
+| Key | Values | Presence and meaning | Code |
+|---|---|---|---|
+| `answered_unretired` | integer ≥ 0 | Present on both operations: requests answered before their publication that have not retired, at that read | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCacheTelemetry.swift`, `emitAnsweredUnretiredTransitionIfNeeded` |
+| `oldest_answered_unretired_ms` | integer ≥ 0 | Present on both operations: milliseconds since the oldest of them was answered; `0` when there is none | same |
+
 ## External Emitter
 
 The [platform emitter and sinks](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/telemetry.md)

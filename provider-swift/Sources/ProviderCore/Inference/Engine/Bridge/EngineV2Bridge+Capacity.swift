@@ -55,6 +55,7 @@ extension EngineV2Bridge {
         wedgeMonitor.sampleQueue(waiting: snapshot.waitingRequests, running: snapshot.activeRequests,
             steps: snapshot.stepsExecuted, now: now)
         emitStepWedgeTransitionIfNeeded(now: now)
+        emitAnsweredUnretiredTransitionIfNeeded(now: now)
 
         // Worst-case potential is bridge bookkeeping (the snapshot has no
         // per-request max-token view); active tokens are engine truth.

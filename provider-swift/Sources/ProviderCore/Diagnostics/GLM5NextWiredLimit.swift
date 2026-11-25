@@ -3,16 +3,17 @@ import Darwin
 import Foundation
 
 /// Operator guidance for the macOS GPU wired-memory limit while serving
-/// GLM-5.3-Flash. Advice only: capacity, admission and KV grants never read it.
+/// GLM-5.3-Flash.
 ///
-/// GLM's KV grant is sized from physical memory (`UnifiedMemoryCap`), so at
-/// full KV a 256 GB M5 Ultra plans the whole cap, about 247 GB, as GPU memory.
-/// Under macOS's default (`iogpu.wired_limit_mb=0`) the GPU may use only the
-/// Metal recommended working set, about 222 GiB there, and command buffers past
-/// it fail with "Insufficient Memory". The recommendation is the sysctl set the
-/// production 256 GB hosts run. Other sizes get no advice: at 512 GB the same
-/// derivation would set the user wire limits below the GPU limit, which no host
-/// has run.
+/// The cap (`UnifiedMemoryCap`) would plan the whole of it, about 247 GB of a
+/// 256 GB M5 Ultra, as GPU memory at full KV. Under macOS's default
+/// (`iogpu.wired_limit_mb=0`) the GPU may use only the Metal recommended
+/// working set, about 222 GiB there, and command buffers past it fail with
+/// "Insufficient Memory". GLM's KV grant is therefore held to the live limit
+/// (`GLM5NextGPULimitKVBudget`); this advice is how a Mac gets its full grant
+/// back. The recommendation is the sysctl set the production 256 GB hosts run.
+/// Other sizes get no advice: at 512 GB the same derivation would set the user
+/// wire limits below the GPU limit, which no host has run.
 public enum GLM5NextWiredLimit {
     static let validatedMemoryGiB: UInt64 = 256
     static let launchDaemonLabel = "com.layrlabs.glm53-wired-limits"

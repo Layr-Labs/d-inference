@@ -173,6 +173,62 @@ struct GLM5NextCoordinatorServingTests {
         #expect(!admits(4, setup: 11_016_754_072, capacity: 72_300_000_000))
     }
 
+    /// A 256 GB M5 Ultra at macOS's default GPU limit holds GLM's grant to
+    /// 51.54 GB (59.79 GB at the raised limit). The row bound prices every row
+    /// at the 262,144-token context, so it drops that grant from 3 rows to 2;
+    /// the gate admits at most (admissible − setup) / (KV + scratch) tokens,
+    /// and priced for those, 3 and even 4 rows fit. Serving rows keep what the
+    /// same set has without the hold (3), never more, so the raised limit
+    /// stays at 3 too. Setups are the calibrated 1-, 2- and 4-row figures,
+    /// 3 rows midway between 2 and 4.
+    @Test func aGrantHeldToTheGPULimitKeepsItsRows() {
+        let rate = 55_057, kv = 33_836, context = 262_144
+        let setups = [1: 5_589_138_629, 2: 7_398_234_550, 3: 9_207_494_311, 4: 11_016_754_072]
+        let raised = 59_790_694_781, held = 51_540_000_000
+        func rows(capacity: Int, reference: Int, bounded: Bool) -> Int {
+            EngineV2Factory.glm5NextServingRows(
+                maximumRows: 4,
+                scratch: { GLM5NextStepScratch(setupBytes: setups[$0]!, bytesPerContextToken: rate) },
+                tokenBytes: kv, context: context, capacityBytes: capacity, referenceBytes: reference,
+                maximumBufferBytes: .max, boundedByAdmission: bounded)
+        }
+        func activatable(capacity: Int, bounded: Bool) -> Int {
+            EngineV2Factory.glm5NextActivatableRows(
+                maximumRows: 4,
+                scratch: { GLM5NextStepScratch(setupBytes: setups[$0]!, bytesPerContextToken: rate) },
+                tokenBytes: kv, context: context, capacityBytes: capacity, maximumScratchBytes: capacity,
+                boundedByAdmission: bounded)
+        }
+        // The row bound: 3 rows at the raised grant, 2 at the held one.
+        #expect(activatable(capacity: raised, bounded: false) == 3)
+        #expect(activatable(capacity: held, bounded: false) == 2)
+        // Priced for the tokens the gate admits, 4 rows fit both.
+        #expect(activatable(capacity: raised, bounded: true) == 4)
+        #expect(activatable(capacity: held, bounded: true) == 4)
+        // Serving rows: the held grant keeps the 3 rows of the same set without the hold, and no grant gets more.
+        #expect(rows(capacity: held, reference: raised, bounded: true) == 3)
+        #expect(rows(capacity: raised, reference: raised, bounded: true) == 3)
+        // The switch off: the row bound at the grant alone, as in 0.10.17.
+        #expect(rows(capacity: held, reference: raised, bounded: false) == 2)
+        #expect(rows(capacity: raised, reference: raised, bounded: false) == 3)
+        // A reference below the grant counts as the grant.
+        #expect(rows(capacity: raised, reference: held, bounded: true) == 3)
+        // A charge below KV plus scratch counts as KV plus scratch.
+        let price = GLM5NextStepScratch(setupBytes: setups[3]!, bytesPerContextToken: rate)
+        func admits(_ charge: Int?) -> Bool {
+            EngineV2Factory.glm5NextActivationAdmits(price, rows: 3, context: context, capacityBytes: held,
+                tokenBytes: kv, maximumScratchBytes: held, watermarkFraction: 0.05,
+                admittedBytesPerContextToken: charge)
+        }
+        #expect(!admits(nil) && admits(kv + rate) && admits(1))
+        // The maximum buffer still bounds the step.
+        #expect(EngineV2Factory.glm5NextServingRows(
+            maximumRows: 4,
+            scratch: { GLM5NextStepScratch(setupBytes: setups[$0]!, bytesPerContextToken: rate) },
+            tokenBytes: kv, context: context, capacityBytes: held, referenceBytes: raised,
+            maximumBufferBytes: 20_000_000_000, boundedByAdmission: true) == 1)
+    }
+
     /// Publication uses the same admissible capacity as request admission
     /// (pool − watermark − one step's setup): one request at the bound fits.
     @Test func advertisedBoundMustFitAlone() {

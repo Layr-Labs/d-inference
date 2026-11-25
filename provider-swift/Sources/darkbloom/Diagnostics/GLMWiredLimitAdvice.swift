@@ -39,9 +39,13 @@ enum GLMWiredLimitAdvice {
                 actionGuide: nil)
         }
         let planned = String(format: "%.0f", Double(recommendation.plannedGPUBytes) / 1e9)
+        // Below the GPU limit the provider holds GLM's KV grant to it (`GLM5NextGPULimitKVBudget`).
+        let effect = limits.gpuLimitBytes < recommendation.plannedGPUBytes
+            ? "so the provider holds GLM's KV cache to the lower GPU limit"
+            : "so Metal command buffers can fail with \"Insufficient Memory\""
         let detail = "GLM-5.3-Flash plans about \(planned) GB of GPU memory at full KV on this "
             + "\(recommendation.memoryGiB) GB Mac, and the macOS wired-memory limits are below the "
-            + "recommendation, so Metal command buffers can fail with \"Insufficient Memory\". "
+            + "recommendation, \(effect). "
             + "Fix: \(recommendation.sysctlCommand) (to keep it after reboot, see below)"
         let guide = [
             "Current: \(current)",

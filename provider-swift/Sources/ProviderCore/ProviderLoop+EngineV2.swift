@@ -142,6 +142,10 @@ extension ProviderLoop {
         /// tests can assert the multi-slot grant + carve derivation without
         /// building a real engine.
         let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
+        /// Overrides the live GPU limit a GLM residency set's KV budget is
+        /// held to (`GLM5NextGPULimitKVBudget`); with `physicalMemoryBytes`
+        /// pinned and this nil, no limit applies.
+        let gpuLimit: GLM5NextGPULimitKVBudget.GPULimit?
 
         init(
             environment: [String: String] = [:],
@@ -154,6 +158,7 @@ extension ProviderLoop {
             measuredKVHeadroomBytes: UInt64? = nil,
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
+            gpuLimit: GLM5NextGPULimitKVBudget.GPULimit? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.environment = environment
@@ -166,6 +171,7 @@ extension ProviderLoop {
             self.measuredKVHeadroomBytes = measuredKVHeadroomBytes
             self.kvBackendKindByModel = kvBackendKindByModel
             self.assistantLoader = assistantLoader
+            self.gpuLimit = gpuLimit
             self.makeEngine = makeEngine
         }
     }
@@ -190,8 +196,11 @@ extension ProviderLoop {
     /// activation reserve, honoring the operator `memory_reserve_gb`.
     /// `activationReserveBytes` overrides the live serving-set reserve for a
     /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
+    /// A set with GLM-5.3-Flash (`extraModelType` names the newcomer's
+    /// family) is also held to the GPU limit (`GLM5NextGPULimitKVBudget`).
     func fleetKVBudgetBytes(
         extraWeightBytes: Int,
+        extraModelType: String? = nil,
         activationReserveBytes: UInt64? = nil,
         excludingModelIDs: Set<String> = [],
         quotingAfterRetirementOf: Set<String> = []
@@ -215,16 +224,22 @@ extension ProviderLoop {
         totalWeights = reservationOverflow ? .max : withSuperReservations
         let physical = engineV2SlotHooks?.physicalMemoryBytes
             ?? ProcessInfo.processInfo.physicalMemory
-        return UnifiedMemoryCap.kvBudgetBytes(
+        let retainedGLM = engineV2SlotHooks?.retainedResidentBytes ?? GLM5NextLoadFaultState.retainedResidentBytes
+        let resident = GLM5NextLoadFaultState.saturatingSum([totalWeights, retainedGLM])
+        // The serving set's resolved reserve, so engine grants carve the
+        // same activation floor the load gate and runtime KV gate hold.
+        let reserve = activationReserveBytes ?? resolvedActivationReserveBytes
+        let budget = UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
-            residentWeightBytes: engineV2SlotHooks?.retainedResidentBytes
-                .map { GLM5NextLoadFaultState.saturatingSum([totalWeights, $0]) }
-                ?? GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
-            // The serving set's resolved reserve, so engine grants carve the
-            // same activation floor the load gate and runtime KV gate hold.
-            activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
+            residentWeightBytes: resident,
+            activationReserveBytes: reserve,
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
+        let modelTypes = modelSlots.filter { !excludingModelIDs.contains($0.key) }.map(\.value.modelType)
+        return GLM5NextGPULimitKVBudget.budgetBytes(
+            budget, modelTypes: modelTypes + [extraModelType], retainedGLMBytes: retainedGLM,
+            residentWeightBytes: resident, activationReserveBytes: reserve,
+            limit: engineV2SlotHooks?.gpuLimit ?? (engineV2SlotHooks?.physicalMemoryBytes == nil ? .live() : .unread))
     }
 
     /// The prefill lanes, paged decode rows and MTP round work that resident
@@ -431,7 +446,7 @@ extension ProviderLoop {
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
         let minimumGrants = Self.minimumGrantBytes(existing)
-        var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+        var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes, extraModelType: modelType)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: newcomer,
@@ -457,7 +472,7 @@ extension ProviderLoop {
                 await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
             }
             clearCacheAfterConfirmedNativeOwnership()
-            fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+            fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes, extraModelType: modelType)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
                 newcomer: newcomer,

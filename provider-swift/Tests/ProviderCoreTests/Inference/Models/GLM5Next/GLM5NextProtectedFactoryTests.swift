@@ -147,6 +147,44 @@ struct GLM5NextProtectedFactoryTests {
         }
     }
 
+    /// The engine's step-envelope check gets the charge the GLM gate reserves
+    /// per token (KV and step scratch), so it is priced for the tokens the gate
+    /// admits; with `DARKBLOOM_GLM_GPU_LIMIT_KV=0` it gets none and keeps its
+    /// row-and-context bound. The bridge charges at least that per request
+    /// token, so the gate never admits more tokens than the check is priced for.
+    @Test(arguments: [true, false])
+    func theEngineGetsTheAdmittedTokenCharge(enabled: Bool) async throws {
+        try await withFixture { fixture in
+            let container = try await fixture.load()
+            let tokenizer = await container.tokenizer
+            var environment = fixture.environment
+            environment.removeValue(forKey: PrefixCachePolicy.environmentFlag)
+            if !enabled { environment[GLM5NextGPULimitKVBudget.environmentName] = "0" }
+            let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+                modelId: GLM5NextLocalQualification.modelID, modelType: "glm5_next", isVLM: true,
+                modelDirectory: fixture.directory, container: container,
+                tokenizer: TokenizerHandle(tokenizer),
+                sizing: fixture.sizing, kvBytesCapacity: fixture.kvBytesCapacity, maxConcurrentRequests: 2,
+                kvBudget: fixture.budget,
+                weightHash: fixture.plan.weights.manifest.aggregateSHA256,
+                specDecPreparation: fixture.mtpPreparation,
+                assemblyOverrides: .init(completeCheckpointIdentity: fixture.identity),
+                environment: environment, startServingTelemetry: false)
+            fixture.bridges.append(bundle.bridge)
+            let engine = try #require(await bundle.bridge.ownedEngine as? EngineV2)
+            let charge = engine.glm5NextAdmittedBytesPerContextToken
+            if enabled {
+                let stated = try #require(charge)
+                #expect(stated > EngineV2Factory.glm5NextKVBytesPerToken(engine.layerKinds), "KV and step scratch")
+                let bridgeRate = await bundle.bridge.kvBytesPerToken
+                #expect(stated <= bridgeRate, "the bridge's per-token charge")
+            } else {
+                #expect(charge == nil)
+            }
+            #expect(await bundle.bridge.canSubmitWithNativeOwner())
+        }
+    }
+
     /// A fleet-wide resident opt-in (`DARKBLOOM_PREFIX_CACHE_MEMORY=1`) never
     /// refuses a GLM load: its protected engine hosts no resident tier, so the
     /// slot keeps its encrypted complete-checkpoint store and serves.

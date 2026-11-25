@@ -94,7 +94,8 @@ See [inference and logprob admission](../architecture/inference.md).
    drops the MLX buffer cache once, then evicts the least recently used idle
    slot (`StandaloneServer.ensureMemoryHeadroomForLoad`). Resident models share
    the KV budget as [KV slot grants](../architecture/hardware-support.md#kv-slot-grants)
-   describes; a load that would leave any model below its minimum grant fails
+   describes, held to the GPU wired-memory limit while GLM-5.3-Flash is resident, being loaded or retained
+   (`GLM5NextGPULimitKVBudget`); a load that would leave any model below its minimum grant fails
    with HTTP 503 (`StandaloneServer.resliceKeepsSlotsServiceable`). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
    model, which still loads on request. A local GLM qualification load reads its

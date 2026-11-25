@@ -3367,7 +3367,9 @@ adds the `glm wired limit` detailed check. It compares `iogpu.wired_limit_mb`
 (Metal's recommended working set while it is `0`, the macOS default),
 `vm.global_user_wire_limit` and `vm.user_wire_limit` with the
 [production values](./hardware-requirements.md). Below them it is ⚠, never ✗:
-the detail gives the planned full-KV GPU memory and the
+the detail gives the planned full-KV GPU memory, what the low value does (a GPU
+limit below that plan makes the provider hold GLM's KV cache to the limit;
+otherwise Metal command buffers can fail with "Insufficient Memory") and the
 `sudo sysctl -w …` fix, and a `GLM-5.3-FLASH GPU WIRED-MEMORY LIMIT — ACTION
 RECOMMENDED` block after the detailed checks prints the current values, the
 fix, `darkbloom restart` and the copy-paste LaunchDaemon install (`sudo tee`
@@ -3387,7 +3389,9 @@ The same one-line fix also appears:
 
 The error text is only matched, never logged. Failures the native engine
 reports without the MLX error text cannot be matched; `doctor` and `start`
-still flag the limit. None of these change admission, KV grants or capacity.
+still flag the limit. None of these messages change admission or capacity; the
+KV grant itself is held to the live GPU limit
+([hardware support](../architecture/hardware-support.md)).
 Steps: [troubleshooting](./troubleshooting.md#glm-53-flash-gpu-wired-memory-limit).
 
 ## `darkbloom verify`

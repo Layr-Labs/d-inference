@@ -399,8 +399,8 @@ public enum LaunchAgent: Sendable {
     /// and authenticate chunks ahead of the copy by default; the rollback to
     /// the sequential stage must reach the job.
     /// `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`: a donor's
-    /// terminal follows its complete-checkpoint write by default; the opt-in
-    /// to answer first must reach the job to apply to an installed provider.
+    /// terminal precedes its complete-checkpoint write by default; the
+    /// rollback to wait for the write must reach the job.
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out

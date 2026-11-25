@@ -2307,14 +2307,15 @@ admission; reported usage, deadline work and calibration evidence start at
 submission, as before. Atomic
 deadline admission passes its retirement acknowledgement to the event pump;
 an early terminal returns to the caller while the service and KV reservations
-remain owned until that acknowledgement completes. With
-`DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`, an unseeded request on
+remain owned until that acknowledgement completes. An unseeded request on
 the ordinary path also submits through `EngineV2.submitWithRetirement` and sets
-`CBv2Request.terminalPrecedesCheckpointPublication`: its client terminal no longer
-waits for its complete-checkpoint write, while the service and KV reservations,
-staging and the ready receipt are released at retirement, after that write
-settles (`EngineV2Bridge+Submission.swift`). Seeded requests keep the default
-order because their sampling reuses a stable engine ID. The pump times each
+`CBv2Request.terminalPrecedesCheckpointPublication`
+(`DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`, on unless negative):
+its client terminal does not wait for its complete-checkpoint write, while the
+service and KV reservations, staging and the ready receipt are released at
+retirement, after that write settles (`EngineV2Bridge+Submission.swift`). Seeded
+requests, and every request when the variable is negative, keep the terminal
+after publication: seeded sampling reuses a stable engine ID. The pump times each
 such request from its terminal to its retirement; one that retires at least
 1 ms after its answer is marked with that time in the provider log and an
 `engine_health` event (`EngineV2Bridge.noteRetirementAfterTerminal`,
@@ -2671,8 +2672,11 @@ thread
 `CBv2NativeCheckpointRowDecoder`).
 
 A donor's stream retires only after its complete checkpoint is published
-(`EngineLoopV2.finishAfterCompletePrefixPublication`), so export time is added
-to the donating response's end. At a quantized checkpoint precision, export
+(`EngineLoopV2.finishAfterCompletePrefixPublication`), so export time holds the
+donor's rows and reservations. It is added to the response's end only where the
+terminal follows publication: seeded donors, native tracked engines, and every
+donor when `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` is negative
+(early terminal above). At a quantized checkpoint precision, export
 encodes each older attention row on the CPU and writes the scalar codec's exact
 bytes ([conversion](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/NativeQuantizedCheckpointTensorSource.swift`).

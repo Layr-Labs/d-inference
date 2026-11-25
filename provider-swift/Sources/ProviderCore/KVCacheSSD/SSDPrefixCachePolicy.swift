@@ -257,14 +257,16 @@ enum SSDPrefixCachePolicy {
     }
 
     /// Deliver a donor's response before its complete checkpoint is durable
-    /// (default off). Rows, the service allowance and the KV reservation are
+    /// (default on). Rows, the service allowance and the KV reservation are
     /// still held until the write finishes; only the client stops waiting.
+    /// A negative value keeps the response until the write settles.
     static let terminalBeforePublicationFlag = "DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION"
 
     static func terminalBeforePublication(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        isOptedIn(terminalBeforePublicationFlag, environment: environment)
+        !["0", "false", "no", "off"].contains(
+            environment[terminalBeforePublicationFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
     static func strictFsync(

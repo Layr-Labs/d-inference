@@ -1837,16 +1837,18 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
 }
 
 @Test func worstCaseCompletionFrameStaysUnder64KiB() throws {
-    // The completion always carries the sealed usage, whose stop string
-    // grows with the caller's. The byte bound is on that sealed copy
-    // (`SealedTerminalFields.maxStopSequenceBytes`), not on requests: here the
-    // longest sealed stop string, of the characters JSON escapes longest
-    // (six bytes each), beside the largest usage, a 64-hex response hash, a
-    // DER signature of the longest P-256 length and the full profile.
+    // The completion always carries the sealed usage, and with it the matched
+    // stop string, bounded in UTF-8 bytes on that sealed copy
+    // (`SealedTerminalFields.maxStopSequenceBytes`), not on requests. The
+    // worst case seals the longest stop string kept, of a character JSON
+    // escapes to six bytes (`\u0001`), beside a usage with every field at its
+    // longest encoding, a 64-hex response hash, a 72-byte DER signature (the
+    // longest P-256 one) and the full profile.
     let stop = String(repeating: "\u{01}", count: 4096)
     let usage = UsageInfo(
-        promptTokens: .max, completionTokens: .max, reasoningTokens: .max, cacheOutcome: .hit, cacheTier: .ssd,
-        cachedTokens: .max, prefillTokensSaved: .max, cacheStageMs: 1e300)
+        promptTokens: .max, completionTokens: .max, reasoningTokens: .max, cacheOutcome: .skippedCapacity,
+        cacheTier: .memory, cachedTokens: .max, prefillTokensSaved: .max,
+        cacheStageMs: -Double.greatestFiniteMagnitude)
     let terminal = SealedTerminalFields(
         finishReason: .stop, stopSequence: stop, responseHash: String(repeating: "f", count: 64),
         seSignature: Data(repeating: 0xff, count: 72).base64EncodedString())

@@ -1,0 +1,68 @@
+[
+  {
+    "path": "Sources/CheckpointAlignedReadAccounting.swift",
+    "target": "Sources/ClusterInference/CheckpointAlignedReadAccounting.swift",
+    "sha256": "48249d16df9c8c4598b7cdd7660c49ad4420a613b7ad15ee06a21364a90abd3f",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/CheckpointAlignedReadCheck.swift",
+    "target": "Sources/ClusterInference/CheckpointAlignedReadCheck.swift",
+    "sha256": "40169b67f7001fa20df04a8a66700ae815e1f26bd15df32e1261efaed176a48b",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/CheckpointAlignedReader.swift",
+    "target": "Sources/ClusterInference/CheckpointAlignedReader.swift",
+    "sha256": "9cd87c12f4082cba25e0d2745cf96df05bbdf72f523e46ce4f00f927391c717c",
+    "baselineSHA256": null
+  },
+  {
+    "path": "Sources/Main.swift",
+    "target": "Sources/ClusterInference/Main.swift",
+    "sha256": "9123c60b1dd3b0ae497ee1271bdbb843baad71c6990f2ff0926653c52fe1d49a",
+    "baselineSHA256": "dacc978d20635c5b3601eb3ba5b16301ece011ee80a6f2a7c972c65763ff8447"
+  },
+  {
+    "path": "Sources/QwenCheckpointTensor.swift",
+    "target": "Sources/ClusterInference/QwenCheckpointTensor.swift",
+    "sha256": "f96b47f2e7ff5e04b9925cbd3ba412c2e0246c7f5ba72de0477a96a31702ba37",
+    "baselineSHA256": "a952b95d25b3804951c3cb790febf3626293b4405d8bcb2ca1ba0e26896154b7"
+  },
+  {
+    "path": "Sources/QwenDenseShortPairResourcePolicy.swift",
+    "target": "Sources/ClusterInference/QwenDenseShortPairResourcePolicy.swift",
+    "sha256": "7cfc46e0b63e4958872f9218402d6adcd5ad8f35f4efa13e685600c23631582f",
+    "baselineSHA256": "73b102849cfa5d5c30430b9c7e8196c1d02856d706c31e3449fa06cc01f5f002"
+  },
+  {
+    "path": "Sources/QwenDenseStageLoadPolicy.swift",
+    "target": "Sources/ClusterInference/QwenDenseStageLoadPolicy.swift",
+    "sha256": "a5c2ad232656ff6dcadea75169c8f2544f7267401cf427409b048e466ba0abfc",
+    "baselineSHA256": "75f897a9db0bbe3ac43ccf986bb9573fd7b480765b23143fcb79984baffde440"
+  },
+  {
+    "path": "Sources/QwenLayerStageInventoryTypes.swift",
+    "target": "Sources/ClusterInference/QwenLayerStageInventoryTypes.swift",
+    "sha256": "954970af1c3cf33d04356bdf1cb1f343005c5e4eca0d4c44233a98990d017f6f",
+    "baselineSHA256": "49629d819b7f7d97b94a4afba409a86b8eebe397124645b20230c30355e85d83"
+  },
+  {
+    "path": "Sources/SafeTensorReader.swift",
+    "target": "Sources/ClusterInference/SafeTensorReader.swift",
+    "sha256": "dcc94d56c57abb663ae743f1ae7c571d23ff79c5ed24502bf60d4224a11182b2",
+    "baselineSHA256": "264cbee73f42a63612879edc8f5b0316e8fe5bfde241d92d4b001d68108d872e"
+  },
+  {
+    "path": "Sources/VerifiedCheckpoint.swift",
+    "target": "Sources/ClusterInference/VerifiedCheckpoint.swift",
+    "sha256": "f2f44f739f2dd8a547197b66af19fa97d1b0f169a2262695966ec146b134e92b",
+    "baselineSHA256": "06ee774dd69fcece9cefeea5ae4927bff4da6fada37085db473c3991679e001e"
+  },
+  {
+    "path": "Sources/VerifiedQwenLayerStageLoading.swift",
+    "target": "Sources/ClusterInference/VerifiedQwenLayerStageLoading.swift",
+    "sha256": "33dd9796a5e9d48edcc4967809b52990e05e1528b66989c99581c8da855b241c",
+    "baselineSHA256": "bed850ce0f8977bcc22b4d1c8ab72ce6996cfd93c039fe5b2c9ecf52fc1c4641"
+  }
+]

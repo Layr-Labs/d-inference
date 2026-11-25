@@ -1,0 +1,49 @@
+--- a/test_readiness.py
++++ b/test_readiness.py
+@@ -63,12 +63,12 @@
+             ranks.append(dict(rank=rank, host=None, local=str(path), directory=str(path), bundle=str(self.path/'bundle')))
+         def start(rank):
+             i=rank['rank']; p=Path(rank['local'])
+-            err=WARNING + (MISMATCH if scenario=='warmup-mismatch' and i==1 else b'')
++            err=WARNING + (MISMATCH if scenario=='warmup-mismatch' else b'')
+             (p/'stderr.log').write_bytes(err)
+             stdout=canonical(record(i))+b'\n' if scenario=='match' else b''
+             if failure=='invalid-output':stdout=b'broken\n'
+             (p/'stdout.jsonl').write_bytes(stdout)
+-            code=0 if scenario=='match' else 1 if scenario=='warmup-mismatch' and i==1 else None
++            code=0 if scenario=='match' else 1 if scenario=='warmup-mismatch' else None
+             if failure=='early-failure':code=1
+             if failure=='late-mismatch' and i==1:now[0]=parent_seconds(scenario)+.1
+             if failure=='late-unexpected':code=2;now[0]=parent_seconds(scenario)+.1
+@@ -151,7 +151,8 @@
+         r,children,calls=self.cohort('warmup-mismatch')
+         self.assertTrue(r['scenario_passed']);self.assertFalse(r['native_success'])
+         self.assertEqual(r['primary_reason'],'expected_warmup_mismatch')
+-        self.assertEqual(r['supervisor_exit_codes'],[143,1]);self.assertEqual(calls,['stop'])
++        self.assertEqual(r['supervisor_exit_codes'],[1,1]);self.assertEqual(calls,[])
++        self.assertIsNone(r['supervisor_exit_codes_before_cancellation'])
+ 
+     def test_missing_peer_parent_deadline(self):
+         r,children,calls=self.cohort('missing-peer')
+@@ -164,7 +165,7 @@
+     def test_mismatch_first_observed_after_deadline_is_not_passed(self):
+         r,_,_=self.cohort('warmup-mismatch',failure='late-mismatch')
+         self.assertFalse(r['scenario_passed']);self.assertEqual(r['primary_reason'],'parent_deadline')
+-        self.assertEqual(r['supervisor_exit_codes_before_cancellation'],[None,1])
++        self.assertEqual(r['supervisor_exit_codes_before_cancellation'],[1,1])
+ 
+     def test_mismatch_validation_time_is_charged(self):
+         original=Streams.negative
+@@ -176,10 +177,10 @@
+             for rank in range(2):
+                 path=self.path/str(rank);path.mkdir()
+                 (path/'stdout.jsonl').write_bytes(b'')
+-                (path/'stderr.log').write_bytes(WARNING+(MISMATCH if rank else b''))
++                (path/'stderr.log').write_bytes(WARNING+MISMATCH)
+                 ranks.append(dict(rank=rank,host=None,local=str(path)))
+             def start(rank):
+-                child=FakeProcess(100+rank['rank'],1 if rank['rank'] else None)
++                child=FakeProcess(100+rank['rank'],1)
+                 children.append(child);return child
+             def stop(_ranks,values):
+                 for child in values:

@@ -1,0 +1,156 @@
+--- a/solo_inputs.py
++++ b/solo_inputs.py
+@@ -11,9 +11,9 @@
+ from reference_profiles import registered_profile
+ from worker_contract import WorkerSpec, workers
+ 
+-NATIVE = '8952b0f260502b06f7dbe7eb9e0cbef1b41564001570ad52a3c2739a247252d3'
++NATIVE = 'UNBOUND_NATIVE_SHA256'
+ METALLIB = '2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2'
+-SOURCE = '796b0d89409e63445dc4baec18bc0e3baa989f82b1fe516f1a8fe79f33e4ceb9'
++SOURCE = 'UNBOUND_BUILD_MANIFEST_SHA256'
+ PAGED = '4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149'
+ 
+ 
+@@ -86,7 +86,7 @@
+     for token in stops:
+         integer(token, 'stop token', 0, 248319)
+     require(stops == sorted(set(stops)), 'Stop token IDs must be sorted and unique')
+-    require(job['registered_model'] == 'registered_qwen35_9b' and job['stage_cut'] == 4
++    require(job['registered_model'] == 'registered_qwen38_27b' and job['stage_cut'] == 16
+             and job['prompt_count'] == 8192 and job['chunk_size'] == 512
+             and job['output_count'] == 128 and stops == [], 'Solo matched geometry differs')
+     return job
+--- a/solo_contract.py
++++ b/solo_contract.py
+@@ -5,7 +5,7 @@
+ from binding_common import fields, integer, parse, pin, require, same
+ from reference_contract import expected_identity as reference_identity
+ 
+-PLAN = '67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f'
++PLAN = '8e1408f4f044b0fa6f97ae9b997d575797fe1d22036ddb68409e2aeb349949ed'
+ ARITHMETIC = '0ae9c7c21048fa94fc90353b84cd8578f4adc05b1b22c3d55bd70f01c9c3bc74'
+ 
+ 
+@@ -92,23 +92,23 @@
+         externalTTFTMeasured=False, expectedTokenFileSHA256=expected.job['expected_sha256']))
+     kernel = fields(value['kernelEligibility'], 'gatedDeltaLayers fusedProjectionLayers warmupDispatch configuredQueryBlockSize '
+         'queryBlockDispatchIndependentlyCounted measuredRequestDispatchObservationEnabled optimizedAgainstAllPossibleSoloPolicies', 'kernel')
+-    same_fields(kernel, dict(gatedDeltaLayers=24, fusedProjectionLayers=24, configuredQueryBlockSize=128,
++    same_fields(kernel, dict(gatedDeltaLayers=48, fusedProjectionLayers=48, configuredQueryBlockSize=128,
+         queryBlockDispatchIndependentlyCounted=False, measuredRequestDispatchObservationEnabled=False,
+         optimizedAgainstAllPossibleSoloPolicies=False))
+-    same(kernel['warmupDispatch'], dict(nativePrefillCalls=384,nativeDecodeCalls=3048,
++    same(kernel['warmupDispatch'], dict(nativePrefillCalls=768,nativeDecodeCalls=6096,
+         operationsFallbackCalls=0,invalidGeometryCalls=0), 'actual warmup dispatch')
+     source = fields(value['source'], 'artifactAggregateSHA256 sourceConfigurationSHA256 sourceParameterLayoutSHA256 '
+         'planSHA256 arithmeticEnvironmentSHA256 bf16ConversionEnabled embeddingActivationDType '
+         'sourceModelTensorBytes layerCount vocabularySize', 'source')
+     same_fields(source,dict(artifactAggregateSHA256=expected.model.artifact,
+         sourceConfigurationSHA256=expected.model.configuration,planSHA256=PLAN,arithmeticEnvironmentSHA256=ARITHMETIC,
+-        bf16ConversionEnabled=True,embeddingActivationDType='bfloat16',sourceModelTensorBytes=5_038_041_600,
+-        layerCount=32,vocabularySize=248320))
++        bf16ConversionEnabled=True,embeddingActivationDType='bfloat16',sourceModelTensorBytes=expected.model.source_bytes,
++        layerCount=expected.model.layers,vocabularySize=248320))
+     pin(source['sourceParameterLayoutSHA256'])
+     require(type(value['sourceLoad']) is dict, 'Source load receipt missing')
+     same_fields(value['sourceLoad'],dict(configurationSHA256=expected.model.configuration,
+         verifiedAggregateSHA256=expected.model.artifact,parameterLayoutSHA256=source['sourceParameterLayoutSHA256'],
+-        tensorCount=927,sourceTensorCount=927,loadedTensorBytes=5_038_041_600,sourceModelTensorBytes=5_038_041_600,
++        tensorCount=expected.model.tensor_count,sourceTensorCount=expected.model.tensor_count,loadedTensorBytes=expected.model.source_bytes,sourceModelTensorBytes=expected.model.source_bytes,
+         bf16ConversionEnabled=True))
+     requests = value['requests']; require(type(requests) is list and len(requests)==4,'Four completed requests')
+     previous = 0
+@@ -129,7 +129,7 @@
+     resources=fields(value['resources'],'policy budget authorizedTensorCount observationCount minimumActualFreeBytes '
+         'maximumObservedActiveBytes requestResourceAdmissionPerformed actualAllocatorBoundsUsed reclaimableUsedForAdmission '
+         'wholeProcessPeakBoundEstablished','resource receipt')
+-    same_fields(resources,dict(policy='qwen_full_generation_reference_resources_v1',authorizedTensorCount=927,
++    same_fields(resources,dict(policy='qwen_full_generation_reference_resources_v1',authorizedTensorCount=expected.model.tensor_count,
+         requestResourceAdmissionPerformed=True,actualAllocatorBoundsUsed=True,reclaimableUsedForAdmission=False,
+         wholeProcessPeakBoundEstablished=False))
+     integer(resources['observationCount'],'resource observations',1)
+--- a/worker_processes.py
++++ b/worker_processes.py
+@@ -71,19 +71,39 @@
+             self.check()
+ 
+     def _kill_groups(self):
++        # Serialize destructive signals with every leader reap. Once wait/poll
++        # releases that PID, it cannot authorize a signal to a reused PGID.
+         with self._lock:
+-            children = list(self.children)
+-        for child in children:
+-            if child.pid in self._fenced_groups:
+-                continue
+-            try:
+-                os.killpg(child.pid, signal.SIGKILL)
+-            except ProcessLookupError:
+-                self._fenced_groups.add(child.pid)
+-            except BaseException as error:
+-                self._note_cleanup_error('killpg:%s' % child.pid, error)
+-            else:
+-                self._fenced_groups.add(child.pid)
++            for child in self.children:
++                if child.pid in self._fenced_groups:
++                    continue
++                if child.returncode is not None:
++                    try:
++                        os.killpg(child.pid, 0)
++                    except ProcessLookupError:
++                        self._fenced_groups.add(child.pid)
++                    except BaseException as error:
++                        self._note_cleanup_error('reaped-group:%s' % child.pid, error)
++                    else:
++                        self._note_cleanup_error('reaped-group:%s' % child.pid,
++                            RuntimeError('Reaped leader cannot authorize a destructive group signal'))
++                    continue
++                try:
++                    os.killpg(child.pid, signal.SIGKILL)
++                except ProcessLookupError:
++                    self._fenced_groups.add(child.pid)
++                except BaseException as error:
++                    self._note_cleanup_error('killpg:%s' % child.pid, error)
++                else:
++                    self._fenced_groups.add(child.pid)
++
++    def _poll(self, child):
++        with self._lock:
++            return child.poll()
++
++    def _wait(self, child):
++        with self._lock:
++            return child.wait(timeout=1)
+ 
+     def _confirm_groups_absent(self):
+         with self._lock:
+@@ -137,7 +157,7 @@
+         raw = encoded(command)
+         for index, child in enumerate(self.children):
+             require(not self.writes[index], 'Previous worker command is still pending')
+-            require(child.poll() is None, 'Worker exited before command')
++            require(self._poll(child) is None, 'Worker exited before command')
+             self.writes[index].extend(raw)
+             self.selector.register(child.stdin, selectors.EVENT_WRITE, (index, 'stdin'))
+         # Outputs can arrive while another pipe is writing. Retain them, but do
+@@ -228,7 +248,7 @@
+     def finish(self):
+         while True:
+             require(not any(self.events.values()), 'Unexpected trailing worker event')
+-            if len(self.eof) == 2 * len(self.children) and all(child.poll() is not None for child in self.children):
++            if len(self.eof) == 2 * len(self.children) and all(self._poll(child) is not None for child in self.children):
+                 break
+             self.pump('shutdown-wait')
+         require(all(child.returncode == 0 for child in self.children), 'Worker exit was nonzero')
+@@ -254,9 +274,9 @@
+             if kill:
+                 self._kill_groups()
+             for child in self.children:
+-                if not attempt('reap:%s' % child.pid, lambda: child.wait(timeout=1)):
++                if not attempt('reap:%s' % child.pid, lambda: self._wait(child)):
+                     self._kill_groups()
+-                    attempt('reap-retry:%s' % child.pid, lambda: child.wait(timeout=1))
++                    attempt('reap-retry:%s' % child.pid, lambda: self._wait(child))
+                 for stream in ('stdin', 'stdout', 'stderr'):
+                     attempt('close-pipe:%s' % stream, getattr(child, stream).close)
+             if not kill:

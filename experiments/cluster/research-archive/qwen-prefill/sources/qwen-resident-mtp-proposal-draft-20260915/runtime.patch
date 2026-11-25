@@ -1,0 +1,651 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
+@@ -48,6 +48,7 @@
+     }
+ 
+     func run(tokenCount: Int, observer: CBv2OwnerPhaseObserver? = nil, check: () throws -> Void,
++             additionalEvaluationTargets: (() -> [MLXArray])? = nil,
+              forward: ([any CBv2AttendingLayerCache], CBv2RecurrentStateEvaluation) throws -> MLXArray,
+              validateOutput: (MLXArray) throws -> Void) throws -> MLXArray {
+         do {
+@@ -80,7 +81,11 @@
+                 try CBv2OwnerPhaseObservation(phase: .evaluationBegin, tokenCount: tokenCount, committedTokens: committedTokens)
+                     .deliver(to: observer, check: check)
+             }
+-            eval([output] + recurrentRoots + cacheRoots)
++            if let additionalEvaluationTargets {
++                eval([output] + recurrentRoots + cacheRoots + additionalEvaluationTargets())
++            } else {
++                eval([output] + recurrentRoots + cacheRoots)
++            }
+             try check()
+             if let observer {
+                 try CBv2OwnerPhaseObservation(phase: .evaluationEnd, tokenCount: tokenCount, committedTokens: committedTokens)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageMTPCapture.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageMTPCapture.swift
+@@ -0,0 +1,57 @@
++import MLX
++
++/// Native-only consumable capture. Construction follows actual local state and
++/// schedule commit; the MTP owner separately requires both frame acknowledgements.
++final class QwenLayerStageMTPCommittedFrame {
++    let identity: QwenLayerStageSessionIdentity
++    let frame: QwenLayerStageFrame
++    let tokenIDs: [Int]
++    private var hidden: MLXArray?
++
++    fileprivate init(identity: QwenLayerStageSessionIdentity, frame: QwenLayerStageFrame,
++                     tokens: [Int], hidden: MLXArray) {
++        self.identity = identity; self.frame = frame; tokenIDs = tokens; self.hidden = hidden
++    }
++    func takeHidden() throws -> MLXArray {
++        guard let hidden else { throw ProbeError("MTP committed hidden was already consumed") }
++        self.hidden = nil
++        return hidden
++    }
++    func discard() { hidden = nil }
++}
++
++struct QwenLayerStageMTPOutput {
++    let output: QwenLayerStageOutput
++    let committed: QwenLayerStageMTPCommittedFrame
++}
++
++final class QwenLayerStageMTPCapture {
++    private let shape: [Int]
++    private let dtype: DType
++    private var hidden: MLXArray?
++    var evaluationTargets: [MLXArray] { hidden.map { [$0] } ?? [] }
++
++    init(tokens: Int, hiddenSize: Int, dtype: DType) {
++        shape = [1, tokens, hiddenSize]; self.dtype = dtype
++    }
++    func stage(_ value: MLXArray) throws {
++        guard hidden == nil else { throw ProbeError("MTP capture staged more than one target forward") }
++        hidden = value
++        try validate()
++    }
++    func validate() throws {
++        guard let hidden, hidden.shape == shape, hidden.dtype == dtype else {
++            throw ProbeError("MTP pre-norm capture shape/dtype differs from the final target")
++        }
++    }
++    func takeCommitted(identity: QwenLayerStageSessionIdentity, frame: QwenLayerStageFrame,
++                       tokens: [Int], nativeCommittedTokens: Int) throws -> QwenLayerStageMTPCommittedFrame {
++        try validate()
++        guard identity.stageIndex == 1, nativeCommittedTokens == frame.tokenOffset + frame.tokenCount,
++              tokens.count == frame.tokenCount else { throw ProbeError("MTP capture lacks actual final-rank commit") }
++        let value = QwenLayerStageMTPCommittedFrame(identity: identity, frame: frame, tokens: tokens, hidden: hidden!)
++        hidden = nil
++        return value
++    }
++    func discard() { hidden = nil }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift
+@@ -1,6 +1,6 @@
+ import Foundation
+ import MLX
+-import MLXLLM
++@_spi(Cluster) import MLXLLM
+ import MLXLMCommon
+ import MLXNN
+ 
+@@ -128,8 +128,43 @@
+         } catch { try fail(error) }
+     }
+ 
++    /// Private experimental caller must reserve MTP history/capture storage
++    /// before entering. Existing prefill/decode methods never select this path.
++    func prefillChunkCapturingMTP(_ tokens: [Int], offset: Int, final: Bool,
++        incoming: QwenLayerStageBoundary, check: () throws -> Void
++    ) throws -> QwenLayerStageMTPOutput {
++        try captureMTP(tokens: tokens, incoming: incoming, check: check) {
++            try schedule.admitPrefill(count: tokens.count, offset: offset, final: final)
++        }
++    }
++
++    func decodeCapturingMTP(_ token: Int, offset: Int, incoming: QwenLayerStageBoundary,
++                           check: () throws -> Void) throws -> QwenLayerStageMTPOutput {
++        try captureMTP(tokens: [token], incoming: incoming, check: check) {
++            try schedule.admitDecode(offset: offset)
++        }
++    }
++
++    private func captureMTP(tokens: [Int], incoming: QwenLayerStageBoundary,
++        check: () throws -> Void, admit: () throws -> QwenLayerStageFrame
++    ) throws -> QwenLayerStageMTPOutput {
++        let capture = QwenLayerStageMTPCapture(tokens: tokens.count, hiddenSize: hiddenSize, dtype: stage.activationDType)
++        defer { capture.discard() }
++        do {
++            try state.requireOpen()
++            guard stage.stageIndex == 1, case .generation = request else {
++                throw ProbeError("MTP capture requires an explicitly admitted final-rank generation session")
++            }
++            let frame = try admit()
++            let output = try perform(tokens: tokens, frame: frame, incoming: incoming, capture: capture, check: check)
++            return try .init(output: output, committed: capture.takeCommitted(identity: identity,
++                frame: frame, tokens: tokens, nativeCommittedTokens: state.committedTokens))
++        } catch { try fail(error) }
++    }
++
+     private func perform(tokens: [Int], frame: QwenLayerStageFrame, incoming: QwenLayerStageBoundary?,
+-                         observer: CBv2OwnerPhaseObserver? = nil, check: () throws -> Void) throws -> QwenLayerStageOutput {
++                         observer: CBv2OwnerPhaseObserver? = nil, capture: QwenLayerStageMTPCapture? = nil,
++                         check: () throws -> Void) throws -> QwenLayerStageOutput {
+         try MLX.withError { error in
+             func checked() throws { try error.check(); try check() }
+             guard tokens.allSatisfy({ (0..<stage.vocabularySize).contains($0) }),
+@@ -140,7 +175,21 @@
+             // nil positions use each stage's own KV absoluteOffset. Both states
+             // start at zero and must match the SAME full-model tokenOffset here;
+             // a stage's global layer offset never changes sequence positions.
+-            let output = try state.run(tokenCount: tokens.count, observer: observer, check: checked, forward: { caches, evaluation in
++            let output = try state.run(tokenCount: tokens.count, observer: observer, check: checked,
++                additionalEvaluationTargets: capture.map { value in { value.evaluationTargets } }, forward: { caches, evaluation in
++                if let capture {
++                    guard stage.stageIndex == 1, let incoming else { throw ProbeError("MTP capture requires residual ingress") }
++                    let requirement: Qwen35ClusterMTPForward.Output = frame.phase == .decode ? .decodeLastLogits
++                        : (frame.finalPromptChunk ? .prefillLastLogits : .prefillEvaluation)
++                    let value = try Qwen35ClusterMTPForward.forward(target: stage.model, tokens: input,
++                        residual: incoming.array, caches: caches.map { $0 as! any KVCache },
++                        recurrentState: [evaluation], output: requirement)
++                    // The nested handler owns faults from graph construction.
++                    // Check it before a secondary capture validation can throw.
++                    try error.check()
++                    try capture.stage(value.preNormHidden)
++                    return value.value
++                }
+                 if stage.stageIndex == 0 {
+                     let native = stage.model as! any CBv2RecurrentMTPForwardable
+                     // Ordinary noncaptured trunk: discard the lazy logits tuple
+@@ -157,6 +206,7 @@
+                 return native.embeddingForward(input, inputEmbedding: incoming!.array,
+                     cache: caches.map { $0 as! any KVCache }, recurrentState: [evaluation], positionIds: nil)[0..., -1, 0...]
+             }, validateOutput: { array in
++                try capture?.validate()
+                 let expected = stage.stageIndex == 0 ? [1, tokens.count, hiddenSize]
+                     : [1, frame.phase == .prefill && !frame.finalPromptChunk ? 1 : stage.vocabularySize]
+                 guard array.shape == expected, [.float16, .bfloat16, .float32].contains(array.dtype),
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPProposalControl.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPProposalControl.swift
+@@ -0,0 +1,96 @@
++import Foundation
++
++/// A proposal is never a committed output. Verification must retain both target
++/// ranks' rollback state before consuming it; this increment does not do that.
++struct QwenResidentMTPProposal: Equatable, Encodable {
++    let requestID: UUID
++    let roundID: UUID
++    let agreementFingerprint: String
++    let committedTargetInputs: Int
++    let seedTokenID: Int
++    let previousTokenChainSHA256: String
++    let proposedTokenID: Int
++    let draftDepth = 1
++    let accepted = false
++}
++
++/// Single-proposal lifecycle over already validated generation-control events.
++/// The caller must deliver actual native/peer acknowledgements to that control;
++/// neither this object nor a scalar descriptor proves distributed execution.
++final class QwenResidentMTPProposalControl {
++    enum Phase { case observing, ready, proposing, proposed, discarded, retired }
++    let agreement: QwenLayerStageGenerationAgreement
++    private(set) var phase: Phase = .observing
++    private(set) var failed = false
++    private(set) var observedInputs = 0
++    private(set) var observedFrames = 0
++    private var seed: (roundID: UUID, token: Int, chain: String)?
++
++    init(agreement: QwenLayerStageGenerationAgreement) throws {
++        guard agreement.prefillPolicy == .serial, agreement.request.outputCount >= 2 else {
++            throw ProbeError("Single MTP proposal requires serial prefill and room for a target-verified next token")
++        }
++        self.agreement = agreement
++    }
++
++    func observe(frame: QwenLayerStageFrame, tokenIDs: [Int], generation: QwenLayerStageGenerationControl) throws {
++        try operation {
++            let request = agreement.request
++            guard phase == .observing, frame.phase == .prefill, frame.sequence == observedFrames,
++                  frame.tokenOffset == observedInputs, frame == (try request.frame(sequence: observedFrames)),
++                  tokenIDs == Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset+frame.tokenCount)]),
++                  generation.agreement.fingerprint == agreement.fingerprint, !generation.isFailed,
++                  generation.committedTokens == frame.tokenOffset + frame.tokenCount,
++                  generation.completedFrames == frame.sequence + 1,
++                  generation.phase == (frame.finalPromptChunk ? .token : .frame) else {
++                throw ProbeError("MTP history requires exact prompt rows after both native frame commits")
++            }
++            observedInputs += frame.tokenCount; observedFrames += 1
++            if observedInputs == request.promptCount { phase = .ready }
++        }
++    }
++
++    func begin(generation: QwenLayerStageGenerationControl, roundID: UUID) throws {
++        try operation {
++            guard phase == .ready, generation.agreement.fingerprint == agreement.fingerprint,
++                  !generation.isFailed, generation.phase == .frame,
++                  generation.committedTokens == observedInputs, observedInputs == agreement.request.promptCount,
++                  generation.selectedTokenCount == 1, let token = generation.lastTokenID,
++                  !agreement.request.stopTokenIDs.contains(token) else {
++                throw ProbeError("MTP proposal requires an agreed, continued first target token")
++            }
++            seed = (roundID, token, generation.tokenChainSHA256); phase = .proposing
++        }
++    }
++
++    var seedTokenID: Int? { seed?.token }
++
++    func proposed(_ token: Int) throws -> QwenResidentMTPProposal {
++        try operation {
++            guard phase == .proposing, let seed, (0..<agreement.request.profile.vocabularySize).contains(token) else {
++                throw ProbeError("MTP proposal is out of order or outside target vocabulary")
++            }
++            phase = .proposed
++            return .init(requestID: agreement.request.requestID, roundID: seed.roundID,
++                agreementFingerprint: agreement.fingerprint, committedTargetInputs: observedInputs,
++                seedTokenID: seed.token, previousTokenChainSHA256: seed.chain, proposedTokenID: token)
++        }
++    }
++
++    /// Discard is terminal for this one-proposal object. It does not permit a
++    /// retry that would append the already restored trusted seed a second time.
++    func discarded() throws {
++        try operation {
++            guard phase == .proposed else { throw ProbeError("MTP discard requires one outstanding proposal") }
++            phase = .discarded
++        }
++    }
++    func fail() { failed = true }
++    func retired(failed: Bool) { self.failed = self.failed || failed; seed = nil; phase = .retired }
++    private func operation<T>(_ body: () throws -> T) throws -> T {
++        do {
++            guard !failed, phase != .retired else { throw ProbeError("MTP proposal owner is failed or retired") }
++            return try body()
++        } catch { failed = true; throw error }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift
+@@ -0,0 +1,231 @@
++import Foundation
++import MLX
++import MLXLLM
++import MLXLMCommon
++
++/// A private, serialized final-rank request owner for committed prompt history
++/// and exactly one unaccepted proposal. No serving path constructs this object.
++/// The outer distributed owner retains the full reservation until this object
++/// retires AND the peer is actually retired/fenced. Local cleanup is not that ACK.
++final class QwenResidentMTPRequest {
++    let resources: QwenResidentMTPRequestResources
++    let control: QwenResidentMTPProposalControl
++    private let assets: QwenResidentStageWithMTPAssets
++    private let session: QwenLayerStageSession
++    private let deadlineUptimeNanoseconds: UInt64
++    private var assistantState: (any CBv2MTPRequestState)?
++    private var pending: QwenLayerStageMTPCommittedFrame?
++    private var carry: MLXArray?
++    private(set) var isRetired = false
++    var committedTargetInputs: Int { session.committedTokens }
++
++    init(assets: QwenResidentStageWithMTPAssets, plan: QwenLayerStagePlan,
++         agreement: QwenLayerStageGenerationAgreement, capacityLimitBytes: Int,
++         deadlineUptimeNanoseconds: UInt64,
++         check: () throws -> Void) throws {
++        let now = DispatchTime.now().uptimeNanoseconds
++        guard deadlineUptimeNanoseconds > now, deadlineUptimeNanoseconds - now <= 300_000_000_000 else {
++            throw ProbeError("MTP proposal requires an explicit at-most300s same-Mac deadline")
++        }
++        func checkDeadline() throws {
++            guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
++                throw ProbeError("MTP proposal preparation exceeded owner deadline")
++            }
++        }
++        let control = try QwenResidentMTPProposalControl(agreement: agreement)
++        let prepared = try MLX.withError { nativeError in
++            do {
++                try nativeError.check(); try checkDeadline(); try check(); try nativeError.check()
++                let resources = try QwenResidentMTPRequestResources(assets: assets, plan: plan,
++                    agreement: agreement, capacityLimitBytes: capacityLimitBytes)
++                try nativeError.check(); try check(); try checkDeadline(); try nativeError.check()
++                return resources
++            } catch { try nativeError.check(); throw error }
++        }
++        // The combined reservation/live resource gate precedes both target
++        // request-state construction and assistant request-state construction.
++        let owned: (QwenLayerStageSession, any CBv2MTPRequestState) = try MLX.withError { nativeError in
++            var session: QwenLayerStageSession?
++            var state: (any CBv2MTPRequestState)?
++            do {
++                try checkDeadline(); try prepared.requireLive(); try check(); try checkDeadline(); try nativeError.check()
++                let nextSession = try QwenLayerStageSession(stage: assets.target.loaded, plan: plan,
++                    generationRequest: agreement.request)
++                session = nextSession
++                let nextState = assets.assistant.makeRequestState(); state = nextState
++                try assets.assistant.configureRequestState(nextState, maximumSequenceLength: agreement.request.maximumTokens)
++                guard nextState.committedInputCount == 0, nextState.stagedInputCount == 0, nextState.materializedBytes == 0,
++                      assets.assistant.evaluationTargets(for: nextState).isEmpty else {
++                    throw ProbeError("MTP request did not start with empty exclusive assistant state")
++                }
++                try nativeError.check(); try check(); try checkDeadline(); try nativeError.check()
++                return (nextSession, nextState)
++            } catch {
++                var primary: Error = error
++                do { try nativeError.check() } catch { primary = error }
++                Stream.gpu.synchronize(); Stream.cpu.synchronize()
++                if let state { assets.assistant.releaseRequestState(state) }
++                do { try session?.cancel() }
++                catch { throw ProbeError("MTP state preparation failed (\(primary)); target cleanup also failed (\(error))") }
++                throw primary
++            }
++        }
++        self.assets = assets; self.session = owned.0; self.resources = prepared
++        self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
++        self.control = control; assistantState = owned.1
++    }
++
++    /// Called from the consumer's existing boundary callback. This returns the
++    /// same target output shape; it does not advance assistant history yet.
++    func prefill(tokens: [Int], frame: QwenLayerStageFrame, incoming: QwenLayerStageBoundary,
++                 check: () throws -> Void) throws -> QwenLayerStageOutput {
++        try operation(check: check) { checked in
++            guard pending == nil, control.phase == .observing, frame.phase == .prefill,
++                  frame.sequence == control.observedFrames, frame.tokenOffset == control.observedInputs,
++                  frame == (try control.agreement.request.frame(sequence: control.observedFrames)),
++                  tokens == Array(control.agreement.request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset+frame.tokenCount)]) else {
++                throw ProbeError("MTP target prefill is duplicated, unacknowledged or out of order")
++            }
++            let value = try session.prefillChunkCapturingMTP(tokens, offset: frame.tokenOffset,
++                final: frame.finalPromptChunk, incoming: incoming, check: checked)
++            pending = value.committed
++            return value.output
++        }
++    }
++
++    /// Deliver only after the normal generation control has acknowledged both
++    /// ranks for this frame. The selected output token is not a consumed target
++    /// input and is never appended here.
++    func observeCommitted(generation: QwenLayerStageGenerationControl,
++                          check: () throws -> Void) throws {
++        try operation(check: check) { checked in
++            guard let frame = pending, frame.identity == session.identity, let state = assistantState else {
++                throw ProbeError("MTP observation lacks this request's committed final hidden")
++            }
++            pending = nil
++            defer { frame.discard() }
++            try control.observe(frame: frame.frame, tokenIDs: frame.tokenIDs, generation: generation)
++            let hidden = try frame.takeHidden()
++            let tokens = MLXArray(frame.tokenIDs.map(Int32.init)).reshaped([1, frame.tokenIDs.count])
++            assets.assistant.observeCommittedTarget(.init(tokens: tokens, hidden: hidden), requestState: state)
++            // The assistant normalizes raw target hidden itself exactly once.
++            // Fence the normalized backlog now, so it cannot retain a lazy graph
++            // across a failed target frame or a later state generation.
++            eval(assets.assistant.evaluationTargets(for: state))
++            try checked()
++            guard state.committedInputCount == control.observedInputs - 1, state.stagedInputCount == 0 else {
++                throw ProbeError("MTP cross-chunk trusted history frontier differs")
++            }
++            carry = hidden[0..., (frame.tokenIDs.count - 1)..<frame.tokenIDs.count, 0...]
++            eval(carry!)
++            try checked()
++        }
++    }
++
++    /// The normal target first token and continue decision must already be
++    /// acknowledged by both ranks. This performs one real assistant forward,
++    /// fences every assistant cache/root, and returns only an unaccepted scalar.
++    func propose(generation: QwenLayerStageGenerationControl, roundID: UUID,
++                 check: () throws -> Void) throws -> QwenResidentMTPProposal {
++        try operation(check: check) { checked in
++            guard pending == nil, let carry, let state = assistantState,
++                  session.committedTokens == control.agreement.request.promptCount else {
++                throw ProbeError("MTP proposal requires complete committed target prompt history")
++            }
++            try control.begin(generation: generation, roundID: roundID)
++            guard let seed = control.seedTokenID else { throw ProbeError("MTP proposal seed missing") }
++            let result = assets.assistant.draftStep(tokens: MLXArray([Int32(seed)]).reshaped([1, 1]),
++                hidden: carry, shortlist: nil, requestState: state)
++            eval([result.tokens, result.hidden] + assets.assistant.evaluationTargets(for: state))
++            try checked()
++            guard result.tokens.shape == [1], result.tokens.dtype == .int32,
++                  result.hidden.shape == [1, 1, control.agreement.request.profile.hiddenSize],
++                  result.hidden.dtype == assets.target.loaded.activationDType,
++                  state.committedInputCount == control.observedInputs, state.stagedInputCount == 0 else {
++                throw ProbeError("MTP proposal output or trusted assistant KV frontier differs")
++            }
++            let tokens = result.tokens.asArray(Int32.self)
++            try checked()
++            guard tokens.count == 1 else { throw ProbeError("MTP returned more than one proposal") }
++            return try control.proposed(Int(tokens[0]))
++        }
++    }
++
++    /// No target verification transaction exists in this increment. Discarding
++    /// the head's round therefore cannot authorize target rollback or reuse.
++    func discardProposal(check: () throws -> Void) throws {
++        try operation(check: check) { checked in
++            guard control.phase == .proposed, let state = assistantState else {
++                throw ProbeError("No outstanding MTP proposal to discard")
++            }
++            assets.assistant.discardRound(requestState: state)
++            eval(assets.assistant.evaluationTargets(for: state))
++            try checked()
++            try control.discarded()
++        }
++    }
++
++    /// Cleanup deliberately has no expired deadline/resource callback. The
++    /// incomplete generation session is cancelled, never labeled a clean finish.
++    func retire(failed: Bool = false) throws {
++        guard !isRetired else { return }
++        var primary: Error?
++        func attempt(_ body: () throws -> Void) {
++            do { try body() } catch { if primary == nil { primary = error } }
++        }
++        attempt {
++            try MLX.withError { nativeError in
++                Stream.gpu.synchronize(); Stream.cpu.synchronize()
++                do { try nativeError.check() } catch { primary = error }
++                if let state = assistantState {
++                    assets.assistant.discardRound(requestState: state)
++                    assets.assistant.releaseRequestState(state)
++                    guard state.materializedBytes == 0, state.committedInputCount == 0,
++                          state.stagedInputCount == 0, assets.assistant.evaluationTargets(for: state).isEmpty else {
++                        throw ProbeError("MTP assistant retained request arrays after release")
++                    }
++                }
++                pending?.discard(); pending = nil; carry = nil; assistantState = nil
++                Stream.gpu.synchronize(); Stream.cpu.synchronize()
++                try nativeError.check()
++            }
++        }
++        attempt { try session.cancel() }
++        guard primary == nil, session.isClosed, assistantState == nil, pending == nil, carry == nil else {
++            control.fail()
++            throw primary ?? ProbeError("MTP request local retirement remains incomplete")
++        }
++        isRetired = true; control.retired(failed: failed || control.failed || session.isFailed)
++    }
++
++    private func operation<T>(check: () throws -> Void,
++        _ body: (_ checked: () throws -> Void) throws -> T) throws -> T {
++        try withoutActuallyEscaping(check) { borrowedCheck in
++            try MLX.withError { nativeError in
++                func checked() throws {
++                    try nativeError.check()
++                    guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
++                        throw ProbeError("MTP proposal owner deadline expired")
++                    }
++                    try borrowedCheck(); try resources.requireLive(); try nativeError.check()
++                    guard DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds else {
++                        throw ProbeError("MTP proposal observation exceeded owner deadline")
++                    }
++                }
++                do {
++                    guard !isRetired, !control.failed else { throw ProbeError("MTP request is retired or failed") }
++                    try checked()
++                    return try body(checked)
++                } catch {
++                    var primary: Error = error
++                    do { try nativeError.check() } catch { primary = error }
++                    control.fail()
++                    do { try retire(failed: true) }
++                    catch { throw ProbeError("MTP request failed (\(primary)); local retirement also failed (\(error))") }
++                    throw primary
++                }
++            }
++        }
++    }
++    deinit { try? retire(failed: true) }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequestResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequestResources.swift
+@@ -0,0 +1,83 @@
++import Foundation
++import MLX
++import MLXLLM
++@_spi(Cluster) import MLXLMCommon
++
++/// Named tensor allowance, not a claim to predict every kernel workspace.
++/// Existing live allocator/OS headroom and6GiB floor remain mandatory. The
++/// loaded target,31 head tensors and3 replica tensors are already active memory.
++struct QwenResidentMTPRequestResources {
++    let base: QwenResidentRequestAllowance
++    let assistantStateBytes: Int
++    let captureAndProposalBytes: Int
++    let additionalBytes: Int
++    let requiredReservationBytes: Int
++
++    init(assets: QwenResidentStageWithMTPAssets, plan: QwenLayerStagePlan,
++         agreement: QwenLayerStageGenerationAgreement, capacityLimitBytes: Int) throws {
++        let target = assets.target, loaded = target.loaded, request = agreement.request
++        guard target.profile.model == .qwen35NineB, loaded.stageIndex == 1,
++              loaded.plan.fingerprint == plan.fingerprint, plan.stages.count == 2,
++              plan.stages[0].sourceRange.count == 4,
++              request.promptCount <= 8192, request.chunkSize <= 512, (2...128).contains(request.outputCount),
++              request.profile.hiddenSize == 4096, request.profile.vocabularySize == 248320,
++              request.profile.activationDType == "bfloat16", loaded.activationDType == .bfloat16,
++              agreement.prefillPolicy == .serial,
++              agreement.descriptor.planFingerprint == plan.fingerprint,
++              agreement.descriptor.stageFingerprints == plan.stages.map(\.fingerprint),
++              agreement.descriptor.sourceConfigurationSHA256 == loaded.receipt.sourceConfigurationSHA256,
++              agreement.descriptor.artifactAggregateSHA256 == loaded.receipt.verifiedAggregateSHA256,
++              agreement.descriptor.storageCommitmentSHA256 == loaded.receipt.storageCommitmentSHA256,
++              assets.receipt.targetLoadReceiptSHA256 == sha256(try canonicalJSONData(loaded.receipt)),
++              assets.receipt.loadedTensorBytes == 709_010_432,
++              assets.receipt.placement.targetPlanSHA256 == plan.fingerprint,
++              assets.assistant.requiredVerificationMode == .serialTarget,
++              assets.assistant.maximumSpeculativeBatch == 1,
++              assets.assistant.draftShortlistSize == nil,
++              let actualTarget = loaded.model as? any CBv2RecurrentMTPForwardable,
++              assets.assistant.targetIdentity == actualTarget.cbv2MTPTargetIdentity else {
++            throw ProbeError("MTP proposal resources require the exact loaded cut4/BF16/serial9B owner")
++        }
++        // No process-global shortlist or historical double-forward oracle may
++        // silently change this one-proposal path.
++        for key in ["DARKBLOOM_QWEN_MTP_DOUBLE_FORWARD", "DARKBLOOM_QWEN_MTP_SHORTLIST"] {
++            guard ProcessInfo.processInfo.environment[key] == nil else {
++                throw ProbeError("MTP proposal refuses an ambient draft override")
++            }
++        }
++        guard let specs = assets.assistant.requestStateAllocationSpecs, specs.count == 3,
++              let policy = Memory.allocationFootprintPolicy(),
++              let auxiliary = cbv2ClusterAuxiliaryAllocationBytes(tokens: request.maximumTokens,
++                  policy: policy, specs: specs), auxiliary > 0 else {
++            throw ProbeError("MTP proposal lacks actual assistant allocator geometry")
++        }
++        base = try .derive(profile: target.profile, plan: plan, rank: 1,
++            maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        assistantStateBytes = auxiliary
++        let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
++        let p = request.promptCount, c = min(request.chunkSize, p), h = 4096, kv = 1024
++        // F32 bounds cover BF16 intermediates conservatively. Whole-history
++        // fusion is limited to the one-layer KV-only-prefix implementation:
++        // concatenate history; embed+normalize; hidden normalize; concatenate
++        // features; FC; layer norm; K projection+norm+rope; V projection.
++        let arrays: [(count: Int, shape: [Int])] = [
++            (2,[c,h,4]), (1,[p,h,4]), (2,[p,4]), (3,[p,h,4]),
++            (1,[p,2,h,4]), (2,[p,h,4]), (4,[p,kv,4]),
++            (8,[2,h,4]), (4,[12288,4]), (4,[16,p,4]), (1,[248320,4]), (1,[4]),
++        ]
++        captureAndProposalBytes = try sum(arrays.map { item in
++            try product([item.count, QwenResidentResourceEnvironment.allocationBound(product(item.shape))])
++        })
++        // A growing KV allocation may coexist with its previous generation.
++        // Retain a second complete assistant allowance until proposal disposal.
++        additionalBytes = try sum([product([2, auxiliary]), captureAndProposalBytes])
++        requiredReservationBytes = try sum([base.reservedBytes, additionalBytes])
++        guard capacityLimitBytes >= requiredReservationBytes else {
++            throw ProbeError("MTP proposal exceeds the caller's retained request reservation")
++        }
++        try requireLive()
++    }
++
++    func requireLive() throws { try base.requireLive(additionalNativeBytes: additionalBytes) }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35ClusterMTPForward.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35ClusterMTPForward.swift
+@@ -0,0 +1,46 @@
++import MLX
++import MLXLMCommon
++import MLXNN
++
++/// Explicit residual-ingress capture. The ordinary token/prefill methods do not
++/// call this SPI. The caller owns the target caches and evaluates both outputs
++/// in the same transaction before admitting hidden rows as committed history.
++@_spi(Cluster) public enum Qwen35ClusterMTPForward {
++    public enum Output { case prefillEvaluation, prefillLastLogits, decodeLastLogits }
++    private enum Failure: Error { case invalidInput, incompatibleCache }
++
++    public static func forward(target model: any LanguageModel, tokens: MLXArray,
++        residual: MLXArray, caches: [any KVCache],
++        recurrentState: [CBv2RecurrentStateEvaluation], output: Output
++    ) throws -> (value: MLXArray, preNormHidden: MLXArray) {
++        let target = try Qwen35InlineMTPAssistant.qwen35TextTarget(model)
++        guard tokens.ndim == 2, tokens.dim(0) == 1, tokens.dim(1) > 0,
++              tokens.dtype == .int32, residual.shape == [1, tokens.dim(1), target.configuration.hiddenSize],
++              [.float16, .bfloat16, .float32].contains(residual.dtype), recurrentState.count == 1 else {
++            throw Failure.invalidInput
++        }
++        if case .decodeLastLogits = output, tokens.dim(1) != 1 { throw Failure.invalidInput }
++        let attending = try caches.map { cache -> any CBv2AttendingLayerCache in
++            guard let value = cache as? any CBv2AttendingLayerCache else { throw Failure.incompatibleCache }
++            return value
++        }
++        // Exactly one call to the existing residual-ingress trunk. No token
++        // embedding lookup, target KV replay, or recurrent capture is added.
++        let hidden = target.model.cbv2Forward(tokens, inputEmbeddings: residual,
++            caches: attending, recurrentState: recurrentState, positionIds: nil)
++        let value: MLXArray
++        switch output {
++        case .prefillEvaluation:
++            value = hidden[0..., -1, 0 ..< 1]
++        case .prefillLastLogits:
++            let last = target.model.norm(hidden[0..., -1, 0...])
++            value = target.lmHead.map { $0(last) } ?? target.model.embedTokens.asLinear(last)
++        case .decodeLastLogits:
++            // Preserve the ordinary embeddingForward decode projection shape.
++            let normalized = target.model.norm(hidden)
++            let logits = target.lmHead.map { $0(normalized) } ?? target.model.embedTokens.asLinear(normalized)
++            value = logits[0..., -1, 0...]
++        }
++        return (value, hidden)
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ClusterMTPAuxiliaryAdmission.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ClusterMTPAuxiliaryAdmission.swift
+@@ -0,0 +1,11 @@
++import MLX
++
++/// Shares the production allocator/fragmentation projection without copying
++/// its arithmetic into the experimental resident owner.
++@_spi(Cluster) public func cbv2ClusterAuxiliaryAllocationBytes(
++    tokens: Int, policy: AllocationFootprintPolicy, specs: [CBv2AuxiliaryAllocationSpec]
++) -> Int? {
++    guard !specs.isEmpty,
++          let projection = CBv2AuxiliaryAllocationProjection(policy: policy, buffers: specs) else { return nil }
++    return projection.bytes(forTokens: tokens)
++}

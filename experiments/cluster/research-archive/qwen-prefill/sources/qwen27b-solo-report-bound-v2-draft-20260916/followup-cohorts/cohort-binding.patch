@@ -1,0 +1,144 @@
+--- cohort1/run_physical.py
++++ followup/run-2.py
+@@ -1,7 +1,7 @@
+ from pathlib import Path
+ import json,os,shlex,signal,subprocess,time
+ base=Path(__file__).resolve().parent
+-out=base/'run-1';out.mkdir(mode=0o700)
++out=base/'run-2';out.mkdir(mode=0o700)
+ script='''from pathlib import Path
+ import json,os,subprocess,sys
+ root=Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916')
+@@ -15,12 +15,12 @@
+ resource=sample_local();validate_local(resource)
+ print(json.dumps(dict(kind='root_reference_preflight',active=active,journalBytes=0,resource=resource)),flush=True)
+ os.chdir(root/'supervisor')
+-os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor/run_solo.py'),'--job',str(root/'supervisor/job.json'),'--job-sha256','267fa5e4546574e1ef8179ac577108fb3bffff7c971b7b85628eed3ff2591bf6','--launcher-sha256','2685b7de8be0667d15f3c721f5c81dbf86a0cf09d9a681a6b4a44e0dbbc02c78'])
++os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor/run_solo.py'),'--job',str(root/'jobs/cohort-2.json'),'--job-sha256','a80b81a44bb5d06649fa7d2b9e238f8ccb24730b4c6c71b40432b0020bc8b871','--launcher-sha256','2685b7de8be0667d15f3c721f5c81dbf86a0cf09d9a681a6b4a44e0dbbc02c78'])
+ '''
+ (out/'remote-launch.py').write_text(script)
+ from parent_settings import SSH
+ argv=SSH+['-S','none','darkbloom-48','/usr/bin/python3 -B -']
+-start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916/runs/cohort-1',timedOut=False,localRunnerPID=os.getpid())
++start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916/runs/cohort-2',timedOut=False,localRunnerPID=os.getpid())
+ with (out/'ssh.stdout').open('xb') as stdout,(out/'ssh.stderr').open('xb') as stderr:
+  child=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=stdout,stderr=stderr,start_new_session=True)
+  receipt.update(sshPID=child.pid,sshPGID=child.pid)
+--- cohort1/validate_returned.py
++++ followup/validate-2.py
+@@ -14,12 +14,12 @@
+ 
+ 
+ def main():
+-    directory=BASE/'run-1/returned'
++    directory=BASE/'run-2/returned'
+     pins=Pins()
+     def raw(name, cap=16*1024*1024, empty=False):
+         return pins.read(directory/name,cap,empty=empty)['raw']
+     job_raw=raw('job.json');job=validate_job(parse(job_raw))
+-    same(job_raw,(BASE.parent/'run-source-1/job.json').read_bytes(),'Exact prospective job')
++    same(job_raw,(BASE/'jobs/cohort-2.json').read_bytes(),'Exact prospective job')
+     prompt_raw=raw('prompt.json');expected_raw=raw('expected.json')
+     same(hashlib.sha256(prompt_raw).hexdigest(),job['prompt_sha256'],'Raw prompt')
+     same(hashlib.sha256(expected_raw).hexdigest(),job['expected_sha256'],'Expected output file')
+@@ -41,7 +41,7 @@
+             outputComplete=True,sourceInputsUnchanged=True,cleanupErrors=[],postflightErrors=[],
+             primaryFailure=None).items():
+         same(terminal[key],value,'Successful terminal '+key)
+-    fresh=parse((BASE/'run-1/root-review.json').read_bytes())
++    fresh=parse((BASE/'run-2/root-review.json').read_bytes())
+     same(fresh['active'],[],'Fresh process absence');same(fresh['journalBytes'],0,'Fresh empty journal')
+     samples=[parse(line) for line in raw('resources.jsonl').splitlines()]
+     require(1<=len(samples)<=1500,'Bounded complete resource evidence')
+@@ -61,7 +61,7 @@
+         resourceSampleCount=len(samples),minimumActualFreeBytes=min(x['actualFreeBytes'] for x in samples),
+         independentFullRowStateComparisonPerformed=False,externalTTFTMeasured=False,
+         allThreeMatchedCohortsCompleted=False,performanceQualificationEstablished=False)
+-    with (BASE/'run-1/validated-sample.json').open('x') as stream:
++    with (BASE/'run-2/validated-sample.json').open('x') as stream:
+         json.dump(result,stream,sort_keys=True,indent=2);stream.write('\n')
+     print(json.dumps(result))
+ 
+--- cohort1/prepare_resources.py
++++ followup/prepare-resources-2.py
+@@ -65,7 +65,7 @@
+ 
+ 
+ def main():
+-    directory = BASE / 'resource-preparation-1'
++    directory = BASE / 'resource-preparation-2'
+     directory.mkdir(mode=0o700)
+     credential = BASE.parent.parent.parent / 'machines/CREDENTIALS.private.md'
+     info = credential.lstat()
+--- cohort1/run_physical.py
++++ followup/run-3.py
+@@ -1,7 +1,7 @@
+ from pathlib import Path
+ import json,os,shlex,signal,subprocess,time
+ base=Path(__file__).resolve().parent
+-out=base/'run-1';out.mkdir(mode=0o700)
++out=base/'run-3';out.mkdir(mode=0o700)
+ script='''from pathlib import Path
+ import json,os,subprocess,sys
+ root=Path('/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916')
+@@ -15,12 +15,12 @@
+ resource=sample_local();validate_local(resource)
+ print(json.dumps(dict(kind='root_reference_preflight',active=active,journalBytes=0,resource=resource)),flush=True)
+ os.chdir(root/'supervisor')
+-os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor/run_solo.py'),'--job',str(root/'supervisor/job.json'),'--job-sha256','267fa5e4546574e1ef8179ac577108fb3bffff7c971b7b85628eed3ff2591bf6','--launcher-sha256','2685b7de8be0667d15f3c721f5c81dbf86a0cf09d9a681a6b4a44e0dbbc02c78'])
++os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(root/'supervisor/run_solo.py'),'--job',str(root/'jobs/cohort-3.json'),'--job-sha256','aaecf40761088927c42398fe1c642cec725b40cf0569393ca44269a85b829562','--launcher-sha256','2685b7de8be0667d15f3c721f5c81dbf86a0cf09d9a681a6b4a44e0dbbc02c78'])
+ '''
+ (out/'remote-launch.py').write_text(script)
+ from parent_settings import SSH
+ argv=SSH+['-S','none','darkbloom-48','/usr/bin/python3 -B -']
+-start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916/runs/cohort-1',timedOut=False,localRunnerPID=os.getpid())
++start=time.monotonic();receipt=dict(argv=argv,remoteRun='/Users/developer/DarkbloomDev/qwen27b-resident-solo-report-fixed-20260916/runs/cohort-3',timedOut=False,localRunnerPID=os.getpid())
+ with (out/'ssh.stdout').open('xb') as stdout,(out/'ssh.stderr').open('xb') as stderr:
+  child=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=stdout,stderr=stderr,start_new_session=True)
+  receipt.update(sshPID=child.pid,sshPGID=child.pid)
+--- cohort1/validate_returned.py
++++ followup/validate-3.py
+@@ -14,12 +14,12 @@
+ 
+ 
+ def main():
+-    directory=BASE/'run-1/returned'
++    directory=BASE/'run-3/returned'
+     pins=Pins()
+     def raw(name, cap=16*1024*1024, empty=False):
+         return pins.read(directory/name,cap,empty=empty)['raw']
+     job_raw=raw('job.json');job=validate_job(parse(job_raw))
+-    same(job_raw,(BASE.parent/'run-source-1/job.json').read_bytes(),'Exact prospective job')
++    same(job_raw,(BASE/'jobs/cohort-3.json').read_bytes(),'Exact prospective job')
+     prompt_raw=raw('prompt.json');expected_raw=raw('expected.json')
+     same(hashlib.sha256(prompt_raw).hexdigest(),job['prompt_sha256'],'Raw prompt')
+     same(hashlib.sha256(expected_raw).hexdigest(),job['expected_sha256'],'Expected output file')
+@@ -41,7 +41,7 @@
+             outputComplete=True,sourceInputsUnchanged=True,cleanupErrors=[],postflightErrors=[],
+             primaryFailure=None).items():
+         same(terminal[key],value,'Successful terminal '+key)
+-    fresh=parse((BASE/'run-1/root-review.json').read_bytes())
++    fresh=parse((BASE/'run-3/root-review.json').read_bytes())
+     same(fresh['active'],[],'Fresh process absence');same(fresh['journalBytes'],0,'Fresh empty journal')
+     samples=[parse(line) for line in raw('resources.jsonl').splitlines()]
+     require(1<=len(samples)<=1500,'Bounded complete resource evidence')
+@@ -61,7 +61,7 @@
+         resourceSampleCount=len(samples),minimumActualFreeBytes=min(x['actualFreeBytes'] for x in samples),
+         independentFullRowStateComparisonPerformed=False,externalTTFTMeasured=False,
+         allThreeMatchedCohortsCompleted=False,performanceQualificationEstablished=False)
+-    with (BASE/'run-1/validated-sample.json').open('x') as stream:
++    with (BASE/'run-3/validated-sample.json').open('x') as stream:
+         json.dump(result,stream,sort_keys=True,indent=2);stream.write('\n')
+     print(json.dumps(result))
+ 
+--- cohort1/prepare_resources.py
++++ followup/prepare-resources-3.py
+@@ -65,7 +65,7 @@
+ 
+ 
+ def main():
+-    directory = BASE / 'resource-preparation-1'
++    directory = BASE / 'resource-preparation-3'
+     directory.mkdir(mode=0o700)
+     credential = BASE.parent.parent.parent / 'machines/CREDENTIALS.private.md'
+     info = credential.lstat()

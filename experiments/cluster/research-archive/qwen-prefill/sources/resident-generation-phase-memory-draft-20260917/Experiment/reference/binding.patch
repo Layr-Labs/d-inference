@@ -1,0 +1,49 @@
+--- old/run_physical.py
++++ new/run_physical.py
+@@ -14,16 +14,16 @@
+ from owned_process import invoke_controller
+ 
+ BASE = Path(__file__).resolve().parent
+-sys.path.insert(0, str(BASE.parent / 'qwen27b-owner-load-operands-rerun-20260915'))
++sys.path.insert(0, str(Path('/Users/developer/DarkbloomDev/cluster-research') / 'qwen27b-owner-load-operands-rerun-20260915'))
+ from parent_settings import SSH
+ 
+ REMOTE_RUN = r'''
+ from pathlib import Path
+ import fcntl,hashlib,json,os,stat,subprocess,sys
+ root=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915')
+-launcher=root/'supervisor-27b-8k-owned'
++launcher=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/supervisor-phase-memory-c256-20260917')
+ assert launcher.resolve()==launcher
+-assert hashlib.sha256((launcher/'manifest.json').read_bytes()).hexdigest()=='cb3ae16e52f3469a255a5ff0a5a679365b9ac6b3c1370b4d197b8c66cf2035ef'
++assert hashlib.sha256((launcher/'manifest.json').read_bytes()).hexdigest()=='3df5be15b766fddf36c1e0a57b80aab858a5f1636ce8a4acce1ab25fe30635f4'
+ sys.path.insert(0,str(launcher));sys.dont_write_bytecode=True
+ from reference_resources import sample_local,validate_local
+ ps=subprocess.check_output(['/bin/ps','-axo','pid=,comm='],text=True,timeout=3)
+@@ -40,13 +40,13 @@
+ resource=sample_local();validate_local(resource)
+ print(json.dumps(dict(kind='root_cut16_reference_preflight',active=active,journalBytes=0,resource=resource)),flush=True)
+ os.chdir(launcher)
+-os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(launcher/'run_reference.py'),'--job',str(launcher/'example-job.json'),'--job-sha256','69dc4e329e88fa26e5d28751568b74ffb3215f14d19311732e0a68ed6b804dbf','--launcher-sha256','cb3ae16e52f3469a255a5ff0a5a679365b9ac6b3c1370b4d197b8c66cf2035ef'])
++os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(launcher/'run_reference.py'),'--job',str(launcher/'example-job.json'),'--job-sha256','e9a1ac3b48779d58f3df4c7b1b06cabd008f776d4565ec529df31a419d01a786','--launcher-sha256','3df5be15b766fddf36c1e0a57b80aab858a5f1636ce8a4acce1ab25fe30635f4'])
+ '''
+ 
+ REMOTE_COLLECT = r'''
+ from pathlib import Path
+ import base64,hashlib,json,os,stat,subprocess
+-p=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/long-27b-cut16-1')
++p=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/phase-memory-c256-1')
+ assert p.resolve()==p and p.is_dir()
+ allowed={'job.json','prompt.json','owner.json','resources.jsonl','terminal.json','native/worker-0.stdin','native/worker-0.stdout','native/worker-0.stderr'}
+ def identity(s):return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+--- old/install_new_tree.py
++++ new/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/supervisor-27b-8k-owned')}
++ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/supervisor-phase-memory-c256-20260917')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)

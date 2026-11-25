@@ -1,0 +1,11 @@
+# Cut16 collection and comparison
+
+Root runs the three sequential argv arrays in `commands.json`: collect the two completed sidecars; prepare the six-role packet using the printed collection SHA; compare using the printed packet SHA. Outputs are create-only. No rebuild, model invocation or change to remote inputs is needed. The reference is the actual matching cut16 full-reference stdout, SHA `539f0ed3…d6e26`.
+
+The collector is byte-exact to the prior frozen diagnostic collector. Its remote reader changes only the fixed root to `qwen27b-cut16-owner-validation-20260915`. It retains bounded no-follow 16 MiB sidecar reads, raw transport results, hashes, file identities and fresh process/journal observations. Each SSH call is bounded to 30 seconds; retrieval failure remains failure. Only root executes remote actions.
+
+The preparer changes only binding constants and a manifest adapter: the new parent's dictionary of member pins is normalized to the existing list representation, then every exact byte count/hash is checked. The cut16 numerical comparator remains frozen `f3757094…aebe`, and the prospective expected agreement remains `42c31063…6b2e`. The packet roles are prompt, matching reference stdout, ordered rank0/rank1 sidecars, registered request and actual metadata/Plan. All snapshots are rechecked before create-only publication.
+
+`binding.patch` and `lineage.json` retain the exact inverse to the old preparer and remote reader. All twelve prior handoff test bodies remain unchanged. Thirteen local test methods passed: the original twelve plus both list/dictionary manifest acceptance and tamper refusal. These are fabricated file/transport checks, not model evidence. No candidate output or remote host was read while preparing this package.
+
+The frozen numerical gate compares both 128-ID sequences, final schedule/frontier159, reconstructed 496640-byte BF16 full row, and the 36/108 partition's complete 144-state union. It does not independently reconstruct opaque storage commitments or non-offset state payloads, inspect intermediate logits/frontiers, or attest physical cleanup/resources. Root separately retains native cleanup, authenticated owner release, transport exit, diagnostic EOF, alias restoration, process absence and empty journals. Controller duration is not a throughput measurement.

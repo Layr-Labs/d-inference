@@ -1,0 +1,431 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -25,6 +25,7 @@
+             try checkQwenLongPrefillPairCLI()
+             try checkQwenLongPrefillRankAdmission()
+             try checkQwenLongPrefillResidentRankAdmission()
++        try checkQwenLongPrefillResidentCohortAgreement()
+             try checkQwenLongPrefillSoloCLI()
+             try checkQwenPrefillPhaseCLI()
+             try checkQwenPrefillOwnerCLI()
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankReadiness.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankReadiness.swift
+@@ -7,30 +7,9 @@
+ func requireQwenLongPrefillRankReadiness(_ agreement: QwenLayerStageProfiledPrefillStartAgreement,
+     collective: Collective, check: () throws -> Void
+ ) throws -> QwenLongPrefillRankReadiness {
+-    guard collective.size == 2, (0..<2).contains(collective.rank) else {
+-        throw ProbeError("Long prefill readiness requires exactly two admitted ranks")
+-    }
+-    return try MLX.withError { error in
+-        func checked() throws { try error.check(); try check(); try error.check() }
+-        let digest = sha256(Data(("qwen-profiled-prefill-readiness-v1|" + agreement.fingerprint).utf8))
+-        let values = digest.utf8.map(Int32.init)
+-        func send() throws {
+-            let array = MLXArray(values)
+-            try checked()
+-            _ = try collective.sendCompleted(array, to: 1 - collective.rank,
+-                maximumBytes: 256, check: checked)
+-        }
+-        func receive() throws {
+-            let actual = try collective.receiveCompleted(shape: [64], dtype: .int32,
+-                from: 1 - collective.rank, maximumBytes: 256, check: checked).asArray(Int32.self)
+-            try checked()
+-            guard actual == values else {
+-                throw ProbeError("Long ranks disagree on admitted source, input, arithmetic or scheduling before clock start")
+-            }
+-        }
+-        if collective.rank == 0 { try send(); try receive() }
+-        else { try receive(); try send() }
+-        try checked()
+-        return .init(agreementFingerprint: agreement.fingerprint, readinessMaterialSHA256: digest)
+-    }
++    let digest = try requireQwenLongPrefillReadinessDigest(collective: collective,
++        material: { .request(agreementFingerprint: agreement.fingerprint) },
++        disagreementMessage: "Long ranks disagree on admitted source, input, arithmetic or scheduling before clock start",
++        check: check)
++    return .init(agreementFingerprint: agreement.fingerprint, readinessMaterialSHA256: digest)
+ }
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillReadinessExchange.swift
+@@ -0,0 +1,36 @@
++import Foundation
++import MLX
++
++/// Shared fixed-shape completed exchange. It owns no request state or clock.
++/// The material factory runs at the former request digest-construction point.
++func requireQwenLongPrefillReadinessDigest(collective: Collective,
++    material: () -> QwenLongPrefillReadinessMaterial, disagreementMessage: String,
++    check: () throws -> Void
++) throws -> String {
++    guard collective.size == 2, (0..<2).contains(collective.rank) else {
++        throw ProbeError("Long prefill readiness requires exactly two admitted ranks")
++    }
++    return try MLX.withError { error in
++        func checked() throws { try error.check(); try check(); try error.check() }
++        let digest = material().digest
++        let values = digest.utf8.map(Int32.init)
++        func send() throws {
++            let array = MLXArray(values)
++            try checked()
++            _ = try collective.sendCompleted(array, to: 1 - collective.rank,
++                maximumBytes: 256, check: checked)
++        }
++        func receive() throws {
++            let actual = try collective.receiveCompleted(shape: [64], dtype: .int32,
++                from: 1 - collective.rank, maximumBytes: 256, check: checked).asArray(Int32.self)
++            try checked()
++            guard actual == values else {
++                throw ProbeError(disagreementMessage)
++            }
++        }
++        if collective.rank == 0 { try send(); try receive() }
++        else { try receive(); try send() }
++        try checked()
++        return digest
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillReadinessMaterial.swift
+@@ -0,0 +1,16 @@
++import Foundation
++
++/// Only the two named readiness domains can create a fixed-size SHA material.
++/// No received string, array or unchecked digest initializer is exposed.
++struct QwenLongPrefillReadinessMaterial: Equatable {
++    let digest: String
++    private init(digest: String) { self.digest = digest }
++
++    static func request(agreementFingerprint: String) -> Self {
++        .init(digest: sha256(Data(("qwen-profiled-prefill-readiness-v1|" + agreementFingerprint).utf8)))
++    }
++
++    static func residentCohort(agreementFingerprint: String) -> Self {
++        .init(digest: sha256(Data(("qwen-long-prefill-resident-cohort-readiness-v1|" + agreementFingerprint).utf8)))
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillReadinessMaterialCheck.swift
+@@ -0,0 +1,23 @@
++import Foundation
++
++/// Golden SHA values were derived independently from the retained old domain.
++/// This does not invoke the native exchange or claim peer mismatch shutdown.
++func checkQwenLongPrefillReadinessMaterialVectors() throws -> Int {
++    let values: [(String, String, String)] = [
++        (String(repeating: "a", count: 64),
++         "65ef8c8a18b25335d2ab562f02a982382c18eacfdfdeb3e9f868169146afc71d",
++         "181eabc1a07561e5879fd5f5908e9e417316934af73d2870f1a2b942cbcbcf0c"),
++        (String(repeating: "0", count: 64),
++         "8222c88091ed5bbf263c921a8cf0364ccd339e166739f5541728430cf5f0b54c",
++         "d6d295fa7afdf9173b3810b22ffcf5181b6f8bbe14c2220b2375bbcc0ee739e4"),
++    ]
++    for (fingerprint, oldExpected, cohortExpected) in values {
++        let old = QwenLongPrefillReadinessMaterial.request(agreementFingerprint: fingerprint).digest
++        let cohort = QwenLongPrefillReadinessMaterial.residentCohort(agreementFingerprint: fingerprint).digest
++        guard old == oldExpected, cohort == cohortExpected, old != cohort,
++              old.utf8.count == 64, cohort.utf8.count == 64 else {
++            throw ProbeError("Readiness material changed its legacy vector, domain or fixed size")
++        }
++    }
++    return values.count * 2
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentCohortAgreement.swift
+@@ -0,0 +1,64 @@
++import Foundation
++
++/// Common, CPU-only intent for an entire bounded resident cohort. Actual loaded
++/// storage and native precision remain the later per-request agreement's job.
++struct QwenLongPrefillResidentCohortAgreement {
++    static let maximumEncodedBytes = 16_384
++
++    struct Entry: Encodable, Equatable {
++        let ordinal: Int
++        let epoch: String, requestID: String
++        let recordedRequestFingerprint: String, promptFileSHA256: String
++        let excludedWarmup: Bool
++    }
++
++    struct Descriptor: Encodable, Equatable {
++        let schemaVersion = 1
++        let kind = "qwen_long_prefill_resident_cohort_agreement"
++        let initialEpoch: String
++        let sourceConfigurationSHA256: String, expectedArtifactAggregateSHA256: String
++        let planFingerprint: String, arithmeticEnvironmentSHA256: String
++        let resourceAdmissionSHA256: String
++        let profile: String, profileFingerprint: String
++        let schedulingPolicy: String, logitsDType: String
++        let transport: String, executionPath: String
++        let requestCount: Int, warmupCount: Int
++        let tracePathsDisabled = true
++        let requests: [Entry]
++    }
++
++    let descriptor: Descriptor
++    let fingerprint: String
++
++    init(options: Options, requests: [QwenLongPrefillResidentRankRequest], warmupCount: Int) throws {
++        try QwenLongPrefillResidentRankAdmission.validate(
++            options: options, requests: requests, warmupCount: warmupCount)
++        let first = requests[0]
++        let entries = try requests.enumerated().map { ordinal, request in
++            let identity = try request.identity
++            return Entry(ordinal: ordinal, epoch: request.epoch,
++                requestID: identity.requestID.uuidString.lowercased(),
++                recordedRequestFingerprint: request.local.request.fingerprint,
++                promptFileSHA256: request.local.promptFileSHA256,
++                excludedWarmup: ordinal < warmupCount)
++        }
++        let descriptor = Descriptor(initialEpoch: first.epoch,
++            sourceConfigurationSHA256: sha256(first.local.configuration),
++            expectedArtifactAggregateSHA256: first.local.resource.expectedArtifactAggregateSHA256,
++            planFingerprint: first.local.plan.fingerprint,
++            arithmeticEnvironmentSHA256: first.local.arithmeticEnvironmentSHA256,
++            resourceAdmissionSHA256: sha256(try canonicalJSONData(first.local.resource)),
++            profile: first.local.request.request.profile.rawValue,
++            profileFingerprint: first.local.request.request.profile.fingerprint,
++            schedulingPolicy: options.stagePrefillPolicy!.rawValue,
++            logitsDType: options.stageLogitsDType!, transport: options.transport.rawValue,
++            executionPath: options.executionPath.rawValue,
++            requestCount: requests.count, warmupCount: warmupCount, requests: entries)
++        let bytes = try canonicalJSONData(descriptor)
++        guard bytes.count <= Self.maximumEncodedBytes else {
++            throw ProbeError("Resident cohort agreement exceeds its 16 KiB metadata bound")
++        }
++        self.descriptor = descriptor
++        self.fingerprint = sha256(Data("qwen-long-prefill-resident-cohort-v1|".utf8) + bytes)
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentCohortAgreementCheck.swift
+@@ -0,0 +1,118 @@
++import Foundation
++
++func checkQwenLongPrefillResidentCohortAgreement() throws {
++    let fixture = try QwenLongPrefillResidentCohortFixture()
++    let first = try fixture.request(1), middle = try fixture.request(2, prompt: fixture.promptB)
++    let last = try fixture.request(3), requests = [first, middle, last]
++    let options = try fixture.options(first)
++    let agreement = try QwenLongPrefillResidentCohortAgreement(
++        options: options, requests: requests, warmupCount: 1)
++    var accepted: [String] = [], distinct: [String] = [], rejected: [String] = []
++    func require(_ name: String, _ condition: Bool) throws {
++        guard condition else { throw ProbeError("Resident cohort agreement fixture failed: " + name) }
++        accepted.append(name)
++    }
++    func different(_ name: String, _ candidate: QwenLongPrefillResidentCohortAgreement) throws {
++        guard candidate.fingerprint != agreement.fingerprint,
++              candidate.descriptor != agreement.descriptor else {
++            throw ProbeError("Resident cohort failed to distinguish: " + name)
++        }
++        distinct.append(name)
++    }
++    func reject(_ name: String, _ body: () throws -> Void) throws {
++        do { try body() } catch { rejected.append(name); return }
++        throw ProbeError("Resident cohort agreement admitted: " + name)
++    }
++    func make(_ values: [QwenLongPrefillResidentRankRequest], warmups: Int = 1,
++              changed: Options? = nil) throws -> QwenLongPrefillResidentCohortAgreement {
++        try .init(options: changed ?? options, requests: values, warmupCount: warmups)
++    }
++
++    let repeated = try make(requests)
++    try require("deterministic descriptor and fingerprint", repeated.fingerprint == agreement.fingerprint &&
++        canonicalJSONData(repeated.descriptor) == canonicalJSONData(agreement.descriptor))
++    let entries = agreement.descriptor.requests
++    try require("ordered A B A binds fresh full identities and warmups",
++        entries.map(\.epoch) == requests.map(\.epoch) && entries.map(\.excludedWarmup) == [true, false, false] &&
++        entries.map(\.recordedRequestFingerprint) == requests.map { $0.local.request.fingerprint } &&
++        first.local.promptTokenIDsSHA256 == last.local.promptTokenIDsSHA256 &&
++        first.local.request.fingerprint != last.local.request.fingerprint)
++    let maximum = try (1...16).map { try fixture.request($0) }
++    let maximumAgreement = try make(maximum, warmups: 15)
++    try require("maximum cohort stays within metadata bound", maximumAgreement.descriptor.requestCount == 16 &&
++        canonicalJSONData(maximumAgreement.descriptor).count <= QwenLongPrefillResidentCohortAgreement.maximumEncodedBytes)
++    let single = try make([first], warmups: 0)
++    try require("one fresh measured request", single.descriptor.requests.count == 1 &&
++        single.descriptor.requests[0].excludedWarmup == false)
++    let halfRequests = try [fixture.request(1, cut: nil),
++        fixture.request(2, prompt: fixture.promptB, cut: nil), fixture.request(3, cut: nil)]
++    let half = try make(halfRequests, changed: fixture.options(halfRequests[0], cut: nil))
++    let explicitHalf = try make(halfRequests, changed: fixture.options(halfRequests[0], cut: 16))
++    try require("omitted and explicit historical half select the same cohort", half.descriptor == explicitHalf.descriptor &&
++        half.fingerprint == explicitHalf.fingerprint)
++    var changed = options
++    changed.modelDirectory = URL(fileURLWithPath: "other-unused-model")
++    changed.tokensFile = URL(fileURLWithPath: "other-unused-prompt")
++    let otherPaths = try make(requests, changed: changed)
++    try require("rank-local paths are absent from common agreement", otherPaths.fingerprint == agreement.fingerprint)
++
++    try different("later logical prompt", make([first, fixture.request(2), last]))
++    try different("later fresh UUID and epoch", make([first, fixture.request(4, prompt: fixture.promptB), last]))
++    try different("later request ordering", make([first, last, middle]))
++    try different("request count", make([first, middle]))
++    try different("warmup boundary", make(requests, warmups: 2))
++    try different("selected Plan", half)
++    try different("scheduling policy", make(requests,
++        changed: fixture.options(first, policy: "prompt_lookahead_one_v1")))
++    let encodedDifferently = try fixture.request(2, prompt: fixture.promptB + Data([10]))
++    guard encodedDifferently.local.request.fingerprint == middle.local.request.fingerprint,
++          encodedDifferently.local.promptFileSHA256 != middle.local.promptFileSHA256 else {
++        throw ProbeError("Raw prompt identity fixture changed its logical token history")
++    }
++    try different("same tokens with different raw prompt bytes", make([first, encodedDifferently, last]))
++
++    try reject("empty cohort") { _ = try make([], warmups: 0) }
++    try reject("seventeenth request") { _ = try make(maximum + [fixture.request(17)]) }
++    try reject("negative warmups") { _ = try make(requests, warmups: -1) }
++    try reject("no measured request") { _ = try make(requests, warmups: 3) }
++    try reject("reused epoch and UUID") { _ = try make([first, first]) }
++    try reject("malformed epoch") {
++        _ = try make([first, .init(epoch: String(repeating: "A", count: 32), local: middle.local)])
++    }
++    try reject("epoch differs from request UUID") {
++        _ = try make([first, .init(epoch: last.epoch, local: middle.local)])
++    }
++    changed = options; changed.epoch = middle.epoch
++    try reject("initial epoch differs from options") { _ = try make(requests, changed: changed) }
++    changed = options; changed.longPromptSHA256 = middle.local.promptFileSHA256
++    try reject("initial raw prompt differs from options") { _ = try make(requests, changed: changed) }
++    try reject("later Plan changes") { _ = try make([first, fixture.request(2, cut: nil)]) }
++    changed = options; changed.stageCut = nil
++    try reject("nil cut cannot carry unequal plan") { _ = try make(requests, changed: changed) }
++    try reject("explicit cut cannot carry half plan") { _ = try make(halfRequests) }
++    changed = options; changed.prefillPhaseTraceFile = URL(fileURLWithPath: "unused-phase")
++    try reject("phase trace remains disabled") { _ = try make(requests, changed: changed) }
++    changed = options; changed.prefillOwnerTraceFile = URL(fileURLWithPath: "unused-owner")
++    try reject("owner trace remains disabled") { _ = try make(requests, changed: changed) }
++    changed = options; changed.expectedArtifactAggregateSHA256 = String(repeating: "0", count: 64)
++    try reject("source aggregate differs from options") { _ = try make(requests, changed: changed) }
++    changed = options; changed.stagePrefillPolicy = nil
++    try reject("missing scheduling policy") { _ = try make(requests, changed: changed) }
++    changed = options; changed.stageLogitsDType = "float32"
++    try reject("changed logits precision") { _ = try make(requests, changed: changed) }
++
++    let vectors = try checkQwenLongPrefillReadinessMaterialVectors()
++    guard accepted.count == 6, distinct.count == 8, rejected.count == 17, vectors == 4 else {
++        throw ProbeError("Resident cohort agreement fixture case count changed")
++    }
++    struct Result: Encodable {
++        let kind = "qwen_long_prefill_resident_cohort_agreement_check", cpuOnly = true
++        let acceptedFixtures = 6, distinctPeerAgreementFixtures = 8, rejectedFixtures = 17
++        let readinessMaterialVectors = 4
++        let accepted: [String], distinctPeerAgreements: [String], rejected: [String]
++        let actualOptionsAndLocalAdmissionUsed = true
++        let collectiveConstructed = false, modelConstructed = false
++        let readinessExchangeExecuted = false, residentModelReuseQualified = false
++    }
++    try emitJSON(Result(accepted: accepted, distinctPeerAgreements: distinct, rejected: rejected))
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentCohortFixture.swift
+@@ -0,0 +1,45 @@
++import Foundation
++
++/// Reuse the retained admission fixture's exact configuration and synthetic IDs.
++/// These are real Options/local-admission constructors, never file preflight.
++struct QwenLongPrefillResidentCohortFixture {
++    let configuration: Data
++    let arithmetic: QwenLongPrefillArithmeticEnvironment.Receipt
++    let promptA: Data, promptB: Data
++
++    init() throws {
++        configuration = try QwenLongPrefillResidentRankFixture.configuration()
++        arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(
++            QwenLongPrefillArithmeticEnvironment.requiredValues)
++        promptA = try QwenLongPrefillResidentRankFixture.prompt(0)
++        promptB = try QwenLongPrefillResidentRankFixture.prompt(1)
++    }
++
++    func request(_ index: Int, prompt: Data? = nil, cut: Int? = 12) throws
++        -> QwenLongPrefillResidentRankRequest {
++        let epoch = try QwenLongPrefillResidentRankFixture.epoch(index)
++        let data = prompt ?? promptA
++        let spec = try QwenLayerStageProfiledPrefillRequestSpec(profile: .longPrefill8KV1,
++            requestID: QwenLayerStageRankAdmission.requestID(epoch: epoch), batchSize: 1,
++            promptCount: 8192, chunkSize: 512, outputCount: 1)
++        let local = try QwenRegistered9BLongPrefillReferenceAdmission(configuration: configuration,
++            expectedArtifactAggregateSHA256: QwenLongPrefillResidentRankFixture.artifactSHA256,
++            promptData: data, expectedPromptSHA256: sha256(data), request: spec,
++            arithmetic: arithmetic, stageCut: cut)
++        return .init(epoch: epoch, local: local)
++    }
++
++    func options(_ first: QwenLongPrefillResidentRankRequest, cut: Int? = 12,
++                 policy: String = "serial_v1") throws -> Options {
++        var arguments = ["--mode", "qwen-long-prefill-rank-check", "--model-dir", "unused-model",
++            "--tokens-file", "unused-prompt", "--artifact-aggregate-sha256",
++            QwenLongPrefillResidentRankFixture.artifactSHA256,
++            "--long-prompt-sha256", first.local.promptFileSHA256, "--epoch", first.epoch,
++            "--transport", "loopback-test", "--stage-prefill-policy", policy,
++            "--stage-logits-dtype", "bfloat16", "--execution-path", "cbv2-contiguous",
++            "--prompt-tokens", "8192", "--chunk-size", "512", "--decode-tokens", "1",
++            "--repeats", "1", "--warmups", "0", "--timeout-seconds", "300"]
++        if let cut { arguments += ["--stage-cut", String(cut)] }
++        return try Options(arguments: arguments)
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentCohortReadiness.swift
+@@ -0,0 +1,18 @@
++import Foundation
++
++struct QwenLongPrefillResidentCohortReadiness: Encodable {
++    let cohortAgreementFingerprint: String
++    let readinessMaterialSHA256: String
++}
++
++/// Intent agreement only, before model loading. A successful exchange does not
++/// assert verified payload storage, available resources or a completed cohort.
++func requireQwenLongPrefillResidentCohortReadiness(_ agreement: QwenLongPrefillResidentCohortAgreement,
++    collective: Collective, check: () throws -> Void
++) throws -> QwenLongPrefillResidentCohortReadiness {
++    let digest = try requireQwenLongPrefillReadinessDigest(collective: collective,
++        material: { .residentCohort(agreementFingerprint: agreement.fingerprint) },
++        disagreementMessage: "Resident ranks disagree on ordered requests, warmups, source or policy before stage load",
++        check: check)
++    return .init(cohortAgreementFingerprint: agreement.fingerprint, readinessMaterialSHA256: digest)
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankOwner.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankOwner.swift
+@@ -61,7 +61,8 @@
+     requests: [QwenLongPrefillResidentRankRequest], warmupCount: Int,
+     check: () throws -> Void
+ ) throws -> QwenLongPrefillResidentRankReport {
+-    try QwenLongPrefillResidentRankAdmission.validate(options: options, requests: requests, warmupCount: warmupCount)
++    let cohortAgreement = try QwenLongPrefillResidentCohortAgreement(
++        options: options, requests: requests, warmupCount: warmupCount)
+     let first = requests[0].local
+     let collective = try Collective(transport: options.transport)
+     var owner: QwenLongPrefillResidentRankOwner?
+@@ -71,6 +72,8 @@
+     do {
+         return try MLX.withError { error in
+             func checked() throws { try error.check(); try check(); try error.check() }
++            let cohortReadiness = try requireQwenLongPrefillResidentCohortReadiness(
++                cohortAgreement, collective: collective, check: checked)
+             let receipt = try autoreleasepool {
+                 let loaded = try loadVerifiedQwenLayerStage(directory: options.modelDirectory!,
+                     originalConfiguration: first.configuration, plan: first.plan, stageIndex: collective.rank,
+@@ -94,7 +97,8 @@
+             guard model == nil else { throw ProbeError("Resident cohort did not release its stage") }
+             try checked()
+             memory.append(QwenStageMemoryObservation("resident_stage_released_cache_cleared"))
+-            return .init(rank: collective.rank, sourceLoad: receipt, arithmeticEnvironment: first.arithmetic,
++            return .init(rank: collective.rank, cohortAgreement: cohortAgreement.descriptor,
++                cohortReadiness: cohortReadiness, sourceLoad: receipt, arithmeticEnvironment: first.arithmetic,
+                 arithmeticEnvironmentSHA256: first.arithmeticEnvironmentSHA256, resourceAdmission: first.resource,
+                 warmupCount: warmupCount, requests: results, memory: memory)
+         }
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankReport.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillResidentRankReport.swift
+@@ -15,6 +15,8 @@
+     let kind = "qwen_long_prefill_resident_rank_cohort", schemaVersion = 1
+     let rank: Int
+     let worldSize = 2, transport = "loopback-test"
++    let cohortAgreement: QwenLongPrefillResidentCohortAgreement.Descriptor
++    let cohortReadiness: QwenLongPrefillResidentCohortReadiness
+     let sourceLoad: QwenLayerStageLoadReceipt
+     let arithmeticEnvironment: QwenLongPrefillArithmeticEnvironment.Receipt
+     let arithmeticEnvironmentSHA256: String

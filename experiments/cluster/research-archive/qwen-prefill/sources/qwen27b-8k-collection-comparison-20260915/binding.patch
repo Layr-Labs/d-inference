@@ -1,0 +1,116 @@
+--- a/prepare_packet.py
++++ b/prepare_packet.py
+@@ -1,4 +1,4 @@
+-"""Assemble the existing six-role packet against the frozen cut16 numerical gate."""
++"""Assemble the existing six-role packet against the frozen cut16 8K numerical gate."""
+ import argparse
+ import hashlib
+ import json
+@@ -8,14 +8,12 @@
+ ROOT = Path(__file__).resolve().parent.parent
+ COMPARATOR = ROOT / 'qwen27b-cut16-numerical-audit-20260915'
+ COMPARATOR_SHA = 'f3757094f14cc479e761b83b2a988551250bd61a9dba1797e91c3e564f29aebe'
+-PARENT = ROOT / 'qwen27b-cut16-owner-qualification-20260915'
+-PARENT_SHA = '4690e10bee7fcb9c9d5dfd76dd58c9b7344e1d9ee1479f24ea3976ef6d3c1641'
+-AGREEMENT_SHA = '42c310634e03957f611a2c827347f1faf3d6bcc06003296b6c398932b4b56b2e'
+-REFERENCE = ROOT / 'qwen27b-cut16-full-reference-20260915/physical-collect-1/returned/native/worker-0.stdout'
+-REFERENCE_SHA = '539f0ed31bf4b95590d26df3468b2d3863520bc742d2c62cd37bcb8ca94d6e26'
++PARENT = ROOT / 'qwen27b-8k-serial-owner-qualification-20260915'
++PARENT_SHA = 'c479d8277855431bf3acfd0a9310fcd23ada9ee6cf84c741323a24a625f9fcd2'
++AGREEMENT_SHA = '5964b5f1e865fe2d12f3146ff600b0675db24d427ff979f8bde72c24b309172e'
+ SOURCE_ROLES = {
+-    'prompt': ('inputs/prompt.ids.json', '6d4c8898c3d6f01ddd8c3e712cde5005c647db64937977dd907935146442e81e', 256*1024),
+-    'registered_request': ('inputs/request.json', '3b9ca1f74695c1e79a895954cbb26e14857e83c5504c09f26a2f25ac66d00a4f', 64*1024),
++    'prompt': ('inputs/prompt.ids.json', 'ee6caf0be6391e00ec41df930f0fd6351613969622cbb247b1b4bdaf69afe997', 256*1024),
++    'registered_request': ('inputs/request.json', 'd6813ee4697450a618c8027336e6925f94afe230e3e1a031135c3435fd03e57b', 64*1024),
+     'registered_plan': ('provenance/recording-metadata.json', '4c22d847bb83991a37d83a9c97be94eb8152f5341c8deaa4b3bf6e677eb6eeeb', 64*1024),
+ }
+ 
+@@ -76,7 +74,8 @@
+     context = request_context(source['prompt'], request['requestID'],
+                               pinned_scope(request, parse(source['registered_plan'])))
+     agreement(expected, context)
+-    read('reference_stdout', reference, reference_sha, 32*1024**2)
++    from audit_reference import check_reference
++    check_reference(read('reference_stdout', reference, reference_sha, 32*1024**2), context)
+     if len(ranks) != 2:
+         raise ValueError('Exactly two rank artifacts required')
+     for rank, (path, expected_sha) in enumerate(ranks):
+@@ -117,6 +116,8 @@
+         parser.add_argument('--rank' + str(rank) + '-sha256')
+     parser.add_argument('--collection')
+     parser.add_argument('--collection-sha256')
++    parser.add_argument('--reference', required=True)
++    parser.add_argument('--reference-sha256', required=True)
+     parser.add_argument('--output', required=True)
+     args = parser.parse_args()
+     bootstrap()
+@@ -130,7 +131,7 @@
+         if not all(manual):
+             parser.error('Choose a pinned collection or four explicit rank arguments')
+         ranks = [(args.rank0_evidence, args.rank0_sha256), (args.rank1_evidence, args.rank1_sha256)]
+-    packet = assemble(REFERENCE, REFERENCE_SHA, ranks)
++    packet = assemble(args.reference, args.reference_sha256, ranks)
+     if collection:
+         from snapshot import snapshot
+         from audit_common import exact
+--- a/read_sidecar_remote.py
++++ b/read_sidecar_remote.py
+@@ -7,7 +7,7 @@
+ import stat
+ import subprocess
+ 
+-SIDECAR = '/Users/developer/DarkbloomDev/qwen27b-cut16-owner-validation-20260915/evidence/20801ced-ca29-4faf-b71a-9ebbe1886a14.json'
++SIDECAR = '/Users/developer/DarkbloomDev/qwen27b-8k-serial-owner-validation-20260915/evidence/c7517799-2a77-49fa-af9c-2b4f662bf76c.json'
+ JOURNAL = '/Users/developer/.darkbloom/cluster-device/native-device.lease'
+ 
+ 
+--- a/test_handoff.py
++++ b/test_handoff.py
+@@ -21,12 +21,26 @@
+ 
+ 
+ class HandoffChecks(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        from audit_common import request_context
++        from audit_scope import pinned_scope
++        import fabricated
++        request = json.loads((helper.PARENT / 'inputs/request.json').read_bytes())
++        plan = json.loads((helper.PARENT / 'provenance/recording-metadata.json').read_bytes())
++        scope = pinned_scope(request, plan)
++        context = request_context((helper.PARENT / 'inputs/prompt.ids.json').read_bytes(), request['requestID'], scope)
++        with patch.object(fabricated, 'request_context', return_value=context):
++            _, _, admitted, report, _, _ = fabricated.fixture(scope, request['requestID'])
++        cls.reference = fabricated.reference_bytes(admitted, report)
++
+     def setUp(self):
+         self.temporary = tempfile.TemporaryDirectory()
+         self.root = Path(self.temporary.name)
+         self.paths = [self.root / name for name in ['reference', 'rank0', 'rank1']]
+         for i, path in enumerate(self.paths):
+             path.write_bytes(('fabricated opaque artifact ' + str(i)).encode())
++        self.paths[0].write_bytes(self.reference)
+         self.pins = [helper.digest(path) for path in self.paths]
+ 
+     def tearDown(self):
+@@ -47,7 +61,7 @@
+         self.assertEqual(set(packet['files']), {'prompt', 'reference_stdout', 'rank0_evidence',
+                                               'rank1_evidence', 'registered_request', 'registered_plan'})
+         self.assertEqual(packet['expected_agreement'], json.loads((helper.PARENT/'expected-agreement.json').read_bytes()))
+-        self.assertEqual(packet['request_id'], '20801ced-ca29-4faf-b71a-9ebbe1886a14')
++        self.assertEqual(packet['request_id'], 'c7517799-2a77-49fa-af9c-2b4f662bf76c')
+ 
+     def test_wrong_supplied_hash_refused(self):
+         with self.assertRaises(ValueError):
+@@ -77,8 +91,8 @@
+                 decode_response(json.dumps(dict(value, **{key:replacement})).encode())
+ 
+     def test_remote_reader_bound_and_nofollow(self):
+-        data, identity = read_fixed(self.paths[0], 128)
+-        self.assertEqual(data, self.paths[0].read_bytes())
++        data, identity = read_fixed(self.paths[1], 128)
++        self.assertEqual(data, self.paths[1].read_bytes())
+         self.assertEqual(identity[3], len(data))
+         with self.assertRaises(AssertionError): read_fixed(self.paths[0], 1)
+         link = self.root/'link';link.symlink_to(self.paths[0])

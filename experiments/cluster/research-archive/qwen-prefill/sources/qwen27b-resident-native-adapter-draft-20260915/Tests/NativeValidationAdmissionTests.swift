@@ -1,0 +1,105 @@
+import DarkbloomClusterProtocol
+import Foundation
+import XCTest
+@_spi(Benchmark) @testable import DarkbloomClusterRuntime
+
+/// Typechecks the real runtime seam; methods perform metadata operations only.
+final class NativeValidationAdmissionTests: XCTestCase {
+    private let epoch = UUID(uuidString: "435811c9-e834-4294-8641-8e8975f07849")!
+    private func fixture() throws -> (Data, Data, [QwenDenseCanonicalTensor]) {
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["DARKBLOOM_RETAINED_PROFILE_FIXTURE"])
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        XCTAssertEqual(sha256(data), "1a7e2d74df5e055ec31c12478f49d1d07d1bb48cc64d150248859defb518cd25")
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let value = try XCTUnwrap(root["twentySeven"] as? [String: Any])
+        let config = try XCTUnwrap(Data(base64Encoded: XCTUnwrap(value["configuration"] as? String)))
+        let manifest = try XCTUnwrap(Data(base64Encoded: XCTUnwrap(value["manifest"] as? String)))
+        let tensors = try JSONDecoder().decode([QwenDenseCanonicalTensor].self,
+            from: JSONSerialization.data(withJSONObject: XCTUnwrap(value["canonicalTensors"])))
+        return (config, manifest, tensors)
+    }
+    private func identity() throws -> ClusterWorkerIdentity {
+        let spec = try QwenResidentModelDefinition(model: .qwen38TwentySevenB).specification
+        return .init(membershipEpoch: epoch, modelID: spec.model.rawValue,
+            artifactSHA256: spec.artifactSHA256, configurationSHA256: spec.configurationSHA256,
+            peers: [.init(id: "a", buildSHA256: String(repeating: "a", count: 64)),
+                    .init(id: "b", buildSHA256: String(repeating: "b", count: 64))])
+    }
+    private func configuration(rank: Int = 0, cut: Int = 4) throws -> QwenResidentLoadConfiguration {
+        try QwenResidentNativeValidationModel.qwen38TwentySevenB.configuration(identity: identity(),
+            modelDirectory: URL(fileURLWithPath: "/fabricated/model"), rank: rank, stageCut: cut,
+            deadlineUptimeNanoseconds: 300_000_000_100, now: 100)
+    }
+    private func admit(_ value: QwenResidentLoadConfiguration, config: Data, manifest: Data) throws -> QwenResidentAdmission {
+        let environment = QwenLongPrefillArithmeticEnvironment.requiredValues.merging([
+            "JACCL_RANK": String(value.rank), "JACCL_IBV_DEVICES": "/fabricated/devices.json",
+            "JACCL_COORDINATOR": "127.0.0.1:43198",
+        ], uniquingKeysWith: { _, new in new })
+        return try .init(configuration: value, configBytes: config, manifestBytes: manifest,
+            environment: environment, now: 100,
+            read: { _, _ in Data("[[null,\"rdma_en1\"],[\"rdma_en1\",null]]".utf8) })
+    }
+
+    func testBothRanksUseExactSharedProfileAndFrameGeometry() throws {
+        let (config, manifest, _) = try fixture()
+        for cut in try QwenResidentNativeValidationModel.qwen38TwentySevenB.supportedCuts {
+            var agreements = Set<String>()
+            for rank in [0, 1] {
+                let value = try admit(configuration(rank: rank, cut: cut), config: config, manifest: manifest)
+                XCTAssertEqual(value.profile.identifier, "registered_qwen38_27b_greedy_generation_v1")
+                XCTAssertEqual(value.profile.hiddenSize, 5120)
+                XCTAssertEqual(value.plan.layers, 64)
+                XCTAssertEqual(value.plan.stages.map(\.sourceRange), [0..<cut, cut..<64])
+                XCTAssertEqual(value.configuration.prefillSchedule, .serial)
+                XCTAssertEqual(value.configuration.allocatorPolicy, .disableFreedBufferCache)
+                let request = try value.request(.init(profileID: value.profile.identifier,
+                    promptTokenIDs: Array(repeating: 17, count: 8192), stopTokenIDs: [], outputCount: 128,
+                    chunkSize: 512, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 1 << 40), id: UUID(), now: 101)
+                XCTAssertEqual(request.maximumTokens, 8320)
+                XCTAssertEqual(request.forwardCount, 143)
+                XCTAssertEqual(request.finalCommittedTokens, 8319)
+                agreements.insert(try value.loadAgreementFingerprint())
+            }
+            XCTAssertEqual(agreements.count, 1)
+        }
+    }
+
+    func testLogicalRequestAllowanceReusesFullStateAndSelectedFusion() throws {
+        let (config, manifest, tensors) = try fixture()
+        let admission = try admit(configuration(), config: config, manifest: manifest)
+        let profile = try QwenRegisteredDenseModelProfile.admit(configuration: config, manifest: manifest,
+            expectedArtifactAggregateSHA256: admission.specification.artifactSHA256,
+            canonicalTensors: tensors, residentDefinition: admission.definition)
+        for rank in [0, 1] {
+            let value = try QwenResidentRequestAllowance.derive(profile: profile, plan: admission.plan,
+                rank: rank, maximumTokens: 8320, chunkSize: 512, bound: { $0 })
+            XCTAssertEqual(value.stateBytes, 1_616_248_896)
+            XCTAssertEqual(value.fusionBytes, rank == 0 ? 142_387_200 : 2_135_808_000)
+            XCTAssertEqual(value.reservedBytes, rank == 0 ? 1_758_636_096 : 3_752_056_896)
+        }
+        XCTAssertThrowsError(try QwenResidentRequestAllowance.derive(profile: profile, plan: admission.plan,
+            rank: 0, maximumTokens: 8321, chunkSize: 1, bound: { $0 }))
+        XCTAssertThrowsError(try QwenResidentRequestAllowance.derive(profile: profile, plan: admission.plan,
+            rank: 0, maximumTokens: 8320, chunkSize: 512, bound: { $0 - 1 }))
+    }
+
+    func testOrdinaryConfigurationAndCapabilityRemainClosed() throws {
+        let (config, manifest, _) = try fixture()
+        let ordinary = QwenResidentLoadConfiguration(identity: try identity(),
+            modelDirectory: URL(fileURLWithPath: "/fabricated/model"), rank: 0, stageCut: 4,
+            deadlineUptimeNanoseconds: 300_000_000_100)
+        XCTAssertThrowsError(try admit(ordinary, config: config, manifest: manifest))
+        XCTAssertThrowsError(try QwenResidentCapabilityMetadata.describe(configuration: config,
+            manifest: manifest, runtimeBinarySHA256: String(repeating: "a", count: 64)))
+        XCTAssertThrowsError(try configuration(cut: 20))
+        XCTAssertThrowsError(try configuration(rank: 2))
+        XCTAssertThrowsError(try admit(configuration(), config: config + Data([32]), manifest: manifest))
+        XCTAssertThrowsError(try admit(configuration(), config: config, manifest: manifest + Data([32])))
+        let selected = try configuration()
+        let lookahead = QwenResidentLoadConfiguration(identity: selected.identity,
+            modelDirectory: selected.modelDirectory, rank: selected.rank, stageCut: selected.stageCut,
+            deadlineUptimeNanoseconds: selected.deadlineUptimeNanoseconds, allocatorPolicy: selected.allocatorPolicy,
+            prefillSchedule: .oneChunkLookahead, nativeValidationModel: .qwen38TwentySevenB)
+        XCTAssertThrowsError(try admit(lookahead, config: config, manifest: manifest))
+    }
+}

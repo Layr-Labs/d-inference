@@ -1,0 +1,114 @@
+--- thunk/retry_inputs.py
++++ scoped/retry_inputs.py
+@@ -1,12 +1,12 @@
+-"""One nonescaping thunk over the actually prepared numerical source union."""
++"""One scoped publisher over the actually prepared thunk source union."""
+ import importlib.util
+ import json
+ from pathlib import Path
+ 
+ BASE = Path(__file__).resolve().parent
+-OLD = BASE.parent / 'qwen9b-protected-numerical-build-draft-20260917'
+-OLD_SHA = '684bf5f3ee466303004fa6b8bbc6ac6f40853748df2734ac6bbd97fb37e06ad4'
+-spec = importlib.util.spec_from_file_location('numerical_retry_inputs', OLD / 'retry_inputs.py')
++OLD = BASE.parent / 'qwen9b-protected-evidence-thunk-build-20260917'
++OLD_SHA = '7bb73e803ce0e391a24b267a9dab11a5f67b0de292ceb0d504e98ec7b118ca5f'
++spec = importlib.util.spec_from_file_location('thunk_retry_inputs', OLD / 'retry_inputs.py')
+ previous = importlib.util.module_from_spec(spec)
+ spec.loader.exec_module(previous)
+ prior, WORKSPACE, SCRATCH, sha = previous.prior, previous.WORKSPACE, previous.SCRATCH, previous.sha
+@@ -27,7 +27,7 @@
+ def expected(before=False):
+     inputs()
+     source, deps = previous.expected()
+-    if source != json.loads((OLD / 'source-snapshot-5.json').read_bytes())['members'] or deps != json.loads((OLD / 'dependency-snapshot-5.json').read_bytes())['members']:
++    if source != json.loads((OLD / 'source-snapshot-6.json').read_bytes())['members'] or deps != json.loads((OLD / 'dependency-snapshot-6.json').read_bytes())['members']:
+         raise ValueError('Prepared numerical inventory changed')
+     by = {row['path']: dict(row) for row in source}
+     rows = json.loads((BASE / 'integration.json').read_bytes())['files']
+--- thunk/verify_retry.py
++++ scoped/verify_retry.py
+@@ -6,8 +6,8 @@
+ def verify(before=False, require_snapshots=True):
+     source, deps = expected(before)
+     counts = {}
+-    for name, root, rows in [('source-snapshot-6.json', WORKSPACE, source),
+-                             ('dependency-snapshot-6.json', SCRATCH / 'checkouts', deps)]:
++    for name, root, rows in [('source-snapshot-7.json', WORKSPACE, source),
++                             ('dependency-snapshot-7.json', SCRATCH / 'checkouts', deps)]:
+         if prior.entries(root) != rows:
+             raise ValueError('Exact source inventory differs: ' + name)
+         if require_snapshots and json.loads((BASE / name).read_bytes())['members'] != rows:
+@@ -19,11 +19,11 @@
+         head = subprocess.check_output(['git', '--no-optional-locks', '-C', str(directory), 'rev-parse', 'HEAD'], text=True, timeout=10).strip()
+         if head != row['pin']['state']['revision'] or head != row['head']:
+             raise ValueError('Dependency revision changed')
+-    preserved = OLD / 'preparation-5/darkbloom-cluster-worker.canonical4'
++    preserved = BASE.parent / 'qwen9b-protected-numerical-build-draft-20260917/preparation-5/darkbloom-cluster-worker.canonical4'
+     if preserved.is_symlink() or sha(preserved) != 'dd277746f02ef87e00a517b63932a111ea986b1a4c361718ba8cf05012d9dd70':
+         raise ValueError('Preserved canonical native changed')
+     if not before:
+         row = json.loads((BASE / 'integration.json').read_bytes())['files'][0]
+-        if sha(BASE / 'preparation-6/original.swift') != row['preimageSHA256']:
++        if sha(BASE / 'preparation-7/original.swift') != row['preimageSHA256']:
+             raise ValueError('Preserved numerical source changed')
+     return counts
+--- thunk/prepare.py
++++ scoped/prepare.py
+@@ -10,7 +10,7 @@
+         json.dump(value, stream, indent=2, sort_keys=True); stream.write('\n')
+ 
+ def main():
+-    output = BASE / 'preparation-6'; output.mkdir(mode=0o700)
++    output = BASE / 'preparation-7'; output.mkdir(mode=0o700)
+     receipt = dict(status='failed', compilerExecuted=False, cacheCopied=False, remoteExecuted=False)
+     try:
+         receipt['before'] = verify(before=True, require_snapshots=False)
+@@ -23,14 +23,14 @@
+             raise ValueError('Thunk source binding changed')
+         with (output / 'original.swift').open('xb') as stream: stream.write(destination.read_bytes())
+         verify(before=True, require_snapshots=False)
+-        temporary = destination.with_name(destination.name + '.thunk-new')
++        temporary = destination.with_name(destination.name + '.scoped-publisher-new')
+         with temporary.open('xb') as stream:
+             stream.write(source.read_bytes()); stream.flush(); os.fsync(stream.fileno())
+         if sha(temporary) != row['proposedSHA256'] or sha(destination) != row['preimageSHA256']:
+             raise ValueError('Source changed before replacement')
+         os.replace(temporary, destination)
+         receipt['after'] = verify(require_snapshots=False)
+-        for name, rows in zip(('source-snapshot-6.json','dependency-snapshot-6.json'), expected()):
++        for name, rows in zip(('source-snapshot-7.json','dependency-snapshot-7.json'), expected()):
+             save(BASE / name, dict(members=rows))
+         verify(); receipt['status'] = 'passed'
+     finally: save(output / 'receipt.json', receipt)
+--- thunk/run_phase.py
++++ scoped/run_phase.py
+@@ -11,21 +11,21 @@
+     args = parser.parse_args(); inputs()
+     if args.phase != 'prepare':
+         name = phases[phases.index(args.phase)-1]
+-        record = json.loads((BASE / ('root-'+name+'-6/receipt.json')).read_bytes())
++        record = json.loads((BASE / ('root-'+name+'-7/receipt.json')).read_bytes())
+         if record['status'] != 'passed' or record['manifestSHA256'] != sha(BASE/'manifest.json'):
+             raise ValueError('Matching previous phase must pass')
+-    output = BASE / ('root-'+args.phase+'-6'); output.mkdir(mode=0o700)
++    output = BASE / ('root-'+args.phase+'-7'); output.mkdir(mode=0o700)
+     receipt = dict(status='failed', phase=args.phase, manifestSHA256=sha(BASE/'manifest.json'), steps=[])
+     try:
+         if args.phase == 'prepare':
+             command = ['/usr/bin/python3','-B',str(BASE/'prepare.py')]; timeout=120
+-            result = BASE/'preparation-6/receipt.json'
++            result = BASE/'preparation-7/receipt.json'
+         elif args.phase == 'package':
+-            command = ['/usr/bin/python3','-B',str(BASE/'package_native.py'),'runtime-6','worker-6','capability-6','native-6','runtime-bundle-6']; timeout=180
+-            result = BASE/'runtime-bundle-6/bundle.json'
++            command = ['/usr/bin/python3','-B',str(BASE/'package_native.py'),'runtime-7','worker-7','capability-7','native-7','runtime-bundle-7']; timeout=180
++            result = BASE/'runtime-bundle-7/bundle.json'
+         else:
+-            command = ['/usr/bin/python3','-B',str(BASE/'run_checks.py'),args.phase,args.phase+'-6']; timeout=1100
+-            result = BASE/(args.phase+'-6/receipt.json')
++            command = ['/usr/bin/python3','-B',str(BASE/'run_checks.py'),args.phase,args.phase+'-7']; timeout=1100
++            result = BASE/(args.phase+'-7/receipt.json')
+         receipt['steps'].append(run_owned(command,output,'execution',timeout))
+         if args.phase != 'package' and json.loads(result.read_bytes())['status'] != 'passed':
+             raise ValueError('Actual phase failed')

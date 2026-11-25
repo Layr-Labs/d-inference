@@ -1,0 +1,30 @@
+--- original-collector
++++ snapshot-corrected-collector
+@@ -4,6 +4,8 @@
+ from pathlib import Path
+ import shlex
+ import sys
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'Physical'))
+ 
+ from common import BASE, REMOTE, local_execute, sha, verify_bound, verify_sources, write, write_json
+ from results import controller, copies, parent, pinned_json, reference_result, resources
+@@ -82,14 +84,16 @@
+     else:
+         targets,rounds=check_rounds(actual,context,reference['selected'],binding['depth1Agreement'])
+         numerical=compare_accepted(reference,targets,binding['depth1Agreement'],context)
+-    exact(snapshot(args.reference_stdout,32*1024**2,keep=False),{k:v for k,v in full_item.items() if k!='raw'},'Reference bytes unchanged')
++    final_item = snapshot(args.reference_stdout,32*1024**2,keep=False)
++    exact({k:v for k,v in final_item.items() if k!='raw'},{k:v for k,v in full_item.items() if k!='raw'},'Reference bytes unchanged')
+     parent(parent_path,run['parentExecutionSHA256']); verify_bound(args.bound,args.binding_sha256); verify_sources()
+     write_json(args.output/'pair-result.json',dict(schema='qwen_mtp_owned_pair_result_v1',status='passed',mode=args.mode,
+         bindingSHA256=args.binding_sha256,runResultSHA256=args.run_result_sha256,referenceResultSHA256=args.reference_result_sha256,
+         referenceStdoutSHA256=args.reference_stdout_sha256,selectedTokenIDs=reference['selected'],
+         numerical=numerical,rounds=rounds,sidecars=retained,resources=observations,
+         exactReferenceNumericalComparisonPassed=True,ownedCleanupAndAliasVerified=True,
+-        encryptedTransportQualified=False,throughputMeasurementValid=False,servingEnabled=False))
++        encryptedTransportQualified=False,throughputMeasurementValid=False,servingEnabled=False,
++        correctedCollectorSHA256=sha(Path(__file__).resolve())))
+ 
+ 
+ if __name__=='__main__':

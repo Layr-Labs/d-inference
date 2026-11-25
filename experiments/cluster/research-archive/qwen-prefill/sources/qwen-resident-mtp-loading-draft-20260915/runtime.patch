@@ -1,0 +1,654 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
+@@ -13,9 +13,11 @@
+ /// scope. The existing default-half-only StageLoadBudget policy is untouched.
+ private final class QwenResidentLoadGate {
+     let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
++    let additional: QwenResidentMTPLoadResources?
+     private var next = 0
+     private var failed = false
+-    init(inventory: QwenStagePreparedInventory) throws {
++    init(inventory: QwenStagePreparedInventory, additional: QwenResidentMTPLoadResources? = nil) throws {
++        self.additional = additional
+         active = inventory.active; host = active.map(\.byteCount).max() ?? 0
+         bounds = try active.map { try Memory.allocationFootprintUpperBound(byteCount: $0.byteCount) }
+         let inertBounds = try inventory.inert.flatMap(\.parameters).map {
+@@ -33,8 +35,9 @@
+     func observe() throws {
+         do {
+             guard !failed else { throw ProbeError("Resident load gate was poisoned") }
+-            let remaining = try QwenLongPrefillCheckedBytes.sum(Array(bounds.dropFirst(next)) + [inert])
+-            let h = next < active.count ? host : 0
++            let remaining = try QwenLongPrefillCheckedBytes.sum(Array(bounds.dropFirst(next))
++                + [inert, additional?.reservedTensorBytes ?? 0])
++            let h = max(next < active.count ? host : 0, additional?.largestHostTensorBytes ?? 0)
+             let scratch = h == 0 ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
+             let required = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+                 try QwenLongPrefillCheckedBytes.sum([remaining, h, h, scratch, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+@@ -67,6 +70,15 @@
+ func loadQwenResidentStage(_ admission: QwenResidentAdmission,
+                           check: () throws -> Void) throws -> QwenResidentLoadedStage {
+     let prepared = try prepareQwenResidentSource(admission, check: check)
++    return try loadPreparedQwenResidentStage(admission, prepared: prepared, check: check)
++}
++
++/// Same selected-stage body, with descriptor ownership supplied by the caller.
++/// The ordinary entry above retains its original source/read order and receipts.
++func loadPreparedQwenResidentStage(_ admission: QwenResidentAdmission,
++    prepared: QwenResidentSource, additional: QwenResidentMTPLoadResources? = nil,
++    check: () throws -> Void
++) throws -> QwenResidentLoadedStage {
+     let plan = admission.plan, index = admission.configuration.rank
+     let other = try withRandomState(MLXRandom.RandomState(seed: 7)) {
+         try inspectOtherQwenLayerStage(source: prepared.source, stage: plan.stages[1 - index], check: check)
+@@ -85,7 +97,7 @@
+                 inventories: [other, value.inventory].sorted { $0.summary.stageIndex < $1.summary.stageIndex })
+             let selected = try QwenDenseStorageRequirement.derive(profile: prepared.profile,
+                 plan: plan, role: index == 0 ? .stage0 : .stage1)
+-            let gate = try QwenResidentLoadGate(inventory: value.inventory)
++            let gate = try QwenResidentLoadGate(inventory: value.inventory, additional: additional)
+             let loaded = try withoutActuallyEscaping(check) { borrowedCheck in
+                 try materializeVerifiedQwenLayerStage(source: prepared.source, plan: plan,
+                     stageIndex: index, model: value.model, inventory: value.inventory, commitment: commitment,
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoadResources.swift
+@@ -0,0 +1,32 @@
++import Foundation
++
++/// Optional additional-load ledger supplied to the existing target loader.
++/// Actual array rounding is supplied by the native allocator, never by config.
++struct QwenResidentMTPLoadResources {
++    let tensorBounds: [Int]
++    let reservedTensorBytes: Int
++    let largestHostTensorBytes: Int
++
++    init(placement: QwenResidentMTPPlacement, maximumBufferBytes: Int,
++         bound: (Int) throws -> Int) throws {
++        let values = placement.tensorsInReadOrder
++        tensorBounds = try values.map { value in
++            let rounded = try bound(value.byteCount)
++            guard rounded >= value.byteCount, rounded <= maximumBufferBytes else {
++                throw ProbeError("MTP tensor exceeds actual allocator/buffer limits")
++            }
++            return rounded
++        }
++        reservedTensorBytes = try QwenLongPrefillCheckedBytes.sum(tensorBounds)
++        largestHostTensorBytes = values.map(\.byteCount).max() ?? 0
++        guard largestHostTensorBytes > 0 else { throw ProbeError("Empty MTP load ledger") }
++    }
++
++    func pending(after completed: Int) throws -> (tensorBytes: Int, hostBytes: Int) {
++        guard (0...tensorBounds.count).contains(completed) else {
++            throw ProbeError("Invalid MTP load progress")
++        }
++        return (try QwenLongPrefillCheckedBytes.sum(Array(tensorBounds.dropFirst(completed))),
++            completed < tensorBounds.count ? largestHostTensorBytes : 0)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoading.swift
+@@ -0,0 +1,86 @@
++import Foundation
++import MLX
++@_spi(Cluster) import MLXLLM
++import MLXLMCommon
++import MLXNN
++
++struct QwenResidentMTPLoadReceipt: Encodable {
++    let placement: QwenResidentMTPPlacement
++    let targetLoadReceiptSHA256: String
++    let loadedTensorBytes: Int
++    let allocatorReservedTensorBytes: Int
++    let sourceReadAccounting: CheckpointAlignedReadAccounting
++    let independentlyOwnedAdditionalBuffers = true
++    let sharesTargetFinalNormAndOutputHead = true
++    let targetResidualEmbeddingUnchanged = true
++    let generationEnabled = false
++    let requestHistoryAllocated = false
++}
++
++/// Native-only storage owner. No serving/worker/protocol entry consumes this
++/// value yet. The assistant retains the final target and its explicit replica;
++/// no Module/array escapes the future private resident execution owner.
++struct QwenResidentStageWithMTPAssets {
++    let target: QwenResidentLoadedStage
++    let assistant: Qwen35InlineMTPAssistant
++    let receipt: QwenResidentMTPLoadReceipt
++}
++
++/// Separate opt-in storage preparation, not an MTP generation switch. The
++/// ordinary loadQwenResidentStage entry does not call this function.
++func loadQwenResidentStageWithMTPAssets(_ admission: QwenResidentAdmission,
++    check: () throws -> Void
++) throws -> QwenResidentStageWithMTPAssets {
++    try MLX.withError { nativeError in
++        func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
++        do {
++            return try autoreleasepool {
++                let source = try PreparedQwenResidentMTPSource(admission: admission, check: checked)
++                let loaded = try loadPreparedQwenResidentStage(admission, prepared: source.target,
++                    additional: source.resources, check: checked)
++                guard loaded.loaded.stageIndex == 1, loaded.loaded.plan.fingerprint == admission.plan.fingerprint else {
++                    throw ProbeError("MTP target is not the admitted final stage")
++                }
++                let originalLayout = modelParameterLayout(loaded.loaded.model)
++                let reader = QwenResidentMTPMaterializer(source: source)
++                // Lazy defaults are individually replaced without eval(embedding).
++                // This object is separate from the residual-ingress placeholder.
++                let embedding = QuantizedEmbedding(embeddingCount: loaded.profile.vocabularySize,
++                    dimensions: loaded.profile.geometry.hiddenSize, groupSize: 64, bits: 4, mode: .affine)
++                for entry in source.placement.embedding {
++                    let suffix = String(entry.name.dropFirst(QwenResidentMTPPlacement.embeddingRoot.count + 1))
++                    let value = try reader.read(entry.name, shape: entry.shape,
++                        packed: entry.sourceDType == "U32", check: checked)
++                    try embedding.update(parameters: ModuleParameters.unflattened([suffix: value]),
++                        verify: [.noUnusedKeys, .shapeMismatch])
++                    try checked()
++                }
++                embedding.freeze()
++                let names = Set(source.placement.head.map { String($0.name.dropFirst(4)) })
++                let assistant = try Qwen35InlineMTPAssistant.loadVerifiedInline(
++                    configuration: admission.configBytes, target: loaded.loaded.model,
++                    inputEmbedding: embedding, parameterNames: names, verificationMode: .serialTarget,
++                    read: { name, shape, dtype in
++                        try reader.read("mtp." + name, shape: shape, packed: dtype == .uint32, check: checked)
++                    }, check: checked)
++                try reader.finish(); try checked()
++                guard modelParameterLayout(loaded.loaded.model) == originalLayout,
++                      let target = loaded.loaded.model as? any CBv2RecurrentMTPForwardable,
++                      assistant.targetIdentity == target.cbv2MTPTargetIdentity else {
++                    throw ProbeError("MTP loading changed target storage or bound another target")
++                }
++                return .init(target: loaded, assistant: assistant,
++                    receipt: .init(placement: source.placement,
++                        targetLoadReceiptSHA256: sha256(try canonicalJSONData(loaded.loaded.receipt)),
++                        loadedTensorBytes: reader.loadedBytes,
++                        allocatorReservedTensorBytes: source.resources.reservedTensorBytes,
++                        sourceReadAccounting: reader.accounting))
++            }
++        } catch {
++            // Same recorded-native-fault precedence as the resident load owner.
++            try nativeError.check()
++            throw error
++        }
++    }
++}
++
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPMaterializer.swift
+@@ -0,0 +1,68 @@
++import Foundation
++import MLX
++
++/// Ordered extra-payload reader. Current active arrays are observed through
++/// MLX; only the not-yet-read bounds remain in this additional load reserve.
++final class QwenResidentMTPMaterializer {
++    let source: PreparedQwenResidentMTPSource
++    private var progress: QwenResidentMTPReadProgress
++    private(set) var loadedBytes = 0
++    private(set) var accounting = CheckpointAlignedReadAccounting()
++    init(source: PreparedQwenResidentMTPSource) {
++        self.source = source
++        progress = .init(placement: source.placement, resources: source.resources)
++    }
++
++    private func observe() throws {
++        let pending = try progress.pending()
++        try QwenResidentResourceEnvironment.require()
++        let remaining = pending.tensorBytes, host = pending.hostBytes
++        let scratch = host == 0 ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
++        let required = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
++            try QwenLongPrefillCheckedBytes.sum([remaining, host, host, scratch, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
++        let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
++            remaining, host, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
++        let os = try QwenDenseStageLoadResources.requireInitial()
++        guard os.actualFreeBytes >= required, Memory.memoryLimit >= allocator else {
++            throw ProbeError("MTP storage exceeds actual-free or allocator policy")
++        }
++    }
++
++    func read(_ name: String, shape: [Int], packed: Bool, check: () throws -> Void) throws -> MLXArray {
++        do {
++            let entry = try progress.entry(name: name, shape: shape, packed: packed)
++            guard let descriptor = source.descriptors[name] else { throw ProbeError("MTP descriptor disappeared") }
++            try check(); try observe()
++            let value = try descriptor.read(.all)
++            eval(value.array); Stream.gpu.synchronize(); try check()
++            guard value.array.shape == shape, value.array.dtype == descriptor.dtype,
++                  value.array.nbytes == entry.byteCount, value.copiedBytes == entry.byteCount,
++                  let info = try value.array.evaluatedBufferInfo(), info.isUnique,
++                  info.dataOffset == 0, info.isRowContiguous, info.dataElements == value.array.size,
++                  info.allocatedBytes >= value.array.nbytes,
++                  info.allocatedBytes <= source.resources.tensorBounds[progress.completed],
++                  let read = value.readAccounting, read.selectedBytes == value.copiedBytes else {
++                throw ProbeError("MTP tensor is not an exact independently owned selected allocation")
++            }
++            try accounting.merge(read)
++            loadedBytes = try QwenLongPrefillCheckedBytes.sum([loadedBytes, value.copiedBytes])
++            try progress.accept(copiedBytes: value.copiedBytes)
++            try observe(); try check()
++            return value.array
++        } catch { progress.poison(); throw error }
++    }
++
++    func finish() throws {
++        do {
++            try progress.requireComplete()
++            guard loadedBytes == source.placement.additionalTensorBytes,
++                  accounting.selectedBytes == loadedBytes else {
++                throw ProbeError("MTP selected loading did not complete")
++            }
++            try source.target.source.prepared.checkpoint.checkUnchanged()
++            try observe()
++        } catch {
++            progress.poison(); throw error
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPPlacement.swift
+@@ -0,0 +1,89 @@
++import Foundation
++
++/// Additional storage only. The target Plan, source conservation receipt and
++/// MTP-off generation admission remain unchanged. No request state is implied.
++struct QwenResidentMTPPlacement: Encodable {
++    let targetPlanSHA256: String
++    let ownerRank = 1
++    let embeddingSourceOwnerRank = 0
++    let embeddingIsExplicitReplica = true
++    let generationEnabled = false
++    let head: [QwenDenseCanonicalTensor]
++    let embedding: [QwenDenseCanonicalTensor]
++    let headBytes: Int
++    let replicatedEmbeddingBytes: Int
++    let additionalTensorBytes: Int
++    var tensorsInReadOrder: [QwenDenseCanonicalTensor] { embedding + head }
++    static let embeddingRoot = "language_model.model.embed_tokens"
++
++    static func requireOwner(rank: Int) throws {
++        guard rank == 1 else { throw ProbeError("Inline MTP storage belongs only to the final rank") }
++    }
++
++    static func derive(configuration: Data, plan: QwenLayerStagePlan,
++        head: [QwenDenseCanonicalTensor], embedding: [QwenDenseCanonicalTensor]
++    ) throws -> Self {
++        guard let spec = QwenDenseRegisteredSpecification.all.first(where: { $0.model == .qwen35NineB }),
++              sha256(configuration) == spec.configurationSHA256,
++              configuration == plan.originalConfiguration, plan.stages.count == 2,
++              let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
++              let text = root["text_config"] as? [String: Any],
++              let inline = root["mtplx_mtp"] as? [String: Any],
++              inline["included"] as? Bool == true, inline["prefix"] as? String == "mtp.",
++              inline["shares_target_embeddings"] as? Bool == true,
++              inline["shares_target_lm_head"] as? Bool == true,
++              BoundedProbeInput.integer(inline["block_size"]) == 3,
++              BoundedProbeInput.integer(text["mtp_num_hidden_layers"]) == 1,
++              text["mtp_use_dedicated_embeddings"] as? Bool == false else {
++            throw ProbeError("MTP storage requires the exact registered 9B inline shared-head artifact")
++        }
++        let rebuilt = try QwenLayerStagePlan(configuration: configuration,
++            ranges: plan.stages.map(\.sourceRange), activeMTP: false)
++        guard rebuilt.fingerprint == plan.fingerprint else { throw ProbeError("MTP target Plan differs") }
++        let g = try spec.expectedGeometry(), h = g.hiddenSize
++        let middle = try QwenStageMetadata.integer(text, "intermediate_size", limit: 131072)
++        let vocabulary = try QwenStageMetadata.integer(text, "vocab_size", limit: 262144)
++        var shapes: [String: [Int]] = [:]
++        for name in ["pre_fc_norm_hidden", "pre_fc_norm_embedding", "norm",
++                     "layers.0.input_layernorm", "layers.0.post_attention_layernorm"] {
++            shapes["mtp." + name + ".weight"] = [h]
++        }
++        for name in ["q_norm", "k_norm"] {
++            shapes["mtp.layers.0.self_attn." + name + ".weight"] = [g.headDimension]
++        }
++        let projections: [(String, Int, Int)] = [
++            ("fc", 2*h, h),
++            ("layers.0.self_attn.q_proj", h, 2*g.queryHeads*g.headDimension),
++            ("layers.0.self_attn.k_proj", h, g.kvHeads*g.headDimension),
++            ("layers.0.self_attn.v_proj", h, g.kvHeads*g.headDimension),
++            ("layers.0.self_attn.o_proj", g.queryHeads*g.headDimension, h),
++            ("layers.0.mlp.gate_proj", h, middle), ("layers.0.mlp.up_proj", h, middle),
++            ("layers.0.mlp.down_proj", middle, h)]
++        for (name, input, output) in projections {
++            shapes["mtp." + name + ".weight"] = [output, input/8]
++            for suffix in ["scales", "biases"] { shapes["mtp." + name + "." + suffix] = [output, input/64] }
++        }
++        let replicaShapes = [embeddingRoot + ".weight": [vocabulary, h/8],
++            embeddingRoot + ".scales": [vocabulary, h/64], embeddingRoot + ".biases": [vocabulary, h/64]]
++        func validate(_ values: [QwenDenseCanonicalTensor], _ expected: [String: [Int]]) throws {
++            guard values.count == expected.count, Set(values.map(\.name)) == Set(expected.keys) else {
++                throw ProbeError("MTP storage has missing, extra or duplicate tensors")
++            }
++            for value in values {
++                try value.validate()
++                let packed = value.name.hasSuffix(".weight") && value.shape.count == 2
++                guard value.shape == expected[value.name],
++                      (packed ? value.sourceDType == "U32" : value.sourceDType == "BF16") else {
++                    throw ProbeError("MTP storage shape or source dtype differs: \(value.name)")
++                }
++            }
++        }
++        try validate(head, shapes); try validate(embedding, replicaShapes)
++        let headBytes = try QwenLongPrefillCheckedBytes.sum(head.map(\.byteCount))
++        let embeddingBytes = try QwenLongPrefillCheckedBytes.sum(embedding.map(\.byteCount))
++        return .init(targetPlanSHA256: plan.fingerprint, head: head.sorted { $0.name < $1.name },
++            embedding: embedding.sorted { $0.name < $1.name }, headBytes: headBytes,
++            replicatedEmbeddingBytes: embeddingBytes,
++            additionalTensorBytes: try QwenLongPrefillCheckedBytes.sum([headBytes, embeddingBytes]))
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPReadProgress.swift
+@@ -0,0 +1,40 @@
++import Foundation
++
++/// The selected reader advances only after an evaluated allocation passed its
++/// descriptor/ownership checks. Failure permanently refuses another read.
++struct QwenResidentMTPReadProgress {
++    let placement: QwenResidentMTPPlacement
++    let resources: QwenResidentMTPLoadResources
++    private(set) var completed = 0
++    private(set) var failed = false
++
++    func entry(name: String, shape: [Int], packed: Bool) throws -> QwenDenseCanonicalTensor {
++        let entries = placement.tensorsInReadOrder
++        guard !failed, entries.indices.contains(completed), entries[completed].name == name,
++              entries[completed].shape == shape, (entries[completed].sourceDType == "U32") == packed else {
++            throw ProbeError("MTP read differs from its complete ordered inventory")
++        }
++        return entries[completed]
++    }
++
++    mutating func accept(copiedBytes: Int) throws {
++        let entries = placement.tensorsInReadOrder
++        guard !failed, entries.indices.contains(completed), copiedBytes == entries[completed].byteCount else {
++            throw ProbeError("MTP completed read differs from its admitted byte count")
++        }
++        completed += 1
++    }
++
++    mutating func poison() { failed = true }
++
++    func pending() throws -> (tensorBytes: Int, hostBytes: Int) {
++        guard !failed else { throw ProbeError("MTP materializer is poisoned") }
++        return try resources.pending(after: completed)
++    }
++
++    func requireComplete() throws {
++        guard !failed, completed == placement.tensorsInReadOrder.count else {
++            throw ProbeError("MTP selected loading did not complete")
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPSource.swift
+@@ -0,0 +1,52 @@
++import Foundation
++import MLX
++
++/// Retains the same verified descriptor owner as the MTP-off target source.
++/// Artifact checksum verification is unchanged. This preparation creates only
++/// metadata/descriptors, with no selected tensor allocation or model evaluation.
++struct PreparedQwenResidentMTPSource {
++    let target: QwenResidentSource
++    let placement: QwenResidentMTPPlacement
++    let descriptors: [String: TensorDescriptor]
++    let resources: QwenResidentMTPLoadResources
++
++    init(admission: QwenResidentAdmission, check: () throws -> Void) throws {
++        try QwenResidentMTPPlacement.requireOwner(rank: admission.configuration.rank)
++        try QwenResidentResourceEnvironment.require(); try check()
++        target = try prepareQwenResidentSource(admission, check: check)
++        let checkpoint = target.source.prepared.checkpoint
++        let all = try tensorDescriptors(checkpoint: checkpoint)
++        var selected = all.filter { $0.key.hasPrefix("mtp.") }
++        let replica = target.profile.canonicalTensors.filter {
++            $0.name.hasPrefix(QwenResidentMTPPlacement.embeddingRoot + ".")
++        }
++        for entry in replica {
++            guard let tensor = target.source.prepared.canonical[entry.name],
++                  tensor.parts.count == 1, tensor.shape == entry.shape,
++                  tensor.byteCount == entry.byteCount, selected[entry.name] == nil else {
++                throw ProbeError("MTP replica differs from verified target embedding descriptors")
++            }
++            selected[entry.name] = tensor.parts[0].tensor
++        }
++        let head = try selected.keys.filter { $0.hasPrefix("mtp.") }.sorted().map { name in
++            let value = selected[name]!
++            let dtype: String
++            switch value.dtype {
++            case .uint32: dtype = "U32"
++            case .bfloat16: dtype = "BF16"
++            default: throw ProbeError("Registered MTP descriptor has an unsupported source dtype")
++            }
++            return QwenDenseCanonicalTensor(name: name, shape: value.shape,
++                sourceDType: dtype, byteCount: value.byteCount)
++        }
++        placement = try .derive(configuration: admission.configBytes, plan: admission.plan,
++            head: head, embedding: replica)
++        guard Set(selected.keys) == Set(placement.tensorsInReadOrder.map(\.name)) else {
++            throw ProbeError("MTP selected descriptor coverage differs")
++        }
++        descriptors = selected
++        resources = try .init(placement: placement, maximumBufferBytes: GPU.deviceInfo().maxBufferSize,
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        try checkpoint.checkUnchanged(); try check()
++    }
++}
+--- /dev/null
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+VerifiedLoading.swift
+@@ -0,0 +1,85 @@
++import Foundation
++import MLX
++import MLXLMCommon
++import MLXNN
++
++extension Qwen35InlineMTPAssistant {
++    /// Common lazy constructor/quantization from the existing local loader.
++    /// No checkpoint IO or parameter evaluation occurs in this helper.
++    static func preparedAssistant(metadata: Qwen35InlineMTPMetadata,
++        target: Qwen35TextModel, parameterNames: Set<String>,
++        verificationMode: CBv2MTPVerificationMode?, inputEmbedding: Embedding? = nil
++    ) throws -> Qwen35InlineMTPAssistant {
++        let assistant = Qwen35InlineMTPAssistant(
++            configuration: metadata.textConfiguration,
++            blockSize: metadata.blockSize, target: target,
++            verificationMode: verificationMode, inputEmbedding: inputEmbedding)
++        let scaledPaths = Set(parameterNames.compactMap { key -> String? in
++            guard key.hasSuffix(".scales") else { return nil }
++            return String(key.dropLast(".scales".count))
++        })
++        for path in scaledPaths where metadata.resolvedQuantization(for: path) == nil {
++            throw Qwen35InlineMTPError.missingQuantization(path)
++        }
++        if !scaledPaths.isEmpty {
++            quantize(model: assistant.mtp) { path, _ in
++                guard scaledPaths.contains(path) else { return nil }
++                return metadata.resolvedQuantization(for: path)?.asTuple
++            }
++        }
++        return assistant
++    }
++
++    /// Native-library seam for a verified descriptor owner. It owns an explicit
++    /// input-embedding replica but reuses the bound target's final norm/head.
++    /// The caller must admit all storage and return an evaluated, owned tensor
++    /// from every read. No file, global attachment flag, cache or generation
++    /// state is created here. Failure publishes no assistant.
++    @_spi(Cluster) public static func loadVerifiedInline(
++        configuration: Data, target: any LanguageModel, inputEmbedding: Embedding,
++        parameterNames: Set<String>, verificationMode: CBv2MTPVerificationMode,
++        read: (String, [Int], DType) throws -> MLXArray,
++        check: () throws -> Void
++    ) throws -> Qwen35InlineMTPAssistant {
++        guard !configuration.isEmpty, configuration.count <= 1_048_576 else {
++            throw Qwen35InlineMTPError.invalidConfiguration("bounded configuration required")
++        }
++        let target = try qwen35TextTarget(target)
++        let metadata = try parseMetadata(configuration)
++        try validate(metadata.textConfiguration, against: target.configuration)
++        guard metadata.prefix == "mtp.", !target.hasMTPHead,
++              inputEmbedding.shape.0 == target.vocabularySize,
++              inputEmbedding.shape.1 == target.configuration.hiddenSize else {
++            throw Qwen35InlineMTPError.invalidConfiguration("inline head or explicit embedding differs")
++        }
++        let resolved = resolvedVerificationMode(requested: verificationMode,
++            forceSerialEnvironment: forceSerialVerification)
++        guard resolved != .rectangularExact || target.model.exactTargetVerify else {
++            throw Qwen35InlineMTPError.invalidConfiguration("exact verification requires exact target arithmetic")
++        }
++        let assistant = try preparedAssistant(metadata: metadata, target: target,
++            parameterNames: parameterNames, verificationMode: verificationMode,
++            inputEmbedding: inputEmbedding)
++        let expected = Dictionary(uniqueKeysWithValues: assistant.mtp.parameters().flattened().map {
++            ($0.0, (shape: $0.1.shape, dtype: $0.1.dtype))
++        })
++        guard Set(expected.keys) == parameterNames else {
++            throw Qwen35InlineMTPError.invalidWeightIndex("head descriptors do not cover constructed parameters")
++        }
++        for name in expected.keys.sorted() {
++            try check()
++            let parameter = expected[name]!
++            let value = try read(name, parameter.shape, parameter.dtype)
++            guard value.shape == parameter.shape,
++                  (value.dtype == .uint32) == (parameter.dtype == .uint32) else {
++                throw Qwen35InlineMTPError.invalidWeightIndex("head shape/dtype differs at \(name)")
++            }
++            try assistant.mtp.update(parameters: ModuleParameters.unflattened([name: value]),
++                verify: [.noUnusedKeys, .shapeMismatch])
++            try check()
++        }
++        assistant.mtp.freeze()
++        try check()
++        return assistant
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift
+@@ -230,15 +230,17 @@
+ 
+ /// An explicitly loaded Qwen3.5/3.6 MTP assistant bound to one target.
+ ///
+-/// The assistant owns only the tensors below `mtp.*`. Target embeddings and
+-/// the LM head are called through the bound target, so loading this object does
+-/// not duplicate the target checkpoint and does not require
++/// The ordinary loader owns only tensors below `mtp.*` and uses target
++/// embeddings. The verified cluster seam may additionally own an explicit
++/// embedding replica; both paths call the bound target LM head and do not require
+ /// `_qwen35MTPEnabled`.
+ public final class Qwen35InlineMTPAssistant: Module, @unchecked Sendable {
+     static let cacheAllocationStep = 256
+ 
+-    private let mtp: Qwen35MTPModule
++    let mtp: Qwen35MTPModule
+     private let target: Qwen35TextModel
++    private let ownedInputEmbedding: Embedding?
++    private var inputEmbedding: Embedding { ownedInputEmbedding ?? target.model.embedTokens }
+     private let installedVerificationMode: CBv2MTPVerificationMode
+ 
+     public let blockSize: Int
+@@ -249,15 +251,17 @@
+          target.vocabularySize, installedVerificationMode.rawValue)
+     }
+ 
+-    private init(
++    init(
+         configuration: Qwen35TextConfiguration,
+         blockSize: Int,
+         target: Qwen35TextModel,
+-        verificationMode: CBv2MTPVerificationMode?
++        verificationMode: CBv2MTPVerificationMode?,
++        inputEmbedding: Embedding? = nil
+     ) {
+         self.mtp = Qwen35MTPModule(configuration)
+         self.blockSize = blockSize
+         self.target = target
++        self.ownedInputEmbedding = inputEmbedding
+         self.installedVerificationMode = Self.resolvedVerificationMode(
+             requested: verificationMode,
+             forceSerialEnvironment: Self.forceSerialVerification)
+@@ -292,7 +296,7 @@
+         let output = mtp(
+             hidden: hidden,
+             nextTokenIds: tokens,
+-            embedTokens: target.model.embedTokens,
++            embedTokens: inputEmbedding,
+             cache: cache)
+         return (headLogits(output), output)
+     }
+@@ -323,7 +327,7 @@
+         mtp(
+             hidden: hidden,
+             nextTokenIds: tokens,
+-            embedTokens: target.model.embedTokens,
++            embedTokens: inputEmbedding,
+             cache: cache)
+     }
+ 
+@@ -338,7 +342,7 @@
+         mtp.lastHiddenWithKVOnlyHistory(
+             hidden: hidden,
+             nextTokenIds: tokens,
+-            embedTokens: target.model.embedTokens,
++            embedTokens: inputEmbedding,
+             cache: cache)
+     }
+ 
+@@ -407,26 +411,8 @@
+             indexed = try loadIndexedWeights(
+                 from: modelDirectory, prefix: metadata.prefix)
+         }
+-        let assistant = Qwen35InlineMTPAssistant(
+-            configuration: metadata.textConfiguration,
+-            blockSize: metadata.blockSize,
+-            target: target,
+-            verificationMode: verificationMode)
+-
+-        let scaledPaths = Set(indexed.keys.compactMap { key -> String? in
+-            guard key.hasSuffix(".scales") else { return nil }
+-            return String(key.dropLast(".scales".count))
+-        })
+-        for path in scaledPaths
+-        where metadata.resolvedQuantization(for: path) == nil {
+-            throw Qwen35InlineMTPError.missingQuantization(path)
+-        }
+-        if !scaledPaths.isEmpty {
+-            quantize(model: assistant.mtp) { path, _ in
+-                guard scaledPaths.contains(path) else { return nil }
+-                return metadata.resolvedQuantization(for: path)?.asTuple
+-            }
+-        }
++        let assistant = try preparedAssistant(metadata: metadata, target: target,
++            parameterNames: Set(indexed.keys), verificationMode: verificationMode)
+ 
+         try assistant.mtp.update(
+             parameters: ModuleParameters.unflattened(indexed), verify: [.all])
+@@ -434,7 +420,7 @@
+         return assistant
+     }
+ 
+-    private static func qwen35TextTarget(
++    static func qwen35TextTarget(
+         _ target: any LanguageModel
+     ) throws -> Qwen35TextModel {
+         if let target = target as? Qwen35TextModel { return target }
+@@ -511,6 +497,10 @@
+ 
+     static func loadMetadata(from directory: URL) throws -> Qwen35InlineMTPMetadata {
+         let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
++        return try parseMetadata(data)
++    }
++
++    static func parseMetadata(_ data: Data) throws -> Qwen35InlineMTPMetadata {
+         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+             let text = root["text_config"] as? [String: Any]
+         else {
+@@ -660,7 +650,7 @@
+         return weights
+     }
+ 
+-    private static func validate(
++    static func validate(
+         _ artifact: Qwen35TextConfiguration,
+         against target: Qwen35TextConfiguration
+     ) throws {

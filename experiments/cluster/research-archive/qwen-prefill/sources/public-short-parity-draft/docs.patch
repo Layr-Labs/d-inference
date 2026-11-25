@@ -1,0 +1,36 @@
+--- a/experiments/cluster/inference/README.md
++++ b/experiments/cluster/inference/README.md
+@@ -191,6 +191,11 @@
+ compact models through ordered loading, then returns CPU evidence after release.
+ Its pure fixture passes 24 accepted/82 rejected checks; lazy inert allowances
+ remain reserved. Pair materialization and forward parity remain unqualified.
++
++The [short parity probe](QWEN_DENSE_SHORT_PARITY.md) records a registered full
++model, releases it, then replays the same three-step request through both stages.
++Its pure entry fixture passes 19 accepted/83 rejected checks; native compilation
++passes, while actual forward parity remains unqualified.
+ 
+ | Stage | Active weights | Inactive components that the loader must handle |
+ |---|---|---|
+--- a/docs/developer/test.md
++++ b/docs/developer/test.md
+@@ -100,6 +100,19 @@
+ retained metadata. Synthetic resource and allocator observations test ownership,
+ ordered progress and retained inert allowances without executing the private pair
+ owner, model loading or forward arithmetic.
++
++Run the [short parity entry fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_PARITY.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ShortParity/run.sh
++```
++
++The standalone 40-source fixture passed 19 accepted/83 rejected checks with empty
++stderr. It uses the real strict parser and request admission, synthetic token
++files and fabricated CPU publication values. It checks encoded byte limits and
++no-write failure boundaries; public runner and actual forward execution remain
++pending.
+ 
+ Run the [resident lifecycle fixtures](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
+ under Swift 6 without MLX:

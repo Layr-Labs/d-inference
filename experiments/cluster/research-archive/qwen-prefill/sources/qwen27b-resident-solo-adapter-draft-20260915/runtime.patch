@@ -1,0 +1,291 @@
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSolo27BCheck.swift
+@@ -0,0 +1,70 @@
++import Foundation
++@_spi(ClusterBenchmark) import MLXLLM
++
++/// Uses retained config/manifest bytes only; no model, kernel or tensor payload.
++func checkQwenResidentSolo27B(root: [String: Any]) throws -> (accepted: Int, rejected: Int) {
++    guard let row = root["twentySeven"] as? [String: Any],
++          let configText = row["configuration"] as? String, let config = Data(base64Encoded: configText),
++          let manifestText = row["manifest"] as? String, let manifest = Data(base64Encoded: manifestText) else {
++        throw ProbeError("Solo retained 27B metadata is absent")
++    }
++    let prompt = try JSONEncoder().encode(Array(repeating: 17, count: 8192))
++    let expected = try JSONEncoder().encode(Array(repeating: 19, count: 128))
++    let ids = (11...14).map { UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", $0))! }
++    let arguments = ["--mode", QwenResidentSoloCLI.mode,
++        "--model-dir", "/invented/model", "--tokens-file", "/invented/prompt.json", "--tokens-sha256", sha256(prompt),
++        "--request-id", ids[0].uuidString.lowercased(), "--stage-cut", "16", "--output-count", "128",
++        "--stop-token-ids", "[]", "--timeout-seconds", "300",
++        "--registered-dense-profile", "registered_qwen38_27b", "--prompt-count", "8192", "--chunk-size", "512",
++        "--expected-token-ids-file", "/invented/expected.json", "--expected-token-ids-sha256", sha256(expected)]
++    var accepted = 0, rejected = 0
++    func require(_ value: Bool, _ message: String) throws {
++        guard value else { throw ProbeError("Solo 27B CPU check: \(message)") }; accepted += 1
++    }
++    func refuse(_ body: () throws -> Void) throws {
++        do { try body() } catch { rejected += 1; return }
++        throw ProbeError("Solo 27B CPU check accepted an invalid case")
++    }
++    func read(_ url: URL, _: Int) throws -> Data {
++        switch url.path {
++        case "/invented/model/config.json": return config
++        case "/invented/model/manifest.json": return manifest
++        case "/invented/prompt.json": return prompt
++        case "/invented/expected.json": return expected
++        default: throw ProbeError("Unexpected fabricated solo 27B read")
++        }
++    }
++    let cli = try QwenResidentSoloCLI(arguments: arguments)
++    var index = 1
++    let input = try cli.preflight(environment: QwenLongPrefillArithmeticEnvironment.requiredValues,
++        read: read, makeUUID: { defer { index += 1 }; return ids[index] })
++    try require(input.requests.map { $0.request.requestID } == ids, "four fresh registered requests")
++    try require(input.requests.allSatisfy {
++        $0.source.specification.model == .qwen38TwentySevenB && $0.request.forwardCount == 143
++            && $0.request.finalCommittedTokens == 8319 && $0.request.maximumTokens == 8320
++            && $0.source.plan.stages.map(\.sourceRange) == [0..<16, 16..<64]
++    }, "complete 27B trunk and matched request geometry")
++    let scope = try QwenResidentSoloModelScope(definition: cli.reference.definition)
++    try require(scope.gatedDeltaLayers == 48 && scope.warmupProfile.valueHeads == 48,
++        "48 actual GDN layers with 48 value heads")
++    try scope.requireWarmup(gatedDeltaLayers: 48, fusedLayers: 48, queryBlock: 128,
++        nativePrefillCalls: 768, nativeDecodeCalls: 6096, fallbackCalls: 0, invalidGeometryCalls: 0)
++    accepted += 1
++    for counts in [[24,24,128,384,3048,0,0], [48,47,128,768,6096,0,0],
++                   [48,48,64,768,6096,0,0], [48,48,128,767,6096,0,0],
++                   [48,48,128,768,6095,0,0], [48,48,128,768,6096,1,0],
++                   [48,48,128,768,6096,0,1]] {
++        try refuse { try scope.requireWarmup(gatedDeltaLayers: counts[0], fusedLayers: counts[1],
++            queryBlock: counts[2], nativePrefillCalls: counts[3], nativeDecodeCalls: counts[4],
++            fallbackCalls: counts[5], invalidGeometryCalls: counts[6]) }
++    }
++    for cut in ["4", "32"] {
++        var wrong = arguments; wrong[wrong.firstIndex(of: "--stage-cut")! + 1] = cut
++        try refuse { _ = try QwenResidentSoloCLI(arguments: wrong) }
++    }
++    try refuse { _ = try cli.preflight(environment: QwenLongPrefillArithmeticEnvironment.requiredValues,
++        read: read, makeUUID: { ids[0] }) }
++    try refuse { _ = try cli.preflight(environment: QwenLongPrefillArithmeticEnvironment.requiredValues,
++        read: { url, cap in url.lastPathComponent == "config.json" ? Data("{}".utf8) : try read(url, cap) }) }
++    return (accepted, rejected)
++}
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCLI.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCLI.swift
+@@ -26,9 +26,10 @@
+         guard let expectedPath, expectedPath.hasPrefix("/"), let expectedSHA,
+               qwenStageWireIsSHA256(expectedSHA) else { throw ProbeError("Solo expected IDs need an absolute pinned input") }
+         let value = try QwenFullGenerationReferenceCLI(arguments: base)
+-        guard value.definition.specification.model == .qwen35NineB, value.stageCut == 4,
++        let scope = try QwenResidentSoloModelScope(definition: value.definition)
++        guard value.stageCut == scope.referenceCut,
+               value.promptCount == 8192, value.chunkSize == 512, value.outputCount == 128,
+-              value.stopTokenIDs.isEmpty else { throw ProbeError("Resident solo requires the matched registered9B 8192/512/128 request") }
++              value.stopTokenIDs.isEmpty else { throw ProbeError("Resident solo requires the selected registered model/cut and matched 8192/512/128 request") }
+         reference = value
+         expectedTokensFile = URL(fileURLWithPath: expectedPath); expectedTokensSHA256 = expectedSHA
+     }
+@@ -55,7 +56,7 @@
+             let next = try QwenRegisteredGenerationReferenceSource(definition: source.definition,
+                 configuration: source.configuration, manifest: source.manifest, promptData: prompt,
+                 expectedPromptSHA256: source.promptFileSHA256, promptCount: 8192, requestID: makeUUID(),
+-                stageCut: 4, chunkSize: 512, outputCount: 128, stopTokenIDs: [], arithmetic: source.arithmetic)
++                stageCut: reference.stageCut, chunkSize: 512, outputCount: 128, stopTokenIDs: [], arithmetic: source.arithmetic)
+             requests.append(try .init(source: next, request: next.request))
+         }
+         return try .init(first: first, requests: requests, expectedTokenIDs: expected,
+@@ -74,7 +75,10 @@
+     init(first: QwenFullGenerationReferencePreflight, requests: [QwenGenerationReferenceAdmission],
+          expectedTokenIDs: [Int], expectedTokenFileSHA256: String) throws {
+         let base = first.admission
+-        guard requests.count == 4, Set(requests.map { $0.request.requestID }).count == 4,
++        let scope = try QwenResidentSoloModelScope(definition: base.source.definition)
++        guard base.source.plan.stages.map(\.sourceRange) ==
++                [0..<scope.referenceCut, scope.referenceCut..<base.source.specification.layers],
++              requests.count == 4, Set(requests.map { $0.request.requestID }).count == 4,
+               requests[0].request.requestID == base.request.requestID,
+               expectedTokenIDs.count == 128, expectedTokenIDs.allSatisfy({ (0..<248_320).contains($0) }),
+               qwenStageWireIsSHA256(expectedTokenFileSHA256) else {
+@@ -83,7 +87,7 @@
+         for next in requests {
+             guard next.source.configuration == base.source.configuration,
+                   next.source.manifest == base.source.manifest,
+-                  next.source.specification.model == .qwen35NineB,
++                  next.source.specification.model == scope.model,
+                   next.source.plan.fingerprint == base.source.plan.fingerprint,
+                   next.source.arithmetic == base.source.arithmetic,
+                   next.source.promptFileSHA256 == base.source.promptFileSHA256,
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCheck.swift
+@@ -126,5 +126,6 @@
+         recordedRequestFingerprint: input.requests[1].request.fingerprint)) { 128 } }
+     try failure.withModelRelease {}
+     try require(failure.snapshot.releaseCallbackCompleted, "failed body permits independent final cleanup")
+-    return .init(accepted: accepted, rejected: rejected)
++    let additional = try checkQwenResidentSolo27B(root: root)
++    return .init(accepted: accepted + additional.accepted, rejected: rejected + additional.rejected)
+ }
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCohort.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloCohort.swift
+@@ -13,15 +13,13 @@
+     let measuredRequestDispatchObservationEnabled = false
+     let optimizedAgainstAllPossibleSoloPolicies = false
+ 
+-    init(model: Module, warmup: QwenGatedDeltaWarmupObservation) throws {
++    init(model: Module, warmup: QwenGatedDeltaWarmupObservation, scope: QwenResidentSoloModelScope) throws {
+         let counts = qwen35BenchmarkFusedProjectionCounts(model)
+         let block = cbv2BenchmarkConfiguredQueryBlockSize()
+-        guard counts.gatedDeltaLayers == 24, counts.fusedLayers == 24, block == 128,
+-              warmup.nativePrefillCalls == 24 * 16,
+-              warmup.nativeDecodeCalls == 24 * 127,
+-              warmup.operationsFallbackCalls == 0, warmup.invalidGeometryCalls == 0 else {
+-            throw ProbeError("Solo warmup did not establish the required native GDN/fusion/query-block eligibility")
+-        }
++        try scope.requireWarmup(gatedDeltaLayers: counts.gatedDeltaLayers,
++            fusedLayers: counts.fusedLayers, queryBlock: block,
++            nativePrefillCalls: warmup.nativePrefillCalls, nativeDecodeCalls: warmup.nativeDecodeCalls,
++            fallbackCalls: warmup.operationsFallbackCalls, invalidGeometryCalls: warmup.invalidGeometryCalls)
+         gatedDeltaLayers = counts.gatedDeltaLayers; fusedProjectionLayers = counts.fusedLayers
+         warmupDispatch = warmup; configuredQueryBlockSize = block
+     }
+@@ -66,8 +64,10 @@
+     private var loaded: LoadedModel?
+     private weak var model: Module?
+     private let lifecycle: QwenLayerStageResidentLifecycle
++    private let scope: QwenResidentSoloModelScope
+ 
+-    init(loaded: LoadedModel) throws {
++    init(loaded: LoadedModel, scope: QwenResidentSoloModelScope) throws {
++        self.scope = scope
+         lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: 4)
+         self.loaded = loaded; model = loaded.model
+     }
+@@ -87,7 +87,7 @@
+ 
+     func eligibility(_ warmup: QwenGatedDeltaWarmupObservation) throws -> QwenResidentSoloKernelEligibility {
+         guard let loaded else { throw ProbeError("Solo eligibility lacks its resident model") }
+-        return try .init(model: loaded.model, warmup: warmup)
++        return try .init(model: loaded.model, warmup: warmup, scope: scope)
+     }
+ 
+     func release() throws {
+@@ -104,6 +104,7 @@
+ 
+ func produceQwenResidentSoloCohort(directory: URL, preflight: QwenResidentSoloPreflight,
+     resources: QwenFullGenerationReferenceResources) throws -> QwenResidentSoloCohortReport {
++    let scope = try QwenResidentSoloModelScope(definition: preflight.first.admission.source.definition)
+     var owner: QwenResidentSoloModelOwner?
+     weak var model: Module?
+     var releaseAttempted = false
+@@ -120,7 +121,7 @@
+                     let admitted = try admitQwenRegisteredGenerationReferenceSource(
+                         loaded: loaded, admission: preflight.first.admission.source)
+                     try resources.modelLoaded(admitted.1)
+-                    owner = try QwenResidentSoloModelOwner(loaded: loaded)
++                    owner = try QwenResidentSoloModelOwner(loaded: loaded, scope: scope)
+                     try checked()
+                     return admitted
+                 }
+@@ -153,7 +154,7 @@
+                     }
+                     let result: QwenResidentSoloRequestResult
+                     if ordinal == 0 {
+-                        let observed = try withQwenGatedDeltaWarmupObservation(request)
++                        let observed = try withQwenGatedDeltaWarmupObservation(request, profile: scope.warmupProfile)
+                         result = observed.0
+                         guard let owner else { throw ProbeError("Warmup owner disappeared") }
+                         eligibility = try owner.eligibility(observed.1)
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenResidentSoloModelScope.swift
+@@ -0,0 +1,43 @@
++import Foundation
++@_spi(ClusterBenchmark) import MLXLLM
++
++/// Benchmark selection only. Source identity and memory admission remain owned
++/// by the sealed registered definition and the existing full-reference loader.
++struct QwenResidentSoloModelScope {
++    let model: QwenRegisteredDenseModel
++    let referenceCut: Int
++    let gatedDeltaLayers: Int
++    let warmupProfile: QwenGatedDeltaWarmupProfile
++
++    init(definition: QwenResidentModelDefinition) throws {
++        let geometry = try definition.specification.expectedGeometry()
++        model = definition.specification.model
++        switch model {
++        case .qwen35NineB:
++            referenceCut = 4
++            warmupProfile = .nineB
++        case .qwen38TwentySevenB:
++            referenceCut = 16
++            warmupProfile = .twentySevenB
++        }
++        guard definition.supportedCuts.contains(referenceCut),
++              geometry.linearKeyHeads == 16,
++              geometry.linearValueHeads == warmupProfile.valueHeads,
++              geometry.linearKeyDimension == 128,
++              geometry.linearValueDimension == 128 else {
++            throw ProbeError("Solo warmup scope differs from registered geometry")
++        }
++        gatedDeltaLayers = geometry.layers - geometry.layers / geometry.fullAttentionInterval
++    }
++
++    func requireWarmup(gatedDeltaLayers actualLayers: Int, fusedLayers: Int, queryBlock: Int,
++                       nativePrefillCalls: Int, nativeDecodeCalls: Int,
++                       fallbackCalls: Int, invalidGeometryCalls: Int) throws {
++        guard actualLayers == gatedDeltaLayers, fusedLayers == gatedDeltaLayers,
++              queryBlock == 128, nativePrefillCalls == gatedDeltaLayers * 16,
++              nativeDecodeCalls == gatedDeltaLayers * 127,
++              fallbackCalls == 0, invalidGeometryCalls == 0 else {
++            throw ProbeError("Solo warmup did not establish the required native GDN/fusion/query-block eligibility")
++        }
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/QwenResidentBenchmarkObservation.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/QwenResidentBenchmarkObservation.swift
+@@ -12,11 +12,26 @@
+     public let invalidGeometryCalls: Int
+ }
+ 
++/// Closed warmup geometry; default callers retain the original 9B checks.
++@_spi(ClusterBenchmark)
++public enum QwenGatedDeltaWarmupProfile {
++    case nineB, twentySevenB
++
++    public var valueHeads: Int {
++        switch self {
++        case .nineB: return 32
++        case .twentySevenB: return 48
++        }
++    }
++}
++
+ final class QwenGatedDeltaWarmupCounter {
++    let profile: QwenGatedDeltaWarmupProfile
++    init(profile: QwenGatedDeltaWarmupProfile) { self.profile = profile }
+     var prefill = 0, decode = 0, fallback = 0, invalid = 0
+     func record(native: Bool, tokenCount: Int, batch: Int, keyHeads: Int,
+                 valueHeads: Int, keyDim: Int, valueDim: Int, bf16: Bool, stateFP32: Bool) {
+-        guard Thread.isMainThread, batch == 1, keyHeads == 16, valueHeads == 32,
++        guard Thread.isMainThread, batch == 1, keyHeads == 16, valueHeads == profile.valueHeads,
+               keyDim == 128, valueDim == 128, bf16, stateFP32,
+               tokenCount == 1 || tokenCount == 512 else { invalid += 1; return }
+         if !native { fallback += 1 }
+@@ -34,13 +49,14 @@
+ nonisolated(unsafe) var qwenGatedDeltaWarmupCounter: QwenGatedDeltaWarmupCounter?
+ 
+ @_spi(ClusterBenchmark)
+-public func withQwenGatedDeltaWarmupObservation<T>(_ body: () throws -> T) throws
++public func withQwenGatedDeltaWarmupObservation<T>(_ body: () throws -> T,
++    profile: QwenGatedDeltaWarmupProfile = .nineB) throws
+     -> (T, QwenGatedDeltaWarmupObservation) {
+     guard Thread.isMainThread, qwenGatedDeltaWarmupCounter == nil else {
+         throw NSError(domain: "QwenResidentBenchmark", code: 1,
+             userInfo: [NSLocalizedDescriptionKey: "Warmup observation requires one main-thread owner"])
+     }
+-    let counter = QwenGatedDeltaWarmupCounter()
++    let counter = QwenGatedDeltaWarmupCounter(profile: profile)
+     qwenGatedDeltaWarmupCounter = counter
+     defer { qwenGatedDeltaWarmupCounter = nil }
+     let result = try body()

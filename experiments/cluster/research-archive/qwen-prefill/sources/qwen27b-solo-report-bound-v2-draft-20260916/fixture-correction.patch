@@ -1,0 +1,13 @@
+--- a/Tests/prepare_fixture.py
++++ b/Tests/prepare_fixture.py
+@@ -76,8 +76,8 @@
+             stamps = [start + 1_000_000_000 + i * 1_000_000 for i in range(128)]
+             end = stamps[-1] + 1_000_000
+             execution['timing'].update(requestStartNanoseconds=start, selectedTokenNanoseconds=stamps,
+-                retiredNanoseconds=end, prefillSeconds=1.0, decodeSeconds=.127,
+-                prefillTokensPerSecond=8192.0, decodeTokensPerSecond=1000.0)
++                retiredNanoseconds=end, prefillSeconds=1, decodeSeconds=.127,
++                prefillTokensPerSecond=8192, decodeTokensPerSecond=1000)
+             row['publishedNanoseconds'] = end+1
+             rows.append(row)
+         model['publishedNanoseconds'] = rows[0]['request']['execution']['timing']['requestStartNanoseconds']-1

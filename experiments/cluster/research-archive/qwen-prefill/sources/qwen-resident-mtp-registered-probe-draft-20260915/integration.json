@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "baseSourceSnapshotSHA256": "8970c7869749883d5f58b2db9b83239e0835c2b2628ffe4cb9c45e55fae5d942",
+  "sources": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "operation": "replace",
+      "baseSHA256": "45cbc63ecad5d254fd72934a59ce542c48a7636e5b7b563084e3e92768225d9c",
+      "sha256": "6f0fb2bd98ec5b63927e00bef3255109d1e2e431425cc8d32a5603902d219555"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageMTPProbe.swift",
+      "operation": "add",
+      "baseSHA256": null,
+      "sha256": "ac4f82e5d97999d60e9c05a670b9e0cb41ed4acbdbec2613912705ae59acae4b"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPProbeRuntime.swift",
+      "operation": "add",
+      "baseSHA256": null,
+      "sha256": "bb37a2ef96cd7909bae0e28c0d39c1eead2df821259dc535dbb035740b47d281"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift",
+      "operation": "replace",
+      "baseSHA256": "bbb1662a6c468a9b7a28111935a0334130b8698241da5e897f35ead996818c9a",
+      "sha256": "76c9f1457a121b8e9d41d1f0a57e75e2ec930dcf0ef9cfc2a3375cffe336acb0"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift",
+      "operation": "replace",
+      "baseSHA256": "582872f5338ca6a1c7277d7c7749f1bbdb0111aabefc5192710757c8e1bcbaf5",
+      "sha256": "fb6865356dd8237ad461779ce6fca35d4fad259a0c96781b20a34cd0b5e6414d"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "operation": "replace",
+      "baseSHA256": "341ebf51cd3ebb2461d9c4a98be98c1fc85814efad59721960aed5297a297ee5",
+      "sha256": "fb9813496094ff296496daf40c4b656f9a54601d8954061f01f1e631c5b3ffd4"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift",
+      "operation": "replace",
+      "baseSHA256": "dc8b0a289b8b950b67c4b55ccd6f3de5ba45ea21e19bc14eb5164ed3c5f8c456",
+      "sha256": "282c7049b00c735933d8b90c5f48d6cc619d96f598b88459305e72122aee1d29"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift",
+      "operation": "add",
+      "baseSHA256": null,
+      "sha256": "cc34788d3fbd8409ff0ff086d6cb7d2dfb2a2ee860dfccb8a1fba5496aff6bfe"
+    }
+  ],
+  "sourceOnly": true,
+  "compilerExecuted": false,
+  "nativeOrModelExecuted": false,
+  "mainModified": false,
+  "targetTransactionIncluded": false
+}

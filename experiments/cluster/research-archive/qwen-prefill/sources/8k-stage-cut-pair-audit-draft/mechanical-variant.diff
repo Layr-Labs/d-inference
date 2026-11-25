@@ -1,0 +1,129 @@
+--- long-prefill-reference-audit-draft/qwen_long_prefill_reference_audit.py
++++ qwen_long_prefill_reference_cut12_audit.py
+@@ -1,4 +1,4 @@
+-"""CPU oracle for registered9B8192/512/1 final-only reference records.
++"""CPU oracle for fixed cut12 registered9B8192/512/1 final-only reference records.
+ 
+ No native/model payload reads. The caller pins actual raw natural prompt bytes.
+ All state geometry is derived; only offset state bytes and the complete BF16
+@@ -14,6 +14,7 @@
+ import re
+ import struct
+ import uuid
++import cut12_reference_context as cut12
+ 
+ ROOT = Path(__file__).resolve().parent.parent
+ MAX_STDOUT = 16 * 1024 * 1024
+@@ -100,6 +101,7 @@
+         for record in manifest['files']:
+             data = read_bounded(record['path'], 2 * 1024 * 1024)
+             require(len(data) == record['byteCount'] and sha(data) == record['sha256'], 'Frozen draft manifest member changed')
++    found.update(cut12.verify_pins())
+     return found
+ 
+ 
+@@ -172,10 +174,10 @@
+     global _CONTEXT
+     if _CONTEXT is not None: return _CONTEXT
+     pins = verify_pins()
+-    spec = importlib.util.spec_from_file_location('long_reference_frozen_recorded_base', ROOT/'qwen_layer_stage_recorded_audit.py')
++    spec = importlib.util.spec_from_file_location('long_reference_frozen_recorded_base', ROOT/'short-stage-cut-audit-draft/qwen_layer_stage_cut12_audit.py')
+     base = importlib.util.module_from_spec(spec); spec.loader.exec_module(base)
+-    expected = json.loads((ROOT/'qwen-layer-stage-real9b-expected-20260913.json').read_bytes())
+     config = json.loads((ROOT/'runs/qwen-layer-stage-prefill-ranks-serial-peer24-20260914/remote-metadata/before-config.json').read_bytes())
++    expected, plan = cut12.metadata((ROOT/'runs/qwen-layer-stage-prefill-ranks-serial-peer24-20260914/remote-metadata/before-config.json').read_bytes())
+     text = config['text_config']
+     require(config['model_type']=='qwen3_5' and text['num_hidden_layers']==32 and text['vocab_size']==248320, 'Wrong registered geometry')
+     full = expected['fullCanonicalTensors']
+@@ -190,12 +192,7 @@
+     retained = expected['sourceHeaderTensorCount']-expected['excluded']['count']
+     require(retained==len(full) and expected['configurationSHA256']==CONFIG_SHA and
+             expected['artifactAggregateSHA256ClaimedByPinnedManifest']==ARTIFACT_SHA, 'Source manifest/config binding differs')
+-    plan = json.loads((ROOT/'qwen-layer-stage-plan-actual9b-20260913.json').read_bytes())
+-    proof = json.loads((ROOT/'qwen-layer-stage-plan-verification-20260913.json').read_bytes())
+-    require(proof['status']=='passed' and proof['actual9b_standalone_exit_code']==0 and plan['configurationSHA256']==CONFIG_SHA,
+-            'Pure plan-control provenance differs')
+-    require(proof['evidence_sha256']['qwen-layer-stage-plan-actual9b-20260913.json']==PINNED['qwen-layer-stage-plan-actual9b-20260913.json'], 'Plan-control pin differs')
+-    require([s['mappedParameters'] for s in plan['stages']]==[463,464] and plan['mappedTextParameters']==retained, 'Plan/source coverage differs')
++    require([s['mappedParameters'] for s in plan['stages']]==[348,579] and plan['mappedTextParameters']==retained, 'Plan/source coverage differs')
+     plan_hash = sha(canonical(dict(adapter='qwen35-dense-two-layer-stages-v1',sourceConfigurationSHA256=CONFIG_SHA,
+                                    stages=[s['fingerprint'] for s in plan['stages']])))
+     require(plan_hash==plan['planSHA256'], 'Plan top fingerprint differs')
+@@ -208,7 +205,7 @@
+         tensorCount=len(full),sourceTensorCount=retained,parameterLayoutSHA256=layout,bf16ConversionEnabled=True)
+     state = state_geometry(text)
+     require(len(state)==72 and sum(e['byteCount'] for e in state)==319946784, 'Derived full-state geometry differs')
+-    _CONTEXT = dict(base=base,pins=pins,text=text,source=source,load=load,state=state,resource=resource_admission(text),
++    _CONTEXT = dict(base=base,pins=pins,text=text,source=source,load=load,state=state,expected=expected,plan=plan,resource=resource_admission(text),
+                     environment=env,environmentSHA256=env_hash,profileFingerprint=profile_fingerprint())
+     return _CONTEXT
+ 
+--- long-prefill-pair-audit-draft/pair_storage.py
++++ cut12_pair_storage.py
+@@ -14,8 +14,8 @@
+ 
+ def check_storage(a, loads, source):
+     a.require(type(loads) is list and len(loads) == 2, 'Two actual stage loads required')
+-    expected = pinned_metadata(a, 'qwen-layer-stage-real9b-expected-20260913.json')
+-    plan = pinned_metadata(a, 'qwen-layer-stage-plan-actual9b-20260913.json')
++    expected = a.context()['expected']
++    plan = a.context()['plan']
+     for rank, load in enumerate(loads):
+         a.require(type(load) is dict and set(load) == RECEIPT_KEYS, 'Stage-load fields differ')
+         for key in ('schemaVersion', 'stageIndex', 'sourceModelTensorBytes', 'loadedTensorBytes', 'largestHostTensorBytes', 'inertTensorBytes'):
+--- long-prefill-pair-audit-draft/pair_final.py
++++ cut12_pair_final.py
+@@ -1,5 +1,5 @@
+ """Compare exact final metadata/digests; candidate values are unavailable."""
+-from pair_storage import compute_source
++from cut12_pair_storage import compute_source
+ 
+ 
+ def logits_metadata(identity, summary, frame):
+@@ -17,9 +17,11 @@
+ 
+ 
+ def expected_final(a, rank, reference, summary, load, identity, agreement_fp):
+-    entries = [e for e in reference['execution']['finalState']['entries'] if rank * 16 <= e['globalLayerIndex'] < (rank + 1) * 16]
+-    a.require(len(entries) == 36 and sum(e['byteCount'] for e in entries) == 159973392, 'Stage state coverage differs')
+-    state = dict(committedTokens=8192, entries=entries, logicalByteCount=159973392, fingerprint=a.state_fingerprint(entries))
++    start, end = ((0,12),(12,32))[rank]
++    entries = [e for e in reference['execution']['finalState']['entries'] if start <= e['globalLayerIndex'] < end]
++    byte_count = (119980044,199966740)[rank]
++    a.require(len(entries) == (27,45)[rank] and sum(e['byteCount'] for e in entries) == byte_count, 'Stage state coverage differs')
++    state = dict(committedTokens=8192, entries=entries, logicalByteCount=byte_count, fingerprint=a.state_fingerprint(entries))
+     record = dict(kind='qwen_layer_stage_profiled_prefill_final_digest', schemaVersion=1,
+         correctnessOnly=True, throughputMeasurementValid=False, modelForwardCompared=False, physicalTransferQualified=False,
+         nativeLogitBytesCompared=False, fullVocabularyValuesExported=False, requestStateRetirementStillRequired=True,
+--- long-prefill-pair-audit-draft/qwen_long_prefill_pair_audit.py
++++ qwen_long_prefill_pair_cut12_audit.py
+@@ -8,9 +8,9 @@
+ import json
+ from pathlib import Path
+ 
+-from pair_storage import check_storage, identity
+-from pair_wire import agreement, check_frames, token
+-from pair_final import check_finals
++from cut12_pair_storage import check_storage, identity
++from cut12_pair_wire import agreement, check_frames, token
++from cut12_pair_final import check_finals
+ 
+ MAX_STDOUT = 16 * 1024**2
+ PHASES = ['before_baseline_load', 'baseline_released_cache_cleared', 'both_stages_loaded',
+@@ -89,13 +89,13 @@
+         reference['execution']['request']['steps'][-1]['frame']), 'actual native selected token')
+     final_state = check_finals(a, comparison['finalDigests'], reference, baseline, loads, identities, agreement_fp)
+     a.exact(comparison['combinedFinalStateFingerprint'], final_state, 'combined final state')
+-    return dict(status='passed',scope='registered9b_8192_chunk512_output1_one_process_pair',
++    return dict(status='passed',scope='registered9b_8192_chunk512_output1_cut12_one_process_pair',
+         referenceFingerprint=baseline['referenceFingerprint'],agreementFingerprint=agreement_fp,
+         promptFileSHA256=expected_prompt_sha256,arithmeticEnvironmentSHA256=baseline['arithmeticEnvironmentSHA256'],
+         completedFrames=16,stageCommits=32,canonicalTensors=inventory['canonicalTensors'],
+         activeTensorBytes=inventory['activeTensorBytes'],inertTensorBytes=inventory['inertTensorBytes'],
+-        reconstructedCanonicalEnvelopeHashes=headers,finalStateComponents=72,stageStateComponents=[36,36],
+-        stageLogicalStateBytes=[159973392,159973392],finalStateLogicalBytes=319946784,finalStateSHA256=final_state,
++        reconstructedCanonicalEnvelopeHashes=headers,finalStateComponents=72,stageStateComponents=[27,45],
++        stageLogicalStateBytes=[119980044,199966740],finalStateLogicalBytes=319946784,finalStateSHA256=final_state,
+         finalLogits=baseline['finalLogits'],selectedTokenID=baseline['argmaxTokenID'],
+         baselineMaximumTieCount=baseline['maximumTieCount'],candidateMaximumTieCountComputed=False,
+         candidateNativeLogitBytesCompared=False,candidateFullLogitValuesAvailable=False,

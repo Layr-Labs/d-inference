@@ -1,0 +1,242 @@
+[
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Entries/controller/Controller.swift",
+    "bytes": 11055,
+    "sha256": "7000beb1a2ccdfe1eff8451d3377e419fe170a6379031da0e9c9b431756bbb98"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Entries/controller/OwnerTransportObservation.swift",
+    "bytes": 433,
+    "sha256": "7b7cb93478445034a38da33941ae9af708a49d50d2690e3c3127cb338ee03159"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Entries/controller/QualificationInput.swift",
+    "bytes": 2591,
+    "sha256": "186632f3dd1948180be611dee3a5c72539de881d8264df0aa487b406bb5a1734"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterBootstrap/BootstrapSocket.swift",
+    "bytes": 4870,
+    "sha256": "4fb0b1968dca75055ec5d982e9d3487e1d61ee034066322316b831d739354097"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift",
+    "bytes": 6119,
+    "sha256": "44b8a6cd29154c2d720aab5851053cbd3394edfa6ec1c0de7c9d54dd9df57efa"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterBootstrap/ClusterBootstrapFrame.swift",
+    "bytes": 3150,
+    "sha256": "daa0889c01a1c375242d1b10b25b0382dd2da43897f3d126ae1cae544d170832"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift",
+    "bytes": 2870,
+    "sha256": "7c26f245b20f0c8ac76f49cbb4decd875fa549bc8bdd8b4113fa625c35ce7fd4"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProcess/ClusterDeviceExclusion.swift",
+    "bytes": 8846,
+    "sha256": "b7a914ef666e363b1c8eeed3a03db552c014c85d437940549274db07a42eb272"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProcess/ClusterWorkerEndpoint.swift",
+    "bytes": 3082,
+    "sha256": "8de606b33adeda437f3f454e07b6d9f9fc68cfc8384bc9345f139bec2b72ef32"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift",
+    "bytes": 10489,
+    "sha256": "979146b683f1afd5394677b844e4f853b45d3e94e08db6cc400dfc976e95eea0"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProcess/ClusterWorkerPairAdmissionState.swift",
+    "bytes": 692,
+    "sha256": "23eb40a7cc49f9da5b9ebc195021d0961d91a62694f46dbcad292d31273c0ed1"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProcess/ClusterWorkerProcess.swift",
+    "bytes": 16835,
+    "sha256": "e09eb12b8b27ede734b1142a40dd9ba4b4c7d3aed25f384c8a2556c9d7b92250"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift",
+    "bytes": 12430,
+    "sha256": "5157cdbf409c895f5cb4ca6292708cd5429d82c802786602d241861738de31ae"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProcess/WorkerPumpWakeup.swift",
+    "bytes": 3171,
+    "sha256": "2177145d635909b953eb6c1074807c6cac1a5f313dce352169e753684f9d204a"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterPrefillSchedule.swift",
+    "bytes": 345,
+    "sha256": "4a85b5395c52851d1075ec29cbfbcc6fb8357f97b77058161a1625051dcf1869"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift",
+    "bytes": 4963,
+    "sha256": "d69cfcb2012596ae0348a3b3c50ece02d7457070cd4949bcf76851553a85ece3"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift",
+    "bytes": 7447,
+    "sha256": "190553d56420dc9e0578bfcc92f949cf097376ae21eac8674d2a669db5e2d091"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift",
+    "bytes": 3795,
+    "sha256": "88693236bd8f2599791a6de2f169e3a1cb2d5909606c3bb53be32fa4de5b4b18"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterWorkerCodec.swift",
+    "bytes": 9384,
+    "sha256": "070fbea45cb5f1d1a39d09bac9cfc73a9f9d7a31e5825ec4ea355a8789f8538e"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterWorkerEnvelopeValidation.swift",
+    "bytes": 614,
+    "sha256": "a058472e4c0739681e7fd21d410dc60060dc42ea3c071c6fee934dd155d3bc26"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterWorkerFraming.swift",
+    "bytes": 1581,
+    "sha256": "f8b361ccf8770a3fd46b7985accd3f28cfdce31c78532b874c570e8fae6dbd45"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterWorkerJSON.swift",
+    "bytes": 5465,
+    "sha256": "dec57dd50237af7d0597374e36a49b23f5105b07943ca024be368f6b9f1d5046"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterWorkerMessages.swift",
+    "bytes": 6229,
+    "sha256": "fe9cd8e5ac2a92559cb5d4ded98fcf5cbc4194c5341eb91c3880c2f21a312dea"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterWorkerObject.swift",
+    "bytes": 3140,
+    "sha256": "4bd7b6bcc4fe128e99c400b84c2e9ec1d470ae7db1d5d0f0c90c68308ba65a0d"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterWorkerSession.swift",
+    "bytes": 10031,
+    "sha256": "f2afbfe40df22f023089d208f78a0d949a5c3fcf09e9cb8930eedbaf28acfa76"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterProtocol/ClusterWorkerValidation.swift",
+    "bytes": 4652,
+    "sha256": "c09f396c8ad55e10568337afb6bbae07853a841768f95898c3dd604602a849c8"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterDeviceLease.swift",
+    "bytes": 1313,
+    "sha256": "e512e594d3243fb1246cffc4569fd02489370f1bcccb43417158951f56e6f048"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterLocalOwnerConfiguration.swift",
+    "bytes": 1539,
+    "sha256": "c56d4dc38088df8fd0496ba7e7310c33eb76cd3030d2b57188ddfc4ba93d0353"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterOwnerBinding.swift",
+    "bytes": 3312,
+    "sha256": "5af2586ba1203d287069f834e6d07995ba34d20da301c7d6c5e738b3513aa420"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift",
+    "bytes": 4677,
+    "sha256": "875792464f6c247eed1c6b499267b356a7b3930d4bde8b71df968865dcac9499"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift",
+    "bytes": 4871,
+    "sha256": "6630d4adc65a24e2832181da65379164187bc820a9553e112e29d00d796860a4"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterOwnerDiagnostics.swift",
+    "bytes": 2325,
+    "sha256": "3caaca93b99d278fcd25664079daa005a14b0396ee59652e7cc0498900bb3652"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState+Control.swift",
+    "bytes": 6612,
+    "sha256": "39ea944a977acadbb3dcfab9ce6cd4855337335d1c87f964689b1e832dd632fa"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterOwnerLeaseState.swift",
+    "bytes": 5815,
+    "sha256": "6fddb3195c78c7c17a9e5bb74080440f0a7ba0bb8d12e64921ec1ef29b0c8954"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterOwnerPipe.swift",
+    "bytes": 3685,
+    "sha256": "667388716e9fa7eebad3a50832f29011e7c875456e4527e1bbc00a92203bfdf4"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterOwnerStatus.swift",
+    "bytes": 1665,
+    "sha256": "2440348dc4c8b2e02be0449387fa8e42d8c5fcaa2fc8d45cf0aef23c675ca5cb"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift",
+    "bytes": 10753,
+    "sha256": "a8a5ce563a0154ee8300b443acfb191d9e4e8a48fd6651b11031672bf5e9b81f"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+    "bytes": 20487,
+    "sha256": "a551c2f317b48b9e4e35656d03337f5f4b770da2b45821100e34ca791d2aa9ab"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterSSHConfiguration.swift",
+    "bytes": 3369,
+    "sha256": "598deefa1498057b0ddd015293f5250573201288602fec19d9d239d11d5aa08a"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/proposed/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+    "bytes": 18101,
+    "sha256": "b23e811ae3c80de443c1e2c29c43c89c6283cefa74af68a431d1c5a9fc58120b"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/local-build-1/artifacts/DarkbloomClusterRemote.swiftmodule",
+    "bytes": 152224,
+    "sha256": "5625fe555e84d26e46f2747d7f915240f91e7a5564a6f3bc3fec6c513f67c7b7"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/local-build-1/artifacts/DarkbloomClusterProcess.swiftmodule",
+    "bytes": 102928,
+    "sha256": "f6b7b215aece9f3fc5fcf4c6bea987b34621c32cb5d85facba61b6dd251f38b0"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/local-build-1/artifacts/DarkbloomClusterProtocol.swiftmodule",
+    "bytes": 161976,
+    "sha256": "99cbc1e6087dbb55bbf315637db07489990b36761a28ddd25abc35cebca7b94d"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/local-build-1/artifacts/DarkbloomClusterBootstrap.swiftmodule",
+    "bytes": 45052,
+    "sha256": "e012bc97512ac6fb602ca4b098b77c331b1c2578b1ba6741253c11ab18a092bb"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseObservation.swift",
+    "bytes": 5516,
+    "sha256": "e586705fef78e3d14d6af765bce8b428eef09c8184ea73ab037b5e7d3c1dcfb2"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseBudget.swift",
+    "bytes": 3296,
+    "sha256": "c3e1346be3ebb938fc5bc89850e4d44d74feb31431ff30e58bed8bffb844266b"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPhaseHostAllocation.swift",
+    "bytes": 879,
+    "sha256": "4606392a7dd1825efb293f53eb2cd272a3557ac43cf39dc48f57343ccca91ce8"
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-native-draft-20260916/Build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ClusterRuntimeError.swift",
+    "bytes": 265,
+    "sha256": "1344ac5e10936fbc894220f7b5e91862bb522920ea00e7fdb8a647660be27865"
+  }
+]

@@ -1,0 +1,41 @@
+--- a/experiments/cluster/inference/README.md
++++ b/experiments/cluster/inference/README.md
+@@ -166,12 +166,16 @@
+ The [shared loading checks](QWEN_DENSE_LOADING.md) validate actual prepared
+ descriptors under unchanged legacy bounds and add optional raw-manifest pinning.
+ Their Foundation fixture passes 22 accepted/104 rejected cases, including tiny
+-checkpoint file verification; registered 27B materialization remains unwired.
++checkpoint file verification; metadata validation alone cannot authorize loading.
+ The [constructor-only probe](QWEN_DENSE_CONSTRUCTOR_PROBE.md) verifies the exact
+ registered checkpoint once and inspects full/compact lazy parameter metadata.
+ Its separate strict mode grants no materialization or forward permission.
+ The 9B native constructor and metadata replay pass; the 27B launch remains
+ pending its external resource screen.
++The [selected-stage loading entry](QWEN_DENSE_STAGE_LOADING.md) adds a closed
++one-stage load/release path with current resource admission. Its public fixture
++runner and native materialization remain pending qualification; no forward
++permission or numerical parity follows from the pure tests.
+ 
+ | Stage | Active weights | Inactive components that the loader must handle |
+ |---|---|---|
+--- a/docs/developer/test.md
++++ b/docs/developer/test.md
+@@ -49,6 +49,18 @@
+ rejected checks and share the retained metadata input. Native constructor execution is a
+ separate guarded mode; these fixtures do not qualify model loading, numerics or
+ memory safety.
++
++Run the [selected-stage loading admission fixtures](../../experiments/cluster/inference/QWEN_DENSE_STAGE_LOADING.md)
++without MLX or downloaded model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/SelectedStageLoading/run.sh
++```
++
++The standalone fixture passed 21 accepted/122 rejected checks with empty stderr.
++The 30-source public runner shares the registered-profile metadata input. These
++pure CLI, budget and resource predicates do not execute the private live gate
++or materialization. Public-runner and native qualification remain pending.
+ 
+ Run the [resident lifecycle fixtures](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
+ under Swift 6 without MLX:

@@ -1,0 +1,151 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationLookaheadProducer.swift
+@@ -0,0 +1,71 @@
++import Foundation
++import MLX
++
++/// One native prepared slot plus one CPU pending ticket. Only this private
++/// executor calls Session; no model evaluation overlaps a local P2P operation.
++final class QwenGenerationLookaheadProducer {
++    struct Prepared {
++        let boundary: QwenLayerStageBoundary
++        let committedTokens: Int
++    }
++    let request: QwenLayerStageGenerationRequest
++    private var window: QwenGenerationPrefillWindow
++    private var prepared: Prepared?
++    var isComplete: Bool { window.complete && prepared == nil }
++    var preparedAheadFrames: Int { window.preparedAheadFrames }
++    var maximumPreparedBoundaries: Int { window.maximumPreparedBoundaries }
++    init(request: QwenLayerStageGenerationRequest) throws {
++        self.request = request
++        window = try .init(promptCount: request.promptCount, chunkSize: request.chunkSize)
++    }
++    func cancel() { prepared = nil; window.cancel() }
++    private func prepare(sequence: Int, session: QwenLayerStageSession, check: () throws -> Void) throws {
++        guard prepared == nil else { throw ProbeError("Generation already owns its prepared slot") }
++        let frame = try request.frame(sequence: sequence)
++        guard frame.phase == .prefill else { throw ProbeError("Generation lookahead cannot prepare decode") }
++        try window.beginPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
++        prepared = try autoreleasepool {
++            try check()
++            let tokens = Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)])
++            guard case .hidden(let boundary) = try session.prefillChunk(tokens, offset: frame.tokenOffset,
++                final: frame.finalPromptChunk, check: check), boundary.frame == frame else {
++                throw ProbeError("Generation prepared output differs from the admitted prompt frame")
++            }
++            try window.commitPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
++            return Prepared(boundary: boundary, committedTokens: session.committedTokens)
++        }
++    }
++    func run(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
++             transport: QwenLayerStageGenerationTransport,
++             expected: QwenLayerStageGenerationBoundaryExpectation,
++             check: () throws -> Void) throws -> QwenLayerStageGenerationBoundaryPacket {
++        guard transport.rank == 0, expected.frame.phase == .prefill else { throw ProbeError("Invalid lookahead producer") }
++        if prepared == nil { try prepare(sequence: expected.frame.sequence, session: session, check: check) }
++        weak var original: MLXArray?
++        let sent: (QwenLayerStageGenerationTransport.BoundaryTicket, QwenGenerationPrefillWindow.Commit) = try autoreleasepool {
++            guard let value = prepared, value.boundary.frame == expected.frame,
++                  session.committedTokens == value.committedTokens else {
++                throw ProbeError("Generation prepared slot has a different native frontier")
++            }
++            let commit = try window.beginSend(sequence: expected.frame.sequence, nativeCommittedTokens: value.committedTokens)
++            let packet = try QwenLayerStageGenerationBoundaryPacket(expected: expected, payloadSHA256: value.boundary.payloadSHA256)
++            try control.acknowledgeFrame(rank: 0, packet: packet, nativeCommittedTokens: commit.committedTokens)
++            original = value.boundary.array
++            let ticket = try transport.sendBoundaryUntilSent(value.boundary, packet: packet, check: check)
++            prepared = nil
++            return (ticket, commit)
++        }
++        guard original == nil, prepared == nil else { throw ProbeError("Generation retained the sent boundary wrapper") }
++        try window.completeSend(sent.1)
++        if expected.frame.sequence + 1 < request.prefillFrameCount {
++            try prepare(sequence: expected.frame.sequence + 1, session: session, check: check)
++        }
++        try transport.finishBoundaryConsumed(sent.0, check: check)
++        // The local session may now be one chunk ahead. The shared control must
++        // acknowledge k with k's captured actual commit, never that newer value.
++        try control.acknowledgeFrame(rank: 1, packet: sent.0.packet, nativeCommittedTokens: sent.1.committedTokens)
++        try window.consume(sent.1)
++        return sent.0.packet
++    }
++}
++
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift
+@@ -183,74 +183,6 @@
+     }
+ }
+ 
+-/// One native prepared slot plus one CPU pending ticket. Only this private
+-/// executor calls Session; no model evaluation overlaps a local P2P operation.
+-private final class QwenGenerationLookaheadProducer {
+-    struct Prepared {
+-        let boundary: QwenLayerStageBoundary
+-        let committedTokens: Int
+-    }
+-    let request: QwenLayerStageGenerationRequest
+-    private var window: QwenGenerationPrefillWindow
+-    private var prepared: Prepared?
+-    var isComplete: Bool { window.complete && prepared == nil }
+-    var preparedAheadFrames: Int { window.preparedAheadFrames }
+-    var maximumPreparedBoundaries: Int { window.maximumPreparedBoundaries }
+-    init(request: QwenLayerStageGenerationRequest) throws {
+-        self.request = request
+-        window = try .init(promptCount: request.promptCount, chunkSize: request.chunkSize)
+-    }
+-    func cancel() { prepared = nil; window.cancel() }
+-    private func prepare(sequence: Int, session: QwenLayerStageSession, check: () throws -> Void) throws {
+-        guard prepared == nil else { throw ProbeError("Generation already owns its prepared slot") }
+-        let frame = try request.frame(sequence: sequence)
+-        guard frame.phase == .prefill else { throw ProbeError("Generation lookahead cannot prepare decode") }
+-        try window.beginPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
+-        prepared = try autoreleasepool {
+-            try check()
+-            let tokens = Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)])
+-            guard case .hidden(let boundary) = try session.prefillChunk(tokens, offset: frame.tokenOffset,
+-                final: frame.finalPromptChunk, check: check), boundary.frame == frame else {
+-                throw ProbeError("Generation prepared output differs from the admitted prompt frame")
+-            }
+-            try window.commitPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
+-            return Prepared(boundary: boundary, committedTokens: session.committedTokens)
+-        }
+-    }
+-    func run(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
+-             transport: QwenLayerStageGenerationTransport,
+-             expected: QwenLayerStageGenerationBoundaryExpectation,
+-             check: () throws -> Void) throws -> QwenLayerStageGenerationBoundaryPacket {
+-        guard transport.rank == 0, expected.frame.phase == .prefill else { throw ProbeError("Invalid lookahead producer") }
+-        if prepared == nil { try prepare(sequence: expected.frame.sequence, session: session, check: check) }
+-        weak var original: MLXArray?
+-        let sent: (QwenLayerStageGenerationTransport.BoundaryTicket, QwenGenerationPrefillWindow.Commit) = try autoreleasepool {
+-            guard let value = prepared, value.boundary.frame == expected.frame,
+-                  session.committedTokens == value.committedTokens else {
+-                throw ProbeError("Generation prepared slot has a different native frontier")
+-            }
+-            let commit = try window.beginSend(sequence: expected.frame.sequence, nativeCommittedTokens: value.committedTokens)
+-            let packet = try QwenLayerStageGenerationBoundaryPacket(expected: expected, payloadSHA256: value.boundary.payloadSHA256)
+-            try control.acknowledgeFrame(rank: 0, packet: packet, nativeCommittedTokens: commit.committedTokens)
+-            original = value.boundary.array
+-            let ticket = try transport.sendBoundaryUntilSent(value.boundary, packet: packet, check: check)
+-            prepared = nil
+-            return (ticket, commit)
+-        }
+-        guard original == nil, prepared == nil else { throw ProbeError("Generation retained the sent boundary wrapper") }
+-        try window.completeSend(sent.1)
+-        if expected.frame.sequence + 1 < request.prefillFrameCount {
+-            try prepare(sequence: expected.frame.sequence + 1, session: session, check: check)
+-        }
+-        try transport.finishBoundaryConsumed(sent.0, check: check)
+-        // The local session may now be one chunk ahead. The shared control must
+-        // acknowledge k with k's captured actual commit, never that newer value.
+-        try control.acknowledgeFrame(rank: 1, packet: sent.0.packet, nativeCommittedTokens: sent.1.committedTokens)
+-        try window.consume(sent.1)
+-        return sent.0.packet
+-    }
+-}
+-
+ private func requireGenerationSource(loaded: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
+     agreement: QwenLayerStageGenerationAgreement, collective: Collective) throws {
+     let source = agreement.descriptor, receipt = loaded.receipt

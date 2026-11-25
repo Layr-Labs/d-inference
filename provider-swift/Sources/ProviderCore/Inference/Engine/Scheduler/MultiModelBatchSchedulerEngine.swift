@@ -628,6 +628,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // there, so GLM routes reasoning to that channel whenever it is withheld.
         let withholdsReasoning = ProviderPromptContractPipeline.withholdsReasoning(
             request, controls: templateControls, modelType: modelType)
+        // Inkling 2 with thinking off may also keep the model from opening a
+        // thought (`Inkling2ThinkingOffPolicy`), on the coordinator path and the
+        // local API alike.
+        let bansThought = Inkling2ThinkingOffPolicy.bansThought(
+            request, controls: templateControls, modelType: modelType)
+        let requestSampling = Inkling2ThinkingOffPolicy.requestSampling(
+            overlay: engineV2Sampling, request: request, bansThought: bansThought,
+            tokenToId: { tokenizer.inner.convertTokenToId($0) })
         let glmWithholdsReasoning = GLM5NextPromptPolicy.withholdsReasoning(templateControls, modelType: modelType)
         // GLM images and video on the tensor-parallel pair: the product's own
         // media preparation on this leader, the vision tower on rank 0.
@@ -895,8 +903,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             openAIRequest: visionRequest, defaultMaxTokens: defaultMaxTokens,
                             logprobs: engineV2Logprobs != nil ? true : nil,
                             topLogprobs: engineV2Logprobs?.topLogprobs,
-                            logitBias: engineV2Sampling?.logitBias,
-                            seed: engineV2Sampling?.seed),
+                            logitBias: requestSampling?.logitBias,
+                            seed: requestSampling?.seed),
                         requestId: visionRequestId,
                         cacheScope: requestCacheScope,
                         cacheEnabled: cacheEnabled,
@@ -1306,8 +1314,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
                         logprobs: engineV2Logprobs != nil ? true : nil,
                         topLogprobs: engineV2Logprobs?.topLogprobs,
-                        logitBias: engineV2Sampling?.logitBias,
-                        seed: engineV2Sampling?.seed,
+                        logitBias: requestSampling?.logitBias,
+                        seed: requestSampling?.seed,
                         // Exact Flint matches stops on its answer channel only.
                         engineStopStrings: modelType != "flint", nativeReasoningBudget: nativeReasoningBudget),
                     requestId: requestId,

@@ -1022,10 +1022,7 @@ extension ProviderLoop {
                 engineV2Logprobs: logprobsSpec.map {
                     EngineV2LogprobsPlumbing(topLogprobs: $0.topLogprobs, relay: logprobsChannel)
                 },
-                engineV2Sampling: Inkling2ThinkingOffPolicy.samplingOverrides(samplingOverrides,
-                    bansThought: Inkling2ThinkingOffPolicy.bansThought(
-                        chatRequest, controls: templateControls, modelType: modelType),
-                    tokenToId: { tokenizer.inner.convertTokenToId($0) }),
+                engineV2Sampling: samplingOverrides,
                 engineV2Usage: v2UsageSignal,
                 firstContentDeadline: firstContentDeadline,
                 profile: profile,

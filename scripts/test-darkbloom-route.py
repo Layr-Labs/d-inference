@@ -168,7 +168,7 @@ WATCHDOG = "darkbloom-watchdog.yml"
 UNROUTED = ("nightly-linear-package.yml", "release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
             "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml",
-            "ci-dev-nightly.yml")
+            "ci-dev-nightly.yml", "provider-release-build-list.yml")
 # The plane grants a lane whole, so each shard of these jobs reads a lane of its
 # own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
 SHARDED = {"test-provider", "test-cluster-gpu"}

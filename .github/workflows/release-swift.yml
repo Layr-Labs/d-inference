@@ -64,6 +64,8 @@ on:
       - 'scripts/provider_release_cache/**'
       - 'scripts/provider-release-publication.py'
       - 'scripts/provider-release-publication-requirements.txt'
+      - 'scripts/provider-release-build-list.py'
+      - 'scripts/provider_release_build_list.py'
       - 'scripts/provider_release_artifact.py'
       - 'scripts/provider_release_github.py'
       - 'scripts/provider_release_notes.py'

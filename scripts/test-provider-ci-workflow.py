@@ -114,6 +114,7 @@ RELEASE_INTEGRITY_CHECKS = (
     "python3 scripts/test-provider-release-toolchain.py", "python3 scripts/test-provider-release-cache.py",
     "python3 scripts/test-prepare-metal-toolchain.py", "python3 scripts/test-provider-release-pipeline.py",
     "python3 scripts/test-provider-release-publication.py", "python3 scripts/test-provider-release-notes.py",
+    "python3 scripts/test-provider-release-build-list.py",
     "python3 scripts/test-provider-cluster-runtime-models.py", "python3 scripts/test-release-dev-branch.py",
     "python3 scripts/test-signing-keychain.py", "python3 scripts/test-desktop-release.py",
     "python3 scripts/test-sign-desktop-app.py", "python3 scripts/test-provider-release-artifact.py",
@@ -458,7 +459,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(run_command(signing).splitlines(),
                          ["python3 scripts/test-provider-release-pipeline.py", "python3 scripts/test-release-dev-branch.py",
                           "python3 scripts/test-provider-signing-validation.py",
-                          "python3 scripts/test-provider-release-resume.py", "python3 scripts/test-signing-keychain.py",
+                          "python3 scripts/test-provider-release-resume.py",
+                          "python3 scripts/test-provider-release-build-list.py", "python3 scripts/test-signing-keychain.py",
                           "python3 scripts/test-desktop-release.py", "python3 scripts/test-sign-desktop-app.py"])
         # The prompt fixture downloaders' and the MiMo audio codec download's
         # self-tests need no Mac; dev runs them here.

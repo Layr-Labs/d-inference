@@ -247,6 +247,7 @@ jobs:
           python3 scripts/test-provider-release-cache.py
           python3 scripts/test-provider-release-resolution.py
           python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-provider-release-build-list.py
           python3 scripts/test-desktop-release.py
           python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-provider-release-resume.py

@@ -1579,6 +1579,7 @@ jobs:
           python3 scripts/test-release-dev-branch.py
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-release-resume.py
+          python3 scripts/test-provider-release-build-list.py
           python3 scripts/test-signing-keychain.py
           python3 scripts/test-desktop-release.py
           python3 scripts/test-sign-desktop-app.py

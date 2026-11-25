@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-25
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -2512,6 +2512,7 @@ make changelog-check
 python3 scripts/test-provider-release-resolution.py
 python3 scripts/test-provider-release-resume.py
 python3 scripts/test-provider-release-publication.py
+python3 scripts/test-provider-release-build-list.py
 python3 scripts/test-provider-release-notes.py
 python3 scripts/test-provider-cluster-runtime-models.py
 python3 scripts/test-release-dev-branch.py
@@ -2590,6 +2591,21 @@ and named), retries and refusals. It reads no weights
 and uses no network. `scripts/provider-cluster-runtime-facts.sh` has no
 fake-driven test; the release lane runs it on every final signed app and shows
 its result in the job summary.
+
+`scripts/test-provider-release-build-list.py` checks the
+[signed provider build list](../operations/provider-release.md#signed-provider-build-list)
+without credentials, network or uploads. It needs the OpenSSL 3 command line
+(`OPENSSL`, else `openssl` on PATH; macOS's `/usr/bin/openssl` is LibreSSL and
+is refused). Its fixed vectors are RFC 8037 appendix A.3 and A.4, the
+thumbprint and an EdDSA signature of the RFC 8032 TEST 1 key, and the exact
+document, header and dry-run list bytes. It refuses every other encoding,
+header, key and signature. It applies each change rule (release, republish,
+revoke, floor) and refuses every other successor. It runs the commands end to
+end with `gh` faked, including the publication order (the numbered list first,
+without replacing an asset) and the refusal of a list no pinned key verifies.
+It also pins the workflow: no secret, no write permission to the repository,
+only the test signer, dry-run sign and publish, and a schedule gated on its
+variable.
 
 `scripts/test-provider-release-pipeline.py` and
 `scripts/test-provider-release-resolution.py` pin the routing of

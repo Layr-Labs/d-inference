@@ -1,0 +1,208 @@
+name: Provider Build List
+
+# The signed list of qualified production provider builds
+# (scripts/provider-release-build-list.py), published on the release
+# `provider-builds` as provider-builds.jws. Each production release prepares
+# its next list in its release run (release-provider.yml, job
+# provider-build-list). This workflow keeps the list current between releases
+# and changes it by hand:
+#
+#   - check (daily, or dispatched): reads the published list. Once the list is
+#     4 days old it prepares the next re-publication and posts a notice that a
+#     re-sign is due; with 2 days or less left it fails and opens an issue.
+#   - prepare (dispatched: republish, revoke or floor): computes the next list
+#     and writes the unsigned document, its SHA-256 and the exact change to the
+#     job summary and a run artifact.
+#   - publish (after prepare): checks the signed list against the pinned
+#     provider-release keys, the prepared SHA-256 and the newest published list,
+#     then uploads the numbered list and, after it, the fixed name.
+#
+# Until a signing key is configured every run is a dry run: scheduled runs
+# wait for the PROVIDER_BUILD_LIST_PUBLISHING repository variable, prepare
+# starts from a test list, and publish signs with the RFC 8032 test key, which
+# no verifier accepts, prints its publication plan and uploads nothing. No job
+# holds a secret or a write permission to the repository.
+
+run-name: >-
+  ${{ github.event_name == 'schedule' && 'provider build list: daily check' ||
+      format('provider build list: {0}', inputs.operation) }}
+
+on:
+  schedule:
+    - cron: '41 7 * * *'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Read the published list (check), or prepare a change
+        type: choice
+        options: [check, republish, revoke, floor]
+        default: check
+      versions:
+        description: 'revoke: the versions to revoke, comma-separated'
+        type: string
+        default: ''
+      min_version:
+        description: 'floor: the new min_version'
+        type: string
+        default: ''
+
+permissions: {}
+
+env:
+  BUILD_LIST_RELEASE: provider-builds
+
+jobs:
+  check:
+    if: >-
+      ${{ (github.event_name == 'schedule' && vars.PROVIDER_BUILD_LIST_PUBLISHING == 'true') ||
+          (github.event_name == 'workflow_dispatch' && inputs.operation == 'check') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Read the published list
+        id: state
+        env:
+          URL: https://github.com/${{ github.repository }}/releases/download/provider-builds/provider-builds.jws
+        run: python3 scripts/provider-release-build-list.py check --url "$URL"
+      - name: Prepare the re-publication that is due
+        if: ${{ !cancelled() && (steps.state.outputs.state == 'due' || steps.state.outputs.state == 'escalate') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/provider-release-build-list.py prepare republish \
+            --release "$BUILD_LIST_RELEASE" --output "$RUNNER_TEMP/prepared"
+      - name: Retain the prepared re-publication
+        if: ${{ !cancelled() && (steps.state.outputs.state == 'due' || steps.state.outputs.state == 'escalate') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: provider-build-list-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared
+          if-no-files-found: error
+          retention-days: 7
+      - name: Open an issue for the expiring list
+        if: ${{ failure() && steps.state.outputs.state == 'escalate' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MESSAGE: ${{ steps.state.outputs.message }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title='The published provider build list expires soon'
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" \
+            --json number --jq length)
+          if [ "$open" = 0 ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$MESSAGE. Check run: $RUN_URL"
+          fi
+
+  prepare:
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          (inputs.operation == 'republish' || inputs.operation == 'revoke' || inputs.operation == 'floor') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      document_sha256: ${{ steps.prepare.outputs.document_sha256 }}
+      artifact_id: ${{ steps.retain.outputs.artifact-id }}
+      artifact_digest: ${{ steps.retain.outputs.artifact-digest }}
+    steps:
+      # A dispatch on another ref runs that ref's copy of this file; the list is
+      # changed only from the default branch.
+      - name: Refuse any ref but the default branch
+        env:
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$REF" = "refs/heads/$DEFAULT_BRANCH"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Sign a test current list (dry run)
+        run: python3 scripts/provider-release-build-list.py dry-run-seed --output "$RUNNER_TEMP/seed"
+      - name: Prepare the next list
+        id: prepare
+        env:
+          OPERATION: ${{ inputs.operation }}
+          VERSIONS: ${{ inputs.versions }}
+          MIN_VERSION: ${{ inputs.min_version }}
+        run: |
+          python3 scripts/provider-release-build-list.py prepare "$OPERATION" \
+            --versions "$VERSIONS" --min-version "$MIN_VERSION" \
+            --seed "$RUNNER_TEMP/seed" --output "$RUNNER_TEMP/prepared"
+      - name: Retain the prepared list
+        id: retain
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: provider-build-list-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    # The release lane's provider-build-list job joins this group too, so one
+    # list is published at a time; the numbered list's upload, which never
+    # replaces an asset, is the lock.
+    concurrency:
+      group: provider-build-list-publication
+      cancel-in-progress: false
+    steps:
+      - name: Refuse any ref but the default branch
+        env:
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$REF" = "refs/heads/$DEFAULT_BRANCH"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # Exactly prepare's upload: its ID, and its zip's SHA-256 checked against
+      # its digest before anything is extracted.
+      - name: Download the prepared list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.prepare.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.prepare.outputs.artifact_digest }}
+        run: |
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/prepared"
+      - name: Sign the prepared list with the test key (dry run)
+        env:
+          OPERATION: ${{ inputs.operation }}
+          VERSIONS: ${{ inputs.versions }}
+          MIN_VERSION: ${{ inputs.min_version }}
+          DOCUMENT_SHA256: ${{ needs.prepare.outputs.document_sha256 }}
+        run: |
+          python3 scripts/provider-release-build-list.py sign "$OPERATION" \
+            --versions "$VERSIONS" --min-version "$MIN_VERSION" \
+            --prepared "$RUNNER_TEMP/prepared" --document-sha256 "$DOCUMENT_SHA256" \
+            --dry-run --signer test --output "$RUNNER_TEMP/signed"
+      - name: Check the signed list and show its publication plan (dry run)
+        env:
+          OPERATION: ${{ inputs.operation }}
+          VERSIONS: ${{ inputs.versions }}
+          MIN_VERSION: ${{ inputs.min_version }}
+          DOCUMENT_SHA256: ${{ needs.prepare.outputs.document_sha256 }}
+        run: |
+          python3 scripts/provider-release-build-list.py publish "$OPERATION" \
+            --versions "$VERSIONS" --min-version "$MIN_VERSION" \
+            --prepared "$RUNNER_TEMP/prepared" --document-sha256 "$DOCUMENT_SHA256" \
+            --dry-run --list-dir "$RUNNER_TEMP/signed" --release "$BUILD_LIST_RELEASE"
+      - name: Retain the signed test list (dry run)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: provider-build-list-dry-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/signed
+          if-no-files-found: error
+          retention-days: 7

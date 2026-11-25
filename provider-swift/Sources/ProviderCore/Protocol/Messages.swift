@@ -268,6 +268,12 @@ public enum ProviderMessage: Sendable, Equatable {
         /// on every connection (`SealedTerminalFields`); omitted by older
         /// providers.
         public var terminalFieldsSealed: Int?
+        /// The blind-request protocol this provider serves (`BlindSignedTerms`);
+        /// omitted by a provider that serves none.
+        public var blindProtocol: Int?
+        /// The coordinator request-signing keys this build pins; omitted when
+        /// it pins none.
+        public var requestSigning: ProviderRequestSigning?
 
         public init(
             hardware: HardwareInfo,
@@ -304,10 +310,14 @@ public enum ProviderMessage: Sendable, Equatable {
             clusterMembership: ClusterMembership? = nil,
             busy: ProviderBusy? = nil,
             gemmaPromptContract: Int? = nil,
-            terminalFieldsSealed: Int? = nil
+            terminalFieldsSealed: Int? = nil,
+            blindProtocol: Int? = nil,
+            requestSigning: ProviderRequestSigning? = nil
         ) {
             self.gemmaPromptContract = gemmaPromptContract
             self.terminalFieldsSealed = terminalFieldsSealed
+            self.blindProtocol = blindProtocol
+            self.requestSigning = requestSigning
             self.executionRole = executionRole
             self.memberRegistrationNonce = memberRegistrationNonce
             self.clusterModels = clusterModels
@@ -537,6 +547,9 @@ public enum ProviderMessage: Sendable, Equatable {
         /// the wire when nil, so every other frame keeps its legacy bytes; the
         /// legacy `error` text is unchanged either way.
         public let refusalReason: InferenceRefusalReason?
+        /// The signed refusal of a blind request (`blind_refused`). Omitted on
+        /// the wire when nil.
+        public let blindRefusal: SignedBlindStatement?
 
         public init(
             requestId: String,
@@ -556,6 +569,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.profile = profile
             self.toolCheck = failure.toolCheck
             self.refusalReason = failure.refusal
+            self.blindRefusal = failure.blindRefusal
         }
 
         /// Decoder-only compatibility path. Discards the legacy free-form
@@ -574,7 +588,8 @@ public enum ProviderMessage: Sendable, Equatable {
             capacitySeq: UInt64?,
             profile: InferenceProfile?,
             toolCheck: ToolNoncomplianceCheck?,
-            refusalReason: InferenceRefusalReason?
+            refusalReason: InferenceRefusalReason?,
+            blindRefusal: SignedBlindStatement?
         ) {
             self.requestId = decodedRequestId
             self.failureCode = failureCode
@@ -589,6 +604,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.profile = profile
             self.toolCheck = toolCheck
             self.refusalReason = refusalReason
+            self.blindRefusal = blindRefusal
         }
     }
 
@@ -1006,6 +1022,8 @@ extension ProviderMessage: Codable {
         case toolConstraintModels = "tool_constraint_models"
         case gemmaPromptContract = "gemma_prompt_contract"
         case terminalFieldsSealed = "terminal_fields_sealed"
+        case blindProtocol = "blind_protocol"
+        case requestSigning = "request_signing"
         case modelAutopilot = "model_autopilot"
         case autopilotInventory = "autopilot_inventory"
         // Heartbeat
@@ -1047,6 +1065,7 @@ extension ProviderMessage: Codable {
         case capacitySeq = "capacity_seq"
         case toolCheck = "tool_check"
         case refusalReason = "refusal_reason"
+        case blindRefusal = "blind_refusal"
         case refusalMessage = "refusal_message"
         // CapacityQuote
         case quoteId = "quote_id"
@@ -1154,6 +1173,8 @@ extension ProviderMessage: Codable {
                 try container.encode(version, forKey: .gemmaPromptContract)
             }
             try container.encodeIfPresent(r.terminalFieldsSealed, forKey: .terminalFieldsSealed)
+            try container.encodeIfPresent(r.blindProtocol, forKey: .blindProtocol)
+            try container.encodeIfPresent(r.requestSigning, forKey: .requestSigning)
             try Self.encodeBusy(r.busy, into: &container)
 
         case .heartbeat(let h):
@@ -1245,6 +1266,7 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(e.toolCheck?.rawValue, forKey: .toolCheck)
             try container.encodeIfPresent(e.refusalReason?.rawValue, forKey: .refusalReason)
             try container.encodeIfPresent(e.refusalReason?.clientMessage, forKey: .refusalMessage)
+            try container.encodeIfPresent(e.blindRefusal, forKey: .blindRefusal)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1441,7 +1463,9 @@ extension ProviderMessage: Codable {
                 clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership),
                 busy: try Self.decodeBusy(from: container),
                 gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract),
-                terminalFieldsSealed: try container.decodeIfPresent(Int.self, forKey: .terminalFieldsSealed)
+                terminalFieldsSealed: try container.decodeIfPresent(Int.self, forKey: .terminalFieldsSealed),
+                blindProtocol: try container.decodeIfPresent(Int.self, forKey: .blindProtocol),
+                requestSigning: try container.decodeIfPresent(ProviderRequestSigning.self, forKey: .requestSigning)
             ))
 
         case .heartbeat:
@@ -1537,7 +1561,9 @@ extension ProviderMessage: Codable {
                 // Unknown values decode to nil; `refusal_message` is derived
                 // from the reason, never decoded.
                 refusalReason: (try container.decodeIfPresent(String.self, forKey: .refusalReason))
-                    .flatMap(InferenceRefusalReason.init(rawValue:))
+                    .flatMap(InferenceRefusalReason.init(rawValue:)),
+                blindRefusal: (try? container.decodeIfPresent(SignedBlindStatement.self, forKey: .blindRefusal))
+                    .flatMap { $0 }
             ))
 
         case .attestationResponse:
@@ -1756,6 +1782,11 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// one (the policy is sealed in `_darkbloom_cache`); when present it
         /// can only narrow the sealed policy (`RequestCachePolicy.narrowed`).
         public var frameCachePolicy: RequestCachePolicy
+        /// The `blind` member and the coordinator's `signed_request` of a blind
+        /// request: a body the client sealed to this Mac, which the coordinator
+        /// relays unopened. Nil for every other request, whose `signed_request`
+        /// is not read.
+        public var blind: BlindFrame?
 
         public init(
             requestId: String,
@@ -1771,8 +1802,10 @@ public enum CoordinatorMessage: Sendable, Equatable {
             promptWork: PromptWork? = nil,
             gemmaPromptContract: Int? = nil,
             coordinatorSignature: CoordinatorRequestSignature? = nil,
-            frameCachePolicy: RequestCachePolicy = .default
+            frameCachePolicy: RequestCachePolicy = .default,
+            blind: BlindFrame? = nil
         ) {
+            self.blind = blind
             self.gemmaPromptContract = gemmaPromptContract
             self.coordinatorSignature = coordinatorSignature
             self.frameCachePolicy = frameCachePolicy
@@ -1990,6 +2023,8 @@ extension CoordinatorMessage: Codable {
         case gemmaPromptContract = "gemma_prompt_contract"
         case coordinatorSignature = "coordinator_signature"
         case cachePolicy = "cache_policy"
+        case blind
+        case signedRequest = "signed_request"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload
@@ -2050,6 +2085,8 @@ extension CoordinatorMessage: Codable {
             if r.frameCachePolicy != .default {
                 try container.encode(r.frameCachePolicy.rawValue, forKey: .cachePolicy)
             }
+            try container.encodeIfPresent(r.blind?.member, forKey: .blind)
+            try container.encodeIfPresent(r.blind?.signedRequest, forKey: .signedRequest)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -2182,7 +2219,14 @@ extension CoordinatorMessage: Codable {
                 // The policy belongs in the sealed body only. A plaintext key,
                 // which no signature covers, may only narrow the request: any
                 // value but "default", a malformed one included, is memory_only.
-                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy)
+                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy),
+                // A `blind` member makes the frame a blind request whatever it
+                // holds: a malformed one is refused, never served as an
+                // ordinary request.
+                blind: container.contains(.blind) ? BlindFrame(
+                    member: (try? container.decode(BlindFrameMember.Wire.self, forKey: .blind))
+                        .map(BlindFrameMember.init(wire:)) ?? .malformed,
+                    signedRequest: try? container.decodeIfPresent(String.self, forKey: .signedRequest)) : nil
             ))
 
         case .cancel:

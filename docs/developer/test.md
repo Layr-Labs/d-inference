@@ -1176,6 +1176,19 @@ Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
 
+## Blind Requests
+
+These synthetic tests use the published RFC 8032 test keys, never a pinned
+coordinator key:
+
+| Coverage | Suites / sources |
+|---|---|
+| The shared request-signing vectors (every frame served or refused for its stated reason, every changed payload byte, the key id and header, scalar canonicality) | `provider-swift/Tests/ProviderCoreTests/Coordinator/RequestSigning/CoordinatorRequestJWSVectorTests.swift`; `provider-swift/Tests/ProviderCoreTests/Fixtures/request-signing-vectors.json`, a copy of the platform's [request-signing vectors](https://github.com/Layr-Labs/darkbloom-platform/blob/12b0489562e5dd1d784e95bbcaf42ea4e4520aa4/coordinator/tests/protocol/testdata/request-signing-vectors.json) |
+| Statement bytes against the shared statement vectors, the JSON form and signed refusals | `provider-swift/Tests/ProviderCoreTests/Blind/BlindStatementTests.swift` |
+| Prompt and output bounds, and the salted cache scope | `provider-swift/Tests/ProviderCoreTests/Blind/BlindRequestBoundsTests.swift` |
+| The serve loop against the mock coordinator: registration, serving within the terms, every refusal signed with its reason, a replayed nonce, a repeated frame and posture | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/BlindRequestServeTests.swift`; `provider-swift/Tests/ProviderCoreTests/Helpers/BlindRequestFixture.swift` |
+| A blind frame the provider cannot verify, and a blind body on an ordinary frame: refused, never served | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/BlindFrameWireTests.swift` |
+
 ## Add-On Hold
 
 These suites need no downloaded model weights, credentials or live provider

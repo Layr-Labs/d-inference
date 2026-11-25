@@ -945,6 +945,12 @@ public actor ProviderLoop {
     /// Cached security posture from startup verification.
     internal var securityPosture: SecurityPosture?
 
+    /// The coordinator request-signing keys blind requests are verified
+    /// against (`BlindRequestRegistration.pinnedKeys`).
+    internal var blindRequestPins = BlindRequestRegistration.pinnedKeys(for: .current)
+    /// Client nonces of blind requests already served (`checkBlindBody`).
+    internal var servedBlindClientNonces = CoordinatorServedRequests()
+
     #if DEBUG
     /// Stand-ins for the boot-settings reading (its command results and the kernel
     /// SIP value), set only by `setBootSettingsReadingForTesting`: startup then

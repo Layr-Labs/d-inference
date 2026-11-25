@@ -191,6 +191,20 @@ extension CoordinatorClient {
                 return
             }
 
+            // A repeat of a blind request already served gets no answer: an
+            // answer would end the copy being served. Its checks run in full
+            // in the handler.
+            if let blind = request.blind, let pins = config.blindRequests?.pins,
+               let ownKey = config.publicKey.flatMap({ Data(base64Encoded: $0) }),
+               case .success(let signature) = CoordinatorRequestJWS.verify(
+                   blind.signedRequest, pins: pins, requestID: requestId,
+                   serviceReservationID: request.serviceReservationID, recipientPublicKey: ownKey,
+                   senderPublicKey: senderKeyBytes, ciphertext: cipherBytes, now: Date()),
+               !servedBlindRequests.admitBlindSignature(signature, now: Date()) {
+                logger.error("Ignoring a repeat of blind request \(requestId)")
+                return
+            }
+
             eventContinuation?.yield(.inferenceRequest(
                 requestId: requestId,
                 ciphertext: cipherBytes,
@@ -207,7 +221,8 @@ extension CoordinatorClient {
                 serviceReservationID: request.serviceReservationID,
                 promptWork: request.promptWork,
                 gemmaPromptContract: request.gemmaPromptContract,
-                frameCachePolicy: request.frameCachePolicy
+                frameCachePolicy: request.frameCachePolicy,
+                blind: request.blind
             ))
 
         case .cancel(let cancel):

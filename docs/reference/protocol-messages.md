@@ -349,6 +349,8 @@ connection, first.
 | `tool_constraint_models` | `[]string` | `[String]?` | opt | concrete model IDs the provider enforces |
 | `gemma_prompt_contract` | `int` | `Int?` | opt | highest [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the provider renders when an `inference_request` asks for it: `2` (the template's text parts, vLLM's prompt for system and user content). Provider-wide: it says which contract the provider can render for the Gemma 4 model types it honours (`gemma4`, `gemma4_text`), not which models it serves. Swift omits nil and 1 (contract 1 only); `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` omits it. Older coordinators ignore it |
 | `terminal_fields_sealed` | `int` | `Int?` | opt | `1`: the provider sends a response's terminal fields only inside `encrypted_usage`, on every connection, and never their clear copies on `inference_complete` ([`inference_complete`](#inference_complete); `SealedTerminalFields`, `provider-swift/Sources/ProviderCore/Crypto/ResponseFrameSealer.swift`). A claim only: it proves nothing about the build that sent it. Older providers omit it; older coordinators ignore it |
+| `blind_protocol` | `int` | `Int?` | opt | `1`: the provider serves [blind requests](#blind-requests). Sent only when the build pins a coordinator request-signing key for blind requests, the Mac has its Secure Enclave signer, serves alone (never as a cluster member) and its posture holds SIP on, Secure Boot full, debugger attachment denied and core dumps off (`ProviderLoop.blindRequestRegistration`, `provider-swift/Sources/ProviderCore/ProviderLoop+BlindRequest.swift`). Omitted otherwise, and by older providers |
+| `request_signing` | `ProviderRequestSigning` | `ProviderRequestSigning?` | opt | `{"keys":[{"kid":…,"expires_at_ms":…}]}`: the coordinator request-signing keys the build pins for blind requests that have not expired by the Mac's clock (`kid` is the RFC 7638 thumbprint, unpadded base64url). Sent beside `blind_protocol` only. A hint: a peer that changes it can only cause refusals (`provider-swift/Sources/ProviderCore/Protocol/ProviderRequestSigning.swift`) |
 | `apns_device_token` | `string` | `String?` | opt | hex APNs token for the `E_K(nonce)` code-identity push |
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
 | `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
@@ -995,7 +997,7 @@ these fields: [../architecture/request-outcome-observability.md](https://github.
 | `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` ([coordinator/internal/inference/failure/inference_error_sanitize.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/failure/inference_error_sanitize.go)) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
 | `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `media_memory_unavailable`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge ([coordinator/api/inference/consumer.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/consumer.go), `noteInferenceError`; [coordinator/api/inference/dispatch.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/dispatch.go), `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). Swift also sends `queue_full` on a capacity 429, as the engine's queue does, to refuse an `inference_request` on arrival when its admission queue is past `CoordinatorQueueBudget` (`refuseCoordinatorRequestPastQueueBudget`, `provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`). Unlike `draining`, that is an ordinary capacity refusal: the coordinator spends a capacity retry and records a capacity reject for the provider and model ([coordinator/internal/inference/failure/inference_error_sanitize.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/failure/inference_error_sanitize.go), `safeInferenceFailureStatus`; [coordinator/internal/inference/providerhealth/policy.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/providerhealth/policy.go), `RecordError`). |
-| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum ([coordinator/protocol/inference_failure.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/inference_failure.go)): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`. Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
+| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum ([coordinator/protocol/inference_failure.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/inference_failure.go)): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`, `blind_refused` ([blind requests](#blind-requests)). Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
 | `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric ([coordinator/api/inference/terminal_cause.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/terminal_cause.go)); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
 | `rejection_reason` | `CapacityRejectionReason` | `CapacityRejectionReason?` | opt | routing-v2 enriched rejection; enum shared with [`capacity_quote`](#capacity_quote) |
@@ -1006,6 +1008,7 @@ these fields: [../architecture/request-outcome-observability.md](https://github.
 | `tool_check` | — (not yet read) | `ToolNoncomplianceCheck?` | opt | only beside `error_reason` `tool_noncompliance`: the check that failed, closed (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `undeclared_name`, `schema`, `malformed`, `diverged`, `unterminated`, `parallel`, `response_format`, `forced_choice`, `native_output`, `other`. Names the check only, never the tool or its arguments. Also on the provider's local failure log line. Today's coordinator ignores the key (`sanitizeProviderInferenceError` copies named fields only); keeping it on the route row is a coordinator change |
 | `refusal_reason` | — (not yet read) | `InferenceRefusalReason?` | opt | only on a client refusal (before the inference task, or while the prompt is prepared): why it refused, closed (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`), the same reason as the provider's [refusal line](../provider/cli-reference.md#refusal-lines), such as `missing_user_query`, `unmatched_tool_result`, `invalid_tool_history` or `request_exceeds_context`. Never request text. Today's coordinator ignores the key (`sanitizeProviderInferenceError` copies named fields only), so the requester's error is unchanged; recording it (for example on the route or rejection row) is a coordinator change that reads this key. Unknown values decode to nil |
 | `refusal_message` | — (not yet read) | computed `String` (`InferenceRefusalReason.clientMessage`) | opt | beside `refusal_reason` only: one fixed sentence per reason, derived from the reason alone, safe to show the requester if the coordinator chooses to forward it. Never decoded |
+| `blind_refusal` | — | `SignedBlindStatement?` | opt | only beside `failure_code` `blind_refused`: the refusal of a [blind request](#blind-requests), signed by the Mac's Secure Enclave key. Omitted otherwise |
 | — (`CoordinatorCause`) | `json:"-"` | — | never on the wire | coordinator-synthetic only (`provider_disconnected`) |
 
 `media_memory_unavailable` is a retryable `capacity`/503 failure for media
@@ -1374,6 +1377,8 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `gemma_prompt_contract` | `int` | `Int?` | opt | the [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the coordinator planned and counted this request with. `2` asks a provider that registered `gemma_prompt_contract: 2` for the text-parts render; absent (older coordinators, or a model the coordinator has not switched on) renders contract 1. A provider renders `2` only while it advertises it, only for the model types `gemma4` and `gemma4_text` (not `gemma4_vision` or `diffusion_gemma`) and only for text requests (no image, video or audio parts); any other value, or a malformed one, renders contract 1 and never refuses the frame. **Coordinator preconditions** (anything else serves a prompt other than the one planned, which fails the cache receipt and fences the provider): send `2` only to a provider that registered it, only for a text request, with contract 2's cache plan and prompt work (or none); choose again for every attempt, so a retry or handoff to another provider recomputes or clears it as it does the cache fields. For other model types both contracts plan the same prompt, so the ask changes nothing |
 | `cache_policy` | — | `RequestCachePolicy` | — | Never sent: the policy is sealed in `_darkbloom_cache` ([below](#sealed-cache-policy)). No signature covers the frame's key, so one that a frame carries anyway can only narrow the sealed policy: any value but the string `default`, a malformed one included, makes the request `memory_only` (`CoordinatorMessage.InferenceRequest.frameCachePolicy`) |
 | `coordinator_signature` | `*CoordinatorRequestSignature` | `CoordinatorRequestSignature?` | opt | The coordinator's Ed25519 signature over this request: `version` (1), `key_id` (first 16 hex characters of SHA-256 of the public key), `issued_at_ms` (coordinator Unix time at dispatch), `model` (the build the sealed body asks for) and `signature` (base64, 64 bytes). Version 1 signs, each as a 4-byte big-endian length and its bytes: the domain `darkbloom-coordinator-inference-request-v1`, `key_id`, `issued_at_ms`, `request_id`, `service_reservation_id`, the provider's own X25519 public key, `model`, SHA-256 of the raw `ephemeral_public_key` followed by the raw `ciphertext`, `cache_scope`, `cache_receipt_nonce`, `prefix_cache_protocol`, `cache_receipt_boundary_mode`, `cache_repeated_prefix_tokens`, `tool_schema_metadata_protocol` and `gemma_prompt_contract` (an absent value is empty; an integer is decimal). A provider build checks it only against the keys it pins (`CoordinatorRequestSigningKeys`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSigningKeys.swift`): production builds pin the production coordinator's key (`key_id` `e7d53f46617e9494`), dev builds DevNet's (`7c638fff1a85dd4a`), staging builds none, and no build requires a signature yet. With a pinned key, a signed request is served only if it verifies for this provider's key and its `issued_at_ms` is within 300 s of the Mac's clock; a build that also sets `requireSignature` refuses a request without one. A refused request gets `inference_error` `encryption_failure` (502) and releases its reservation; the provider log names the reason (`coordinator signature unknown_key`, `stale`, …). The same signed request is served once: a second copy within its 300 s gets no answer, so the first copy keeps its reservation (`CoordinatorRequestVerifier.check`, `CoordinatorServedRequests`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorRequestSignature.swift`). A value that does not decode as this object reads as absent; one that decodes but fails a check is refused. Without a pinned key it is ignored, as older providers ignore it |
+| `blind` | — | `BlindFrame?` | opt | `{"v":1,"meta":"<base64 of the clear meta bytes>"}`: makes the frame a [blind request](#blind-requests), whatever it holds. A member that does not decode is refused, never served as an ordinary request |
+| `signed_request` | — | `String?` (in `BlindFrame`) | opt | the coordinator's JWS over a blind request (below). Read only on a frame with `blind`; every other frame's is ignored |
 
 A coordinator can also put the attempt's prefix-cache identity inside the
 encrypted body as the top-level member `_darkbloom_cache`:
@@ -1537,6 +1542,79 @@ recognized by `GLM5NextPromptPolicy.templateSHA256`; a LOAD with any other
 template is refused (`GLM5NextLocalQualification.requireShippedTemplate`). They do not
 prove full HTTP/sidecar parity.
 See the [integration gates](../design/glm53-flash-native.md).
+
+#### Blind requests
+
+In a blind request the client seals the request body to one provider's
+X25519 key, and the coordinator relays it unopened under terms it signs. The
+frame carries `blind` (the clear meta bytes the coordinator acted on) and
+`signed_request`, a JWS (RFC 7515, compact) with the algorithm `Ed25519`
+(RFC 8032). Its protected header is exactly
+`{"alg":"Ed25519","kid":<kid>,"typ":"darkbloom-inference-request+jws"}`. Its
+payload names `issued_at_ms`, `request_id`, `service_reservation_id`, `model`,
+`recipient_public_key`, `sealed_body_sha256` (SHA-256 of the raw
+`ephemeral_public_key` followed by the raw `ciphertext`), the frame's other
+fields the provider acts on, and the `blind` terms: `v`, `meta_sha256`,
+`model`, `max_tokens`, `prompt_token_bound`, `traits` (`tools`, `vision`),
+`account_binding`, `client_nonce`, `client_ts`, `seal_set` and
+`client_public_key`. The header is compared byte for byte with a pinned key's,
+the signature is checked over the exact signed bytes (S below the group
+order), and only then is the payload decoded; `issued_at_ms` must be within
+300 s of the Mac's clock (`CoordinatorRequestJWS`,
+`provider-swift/Sources/ProviderCore/Coordinator/RequestSigning/CoordinatorRequestJWS.swift`;
+shared vectors:
+`provider-swift/Tests/ProviderCoreTests/Fixtures/request-signing-vectors.json`).
+
+The provider checks, in this order, refusing at the first that fails
+(`BlindFrameCheck`, `BlindBodyCheck`,
+`provider-swift/Sources/ProviderCore/Blind/BlindAdmission.swift`):
+
+| Check | Refusal reason |
+|---|---|
+| a valid JWS from a key the build pins, for this request, this provider's key and this sealed body | `signature_invalid` |
+| the terms' version is 1, and this Mac's key is in `seal_set` | `unsupported_version`, `not_in_set` |
+| SHA-256 of the meta bytes is `meta_sha256` | `meta_mismatch` |
+| the terms' `client_public_key` is the frame's `ephemeral_public_key` | `binding_mismatch` |
+| the Mac serves blind requests now (as for `register.blind_protocol`) | `posture` |
+| the body opens | `seal_unopenable` |
+| the body parses and carries `_darkbloom_blind` version 1 | `binding_missing` |
+| its `meta_sha256`, `nonce`, `cred` and `ts` equal the signed `meta_sha256`, `client_nonce`, `account_binding` and `client_ts`; an optional `cache_salt` is 16 to 32 bytes of unpadded base64url | `binding_mismatch` |
+| `client_ts` is within 600 s of the Mac's clock | `stale` |
+| the client nonce has not been served in that window | `replayed` |
+| the body's `model`, the payload's `model` and the terms' `model` agree | `model_mismatch` |
+| the body's `max_tokens` and `max_completion_tokens` are at most the terms' `max_tokens` | `bound_exceeded` |
+| declared tools need `traits.tools`; any media part needs `traits.vision` | `traits_mismatch` |
+| the tokenized prompt has at most `prompt_token_bound` tokens | `prompt_bound_exceeded` |
+
+The posture is checked before the body is opened, so a Mac that cannot serve
+blind requests never opens one. A cluster member or pair refuses every blind
+request with `posture`. A second copy of a signed frame already received gets
+no answer, so the first copy keeps its reservation. A body that carries
+`_darkbloom_blind` on a frame without `blind` is refused with
+`invalid_request` and `refusal_reason` `sealed_for_blind_request`.
+
+A blind request is served with the values the coordinator signed, never their
+clear copies: generation is capped at the body's own limit, at most the
+terms' `max_tokens`, on every engine path (the bridge holds every submission
+of the request to the signed bounds, `BlindRequestBounds`); the template
+contract and tool-schema protocol are the payload's; the prefix-cache scope is
+the payload's `cache_scope` (none: no cache), narrowed by the client's
+`cache_salt` as `<scope>|s:<first 22 characters of unpadded base64url
+SHA-256("darkbloom-blind-cache-salt-v1" ‖ 0x00 ‖ salt)>`, and the body's
+`_darkbloom_cache` is not read. Capacity, load and generation failures keep
+their ordinary errors.
+
+A refusal is an `inference_error` with `failure_code` `blind_refused`,
+`status_code` 502 for `signature_invalid` and `posture` and 400 for every
+other reason, and `blind_refusal`:
+`{"statement":{"request_id":…,"signed_request_sha256":…,"reason":…,"issued_at_ms":…},"signature":"<base64 DER>"}`.
+`signed_request_sha256` is the base64 SHA-256 of the JWS as sent, or empty
+before it verified. The signature is ECDSA P-256 over SHA-256, by the Mac's
+Secure Enclave key, of the 4-byte big-endian length and bytes of
+`darkbloom-blind-refusal-v1` and then of each field's string form in that
+order (integers in decimal) (`BlindStatement`,
+`provider-swift/Sources/ProviderCore/Blind/BlindStatement.swift`). A Mac
+without its signer sends the refusal without `blind_refusal`.
 
 ### `cancel`
 

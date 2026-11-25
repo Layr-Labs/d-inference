@@ -39,6 +39,9 @@ public actor CoordinatorClient {
     internal var drainAcknowledgements: [String: AsyncStream<Bool>.Continuation] = [:]
     /// Signed coordinator requests already served, across connections.
     internal var servedSignedRequests = CoordinatorServedRequests()
+    /// Blind requests whose signature verified, so a repeat is not served
+    /// (`CoordinatorServedRequests.admitBlindSignature`).
+    internal var servedBlindRequests = CoordinatorServedRequests()
     /// The current connection's comparison with the build's coordinator pin,
     /// which heartbeats report (`CoordinatorServerPin.observe`).
     internal var coordinatorConnectionReport = CoordinatorServerPin.ConnectionReport()

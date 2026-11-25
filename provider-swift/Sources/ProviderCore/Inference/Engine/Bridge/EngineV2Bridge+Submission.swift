@@ -256,6 +256,10 @@ extension EngineV2Bridge {
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        if let bounds = BlindRequestBounds.current, !bounds.admit(promptTokens: promptTokens.count) {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            throw BlindRequestBounds.PromptBoundExceeded()
+        }
         let reasoningBudget: CBv2ReasoningBudget?
         do {
             if let budget = request.nativeReasoningBudget {
@@ -401,7 +405,8 @@ extension EngineV2Bridge {
         }
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
-        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count,
+        let requestedOutput = BlindRequestBounds.current?.outputLimit(requested: request.max_tokens) ?? request.max_tokens
+        let maxOutputTokens = outputTokens(requested: requestedOutput, promptTokens: promptTokens.count,
                                            ownerRequest: ownerRequest)
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,

@@ -4,7 +4,8 @@
 // constraints. Vocabulary decoding is cached per loaded tokenizer; schemas
 // and grammar state remain per request. Qwen4 uses its rendered native channel
 // boundary and opaque framed arguments; Gemma keeps its own schema automaton;
-// GPT-OSS frames its Harmony call (GPTOSSForcedToolConstraint); tool-free
+// GPT-OSS frames its Harmony call (GPTOSSForcedToolConstraint) and Inkling 2
+// its call message (InklingForcedToolConstraint); tool-free
 // JSON answers of the families `JSONAnswerPolicy` admits use
 // JSONAnswerConstraint.
 
@@ -87,6 +88,13 @@ enum ToolConstraintFactory {
                     promptTokens: nativePromptTokens)
             }
             if strategy == .structuredPostValidation {
+                // Inkling 2 frames its forced call in the sampler; its channel
+                // lexer still checks every frame before it leaves.
+                if InklingForcedToolCalls.applies(modelType: modelContext.modelType) {
+                    return try InklingForcedToolConstraint.make(prepared: prepared, tokenizer: tokenizer,
+                        maxTokens: request.maxTokens ?? defaultMaxTokens, stopTokenIDs: stopTokenIDs,
+                        promptTokens: nativePromptTokens)
+                }
                 if Qwen4ModelIdentity.isQualified(modelContext.modelId),
                    modelContext.modelType == "qwen4_exp" {
                     guard let nativePromptTokens, !nativePromptTokens.isEmpty,

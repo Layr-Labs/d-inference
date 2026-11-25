@@ -55,7 +55,15 @@ extension ModelDownloader {
         // An existing daemon may retain this lease while its prepared update
         // waits for rollout jitter. Do not silently block a foreground start.
         try Task.checkCancellation()
-        let lease = try ModelArtifactWriteLease.acquireIfAvailable(modelID: model.id, operation: "verification")
+        // The only `ModelCatalogError` the lease throws is another process
+        // holding it; reported as its own type, so a start can tell it apart
+        // from a build that failed its check.
+        let lease: ModelArtifactWriteLease
+        do {
+            lease = try ModelArtifactWriteLease.acquireIfAvailable(modelID: model.id, operation: "verification")
+        } catch let busy as ModelCatalogError {
+            throw SelectedModelBusy(modelID: model.id, underlying: busy)
+        }
         defer { lease.release() }
         guard let path = ModelScanner.resolveLocalPath(modelID: model.id) else {
             throw ModelCatalogError.downloadFailed("Selected model is missing: \(model.id)")
@@ -81,4 +89,19 @@ extension ModelDownloader {
             }
         }
     }
+}
+
+/// Another process holds a selected model's write lease while a start verifies it (a download, update or
+/// verification in progress): `ModelDownloader.verifySelectedModel`. It reads as the lease's own error.
+public struct SelectedModelBusy: Error, CustomStringConvertible, LocalizedError, Sendable {
+    public let modelID: String
+    public let underlying: ModelCatalogError
+
+    public init(modelID: String, underlying: ModelCatalogError) {
+        self.modelID = modelID
+        self.underlying = underlying
+    }
+
+    public var description: String { underlying.description }
+    public var errorDescription: String? { underlying.errorDescription }
 }

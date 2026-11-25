@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-24
+> Last updated: 2026-11-25
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -28,40 +28,42 @@ runs the SDK qualification with no secrets first; then the reusable
 staging and publication chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.18`, a patch release over `v0.10.17`
-with the changes listed in the [`v0.10.18` changelog entry](../../CHANGELOG.md): bug fixes, performance and security posture improvements.
+`ProviderCore.version` is prepared as `0.10.19`, a patch release over `v0.10.18`
+with the changes listed in the [`v0.10.19` changelog entry](../../CHANGELOG.md): Inkling 2 Mini fixes and a startup fix.
 
-Before tagging `v0.10.18`:
+Before tagging `v0.10.19`:
 
-- Full CI green on the release PR's final head and on the `dev` commit the
-  candidate was cut from (every required job, SDK 27 qualification, Release
-  Integrity); no run is waived.
+- Full CI green on the release PR's final head (every required job, SDK 27
+  qualification, Release Integrity); no run is waived. The fixes were composed on
+  `v0.10.18`'s tree, so the release PR's head descends from `master`.
 - Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins for the combined Inkling 2 Mini and sampler source: `libs/mlx` `72dffa2dbbdce95601fd84f5e8b6d7b4ec97a11b`, `libs/mlx-swift` `b1c94d29c5ddff16838fdc25b83fbe8fde48b3e8`, `libs/mlx-swift-lm` `10c5a332ee86c6704a4e79502b48be0aaa4750b4`. Compare the packaged Metal library and
-  application inventory with the manifests for this exact combined build.
+- Pins, unchanged from `v0.10.18`: `libs/mlx` `72dffa2dbbdce95601fd84f5e8b6d7b4ec97a11b`, `libs/mlx-swift` `b1c94d29c5ddff16838fdc25b83fbe8fde48b3e8`, `libs/mlx-swift-lm` `10c5a332ee86c6704a4e79502b48be0aaa4750b4`. Compare the packaged Metal library and
+  application inventory with the manifests for this exact build.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree; compare the model, grant and qualification counts with the combined build's verified facts (12 models, 11 grants, 18 qualifications).
-- Catalog room: v0.10.17 holds 24 approvals and v0.10.18 adds two per model;
-  v0.10.16's are left out. Pairs still on 0.10.16 stop serving through Darkbloom
+  tree; compare the model, grant and qualification counts with the verified facts (12 models, 11 grants, 18 qualifications).
+- Catalog room: v0.10.18 holds 24 approvals and v0.10.19 adds two per model;
+  v0.10.17's are left out. Pairs still on 0.10.17 stop serving through Darkbloom
   until they update.
 - The release is signed by a listed certificate (`DarkbloomSigningIdentity.certificateSHA1s`;
   the workflow fails closed otherwise). The listed certificate can't sign after 2027-02-01: a
   release listing its replacement is due by mid-January 2027 ("Signing Certificates" below).
-- The tag's run builds, signs and stages by itself and waits once, before
-  publication, for an approval in the `prod` environment from someone other than
-  the person who pushed the tag.
+- The tag's run builds, signs, stages and publishes by itself; the `prod`
+  environment it deploys to restricts which refs may deploy and has no reviewers.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.18`, keeps the plain-build default `prod`, holds the GitHub release
-  notes ([`docs/releases/provider-v0.10.18.md`](../releases/provider-v0.10.18.md)),
+  `0.10.19`, keeps the plain-build default `prod`, holds the GitHub release
+  notes ([`docs/releases/provider-v0.10.19.md`](../releases/provider-v0.10.19.md)),
   and its `changelog.d/` holds only `README.md`.
 
 After publish: the coordinator snapshot PR (pin + `LatestProviderVersion`
-0.10.18) rides the next coordinator update. Set the GitHub release body from
+0.10.19) rides the next coordinator update. Set the GitHub release body from
 those notes only if the release run did not.
 
+`v0.10.18` was [published on 2026-11-25](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.18)
+from `0174ccf83e26fb0d62245ec3bb17afb8b86474f1` (notes:
+[`docs/releases/provider-v0.10.18.md`](../releases/provider-v0.10.18.md)),
 `v0.10.17` was [published on 2026-11-21](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.17)
 from `568ed5b75cd557c0cf2e2bba0aa5028b23246a0c` (notes:
 [`docs/releases/provider-v0.10.17.md`](../releases/provider-v0.10.17.md)),

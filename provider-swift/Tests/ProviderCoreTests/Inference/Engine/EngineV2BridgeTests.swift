@@ -470,7 +470,7 @@ private struct EngineV2BridgePumpReceiptTests {
             }),
             donationDemand: .init(repeatedPrefixTokens: 256))
         model.allowForward()
-        // Without the opt-in this returns only after the blocked write times out.
+        // With the early terminal off this returns only after the blocked write times out.
         let recorded = await record(stream)
         #expect(recorded.events.contains { if case .info = $0 { true } else { false } })
         let writing = await Task.detached { blockingWait(entered, seconds: 10) }.value
@@ -498,7 +498,7 @@ private struct EngineV2BridgePumpReceiptTests {
         await bridge.shutdown()
     }
 
-    @Test("with the opt-in on, a seeded donor's response still waits for its checkpoint write")
+    @Test("with the early terminal on, a seeded donor's response still waits for its checkpoint write")
     func seededDonorKeepsTerminalAfterPublication() async throws {
         let fixture = try SSDHybridCheckpointTestFixture()
         defer { fixture.remove() }
@@ -899,7 +899,7 @@ struct EngineV2TranslationTests {
         #expect(engine.submitted[3].cacheSalt == nil)
     }
 
-    @Test("the early-terminal opt-in reaches the engine only for unseeded requests")
+    @Test("the early terminal reaches the engine only for unseeded requests")
     func earlyTerminalOptInSkipsSeededRequests() async {
         for enabled in [false, true] {
             let engine = ScriptedCBv2Engine(script: .stream([

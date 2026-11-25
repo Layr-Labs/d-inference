@@ -136,9 +136,18 @@ struct MemoryOnlySSDTierTests {
                           maxContextLength: 8192, defaultMaxTokens: 4096))
         let before = try Self.files(under: fixture.root)
         let counts = RequestCachePolicyCounters.shared.snapshot
+        // A terminal can precede the checkpoint write; the request retires after it.
+        func waitForRetirement() async throws {
+            let deadline = ContinuousClock.now + .seconds(10)
+            while await bridge._testLivePumpCount() > 0, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            #expect(await bridge._testLivePumpCount() == 0)
+        }
 
         // Marked with no nonce or scope, as the coordinator marks a request.
         let marked = try await serve(loop, requestID: "marked", cacheMember: ["cache_policy": "memory_only"])
+        try await waitForRetirement()
         await store.waitForWritesForTesting()
         let afterMarked = try Self.files(under: fixture.root)
         let counted = RequestCachePolicyCounters.shared.snapshot
@@ -153,6 +162,7 @@ struct MemoryOnlySSDTierTests {
 
         // The control: the same request, unmarked, writes its checkpoint.
         let unmarked = try await serve(loop, requestID: "unmarked", cacheMember: nil)
+        try await waitForRetirement()
         await store.waitForWritesForTesting()
         #expect(unmarked.contains { if case .inferenceComplete = $0 { true } else { false } })
         #expect(store.stats().filesWritten > 0)

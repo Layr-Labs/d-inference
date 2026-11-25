@@ -400,9 +400,9 @@ struct LaunchAgentEnvironmentTests {
             environment: LaunchAgent.passthroughEnvironment(from: [:])))
     }
 
-    @Test func forwardsTerminalBeforePublicationOptInToProviderJob() {
-        // The early terminal is off by default. launchd does not inherit the
-        // shell, so an installed provider takes the opt-in only if its plist
+    @Test func forwardsTerminalBeforePublicationRollbackToProviderJob() {
+        // The early terminal is on by default. launchd does not inherit the
+        // shell, so an installed provider takes the rollback only if its plist
         // carries it; the watchdog serves no request.
         let key = SSDPrefixCachePolicy.terminalBeforePublicationFlag
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
@@ -418,10 +418,10 @@ struct LaunchAgentEnvironmentTests {
             #expect(SSDPrefixCachePolicy.terminalBeforePublication(environment: launchd)
                 == SSDPrefixCachePolicy.terminalBeforePublication(environment: foreground))
         }
-        let optIn = LaunchAgent.passthroughEnvironment(from: [key: "1"])
-        #expect(optIn == [key: "1"])
-        #expect(SSDPrefixCachePolicy.terminalBeforePublication(environment: optIn))
-        #expect(!SSDPrefixCachePolicy.terminalBeforePublication(
+        let rollback = LaunchAgent.passthroughEnvironment(from: [key: "0"])
+        #expect(rollback == [key: "0"])
+        #expect(!SSDPrefixCachePolicy.terminalBeforePublication(environment: rollback))
+        #expect(SSDPrefixCachePolicy.terminalBeforePublication(
             environment: LaunchAgent.passthroughEnvironment(from: [:])))
     }
 

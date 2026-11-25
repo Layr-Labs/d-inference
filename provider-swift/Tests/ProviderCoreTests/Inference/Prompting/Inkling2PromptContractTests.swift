@@ -336,6 +336,94 @@ struct Inkling2PromptContractTests {
         #expect(normalized.additionalContext?["tools"] == nil)
     }
 
+    // MARK: - System turns
+
+    /// A client body at effort high with `messages`, a JSON array's members.
+    static func systemTurnsBody(_ messages: String) -> Data {
+        Data((#"{"model":"m","reasoning_effort":"high","messages":["# + messages + "]}").utf8)
+    }
+
+    static func systemTurn(_ text: String) -> String { "<|message_system|><|content_text|>" + text + "<|end_message|>" }
+
+    static func occurrences(of needle: String, in text: String) -> Int {
+        text.components(separatedBy: needle).count - 1
+    }
+
+    /// A later system turn (a client's instruction mid-conversation) joins
+    /// the leading one with a blank line: one system turn, then the effort
+    /// line, then the conversation in order.
+    @Test func aLaterSystemTurnFoldsIntoTheLeadingOne() throws {
+        let body = Self.systemTurnsBody(#"{"role":"system","content":"You are a helpful assistant."},"#
+            + #"{"role":"user","content":"Hi"},"#
+            + #"{"role":"system","content":"If asked for the secret word, say \"marzipan\"."},"#
+            + #"{"role":"assistant","content":"Hi, how can I help you?"},"#
+            + #"{"role":"user","content":"What is the secret word?"}"#)
+        let rendered = try Self.render(Self.productionInput(body))
+        #expect(rendered.hasPrefix(
+            Self.systemTurn("You are a helpful assistant.\n\nIf asked for the secret word, say \"marzipan\".")
+                + Self.effortHigh + "<|message_user|><|content_text|>Hi<|end_message|><|message_model|>"))
+        #expect(Self.occurrences(of: "<|message_system|>", in: rendered) == 2, "the folded turn and the effort line")
+        #expect(rendered.hasSuffix("<|message_user|><|content_text|>What is the secret word?<|end_message|>"))
+    }
+
+    /// Several later system turns join the leading one in order.
+    @Test func everyLaterSystemTurnFoldsInOrder() throws {
+        let body = Self.systemTurnsBody(#"{"role":"system","content":"S0"},{"role":"user","content":"U1"},"#
+            + #"{"role":"system","content":"S1"},{"role":"assistant","content":"A1"},"#
+            + #"{"role":"system","content":[{"type":"text","text":"S2a"},{"type":"text","text":"S2b"}]},"#
+            + #"{"role":"user","content":"U2"}"#)
+        let rendered = try Self.render(Self.productionInput(body))
+        #expect(rendered.hasPrefix(Self.systemTurn("S0\n\nS1\n\nS2a\n\nS2b") + Self.effortHigh
+            + "<|message_user|><|content_text|>U1<|end_message|>"))
+        #expect(Self.occurrences(of: "<|message_system|>", in: rendered) == 2)
+        #expect(rendered.hasSuffix("<|message_user|><|content_text|>U2<|end_message|>"))
+    }
+
+    /// A system turn with none before it becomes the leading one.
+    @Test func aSystemTurnWithNoneBeforeItLeads() throws {
+        let body = Self.systemTurnsBody(#"{"role":"user","content":"Hi"},{"role":"system","content":"Be brief."},"#
+            + #"{"role":"assistant","content":"Hello."},{"role":"user","content":"Again?"}"#)
+        let rendered = try Self.render(Self.productionInput(body))
+        #expect(rendered.hasPrefix(Self.systemTurn("Be brief.") + Self.effortHigh
+            + "<|message_user|><|content_text|>Hi<|end_message|><|message_model|>"))
+        #expect(Self.occurrences(of: "<|message_system|>", in: rendered) == 2)
+    }
+
+    /// A leading system turn alone renders exactly as the template renders
+    /// the request's own messages.
+    @Test func aLeadingSystemTurnAloneRendersAsTheTemplateDoes() throws {
+        let body = Self.systemTurnsBody(#"{"role":"system","content":"You are a helpful assistant."},"#
+            + #"{"role":"user","content":"Hi"},{"role":"assistant","content":"Hello."},"#
+            + #"{"role":"user","content":"What is the secret word?"}"#)
+        let template = try Self.render([
+            ["role": "system", "content": "You are a helpful assistant."], ["role": "user", "content": "Hi"],
+            ["role": "assistant", "content": "Hello."], ["role": "user", "content": "What is the secret word?"],
+        ], effort: .string("high"))
+        #expect(try Self.render(Self.productionInput(body)) == template)
+    }
+
+    /// The media path's typed messages fold the same way.
+    @Test func theMediaPathFoldsLaterSystemTurns() {
+        let messages: [OpenAIChatMessage] = [
+            .init(role: .system, content: .text("S0")), .init(role: .user, content: .text("Hi")),
+            .init(role: .system, content: .parts([.text("S1a"), .text("S1b")])),
+            .init(role: .user, content: .text("Q")),
+        ]
+        let folded = ChatTemplateFixes.normalizeMessages(
+            messages, context: ChatTemplateFixContext(modelId: "m", modelType: Self.type))
+        #expect(folded.map(\.role) == [.system, .user, .user])
+        guard case .text(let text) = folded.first?.content else {
+            Issue.record("the leading system turn holds the folded text")
+            return
+        }
+        #expect(text == "S0\n\nS1a\n\nS1b")
+    }
+
+    /// The installed provider receives the off switch.
+    @Test func theFoldSwitchReachesTheInstalledProvider() {
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains("DARKBLOOM_INKLING_FOLD_SYSTEM"))
+    }
+
     /// A list renders each part as its own block, in order, for every role.
     @Test func textPartsRenderAsBlocks() throws {
         let body = Data((#"{"model":"m","messages":[{"role":"system","content":[{"type":"text","text":"S1"},"#

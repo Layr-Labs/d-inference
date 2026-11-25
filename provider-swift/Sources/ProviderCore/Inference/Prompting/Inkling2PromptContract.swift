@@ -25,9 +25,93 @@ import ProviderCoreFoundation
 ///   `<|message_tool|>NAME<|content_text|>...`.
 /// - Content: a list renders each part as its own block, so a message's text
 ///   parts reach the template as parts, in order (`textParts(of:)`).
+/// - System turns: the template renders a system message wherever it stands,
+///   but with thinking on the model hunted through its thought for where a
+///   later system instruction sat until the loop guard ended the row with no
+///   answer. Every system turn is folded into one leading system message, in
+///   order (`foldsSystemMessages`).
 /// - Output: `Inkling2OutputChannels`. The template has no tool-choice control,
 ///   so required/named calls are prompt-forced and validated per frame.
 enum Inkling2PromptContract {
+    /// An off word (`0`, `false`, `off` or `no`, in any case, surrounding
+    /// space ignored) renders later system turns in place again, as the
+    /// template does. Read once at launch.
+    static let foldSystemEnvironmentKey = "DARKBLOOM_INKLING_FOLD_SYSTEM"
+    static let foldsSystemMessages = isFoldEnabled(ProcessInfo.processInfo.environment[foldSystemEnvironmentKey])
+
+    static func isFoldEnabled(_ value: String?) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return true }
+        return !["0", "false", "off", "no"].contains(value)
+    }
+
+    /// The text-only system turns folded into one leading system message, in
+    /// order, joined with a blank line (`LeadingSystemMessageNormalizer`, as
+    /// for Qwen 3.5 and GPT-OSS); a single later system turn moves to the
+    /// front. A list's text parts, which render as separate blocks, are
+    /// joined the same way. Other turns keep their order. Nothing changes
+    /// when `enabled` is false, when the only system message already leads,
+    /// or when a system turn holds anything but text.
+    static func normalizeSystemMessages(
+        _ messages: [[String: any Sendable]], enabled: Bool = foldsSystemMessages
+    ) -> [[String: any Sendable]] {
+        guard enabled else { return messages }
+        return LeadingSystemMessageNormalizer.normalize(
+            messages,
+            isSystem: { ($0["role"] as? String) == "system" },
+            textContent: { systemText($0["content"]) },
+            replacingContent: { message, text in
+                var message = message
+                message["content"] = text
+                return message
+            })
+    }
+
+    /// The typed messages of the media path, folded the same way.
+    static func normalizeSystemMessages(
+        _ messages: [OpenAIChatMessage], enabled: Bool = foldsSystemMessages
+    ) -> [OpenAIChatMessage] {
+        guard enabled else { return messages }
+        return LeadingSystemMessageNormalizer.normalize(
+            messages,
+            isSystem: { $0.role == .system },
+            textContent: { message in
+                switch message.content {
+                case .text(let text): return text
+                case .null: return ""
+                case .parts(let parts):
+                    var texts: [String] = []
+                    for part in parts {
+                        guard case .text(let text) = part else { return nil }
+                        texts.append(text)
+                    }
+                    return texts.joined(separator: "\n\n")
+                }
+            },
+            replacingContent: { message, text in
+                var message = message
+                message.content = .text(text)
+                return message
+            })
+    }
+
+    /// A system message's text: a string, or a list's text parts joined with
+    /// a blank line; nil for any other content.
+    static func systemText(_ content: (any Sendable)?) -> String? {
+        guard let content else { return "" }
+        if let text = content as? String { return text }
+        guard let parts = content as? [any Sendable] else { return nil }
+        var texts: [String] = []
+        for part in parts {
+            guard let object = part as? [String: any Sendable],
+                (object["type"] as? String).map({ $0 == "text" || $0 == "input_text" }) ?? true,
+                let text = object["text"] as? String
+            else { return nil }
+            texts.append(text)
+        }
+        return texts.joined(separator: "\n\n")
+    }
+
     /// The served type. The text and vision sub-configs never serve alone.
     static func applies(modelType: String?) -> Bool {
         Inkling2ModelIdentity.isNativeType(modelType)

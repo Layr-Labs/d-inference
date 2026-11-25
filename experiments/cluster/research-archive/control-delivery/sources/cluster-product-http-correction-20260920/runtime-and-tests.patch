@@ -1,0 +1,134 @@
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedEngineFactory.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedEngineFactory.swift
+@@ -10,11 +10,13 @@
+         profile: DistributedResidentExecutionProfile,
+         tokenizer: TokenizerHandle,
+         eosTokenIDs: Set<Int>,
++        resolvedStopTokenIDs: Set<Int>? = nil,
+         firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+         publicModelID: String? = nil
+     ) throws -> EngineV2Bridge {
+         if let publicModelID { try validatePublicModelID(publicModelID) }
+-        guard eosTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) else {
++        guard eosTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }),
++              resolvedStopTokenIDs?.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) != false else {
+             throw DistributedEngineError.invalidConfiguration("invalid EOS vocabulary")
+         }
+         try firstTokenBudgetPolicy?.validate(maximumPromptTokens: profile.maxPromptTokens)
+@@ -27,7 +29,7 @@
+         // attached here. The engine reports its owner's conservative capacity.
+         return EngineV2Bridge(
+             engine: engine, modelId: publicModelID ?? expectedIdentity.modelID, tokenizer: tokenizer,
+-            eosTokenIds: eosTokenIDs, defaultMaxTokens: profile.maxOutputTokens,
++            eosTokenIds: eosTokenIDs, resolvedStopTokenIds: resolvedStopTokenIDs, defaultMaxTokens: profile.maxOutputTokens,
+             maxConcurrentRequests: 1, kvBackendKind: .contiguous,
+             distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy)
+     }
+@@ -43,12 +45,13 @@
+         profile: DistributedResidentExecutionProfile,
+         tokenizer: TokenizerHandle,
+         eosTokenIDs: Set<Int>,
++        resolvedStopTokenIDs: Set<Int>? = nil,
+         modelType: String? = nil,
+         firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil
+     ) throws -> MultiModelBatchSchedulerEngine.ModelRegistryEntry {
+         let bridge = try makeBridge(
+             owner: owner, expectedIdentity: expectedIdentity, profile: profile,
+-            tokenizer: tokenizer, eosTokenIDs: eosTokenIDs,
++            tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, resolvedStopTokenIDs: resolvedStopTokenIDs,
+             firstTokenBudgetPolicy: firstTokenBudgetPolicy, publicModelID: publicModelID)
+         return .init(tokenizer: tokenizer, modelType: modelType, container: nil,
+                      isVLM: false, engineV2Bridge: bridge, visionGate: nil)
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift
+@@ -663,6 +663,13 @@
+             }
+             if let failure = error as? PreContentDeadlineFailure { throw failure }
+             if error is CancellationError { throw CancellationError() }
++            // Distributed HTTP has no native terminal when admission refuses.
++            // Propagate the existing mapped error before response headers; an
++            // error-only stream cannot manufacture a native retirement record.
++            if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {
++                throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
++                    EngineV2Translation.admissionErrorMessage(for: error))
++            }
+             // Admission failure. The message keeps the canonical
+             // `token_budget_exhausted:` prefix contract so
+             // `fromSchedulerMessage` classifies it as a retryable capacity
+--- a/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+@@ -297,6 +297,7 @@
+         modelId: String,
+         tokenizer: TokenizerHandle,
+         eosTokenIds: Set<Int>,
++        resolvedStopTokenIds: Set<Int>? = nil,
+         extraEOSTokens: [String] = [],
+         defaultMaxTokens: Int = 4096,
+         maxConcurrentRequests: Int = 4,
+@@ -325,7 +326,10 @@
+         self.kvBackendFallbackReason = kvBackendFallbackReason
+         self.clampedKVBackendFallbackReason =
+             Self.heartbeatFallbackReason(kvBackendFallbackReason)
+-        self.stopTokenIds = EngineV2Translation.stopTokenIds(
++        // A trusted session can supply its already-resolved policy, including
++        // an intentionally empty fixed-length stop set. Legacy callers retain
++        // the original model/tokenizer/extra-token union.
++        self.stopTokenIds = resolvedStopTokenIds ?? EngineV2Translation.stopTokenIds(
+             eosTokenIds: eosTokenIds,
+             tokenizerEOSTokenId: tokenizer.inner.eosTokenId,
+             extraEOSTokens: extraEOSTokens,
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift
+@@ -32,7 +32,7 @@
+         target.entry = try DistributedEngineFactory.makeRegistryEntry(
+             owner: session, expectedIdentity: session.expectedIdentity,
+             publicModelID: session.model.publicModelID, profile: session.profile,
+-            tokenizer: tokenizer, eosTokenIDs: eos, modelType: session.model.modelType,
++            tokenizer: tokenizer, eosTokenIDs: eos, resolvedStopTokenIDs: eos, modelType: session.model.modelType,
+             firstTokenBudgetPolicy: firstTokenBudgetPolicy)
+         return lifetime
+     }
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedStopResolutionTests.swift
+@@ -0,0 +1,41 @@
++import Foundation
++import MLXLMCommon
++import Testing
++@testable import ProviderCore
++
++@Suite struct DistributedStopResolutionTests {
++    @Test func legacyFactoryStillUnionsModelAndTokenizerStops() async throws {
++        let owner = DistributedTestOwner()
++        let bridge = try DistributedEngineFactory.makeBridge(owner: owner,
++            expectedIdentity: owner.identity, profile: distributedTestProfile(),
++            tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [98])
++        let stops = await bridge.stopTokenIds
++        #expect(stops == [98, 99])
++        await bridge.shutdown()
++    }
++
++    @Test func alreadyResolvedEmptyStopsSurviveRegistryAndBridgeConstruction() async throws {
++        let owner = DistributedTestOwner()
++        let entry = try DistributedEngineFactory.makeRegistryEntry(owner: owner,
++            expectedIdentity: owner.identity, publicModelID: "public/example",
++            profile: distributedTestProfile(), tokenizer: TokenizerHandle(DistributedTestTokenizer()),
++            eosTokenIDs: [98], resolvedStopTokenIDs: [])
++        let bridge = try #require(entry.engineV2Bridge)
++        let stops = await bridge.stopTokenIds
++        #expect(stops.isEmpty)
++        await bridge.shutdown()
++    }
++
++    @Test func resolvedStopsStillRequireTheActualProfileVocabulary() throws {
++        for invalid in [-1, 100] {
++            let owner = DistributedTestOwner()
++            #expect(throws: DistributedEngineError.self) {
++                try DistributedEngineFactory.makeBridge(owner: owner,
++                    expectedIdentity: owner.identity, profile: distributedTestProfile(),
++                    tokenizer: TokenizerHandle(DistributedTestTokenizer()), eosTokenIDs: [],
++                    resolvedStopTokenIDs: [invalid])
++            }
++            #expect(owner.reserveCount == 0)
++        }
++    }
++}

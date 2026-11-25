@@ -1,0 +1,26 @@
+{
+  "root": "/Users/developer/DarkbloomDev/d-inference",
+  "files": [
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/send_frame.h",
+      "beforeSHA256": null,
+      "sha256": "771846ae0406bc2203b37ec9620b3158405433fbe76421e315296670c3c590c7"
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.h",
+      "beforeSHA256": "dbe318131a2d1daa3614b5a48c5be6a31fd8405ebfa394138172d9bb1b7d9f94",
+      "sha256": "726f94b96febd2ec294269872d6672bcaf0a4fc97ecbef9474bdf97b4e962498"
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh_impl.h",
+      "beforeSHA256": "330d399b2af0b2614b87221a400a2e45abac1293804b36ef5a622e22a89adc7b",
+      "sha256": "3ea07df67aae3d0327f111de3b7673c8c76a6c2362682d4b085cd10a8d5847f5"
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h",
+      "beforeSHA256": "f16a493f34bc175c1541ee1a4b2a3a1e3d52c1c78d8942b1f8ed743be3d6a2bb",
+      "sha256": "1f71b26a8448f6ef46aafdae0d3ff760b72317cd3276a069b7d6b92024eb2a33"
+    }
+  ],
+  "compilerExecuted": false
+}

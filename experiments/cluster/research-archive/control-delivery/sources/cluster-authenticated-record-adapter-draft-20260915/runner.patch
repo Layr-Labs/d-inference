@@ -1,0 +1,31 @@
+--- a/codec/Tests/run.py
++++ b/adapter/Tests/run.py
+@@ -57,24 +57,24 @@
+     snapshot = verify_snapshot()
+     os.chdir(BASE)
+     (output / 'module-cache').mkdir(mode=0o700)
+-    binary = output / 'authenticated-record-check'
++    binary = output / 'authenticated-record-adapter-check'
+     sources = [str(BASE / name) for name in snapshot['swiftSources']]
+     command = ['xcrun', 'swiftc', '-j', '2', '-swift-version', '6', '-warnings-as-errors',
+                '-target', platform.machine() + '-apple-macos14.0', '-parse-as-library',
+                '-module-cache-path', str(output / 'module-cache')] + sources + ['-o', str(binary)]
+     compile_receipt = run_owned(command, output, 'compile', 60)
+     verify_snapshot()
+-    fixture_receipt = run_owned([str(binary), str(BASE / 'Tests/vectors.json')], output, 'fixture', 10)
++    fixture_receipt = run_owned([str(binary)], output, 'fixture', 10)
+     verify_snapshot()
+     lines = (output / 'fixture.stdout').read_text().splitlines()
+     if len(lines) != 9 or not all(line.startswith('PASS ') for line in lines):
+-        raise ValueError('Incomplete authenticated-record fixture result')
++        raise ValueError('Incomplete authenticated-record adapter fixture result')
+     if (output / 'compile.stderr').stat().st_size or (output / 'fixture.stderr').stat().st_size:
+         raise ValueError('Unexpected compiler/fixture stderr')
+     summary = {'compile': compile_receipt, 'fixture': fixture_receipt, 'passedGroups': 8,
+                'privateSourcesUnchanged': True, 'mainChanged': False,
+                'nativeModelConstructed': False, 'networkUsed': False,
+-               'membershipOrTransportQualified': False,
++               'membershipOrTransportQualified': False, 'nativeBridgeCompiled': False,
+                'binarySHA256': hashlib.sha256(binary.read_bytes()).hexdigest()}
+     (output / 'checks.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+     print(json.dumps({'passed': True, 'groups': 8, 'membershipOrTransportQualified': False}))

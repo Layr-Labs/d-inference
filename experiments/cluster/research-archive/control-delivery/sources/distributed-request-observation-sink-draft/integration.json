@@ -1,0 +1,49 @@
+{
+  "files": [
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedCBv2Engine+Events.swift",
+      "baseSHA256": "30d772bf260f3a7a5b5ecf6a141c4a2218b7c1ad0485a2ec938d2e9b83525b6d",
+      "proposedSHA256": "a9f88ae6ecaf2db8936b3752b0a8dcff0b4888fc04b70382d5214ea99de6bef2",
+      "bytes": 6043
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedCBv2Engine.swift",
+      "baseSHA256": "cd67421b9196b3667045dfd1dd62cee49be96ddd44f917054b83e235d4d79425",
+      "proposedSHA256": "2eb285629ccf5634a2bd66dc27c740d977b030cd631c03de526d08eae7635b15",
+      "bytes": 17476
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestLogging.swift",
+      "baseSHA256": "35213bc873e22b9da10533f9433fe68ee50b44fba36ced799673ef2813d64e62",
+      "proposedSHA256": "bf68c65a641c8857f74aedc058555fef1d40d9b745e5cec6b0d88b4b767c49fa",
+      "bytes": 1267
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestObservation.swift",
+      "baseSHA256": "efd4ba81ac77071e9546434f4ade32aea1697dff83519047c326fe43e65f98b6",
+      "proposedSHA256": "628ad698eef74ff03d20cc0c184ee6143c34530a8be2dff1c89c37abf4f77d7c",
+      "bytes": 3207
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestObservationSink.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "7458b4bc99b60dbf3e76768d93dd3e4c95ec6ec28961274a23020d2c5241f39e",
+      "bytes": 2078
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Inference/Distributed/DistributedRequestObservationSinkTests.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "3ec4a1d66d5a65c64fd7b8fc2f5d3ae9f5de624a6751d297221cd25dafbd99c7",
+      "bytes": 4865
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Inference/Distributed/DistributedRequestObservationTests.swift",
+      "baseSHA256": "1a0a85d674dce85838f42eba938537c06284417e43cec691887f6745b34e3629",
+      "proposedSHA256": "db874118c5fb506d7a6e56b9d66dcb4f46cb86469d1dc2dda56f0e52a167b9ec",
+      "bytes": 4799
+    }
+  ],
+  "packageManifestChange": false,
+  "testsExecuted": false,
+  "independentCorrectionReview": "pending"
+}

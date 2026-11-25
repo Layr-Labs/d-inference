@@ -1,0 +1,194 @@
+--- a/inputs.py
++++ b/inputs.py
+@@ -14,3 +14,8 @@
+     'publicSigningBytesMatchIndependentGoAndPythonFixture',
+     'ambiguousOrUnknownPublicRecordsAreRefused',
+ )
++
++ORIGINAL = BASE.parent / 'coordinator-native-pair-swift-validation-20260916'
++ORIGINAL_SHA = '9a33d47e497064b6680ef513e09b5896d8f9d05462ce16e589f5548f0e01a8aa'
++FAILED = BASE.parent / 'coordinator-native-pair-swift-build-1-20260916'
++RETRY = FAILED / 'actor-await-correction-1'
+--- a/guards.py
++++ b/guards.py
+@@ -4,7 +4,7 @@
+ import os
+ from pathlib import Path
+ from inputs import (BASE, SOURCE, UPSTREAM, UPSTREAM_SHA, OVERLAY, OVERLAY_SHA,
+-                    B_OVERLAY, B_OVERLAY_SHA)
++                    B_OVERLAY, B_OVERLAY_SHA, ORIGINAL, ORIGINAL_SHA, FAILED)
+ 
+ 
+ def sha(path):
+@@ -34,7 +34,8 @@
+ 
+ def verify_overlay():
+     verify_frozen(BASE)
+-    for root, expected in ((UPSTREAM, UPSTREAM_SHA), (OVERLAY, OVERLAY_SHA), (B_OVERLAY, B_OVERLAY_SHA)):
++    verify_frozen(ORIGINAL, ORIGINAL_SHA)
++    for root, expected in ((UPSTREAM, UPSTREAM_SHA), (OVERLAY, OVERLAY_SHA), (B_OVERLAY, B_OVERLAY_SHA, ORIGINAL, ORIGINAL_SHA, FAILED)):
+         verify_frozen(root, expected)
+     # Only the 25 member and two B Swift files are composed. The separate Go
+     # qualification/integration may proceed without changing this Swift input.
+@@ -62,7 +63,21 @@
+         p = SOURCE / row['path']
+         if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
+             raise ValueError('Swift package/protocol context changed')
+-    return declared
++    corrected = {row['path']: dict(row) for row in declared['files']}
++    corrections = json.loads((BASE / 'integration.json').read_text())['files']
++    if len(corrections) != 2 or len({row['path'] for row in corrections}) != 2:
++        raise ValueError('Unexpected actor-await correction count')
++    for row in corrections:
++        original = corrected[row['path']]
++        if original['proposedSHA256'] != row['baseSHA256']:
++            raise ValueError('Actor-await preimage differs from member freeze')
++        for prefix, expected in [('originals', row['baseSHA256']), ('proposed', row['proposedSHA256'])]:
++            p = BASE / prefix / row['path']
++            if not p.is_file() or p.is_symlink() or sha(p) != expected:
++                raise ValueError('Actor-await correction source changed')
++        original.update(proposedSHA256=row['proposedSHA256'], sizeBytes=row['sizeBytes'],
++                        sourcePath=str(BASE / 'proposed' / row['path']), sourceLayer='actor-await')
++    return dict(declared, files=list(corrected.values()))
+ 
+ 
+ def isolated_environment():
+@@ -72,3 +87,17 @@
+     selected.update(GOMAXPROCS='2', GOPROXY='off', GOSUMDB='off', GOTOOLCHAIN='local',
+                     GOWORK='off', GOFLAGS='-mod=readonly')
+     os.environ.clear(); os.environ.update(selected)
++
++
++def verify_failed_evidence():
++    bound = json.loads((BASE / 'failure-inputs.json').read_text())
++    if bound['failedRoot'] != str(FAILED):
++        raise ValueError('Unexpected failed preparation root')
++    for row in bound['files']:
++        p = FAILED / row['path']
++        if not p.is_file() or p.is_symlink() or p.stat().st_size != row['sizeBytes'] or sha(p) != row['sha256']:
++            raise ValueError('Retained failed source/diagnostic evidence changed')
++    actual = json.loads((FAILED / 'swift-tests-1/execution.json').read_text())
++    if (actual.get('exitCode') != 1 or actual.get('timedOut') is not False
++            or actual.get('reaped') is not True or actual.get('groupAbsent') is not True):
++        raise ValueError('Failed compiler is not naturally terminal/reaped')
+--- a/run.py
++++ b/run.py
+@@ -8,8 +8,8 @@
+ sys.dont_write_bytecode = True
+ import source_inventory as inventory
+ from check_process import run_owned
+-from guards import sha, save, verify_overlay, isolated_environment
+-from inputs import BASE, SOURCE, OVERLAY_SHA, B_OVERLAY_SHA, SWIFT_FILTER
++from guards import sha, save, verify_overlay, verify_failed_evidence, isolated_environment
++from inputs import BASE, SOURCE, OVERLAY_SHA, B_OVERLAY_SHA, SWIFT_FILTER, FAILED, RETRY
+ from swift_results import validate_swift_results
+ 
+ 
+@@ -21,18 +21,21 @@
+     args = parser.parse_args()
+     if args.attempt < 1:
+         raise ValueError('Invalid attempt')
+-    prepared = args.prepared.resolve(); workspace = prepared / 'workspace'
++    prepared = args.prepared.resolve(); workspace = FAILED / 'workspace'
++    if prepared != RETRY:
++        raise ValueError('Retry must use its fixed corrected-source receipt')
+     preparation = json.loads((prepared / 'preparation.json').read_text())
+     if (preparation['overlayManifestSHA256'] != OVERLAY_SHA or preparation['nativeBManifestSHA256'] != B_OVERLAY_SHA
+             or preparation['wrapperManifestSHA256'] != sha(BASE / 'manifest.json')
+             or preparation['swiftIntegrationSHA256'] != sha(BASE / 'swift-integration.json')
++            or preparation['actorAwaitIntegrationSHA256'] != sha(BASE / 'integration.json')
+             or preparation['workspace'] != str(workspace) or preparation['source'] != str(SOURCE)
+             or preparation['phase'] != 'swift'):
+         raise ValueError('Prepared source identity differs')
+     before = json.loads((prepared / 'source-before.json').read_text())
+     candidate = json.loads((prepared / 'candidate-before.json').read_text())
+     def recheck():
+-        integration = verify_overlay()
++        integration = verify_overlay(); verify_failed_evidence()
+         expected = dict(before)
+         for row in integration['files']:
+             expected[row['path']] = {'sha256': row['proposedSHA256']}
+--- /dev/null
++++ b/prepare_retry.py
+@@ -0,0 +1,81 @@
++"""Grant-only two-file correction in the existing private build; never compiles."""
++import argparse
++import json
++import os
++from pathlib import Path
++import sys
++sys.dont_write_bytecode = True
++import source_inventory as inventory
++from guards import sha, save, verify_overlay, verify_failed_evidence
++from inputs import BASE, SOURCE, FAILED, RETRY, OVERLAY_SHA, B_OVERLAY_SHA, ORIGINAL_SHA
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('--apply', action='store_true', required=True)
++    parser.parse_args()
++    integration = verify_overlay(); verify_failed_evidence()
++    workspace = FAILED / 'workspace'
++    previous = json.loads((FAILED / 'preparation.json').read_text())
++    before = json.loads((FAILED / 'source-before.json').read_text())
++    failed_candidate = json.loads((FAILED / 'candidate-before.json').read_text())
++    if (previous['workspace'] != str(workspace) or previous['source'] != str(SOURCE)
++            or previous['wrapperManifestSHA256'] != ORIGINAL_SHA or previous['phase'] != 'swift'):
++        raise ValueError('Prior preparation identity differs')
++    if inventory.inventory(workspace) != failed_candidate or inventory.inventory(SOURCE) != before:
++        raise ValueError('Original private or MAIN source/dependency inventory changed')
++    corrected = dict(before)
++    for row in integration['files']:
++        corrected[row['path']] = {'sha256': row['proposedSHA256']}
++    corrections = json.loads((BASE / 'integration.json').read_text())['files']
++    changed = {path for path in failed_candidate if failed_candidate[path] != corrected.get(path)}
++    if set(failed_candidate) != set(corrected) or changed != {row['path'] for row in corrections}:
++        raise ValueError('Retry changes more than the two authorized sources')
++    # Preserve the original preparation/inventories and failed attempt in place.
++    # New receipt location contains the exact preimages and corrected inventory.
++    RETRY.mkdir(mode=0o700, exist_ok=False)
++    save(RETRY / 'source-before.json', before)
++    save(RETRY / 'failed-candidate-before.json', failed_candidate)
++    staged = []
++    for row in corrections:
++        destination = workspace / row['path']
++        if destination.is_symlink() or sha(destination) != row['baseSHA256']:
++            raise ValueError('Private correction preimage changed')
++        backup = RETRY / 'originals' / row['path']
++        backup.parent.mkdir(parents=True, exist_ok=True)
++        with backup.open('xb') as stream:
++            stream.write(destination.read_bytes())
++        if sha(backup) != row['baseSHA256']:
++            raise ValueError('Retained correction preimage differs')
++        temporary = destination.with_name(destination.name + '.await-correction.new')
++        with temporary.open('xb') as stream:
++            stream.write((BASE / 'proposed' / row['path']).read_bytes())
++            stream.flush(); os.fsync(stream.fileno())
++        if sha(temporary) != row['proposedSHA256']:
++            raise ValueError('Staged correction differs')
++        staged.append((temporary, destination, row))
++    for temporary, destination, row in staged:
++        if destination.is_symlink() or sha(destination) != row['baseSHA256']:
++            raise ValueError('Private source changed before replacement')
++        os.replace(temporary, destination)
++    if inventory.inventory(workspace) != corrected or inventory.inventory(SOURCE) != before:
++        raise ValueError('Corrected private or MAIN source/dependency inventory differs')
++    verify_overlay(); verify_failed_evidence()
++    save(RETRY / 'candidate-before.json', corrected)
++    receipt = dict(previous, wrapperManifestSHA256=sha(BASE / 'manifest.json'),
++        overlayManifestSHA256=OVERLAY_SHA, nativeBManifestSHA256=B_OVERLAY_SHA,
++        swiftIntegrationSHA256=sha(BASE / 'swift-integration.json'),
++        actorAwaitIntegrationSHA256=sha(BASE / 'integration.json'),
++        correctedSourcePaths=sorted(changed), failedPreparationSHA256=sha(FAILED / 'preparation.json'),
++        retainedFailureInputSHA256=sha(BASE / 'failure-inputs.json'),
++        sourceFiles=len(before), candidateFiles=len(corrected),
++        inheritedPreparationReceipts=True, compilerRun=False,
++        newWorkspaceCreated=False, workspacePathUnchanged=True,
++        buildCacheReusedWithoutCopy=True, mainUnchanged=True)
++    save(RETRY / 'preparation.json', receipt)
++    print(json.dumps({'prepared': str(RETRY), 'workspace': str(workspace),
++        'corrections': sorted(changed), 'candidateFiles': len(corrected), 'compilerRun': False}, sort_keys=True))
++
++
++if __name__ == '__main__':
++    main()

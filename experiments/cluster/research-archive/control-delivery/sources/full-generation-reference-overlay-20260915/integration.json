@@ -1,0 +1,38 @@
+[
+  {
+    "source": "Sources/CBv2RequestSession.swift",
+    "destination": "experiments/cluster/inference/Sources/ClusterInference/CBv2RequestSession.swift",
+    "sha256": "771922664db45c0cea233d4202c50d8fdcbc13c47a0a6c5989aebc4787008e6d",
+    "originalSHA256": "5ec5688d5c5c52ef879ec9efa5c5b158724fb1127e0530ac27c267df333c4889"
+  },
+  {
+    "source": "Sources/QwenGenerationReferenceAdmission.swift",
+    "destination": "experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceAdmission.swift",
+    "sha256": "ffd0b7a17b3b360f7915eb3c424e66a5054f43ed0ecbb5d39dcc09c06c0779f7",
+    "originalSHA256": null
+  },
+  {
+    "source": "Sources/QwenGenerationReferenceCapture.swift",
+    "destination": "experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceCapture.swift",
+    "sha256": "f1e62d923adb459dc34f7484d703ed3f2d46e78084443ff7c9a536fc1e2f1b48",
+    "originalSHA256": null
+  },
+  {
+    "source": "Sources/QwenGenerationReferenceCompletion.swift",
+    "destination": "experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceCompletion.swift",
+    "sha256": "eca3619ef4d78961f40f3f2ce37806978fa5840fb50549766909b5be3607e2c1",
+    "originalSHA256": null
+  },
+  {
+    "source": "Sources/QwenGenerationReferenceEvidence.swift",
+    "destination": "experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceEvidence.swift",
+    "sha256": "da67eeb1d5e53b7976096999138455033467e2530496118800b368afa15c67a6",
+    "originalSHA256": null
+  },
+  {
+    "source": "Sources/QwenGenerationReferenceRequest.swift",
+    "destination": "experiments/cluster/inference/Sources/ClusterInference/QwenGenerationReferenceRequest.swift",
+    "sha256": "b0a4b78dc6b398b68e6f5e290a349cc6c986266886c0675c6cb176288fdb25be",
+    "originalSHA256": null
+  }
+]

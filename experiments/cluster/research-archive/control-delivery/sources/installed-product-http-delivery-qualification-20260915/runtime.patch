@@ -1,0 +1,98 @@
+--- a/guards.py
++++ b/guards.py
+@@ -2,7 +2,7 @@
+ import json, os, queue, select, shlex, subprocess, threading, time
+ 
+ SSH = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8']
+-REMOTE = '/Users/developer/DarkbloomDev/installed-distributed-diagnostics-runtime-20260915'
++REMOTE = '/Users/developer/DarkbloomDev/installed-distributed-http-delivery-runtime-20260915'
+ 
+ class Monitor:
+     def __init__(self, host, rank, output):
+--- a/supervisor.py
++++ b/supervisor.py
+@@ -2,7 +2,7 @@
+ from pathlib import Path
+ import json, os, select, signal, subprocess, sys, time
+ 
+-root = Path('/Users/developer/DarkbloomDev/installed-distributed-diagnostics-runtime-20260915')
++root = Path('/Users/developer/DarkbloomDev/installed-distributed-http-delivery-runtime-20260915')
+ run = Path(sys.argv[1])
+ assert run.parent == root / 'qualification'
+ run.parent.mkdir(mode=0o700, exist_ok=True)
+--- a/status_validation.py
++++ b/status_validation.py
+@@ -2,7 +2,8 @@
+ import json
+ import uuid
+ 
+-EXPECTED_CLUSTER = 'darkbloom-product-qwen9b-diagnostics-20260915'
++EXPECTED_CLUSTER = 'darkbloom-product-qwen9b-http-delivery-20260915'
++EXPECTED_CONFIGURATION_SHA256 = 'd787ce64ed4249048c195ab02cedefcda50558fe69b7d7063e08c33f373da588'
+ EXPECTED_PREFILL_SCHEDULE = 'one_chunk_lookahead_v1'
+ EXPECTED_PEERS = ('darkbloom-24', 'darkbloom-48')
+ MAXIMUM_STDOUT = 65536
+@@ -49,6 +50,8 @@
+         require(type(saved) is dict and type(live) is dict, 'live response was not observed')
+         session = live['session']
+         require(saved == live['binding'] == session['binding'], 'saved/live/session binding differs')
++        require(saved['configurationSHA256'] == EXPECTED_CONFIGURATION_SHA256,
++                'selected canonical configuration differs')
+         require(saved['clusterID'] == EXPECTED_CLUSTER and saved['role'] == 'leader'
+                 and saved['publicModelID'] == 'Qwen3.5-9B'
+                 and saved['runtimeModelID'] == 'registered_qwen35_9b', 'selected cluster/model differs')
+--- a/test_status.py
++++ b/test_status.py
+@@ -8,7 +8,7 @@
+ from pathlib import Path
+ from unittest.mock import patch
+ import status_capture
+-from status_validation import EXPECTED_CLUSTER, MAXIMUM_STDOUT, validate
++from status_validation import EXPECTED_CLUSTER, EXPECTED_CONFIGURATION_SHA256, MAXIMUM_STDOUT, validate
+ 
+ 
+ def stopped_report():
+@@ -18,9 +18,13 @@
+ 
+ 
+ def report():
+-    # Exact captured stopped saved binding; only live observations are fabricated.
++    # Historical stopped evidence stays exact. The new selection and all live
++    # observations below are explicitly fabricated for a prospective DTO test.
+     value = stopped_report()
+     binding = copy.deepcopy(value['saved'])
++    binding['clusterID'] = EXPECTED_CLUSTER
++    binding['configurationSHA256'] = EXPECTED_CONFIGURATION_SHA256
++    value['saved'] = copy.deepcopy(binding)
+     assert binding['maximumRequests'] == 16 and binding['maximumLifetimeSeconds'] == 300
+     assert [(x['rank'], x['id']) for x in binding['peers']] == [(0, 'darkbloom-24'), (1, 'darkbloom-48')]
+     assert binding['prefillSchedule'] == 'one_chunk_lookahead_v1'
+@@ -56,12 +60,27 @@
+ class StatusTests(unittest.TestCase):
+     def test_actual_stopped_report_is_not_live_readiness(self):
+         value = stopped_report()
+-        self.assertEqual(value['saved']['clusterID'], EXPECTED_CLUSTER)
++        self.assertEqual(value['saved']['clusterID'], 'darkbloom-product-qwen9b-diagnostics-20260915')
+         self.assertEqual(value['saved']['maximumRequests'], 16)
+         self.assertEqual(value['saved']['maximumLifetimeSeconds'], 300)
+         self.assertEqual([x['id'] for x in value['saved']['peers']], ['darkbloom-24', 'darkbloom-48'])
+         self.assertNotIn('live', value)
+         with self.assertRaises(ValueError): validate(encoded(value))
++
++    def test_previous_cluster_or_configuration_binding_refuses(self):
++        previous = stopped_report()['saved']
++        for key in ('clusterID', 'configurationSHA256'):
++            value = report()
++            for binding in (value['saved'], value['live']['binding'], value['live']['session']['binding']):
++                binding[key] = previous[key]
++            with self.subTest(key=key), self.assertRaises(ValueError): validate(encoded(value))
++
++    def test_status_command_uses_delivery_runtime(self):
++        with tempfile.TemporaryDirectory() as temp:
++            with patch.object(status_capture, 'bounded_command', return_value=(encoded(report()), b'', {}, None)) as command:
++                status_capture.capture(Path(temp), 'before')
++            self.assertEqual(command.call_args[0][0][-1],
++                '/Users/developer/DarkbloomDev/installed-distributed-http-delivery-runtime-20260915/darkbloom cluster status --json')
+ 
+     def test_swift_case_names_and_serial_raw_value_refuse(self):
+         for name in ['oneChunkLookahead', 'serial', 'serial_v1']:

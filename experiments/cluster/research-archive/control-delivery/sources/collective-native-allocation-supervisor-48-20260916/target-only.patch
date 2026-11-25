@@ -1,0 +1,114 @@
+--- a/bind_package.py
++++ b/bind_package.py
+@@ -89,7 +89,7 @@
+         '-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',
+         '-o','UserKnownHostsFile='+str(KNOWN_HOSTS),'-o','GlobalKnownHostsFile=/dev/null',
+         '-o','ConnectTimeout=5','-o','ConnectionAttempts=1','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=2',
+-        'developer@192.0.2.250']
++        'developer@192.0.2.223']
+     run_arguments = {case: ['/usr/bin/env','-i','PATH=/usr/bin:/bin:/usr/sbin:/sbin','HOME=/Users/gaj','LANG=C',
+         'PYTHONNOUSERSITE=1','/usr/bin/python3','-B',REMOTE+'/run_target.py','--package-sha256',package_sha,'--fixture',case] for case in JOBS}
+     commands = dict(knownHosts=dict(path=str(KNOWN_HOSTS),sha256=KNOWN_SHA), sshPrefix=ssh, remoteRoot=REMOTE,
+--- a/collect_remote.py
++++ b/collect_remote.py
+@@ -8,7 +8,7 @@
+ import sys
+ import time
+ 
+-ROOT=Path('/Users/developer/DarkbloomDev/collective-native-allocation-check-20260916')
++ROOT=Path('/Users/developer/DarkbloomDev/collective-native-allocation-check-48-20260916')
+ sys.dont_write_bytecode=True
+ sys.path.insert(0,str(ROOT))
+ from mtp_journal import device_directory, observe as observe_journal
+--- a/install_new_tree.py
++++ b/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'check': Path('/Users/developer/DarkbloomDev/collective-native-allocation-check-20260916')}
++ROOTS = {'check': Path('/Users/developer/DarkbloomDev/collective-native-allocation-check-48-20260916')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+--- a/package/allocation_result.py
++++ b/package/allocation_result.py
+@@ -80,7 +80,7 @@
+     for key, wanted in constants.items(): same(value[key], wanted, key)
+     for key in ('hardwareModel', 'osBuild'): text(value[key], key, 256)
+     if host is not None:
+-        same(host['physicalMemoryBytes'], 24*1024**3, '24 GiB host')
++        same(host['physicalMemoryBytes'], 48*1024**3, '48 GiB host')
+         same(host['pageSizeBytes'], 16_384, 'native allocator page size')
+         same(host['cpuBrand'], 'Apple M4 Pro', 'CPU identity')
+         same(value['hardwareModel'], host['hardwareModel'], 'native hardware identity')
+@@ -96,7 +96,7 @@
+     integer(value['elapsedNanoseconds'], 'native elapsed', 1, 54_999_999_999)
+     for key in ('baselineNativeActiveBytes', 'observedPeakNativeActiveBytes',
+                 'maximumObservedNativeCacheBytes', 'finalNativeActiveBytes', 'finalNativeCacheBytes'):
+-        integer(value[key], key, 0, 24*1024**3)
++        integer(value[key], key, 0, 48*1024**3)
+     baseline = value['baselineNativeActiveBytes']; peak = value['observedPeakNativeActiveBytes']
+     require(baseline <= peak <= baseline+256*1024**2, 'Observed native high-water exceeded fixed bound')
+     same(value['finalNativeActiveBytes'], baseline, 'native active baseline return')
+@@ -104,8 +104,8 @@
+     same(value['finalNativeCacheBytes'], 0, 'final native cache empty')
+     for key in ('baselinePhysical', 'finalPhysical'):
+         record = value[key]; fields(record, 'currentBytes lifetimeMaximumBytes', key)
+-        integer(record['currentBytes'], key+'.current', 1, 24*1024**3)
+-        integer(record['lifetimeMaximumBytes'], key+'.maximum', record['currentBytes'], 24*1024**3)
++        integer(record['currentBytes'], key+'.current', 1, 48*1024**3)
++        integer(record['lifetimeMaximumBytes'], key+'.maximum', record['currentBytes'], 48*1024**3)
+     before, after = value['baselinePhysical'], value['finalPhysical']
+     require(after['lifetimeMaximumBytes'] >= before['lifetimeMaximumBytes'], 'Lost process lifetime maximum')
+     increment = max(0, after['lifetimeMaximumBytes']-before['currentBytes'])
+--- a/package/run_target.py
++++ b/package/run_target.py
+@@ -53,11 +53,11 @@
+         write_json(run/'input-binding.json', binding)
+         values = read_command(['/usr/sbin/sysctl', '-n', 'hw.memsize', 'hw.model', 'kern.osversion',
+                                'hw.pagesize', 'machdep.cpu.brand_string']).strip().splitlines()
+-        require(len(values) == 5 and values[0] == str(24*1024**3) and values[3] == '16384'
+-                and values[4] == 'Apple M4 Pro', 'This job requires the 24 GiB M4 Pro with 16 KiB pages')
++        require(len(values) == 5 and values[0] == str(48*1024**3) and values[3] == '16384'
++                and values[4] == 'Apple M4 Pro', 'This job requires the 48 GiB M4 Pro with 16 KiB pages')
+         host = dict(platform=platform.platform(), machine=platform.machine(), physicalMemoryBytes=int(values[0]),
+             hardwareModel=values[1], osBuild=values[2], pageSizeBytes=int(values[3]), cpuBrand=values[4],
+-            uid=os.geteuid(), expectedSSHTarget='developer@192.0.2.250')
++            uid=os.geteuid(), expectedSSHTarget='developer@192.0.2.223')
+         write_json(run/'host.json', host)
+         log = os.fdopen(os.open(run/'resources.jsonl', os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+             0o600), 'wb', buffering=0)
+--- a/package/target_contract.py
++++ b/package/target_contract.py
+@@ -3,7 +3,7 @@
+ from binding_common import parse
+ from allocation_result import CASES, validate_result
+ 
+-REMOTE = '/Users/developer/DarkbloomDev/collective-native-allocation-check-20260916'
++REMOTE = '/Users/developer/DarkbloomDev/collective-native-allocation-check-48-20260916'
+ ARTIFACT = parse((Path(__file__).parent/'native-binding.json').read_bytes())
+ BUNDLE = ARTIFACT['bundleSHA256']
+ SOURCE = ARTIFACT['sourceSnapshotSHA256']
+--- a/test_allocation_result.py
++++ b/test_allocation_result.py
+@@ -8,7 +8,7 @@
+ sys.path.insert(0, str(Path(__file__).parent/'package'))
+ from allocation_result import validate_result
+ 
+-HOST = dict(physicalMemoryBytes=24*1024**3, pageSizeBytes=16384, cpuBrand='Apple M4 Pro', hardwareModel='FixtureMac', osBuild='FixtureOS')
++HOST = dict(physicalMemoryBytes=48*1024**3, pageSizeBytes=16384, cpuBrand='Apple M4 Pro', hardwareModel='FixtureMac', osBuild='FixtureOS')
+ 
+ 
+ def report(kind='scalar'):
+--- a/validate_returned.py
++++ b/validate_returned.py
+@@ -37,7 +37,7 @@
+     same(binding['bundleSHA256'], ARTIFACT['bundleSHA256'], 'bundle identity')
+     same(binding['sourceSnapshotSHA256'], ARTIFACT['sourceSnapshotSHA256'], 'source identity')
+     same(binding['resourceProfileQualified'], False, 'not a serving profile')
+-    same(host['expectedSSHTarget'], 'developer@192.0.2.250', '24 GiB target')
++    same(host['expectedSSHTarget'], 'developer@192.0.2.223', '48 GiB target')
+     same(host['machine'], 'arm64', 'native architecture')
+     stdout = read(directory/'native/worker-0.stdout', 65_537)
+     require(stdout.endswith(b'\n') and stdout.count(b'\n') == 1, 'Expected one complete native JSONL record')

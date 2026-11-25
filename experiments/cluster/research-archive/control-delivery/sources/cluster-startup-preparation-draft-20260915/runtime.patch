@@ -1,0 +1,299 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerStartupPreparation.swift
+@@ -0,0 +1,79 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++/// Startup work is not routed through an HTTP/coordinator/user usage stream.
++/// These are observed admission/retirement facts, not native peak-memory or
++/// latency claims. The unchanged total lifetime and request quota include it.
++public struct ClusterWorkerStartupPreparationResult: Sendable, Equatable {
++    public let requestID: UUID
++    public let promptTokens: Int
++    public let selectedTokens: Int
++    public let reservedBytes: Int
++    public let elapsedNanoseconds: UInt64
++    public let admissionsRemaining: Int
++}
++
++public enum ClusterWorkerStartupPreparation {
++    /// Synchronous startup-queue operation over the ordinary owned request path.
++    /// Cancellation is handled independently by Pair/request watchdogs; neither
++    /// this wait nor a deadline fabricates retirement or releases a live lease.
++    public static func run(pair: ClusterWorkerPair, recipe: ClusterRuntimeStartupPreparation,
++                           chunkSize: Int, deadlineUptimeNanoseconds: UInt64) throws -> ClusterWorkerStartupPreparationResult {
++        let started = DispatchTime.now().uptimeNanoseconds
++        let before = pair.admissionState
++        guard started < deadlineUptimeNanoseconds,
++              deadlineUptimeNanoseconds <= pair.localLifetimeDeadlineUptimeNanoseconds,
++              before.canAdmit(), before.admissionsRemaining == pair.maximumRequests,
++              before.admissionsRemaining > recipe.requestCount, let ready = pair.readiness else {
++            throw ClusterWorkerOwnerError.unavailable
++        }
++        let reservation = try recipe.reservation(profile: ready.profile, chunkSize: chunkSize,
++            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: ready.requestCapacityBytes)
++        let requestID = UUID()
++        let request = try pair.reserve(requestID: requestID, reservation: reservation,
++                                       admissionDeadline: deadlineUptimeNanoseconds)
++        let events = StartupPreparationEvents()
++        do {
++            let reservedBytes = request.reservedBytes
++            try request.start { events.accept($0) }
++            request.waitForRetirement()
++            guard events.clean(outputCount: recipe.outputCount), request.isRetired else {
++                throw ClusterWorkerOwnerError.unavailable
++            }
++            request.releaseResources()
++            let after = pair.admissionState
++            let completed = DispatchTime.now().uptimeNanoseconds
++            guard request.bytesInUse == 0, after.canAdmit(), pair.readiness != nil,
++                  after.admissionsRemaining == before.admissionsRemaining - recipe.requestCount,
++                  completed < deadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.unavailable }
++            return .init(requestID: requestID, promptTokens: reservation.promptTokenIDs.count,
++                selectedTokens: events.tokenCount, reservedBytes: reservedBytes,
++                elapsedNanoseconds: completed - started, admissionsRemaining: after.admissionsRemaining)
++        } catch {
++            pair.invalidate(); request.cancel(reason: .runtimeError)
++            request.waitForRetirement(); request.releaseResources()
++            throw error
++        }
++    }
++}
++
++private final class StartupPreparationEvents: @unchecked Sendable {
++    private let lock = NSLock()
++    private var count = 0
++    private var finished: ClusterWorkerFinishReason?
++    private var failed = false
++    var tokenCount: Int { lock.withLock { count } }
++    func accept(_ event: ClusterWorkerRequestEvent) -> Bool {
++        lock.withLock {
++            switch event {
++            case .token: count += 1
++            case .finished(let reason): finished = reason
++            case .failed: failed = true
++            }
++            return true
++        }
++    }
++    func clean(outputCount: Int) -> Bool {
++        lock.withLock { !failed && finished == .length && count == outputCount }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift
+@@ -62,6 +62,7 @@
+     /// Requests remain serialized even when adjacent prefill stages overlap.
+     public let schedulingPolicy = "serial"
+     public let supportedPrefillSchedules: [ClusterPrefillSchedule]
++    public let startupPreparation: ClusterRuntimeStartupPreparation?
+     public let selectionPolicy = "greedy"
+     public let modality = "text"
+     public let stopPolicy = "selectedTokenIDs"
+@@ -73,7 +74,8 @@
+                 manifestSHA256: String, profile: ClusterWorkerProfile, profileFingerprint: String,
+                 partitions: [ClusterRuntimePartition], arithmeticPolicyID: String,
+                 arithmeticPolicySHA256: String, maxLifetimeSeconds: Int, maxRequests: Int,
+-                supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial]) throws {
++                supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial],
++                startupPreparation: ClusterRuntimeStartupPreparation? = nil) throws {
+         self.runtimeBinarySHA256 = runtimeBinarySHA256; self.adapterID = adapterID; self.adapterVersion = adapterVersion
+         self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256
+         self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
+@@ -81,6 +83,7 @@
+         self.arithmeticPolicyID = arithmeticPolicyID; self.arithmeticPolicySHA256 = arithmeticPolicySHA256
+         self.maxLifetimeSeconds = maxLifetimeSeconds; self.maxRequests = maxRequests
+         self.supportedPrefillSchedules = supportedPrefillSchedules
++        self.startupPreparation = startupPreparation
+         try ClusterRuntimeCapabilityValidation.check(self)
+     }
+ 
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift
+@@ -37,6 +37,10 @@
+         // adapters advertise the additional supported schedules explicitly.
+         if value.supportedPrefillSchedules != [.serial] {
+             object["supportedPrefillSchedules"] = value.supportedPrefillSchedules.map(\.rawValue)
++        }
++        if let preparation = value.startupPreparation {
++            object["startupPreparation"] = ["kind": preparation.kind, "requestCount": preparation.requestCount,
++                "tokenPattern": preparation.tokenPattern, "outputCount": preparation.outputCount]
+         }
+         var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+         try workerRequire(data.count < maximumBytes, "Runtime capability exceeds its byte bound")
+@@ -84,13 +88,22 @@
+                 return value
+             }
+         } else { schedules = [.serial] }
++        let preparation: ClusterRuntimeStartupPreparation?
++        if r.values["startupPreparation"] != nil {
++            var startup = WorkerObject(try r.object("startupPreparation"))
++            let parsed = try ClusterRuntimeStartupPreparation(tokenPattern: startup.ints("tokenPattern"),
++                                                               outputCount: startup.int("outputCount"))
++            try workerRequire(try startup.string("kind") == parsed.kind
++                && startup.int("requestCount") == parsed.requestCount, "Unknown startup preparation recipe")
++            try startup.finish(); preparation = parsed
++        } else { preparation = nil }
+         let value = try ClusterRuntimeCapability(runtimeBinarySHA256: r.string("runtimeBinarySHA256"),
+             adapterID: r.string("adapterID"), adapterVersion: r.int("adapterVersion"), runtimeModelID: r.string("runtimeModelID"),
+             artifactSHA256: r.string("artifactSHA256"), configurationSHA256: r.string("configurationSHA256"),
+             manifestSHA256: r.string("manifestSHA256"), profile: profile, profileFingerprint: r.string("profileFingerprint"),
+             partitions: partitions, arithmeticPolicyID: r.string("arithmeticPolicyID"),
+             arithmeticPolicySHA256: r.string("arithmeticPolicySHA256"), maxLifetimeSeconds: r.int("maxLifetimeSeconds"),
+-            maxRequests: r.int("maxRequests"), supportedPrefillSchedules: schedules)
++            maxRequests: r.int("maxRequests"), supportedPrefillSchedules: schedules, startupPreparation: preparation)
+         try workerRequire(try r.string("stateSemantics") == value.stateSemantics
+             && r.int("rankCount") == value.rankCount && r.int("batchSize") == value.batchSize
+             && r.int("maxActiveRequests") == value.maxActiveRequests
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift
+@@ -27,6 +27,11 @@
+         // promise. The producer obtains its exact values from the shared adapter.
+         try workerRequire((1...300).contains(value.maxLifetimeSeconds) && (1...16).contains(value.maxRequests),
+                           "Unsupported resident lifetime or request count")
++        if let preparation = value.startupPreparation {
++            try preparation.validate(profile: p)
++            try workerRequire(value.maxRequests > preparation.requestCount,
++                              "Startup preparation must leave an external admission")
++        }
+         try workerRequire(value.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1",
+                           "Unknown runtime arithmetic policy")
+         try workerRequire((1...16).contains(value.partitions.count)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeStartupPreparation.swift
+@@ -0,0 +1,39 @@
++import Foundation
++
++/// Adapter-supplied synthetic input recipe, bound by canonical capability bytes.
++/// It consumes one ordinary admission and uses fresh request state. Completing
++/// these shapes does not predict user TTFT or warm every possible context shape.
++public struct ClusterRuntimeStartupPreparation: Equatable, Sendable {
++    public let kind = "configuredChunkAndDecode_v1"
++    public let requestCount = 1
++    public let tokenPattern: [Int]
++    public let outputCount: Int
++
++    public init(tokenPattern: [Int], outputCount: Int) {
++        self.tokenPattern = tokenPattern; self.outputCount = outputCount
++    }
++
++    func validate(profile: ClusterWorkerProfile) throws {
++        try workerRequire((1...16).contains(tokenPattern.count)
++            && tokenPattern.allSatisfy({ $0 >= 0 && $0 < profile.vocabularySize })
++            && (2...8).contains(outputCount) && outputCount <= profile.maximumOutputTokens
++            && (1...ClusterWorkerLimits.contextTokens).contains(profile.maximumContextTokens)
++            && (1...profile.maximumContextTokens).contains(profile.maximumChunkTokens)
++            && profile.maximumChunkTokens <= profile.maximumPromptTokens
++            && profile.maximumChunkTokens <= profile.maximumContextTokens - outputCount,
++            "Startup preparation exceeds its admitted profile")
++    }
++
++    public func reservation(profile: ClusterWorkerProfile, chunkSize: Int,
++                            deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int) throws -> ClusterWorkerReservation {
++        try validate(profile: profile)
++        try workerRequire((1...profile.maximumChunkTokens).contains(chunkSize)
++            && deadlineUptimeNanoseconds > 0
++            && (1...ClusterWorkerLimits.capacityBytes).contains(capacityLimitBytes),
++            "Invalid startup preparation bounds")
++        return .init(profileID: profile.id,
++            promptTokenIDs: (0..<chunkSize).map { tokenPattern[$0 % tokenPattern.count] },
++            stopTokenIDs: [], outputCount: outputCount, chunkSize: chunkSize,
++            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: capacityLimitBytes)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift
+@@ -41,6 +41,7 @@
+             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
+             maxLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
+             maxRequests: QwenResidentAdapterDefinition.maximumRequests,
+-            supportedPrefillSchedules: QwenResidentAdapterDefinition.supportedPrefillSchedules)
++            supportedPrefillSchedules: QwenResidentAdapterDefinition.supportedPrefillSchedules,
++            startupPreparation: QwenResidentAdapterDefinition.startupPreparation)
+     }
+ }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentStartupPreparation.swift
+@@ -0,0 +1,10 @@
++import DarkbloomClusterProtocol
++
++extension QwenResidentAdapterDefinition {
++    /// A synthetic valid vocabulary ID, not user text or a reusable prefix.
++    /// One configured full chunk plus two selections exercises initial prefill
++    /// and one decode input. It does not cover every long-context kernel shape.
++    static var startupPreparation: ClusterRuntimeStartupPreparation {
++        .init(tokenPattern: [1], outputCount: 2)
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
+@@ -32,7 +32,7 @@
+               value.session.binding == binding, value.boundPort == port,
+               value.authenticationConfigured == authenticationConfigured,
+               ["starting", "serving", "draining", "stopping", "quarantined", "stopped"].contains(value.hostPhase),
+-              ["prepared", "starting", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
++              ["prepared", "starting", "warming", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
+               (0...1).contains(value.acquisitions), value.session.members.count == 2,
+               !value.session.mtpEnabled, value.session.mtpOffReason == "runtimeCapabilityDisablesSpeculation" else {
+             throw ClusterConfigurationError.invalid("Status is stale, malformed or belongs to another saved setup")
+@@ -64,7 +64,8 @@
+         }
+         let admitted = value.session.admission
+         let sessionReady = value.session.ready
+-        guard !sessionReady || (value.session.observedMembershipEpoch != nil
++        guard value.session.phase != "warming" || !sessionReady,
++              !sessionReady || (value.session.observedMembershipEpoch != nil
+             && value.session.members.allSatisfy(\.nativeReady) && admitted?.valid == true
+             && (admitted?.remainingLifetimeNanoseconds ?? 0) > 0),
+               value.ready == (value.hostPhase == "serving" && !value.failed && sessionReady),
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift
+@@ -4,7 +4,7 @@
+ import DarkbloomClusterRemote
+ 
+ public enum DistributedInstalledSessionStatus: String, Sendable {
+-    case prepared, starting, ready, draining, stopping, quarantined, released
++    case prepared, starting, warming, ready, draining, stopping, quarantined, released
+ }
+ 
+ /// One start attempt and its retained cleanup obligation. Missing peer proof is
+@@ -18,6 +18,7 @@
+     private let prepared: DistributedInstalledPreparation
+     private let diagnosticBinding: ClusterStatusBinding
+     private var observedMembershipEpoch: UUID?
++    private var preparationResult: ClusterWorkerStartupPreparationResult?
+     private let wireIdentity: ClusterWorkerIdentity
+     typealias EndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64, ClusterOwnerBootstrapRelay) throws -> ClusterRemoteWorkerEndpoint
+     private let endpointFactory: EndpointFactory
+@@ -35,6 +36,7 @@
+     private var notified = false
+     private var draining = false
+ 
++    public var startupPreparationResult: ClusterWorkerStartupPreparationResult? { lock.withLock { preparationResult } }
+     public var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
+     public var admissionState: ClusterWorkerPairAdmissionState? { lock.withLock { pair }?.admissionState }
+     public var lifetimeDeadlineUptimeNanoseconds: UInt64? { lock.withLock { lifetime == 0 ? nil : lifetime } }
+@@ -149,8 +151,22 @@
+         lock.withLock { self.pair = pair }
+         let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens)
+         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
++        if let recipe = capability.startupPreparation {
++            try lock.withLock {
++                guard phase == .starting, owner.readiness() != nil else { throw DistributedEngineError.unavailable }
++                observedMembershipEpoch = pair.readiness?.identity.membershipEpoch
++                phase = .warming
++            }
++            let result = try ClusterWorkerStartupPreparation.run(pair: pair, recipe: recipe,
++                chunkSize: configuration.chunkTokens,
++                deadlineUptimeNanoseconds: min(startupDeadline, pair.localLifetimeDeadlineUptimeNanoseconds))
++            try lock.withLock {
++                guard phase == .warming else { throw DistributedEngineError.shuttingDown }
++                preparationResult = result
++            }
++        }
+         try lock.withLock {
+-            guard phase == .starting, owner.readiness() != nil else { throw DistributedEngineError.unavailable }
++            guard (phase == .starting || phase == .warming), owner.readiness() != nil else { throw DistributedEngineError.unavailable }
+             self.observedMembershipEpoch = pair.readiness?.identity.membershipEpoch
+             self.owner = owner; phase = .ready
+         }

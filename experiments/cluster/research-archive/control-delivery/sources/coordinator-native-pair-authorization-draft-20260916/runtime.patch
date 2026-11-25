@@ -1,0 +1,1994 @@
+--- /dev/null
++++ b/coordinator/api/native_pair.go
+@@ -0,0 +1,22 @@
++package api
++
++import (
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/registry"
++)
++
++// BeginNativePair is an explicit in-process coordinator selection hook. There
++// is deliberately no provider request or public HTTP route that can choose a
++// peer, approve a runtime, or manufacture this authorization. The later cluster
++// scheduler must supply its selected exact connections after caller policy.
++func (s *Server) BeginNativePair(members [2]*registry.Provider, approvalID string, lifetime time.Duration) (*registry.NativePairSession, error) {
++	if s.nativePairs == nil {
++		return nil, registry.ErrNativePairApproval
++	}
++	connections, e := s.nativePairs.Connections(members)
++	if e != nil {
++		return nil, e
++	}
++	return s.nativePairs.Reserve(connections, approvalID, lifetime)
++}
+--- /dev/null
++++ b/coordinator/api/native_pair_test.go
+@@ -0,0 +1,88 @@
++package api
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"github.com/eigeninference/d-inference/coordinator/registry"
++	"nhooyr.io/websocket"
++)
++
++func TestNativePairAPIDefaultDisabledAndUnregisteredFrameRefused(t *testing.T) {
++	s, _ := testServer(t)
++	defer s.Close()
++	if s.nativePairs != nil {
++		t.Fatal("default started native authorization")
++	}
++	if _, e := s.BeginNativePair([2]*registry.Provider{}, "claimed-hash", time.Minute); e == nil {
++		t.Fatal("unconfigured selector approved")
++	}
++	server := httptest.NewServer(http.HandlerFunc(s.handleProviderWS))
++	defer server.Close()
++	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++	defer cancel()
++	conn, _, e := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
++	if e != nil {
++		t.Fatal(e)
++	}
++	defer conn.CloseNow()
++	// Syntactically valid public message does not imply registration, native
++	// approval or an active handle. It enters the actual provider read loop.
++	b := []byte(`{"type":"native_pair_hello","version":1,"member_nonce":"` + strings.Repeat("1", 64) + `","epoch":"` + strings.Repeat("2", 32) + `","generation":1,"sequence":1,"payload":"","signature":"MAYCAQECAQE="}`)
++	if e = conn.Write(ctx, websocket.MessageText, b); e != nil {
++		t.Fatal(e)
++	}
++	_, _, e = conn.Read(ctx)
++	if websocket.CloseStatus(e) != websocket.StatusPolicyViolation {
++		t.Fatalf("want policy refusal, got %v", e)
++	}
++}
++func TestNativePairActualTLSStateNotForwardedHeader(t *testing.T) {
++	r := registry.New(quietLogger())
++	nonce := strings.Repeat("3", 64)
++	p := r.Register("tls-fixture", nil, &protocol.RegisterMessage{ExecutionRole: protocol.ExecutionRoleClusterMember, MemberRegistrationNonce: nonce})
++	defer r.Disconnect(p.ID)
++	hash := [32]byte{1}
++	catalog, e := registry.NewNativeRuntimeCatalog([]registry.NativeRuntimeApproval{{ID: "fixture", Model: "fixture", Generation: 1, PlanSHA256: hash, ArtifactSHA256: hash, NativeRuntimeSHA256: hash, MetallibSHA256: hash, ResourceLibrarySHA256: hash, CapabilitySHA256: hash, ResourcePolicySHA256: hash, ProfileSHA256: hash, Schedule: 1, MaximumTransportFrame: 4136, MaximumPlaintext: 4096, MaximumRecords: 64, MaximumCumulativePlaintext: 262144, AllowedChips: []string{"fixture"}, NotAfter: time.Now().Add(time.Hour)}})
++	if e != nil {
++		t.Fatal(e)
++	}
++	c := registry.NewNativePairCoordinator(r, catalog)
++	defer c.Close()
++	handler := http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
++		n, e := c.Attach(p, nonce, q.TLS)
++		if e != nil {
++			w.WriteHeader(http.StatusForbidden)
++			return
++		}
++		c.Detach(n)
++		w.WriteHeader(http.StatusNoContent)
++	})
++	plain := httptest.NewServer(handler)
++	defer plain.Close()
++	request, _ := http.NewRequest(http.MethodGet, plain.URL, nil)
++	request.Header.Set("X-Forwarded-Proto", "https")
++	response, e := plain.Client().Do(request)
++	if e != nil {
++		t.Fatal(e)
++	}
++	response.Body.Close()
++	if response.StatusCode != http.StatusForbidden {
++		t.Fatal("forwarded header became TLS proof")
++	}
++	secure := httptest.NewTLSServer(handler)
++	defer secure.Close()
++	response, e = secure.Client().Get(secure.URL)
++	if e != nil {
++		t.Fatal(e)
++	}
++	response.Body.Close()
++	if response.StatusCode != http.StatusNoContent {
++		t.Fatal("actual completed TLS handshake refused")
++	}
++}
+--- a/coordinator/api/provider.go
++++ b/coordinator/api/provider.go
+@@ -233,6 +233,7 @@
+ // them. It runs until the connection closes or the context is cancelled.
+ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
+ 	var provider *registry.Provider
++	var nativeConnection *registry.NativePairConnection
+ 	var appAttestShadow *appAttestShadowSession
+ 	tracker := newChallengeTracker()
+ 	var schedulerSEKey string
+@@ -247,6 +248,9 @@
+ 	// Cancel context for cleanup of the challenge loop goroutine.
+ 	loopCtx, loopCancel := context.WithCancel(ctx)
+ 	defer func() {
++		if s.nativePairs != nil {
++			s.nativePairs.Detach(nativeConnection)
++		}
+ 		loopCancel()
+ 		if s.mdmScheduler != nil {
+ 			s.mdmScheduler.Unbind(schedulerSEKey, schedulerGeneration)
+@@ -267,6 +271,10 @@
+ 	for {
+ 		_, data, err := conn.Read(loopCtx)
+ 		if err != nil {
++			// Stop pair admission before any slow session-store disconnect stamp.
++			if s.nativePairs != nil {
++				s.nativePairs.Detach(nativeConnection)
++			}
+ 			closeStatus := websocket.CloseStatus(err)
+ 			oomSuspected := false
+ 			readReason := readErrorReasonGeneric
+@@ -598,6 +606,14 @@
+ 					schedulerGeneration = s.mdmScheduler.Submit(loopCtx, providerID, provider, priority)
+ 				}
+ 			}
++			if s.nativePairs != nil && regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
++				var attachErr error
++				nativeConnection, attachErr = s.nativePairs.Attach(provider, regMsg.MemberRegistrationNonce, r.TLS)
++				if attachErr != nil {
++					_ = conn.Close(websocket.StatusPolicyViolation, "native pair transport refused")
++					return
++				}
++			}
+ 			// Start challenge loop after registration
+ 			saferun.Go(s.logger, "challengeLoop", func() {
+ 				s.challengeLoop(loopCtx, providerID, provider, tracker)
+@@ -619,6 +635,12 @@
+ 			}
+ 
+ 			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
++
++		case protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
++			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {
++				_ = conn.Close(websocket.StatusPolicyViolation, "native pair control refused")
++				return
++			}
+ 
+ 		case protocol.TypeAppAttestShadow:
+ 			if appAttestShadow != nil {
+--- a/coordinator/api/server.go
++++ b/coordinator/api/server.go
+@@ -198,6 +198,7 @@
+ // Server is the main HTTP/WS server for the coordinator. It ties together
+ // the provider registry, key store, payment ledger, billing service, and HTTP routing.
+ type Server struct {
++	nativePairs                   *registry.NativePairCoordinator // nil unless startup supplies an explicit native approval catalog
+ 	appAttestShadow               AppAttestShadowConfig
+ 	appAttestShadowSlots          chan struct{}
+ 	appAttestStorageOnce          sync.Once
+@@ -819,6 +820,7 @@
+ 
+ 	s := &Server{
+ 		registry:                 reg,
++		nativePairs:              registry.NewNativePairCoordinator(reg, cfg.NativePairCatalog),
+ 		store:                    st,
+ 		ledger:                   payments.NewLedger(st),
+ 		logger:                   logger,
+@@ -946,6 +948,9 @@
+ 
+ // Close releases background resources owned by the Server.
+ func (s *Server) Close() {
++	if s.nativePairs != nil {
++		s.nativePairs.Close()
++	}
+ 	// Graceful-shutdown continuity sweep: stop the periodic coverage loop,
+ 	// then persist the exact shutdown instant for every covered provider so a
+ 	// short deploy reconnects into the continuity fast-skip on the next
+--- a/coordinator/api/server_config.go
++++ b/coordinator/api/server_config.go
+@@ -7,11 +7,16 @@
+ 
+ 	"github.com/eigeninference/d-inference/coordinator/env"
+ 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
++	"github.com/eigeninference/d-inference/coordinator/registry"
+ )
+ 
+ // ServerConfig holds coordinator HTTP server and URL configuration applied
+ // when NewServer constructs an instance.
+ type ServerConfig struct {
++	// NativePairCatalog must come from NewNativeRuntimeCatalog with explicitly
++	// reviewed coordinator policy. No environment or provider field populates it.
++	// Nil keeps all native-pair handlers disabled.
++	NativePairCatalog   *registry.NativeRuntimeCatalog
+ 	AppAttestShadow     AppAttestShadowConfig
+ 	Port                string
+ 	ConsoleURL          string
+--- a/coordinator/protocol/messages.go
++++ b/coordinator/protocol/messages.go
+@@ -1005,6 +1005,12 @@
+ 	pm.Type = msgType
+ 
+ 	switch msgType {
++	case TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
++		msg, err := DecodeNativePairMessage(data)
++		if err != nil {
++			return err
++		}
++		pm.Payload = msg
+ 	case TypeRegister:
+ 		var msg RegisterMessage
+ 		if err := json.Unmarshal(data, &msg); err != nil {
+--- /dev/null
++++ b/coordinator/protocol/native_authorization.go
+@@ -0,0 +1,111 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/binary"
++)
++
++// Exact public-byte mirror of ClusterNativeAuthorization{Common,Start,Hello}
++// from the native prelude. These records carry no authority by themselves.
++type NativeAuthorizationCommon struct {
++	Epoch                                                                               [16]byte
++	MembershipGeneration, NativePolicyGeneration                                        uint64
++	MembershipTranscriptSHA256, ApprovedNativeBindingSHA256, PlanSHA256, ArtifactSHA256 [32]byte
++	NativeRuntimeSHA256, CapabilitySHA256, ResourcePolicySHA256, ProfileSHA256          [32]byte
++	Schedule                                                                            uint8 // 1 serial, 2 one-chunk lookahead
++	MaximumTransportFrame, MaximumPlaintext                                             uint32
++	MaximumRecords, MaximumCumulativePlaintext                                          uint64
++}
++type NativeAuthorizationStart struct {
++	Common                              NativeAuthorizationCommon
++	Rank                                uint8
++	OwnerIncarnation, LeaseID, LaunchID [16]byte
++}
++
++func (c NativeAuthorizationCommon) Canonical() ([]byte, error) {
++	if c.Epoch == [16]byte{} || c.MembershipGeneration == 0 || c.NativePolicyGeneration == 0 || (c.Schedule != 1 && c.Schedule != 2) || c.MaximumPlaintext == 0 || c.MaximumPlaintext > 16*1024*1024 || c.MaximumTransportFrame < c.MaximumPlaintext+40 || c.MaximumTransportFrame > 16*1024*1024+40 || c.MaximumRecords == 0 || c.MaximumRecords > 1048576 || c.MaximumCumulativePlaintext == 0 || c.MaximumCumulativePlaintext > 4*1024*1024*1024 {
++		return nil, ErrNativePairFrame
++	}
++	b := []byte("darkbloom/native-authorization/common/v1\x00")
++	b = append(b, c.Epoch[:]...)
++	b = binary.BigEndian.AppendUint64(b, c.MembershipGeneration)
++	b = binary.BigEndian.AppendUint64(b, c.NativePolicyGeneration)
++	for _, h := range [][32]byte{c.MembershipTranscriptSHA256, c.ApprovedNativeBindingSHA256, c.PlanSHA256, c.ArtifactSHA256, c.NativeRuntimeSHA256, c.CapabilitySHA256, c.ResourcePolicySHA256, c.ProfileSHA256} {
++		if h == [32]byte{} {
++			return nil, ErrNativePairFrame
++		}
++		b = append(b, h[:]...)
++	}
++	b = append(b, 1, 1, c.Schedule)
++	b = binary.BigEndian.AppendUint32(b, c.MaximumTransportFrame)
++	b = binary.BigEndian.AppendUint32(b, c.MaximumPlaintext)
++	b = binary.BigEndian.AppendUint64(b, c.MaximumRecords)
++	b = binary.BigEndian.AppendUint64(b, c.MaximumCumulativePlaintext)
++	return b, nil
++}
++func (s NativeAuthorizationStart) Canonical() ([]byte, error) {
++	if s.Rank > 1 || s.OwnerIncarnation == [16]byte{} || s.LeaseID == [16]byte{} || s.LaunchID == [16]byte{} {
++		return nil, ErrNativePairFrame
++	}
++	c, e := s.Common.Canonical()
++	if e != nil {
++		return nil, e
++	}
++	b := append([]byte("DBNS\x01"), c...)
++	b = append(b, s.Rank)
++	b = append(b, s.OwnerIncarnation[:]...)
++	b = append(b, s.LeaseID[:]...)
++	b = append(b, s.LaunchID[:]...)
++	return b, nil
++}
++
++// A hello may only repeat the coordinator's exact expected start, followed by a
++// canonical nonzero X25519 public key. Small-order rejection also occurs in the
++// native's actual DH operation; the coordinator never computes a shared key.
++func ValidateNativeAuthorizationHello(payload []byte, expected NativeAuthorizationStart) error {
++	s, e := expected.Canonical()
++	if e != nil {
++		return e
++	}
++	prefix := append([]byte("DBNH\x01"), s...)
++	if len(payload) != len(prefix)+32 || !bytes.Equal(payload[:len(prefix)], prefix) {
++		return ErrNativePairFrame
++	}
++	key := payload[len(prefix):]
++	nonzero := false
++	for _, v := range key {
++		nonzero = nonzero || v != 0
++	}
++	if !nonzero {
++		return ErrNativePairFrame
++	}
++	prime := [32]byte{0xed}
++	for i := 1; i < 31; i++ {
++		prime[i] = 0xff
++	}
++	prime[31] = 0x7f
++	for i := 31; i >= 0; i-- {
++		if key[i] < prime[i] {
++			return nil
++		}
++		if key[i] > prime[i] {
++			return ErrNativePairFrame
++		}
++	}
++	return ErrNativePairFrame
++}
++func NativeAuthorizationBinding(hello [2][]byte, start [2]NativeAuthorizationStart) ([]byte, error) {
++	if start[0].Rank != 0 || start[1].Rank != 1 || start[0].Common != start[1].Common || start[0].OwnerIncarnation == start[1].OwnerIncarnation || start[0].LeaseID == start[1].LeaseID || start[0].LaunchID == start[1].LaunchID {
++		return nil, ErrNativePairFrame
++	}
++	for i := range hello {
++		if ValidateNativeAuthorizationHello(hello[i], start[i]) != nil {
++			return nil, ErrNativePairFrame
++		}
++	}
++	if bytes.Equal(hello[0][len(hello[0])-32:], hello[1][len(hello[1])-32:]) {
++		return nil, ErrNativePairFrame
++	}
++	b := append([]byte("DBNB\x01"), hello[0]...)
++	return append(b, hello[1]...), nil
++}
+--- /dev/null
++++ b/coordinator/protocol/native_pair.go
+@@ -0,0 +1,158 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/base64"
++	"encoding/binary"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"io"
++)
++
++const (
++	TypeNativePairPrepared         = "native_pair_prepared"
++	TypeNativePairHello            = "native_pair_hello"
++	TypeNativePairConfirmation     = "native_pair_confirmation"
++	TypeNativePairOwnerReleased    = "native_pair_owner_released"
++	TypeNativePairCancel           = "native_pair_cancel"
++	TypeNativePairPrepare          = "native_pair_prepare"
++	TypeNativePairOwnerStart       = "native_pair_owner_start"
++	TypeNativePairBinding          = "native_pair_binding"
++	TypeNativePairPeerConfirmation = "native_pair_peer_confirmation"
++	NativePairFrameLimit           = 64 * 1024
++)
++
++var ErrNativePairFrame = errors.New("invalid native pair public frame")
++
++// Public control only. Payload is canonical native start/hello/binding, a
++// confirmation MAC, or the exact cleanup observation. Never a traffic secret,
++// prompt, activation, native diagnostic tail, or arbitrary worker JSON.
++// Sequence belongs to the original member connection, not to a grant.
++// Deadlines are absolute coordinator timestamps, never a new request budget.
++type NativePairMessage struct {
++	Type                  string `json:"type"`
++	Version               uint8  `json:"version"`
++	MemberNonce           string `json:"member_nonce"`
++	Epoch                 string `json:"epoch"`
++	Generation            uint64 `json:"generation"`
++	Sequence              uint64 `json:"sequence"`
++	Payload               string `json:"payload"`
++	Signature             string `json:"signature,omitempty"`
++	PrepareBeforeUnixNano int64  `json:"prepare_before_unix_nano,omitempty"`
++	ExpiresAtUnixNano     int64  `json:"expires_at_unix_nano,omitempty"`
++}
++
++func IsNativePairInbound(t string) bool {
++	switch t {
++	case TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
++		return true
++	}
++	return false
++}
++func IsNativePairOutbound(t string) bool {
++	switch t {
++	case TypeNativePairPrepare, TypeNativePairOwnerStart, TypeNativePairBinding, TypeNativePairPeerConfirmation, TypeNativePairCancel:
++		return true
++	}
++	return false
++}
++
++// Unlike legacy JSON envelopes, this closed security protocol refuses repeated
++// and unknown fields before decoding any grant operation. All values are flat.
++func DecodeNativePairMessage(data []byte) (*NativePairMessage, error) {
++	if len(data) == 0 || len(data) > NativePairFrameLimit || bytes.IndexByte(data, 10) >= 0 {
++		return nil, ErrNativePairFrame
++	}
++	d := json.NewDecoder(bytes.NewReader(data))
++	t, e := d.Token()
++	if e != nil || t != json.Delim('{') {
++		return nil, ErrNativePairFrame
++	}
++	seen := map[string]bool{}
++	for d.More() {
++		k, e := d.Token()
++		s, ok := k.(string)
++		if e != nil || !ok || seen[s] {
++			return nil, ErrNativePairFrame
++		}
++		seen[s] = true
++		switch s {
++		case "type", "version", "member_nonce", "epoch", "generation", "sequence", "payload", "signature", "prepare_before_unix_nano", "expires_at_unix_nano":
++		default:
++			return nil, ErrNativePairFrame
++		}
++		var value json.RawMessage
++		if d.Decode(&value) != nil || bytes.Equal(value, []byte("null")) {
++			return nil, ErrNativePairFrame
++		}
++	}
++	if t, e = d.Token(); e != nil || t != json.Delim('}') {
++		return nil, ErrNativePairFrame
++	}
++	if _, e = d.Token(); e != io.EOF {
++		return nil, ErrNativePairFrame
++	}
++	for _, k := range []string{"type", "version", "member_nonce", "epoch", "generation", "sequence", "payload"} {
++		if !seen[k] {
++			return nil, ErrNativePairFrame
++		}
++	}
++	var m NativePairMessage
++	if json.Unmarshal(data, &m) != nil || m.Validate() != nil || (seen["signature"] && m.Signature == "") {
++		return nil, ErrNativePairFrame
++	}
++	return &m, nil
++}
++func (m NativePairMessage) Validate() error {
++	if m.Version != 1 || (!IsNativePairInbound(m.Type) && !IsNativePairOutbound(m.Type)) || !nativePairHex(m.MemberNonce, 32) || !nativePairHex(m.Epoch, 16) || m.Generation == 0 || m.Sequence == 0 {
++		return ErrNativePairFrame
++	}
++	p, e := base64.StdEncoding.DecodeString(m.Payload)
++	if e != nil || base64.StdEncoding.EncodeToString(p) != m.Payload || len(p) > 32768 {
++		return ErrNativePairFrame
++	}
++	if m.Signature != "" {
++		s, e := base64.StdEncoding.DecodeString(m.Signature)
++		if e != nil || len(s) < 8 || len(s) > 72 || base64.StdEncoding.EncodeToString(s) != m.Signature {
++			return ErrNativePairFrame
++		}
++	}
++	if m.PrepareBeforeUnixNano < 0 || m.ExpiresAtUnixNano < 0 {
++		return ErrNativePairFrame
++	}
++	return nil
++}
++func nativePairHex(s string, n int) bool {
++	b, e := hex.DecodeString(s)
++	return e == nil && len(b) == n && hex.EncodeToString(b) == s && !bytes.Equal(b, make([]byte, n))
++}
++func (m NativePairMessage) PayloadBytes() ([]byte, error) {
++	if m.Validate() != nil {
++		return nil, ErrNativePairFrame
++	}
++	return base64.StdEncoding.DecodeString(m.Payload)
++}
++
++// SE signs SHA256 of these bytes using the existing P-256 registration key.
++// Length framing and a dedicated domain prevent JSON spelling ambiguities and
++// cross-message signatures. Signature is deliberately absent from its input.
++func (m NativePairMessage) SigningBytes() ([]byte, error) {
++	if m.Validate() != nil {
++		return nil, ErrNativePairFrame
++	}
++	b := []byte("darkbloom/coordinator-native-pair/member-message/v1\x00")
++	for _, s := range []string{m.Type, m.MemberNonce, m.Epoch} {
++		b = binary.BigEndian.AppendUint32(b, uint32(len(s)))
++		b = append(b, s...)
++	}
++	b = append(b, m.Version)
++	b = binary.BigEndian.AppendUint64(b, m.Generation)
++	b = binary.BigEndian.AppendUint64(b, m.Sequence)
++	p, _ := m.PayloadBytes()
++	b = binary.BigEndian.AppendUint32(b, uint32(len(p)))
++	b = append(b, p...)
++	b = binary.BigEndian.AppendUint64(b, uint64(m.PrepareBeforeUnixNano))
++	b = binary.BigEndian.AppendUint64(b, uint64(m.ExpiresAtUnixNano))
++	return b, nil
++}
+--- /dev/null
++++ b/coordinator/protocol/native_pair_test.go
+@@ -0,0 +1,91 @@
++package protocol
++
++import (
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"os"
++	"strings"
++	"testing"
++)
++
++func TestNativePairPublicBytesMatchQualifiedSwiftPrelude(t *testing.T) {
++	b, e := os.ReadFile("testdata/native_pair_public_vector.json")
++	if e != nil {
++		t.Fatal(e)
++	}
++	var vector struct {
++		Common, Binding, OuterSigningBytes string
++		Starts, Hellos, PublicKeys         []string
++	}
++	if e = json.Unmarshal(b, &vector); e != nil {
++		t.Fatal(e)
++	}
++	c := NativeAuthorizationCommon{MembershipGeneration: 7, NativePolicyGeneration: 11, Schedule: 2, MaximumTransportFrame: 4136, MaximumPlaintext: 4096, MaximumRecords: 64, MaximumCumulativePlaintext: 262144}
++	for i := range c.Epoch {
++		c.Epoch[i] = byte(i + 1)
++	}
++	hashes := []*[32]byte{&c.MembershipTranscriptSHA256, &c.ApprovedNativeBindingSHA256, &c.PlanSHA256, &c.ArtifactSHA256, &c.NativeRuntimeSHA256, &c.CapabilitySHA256, &c.ResourcePolicySHA256, &c.ProfileSHA256}
++	for i, h := range hashes {
++		*h = sha256.Sum256([]byte(fmt.Sprint("fixture-native-field-", i)))
++	}
++	common, e := c.Canonical()
++	if e != nil || hex.EncodeToString(common) != vector.Common {
++		t.Fatal("common differs from actual qualified Swift/OpenSSL vector")
++	}
++	var starts [2]NativeAuthorizationStart
++	var hellos [2][]byte
++	for rank := range starts {
++		s := NativeAuthorizationStart{Common: c, Rank: uint8(rank)}
++		s.OwnerIncarnation[15] = byte(100 + 10*rank)
++		s.LeaseID[15] = byte(101 + 10*rank)
++		s.LaunchID[15] = byte(102 + 10*rank)
++		starts[rank] = s
++		encoded, e := s.Canonical()
++		if e != nil || hex.EncodeToString(encoded) != vector.Starts[rank] {
++			t.Fatal("start bytes differ")
++		}
++		hellos[rank], _ = hex.DecodeString(vector.Hellos[rank])
++		if ValidateNativeAuthorizationHello(hellos[rank], s) != nil {
++			t.Fatal("qualified hello refused")
++		}
++	}
++	binding, e := NativeAuthorizationBinding(hellos, starts)
++	if e != nil || hex.EncodeToString(binding) != vector.Binding {
++		t.Fatal("native key binding differs")
++	}
++	m := NativePairMessage{Type: TypeNativePairHello, Version: 1, MemberNonce: strings.Repeat("11", 32), Epoch: strings.Repeat("22", 16), Generation: 7, Sequence: 9, Payload: base64.StdEncoding.EncodeToString(hellos[0])}
++	signing, e := m.SigningBytes()
++	if e != nil || hex.EncodeToString(signing) != vector.OuterSigningBytes {
++		t.Fatal("outer signature bytes differ from independent Python assembly")
++	}
++	hellos[0][5+len(common)+5] ^= 1
++	if ValidateNativeAuthorizationHello(hellos[0], starts[0]) == nil {
++		t.Fatal("substituted expected context admitted")
++	}
++}
++func TestNativePairClosedPublicEnvelope(t *testing.T) {
++	m := NativePairMessage{Type: TypeNativePairHello, Version: 1, MemberNonce: strings.Repeat("1", 64), Epoch: strings.Repeat("2", 32), Generation: 7, Sequence: 9, Payload: "AA=="}
++	b, _ := json.Marshal(m)
++	if _, e := DecodeNativePairMessage(b); e != nil {
++		t.Fatal(e)
++	}
++	cases := [][]byte{
++		append(append([]byte(nil), b[:len(b)-1]...), []byte(`,"sequence":9}`)...),
++		append(append([]byte(nil), b[:len(b)-1]...), []byte(`,"unknown":1}`)...),
++		[]byte(strings.Replace(string(b), `"sequence":9`, `"sequence":1.0`, 1)),
++		[]byte(strings.Replace(string(b), `"sequence":9`, `"sequence":18446744073709551616`, 1)),
++		[]byte(strings.Replace(string(b), `"version":1`, `"version":2`, 1)),
++		[]byte(strings.Replace(string(b), `"payload":"AA=="`, `"payload":null`, 1)),
++		[]byte(strings.Replace(string(b), `"payload":"AA=="`, `"payload":"AB=="`, 1)),
++		[]byte(strings.Replace(string(b), TypeNativePairHello, "native_pair_unknown", 1)),
++		append(append([]byte(nil), b...), b...),
++	}
++	for i, b := range cases {
++		if _, e := DecodeNativePairMessage(b); e == nil {
++			t.Fatalf("malformed case %d admitted", i)
++		}
++	}
++}
+--- /dev/null
++++ b/coordinator/protocol/testdata/native_pair_public_vector.json
+@@ -0,0 +1,19 @@
++{
++  "binding": "44424e420144424e480144424e53016461726b626c6f6f6d2f6e61746976652d617574686f72697a6174696f6e2f636f6d6d6f6e2f7631000102030405060708090a0b0c0d0e0f100000000000000007000000000000000b8ad475855361fdea5e55d4d25a1509a8bd642b6cd46b833911de616f35c259a216ae2c7dc747fc8ce4e9689e4a452ff4521715b2df90080271ccb8fb1cf621af23446f275f5bf8db1c3800edec9b9894e100ab11c066e2da3801b2ee8ec4e858115aeb8857c13d5ecd6019cee9924c70594c1b672a31f77b87794f22db84a7f3e4f23a1c268daffa06314ca0ed8e9750fc8993c955059c388fe2bd927ff669f6185fdc937e1cbcf6020851084ceafbdb4cb5e72b7d4fe7cad2fdd2e69161bc6a0b991f35b02833b15fd09df7db00e02a2f94f79457a156267d94fe7e415bff0e6c652e1114a1a09c419b0a491336f41b5ffbb58187b877c1b702b1945ac6c1680101020000102800001000000000000000004000000000000400000000000000000000000000000000000064000000000000000000000000000000650000000000000000000000000000006607a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c44424e480144424e53016461726b626c6f6f6d2f6e61746976652d617574686f72697a6174696f6e2f636f6d6d6f6e2f7631000102030405060708090a0b0c0d0e0f100000000000000007000000000000000b8ad475855361fdea5e55d4d25a1509a8bd642b6cd46b833911de616f35c259a216ae2c7dc747fc8ce4e9689e4a452ff4521715b2df90080271ccb8fb1cf621af23446f275f5bf8db1c3800edec9b9894e100ab11c066e2da3801b2ee8ec4e858115aeb8857c13d5ecd6019cee9924c70594c1b672a31f77b87794f22db84a7f3e4f23a1c268daffa06314ca0ed8e9750fc8993c955059c388fe2bd927ff669f6185fdc937e1cbcf6020851084ceafbdb4cb5e72b7d4fe7cad2fdd2e69161bc6a0b991f35b02833b15fd09df7db00e02a2f94f79457a156267d94fe7e415bff0e6c652e1114a1a09c419b0a491336f41b5ffbb58187b877c1b702b1945ac6c168010102000010280000100000000000000000400000000000040000010000000000000000000000000000006e0000000000000000000000000000006f0000000000000000000000000000007064b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d48466",
++  "common": "6461726b626c6f6f6d2f6e61746976652d617574686f72697a6174696f6e2f636f6d6d6f6e2f7631000102030405060708090a0b0c0d0e0f100000000000000007000000000000000b8ad475855361fdea5e55d4d25a1509a8bd642b6cd46b833911de616f35c259a216ae2c7dc747fc8ce4e9689e4a452ff4521715b2df90080271ccb8fb1cf621af23446f275f5bf8db1c3800edec9b9894e100ab11c066e2da3801b2ee8ec4e858115aeb8857c13d5ecd6019cee9924c70594c1b672a31f77b87794f22db84a7f3e4f23a1c268daffa06314ca0ed8e9750fc8993c955059c388fe2bd927ff669f6185fdc937e1cbcf6020851084ceafbdb4cb5e72b7d4fe7cad2fdd2e69161bc6a0b991f35b02833b15fd09df7db00e02a2f94f79457a156267d94fe7e415bff0e6c652e1114a1a09c419b0a491336f41b5ffbb58187b877c1b702b1945ac6c168010102000010280000100000000000000000400000000000040000",
++  "hellos": [
++    "44424e480144424e53016461726b626c6f6f6d2f6e61746976652d617574686f72697a6174696f6e2f636f6d6d6f6e2f7631000102030405060708090a0b0c0d0e0f100000000000000007000000000000000b8ad475855361fdea5e55d4d25a1509a8bd642b6cd46b833911de616f35c259a216ae2c7dc747fc8ce4e9689e4a452ff4521715b2df90080271ccb8fb1cf621af23446f275f5bf8db1c3800edec9b9894e100ab11c066e2da3801b2ee8ec4e858115aeb8857c13d5ecd6019cee9924c70594c1b672a31f77b87794f22db84a7f3e4f23a1c268daffa06314ca0ed8e9750fc8993c955059c388fe2bd927ff669f6185fdc937e1cbcf6020851084ceafbdb4cb5e72b7d4fe7cad2fdd2e69161bc6a0b991f35b02833b15fd09df7db00e02a2f94f79457a156267d94fe7e415bff0e6c652e1114a1a09c419b0a491336f41b5ffbb58187b877c1b702b1945ac6c1680101020000102800001000000000000000004000000000000400000000000000000000000000000000000064000000000000000000000000000000650000000000000000000000000000006607a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
++    "44424e480144424e53016461726b626c6f6f6d2f6e61746976652d617574686f72697a6174696f6e2f636f6d6d6f6e2f7631000102030405060708090a0b0c0d0e0f100000000000000007000000000000000b8ad475855361fdea5e55d4d25a1509a8bd642b6cd46b833911de616f35c259a216ae2c7dc747fc8ce4e9689e4a452ff4521715b2df90080271ccb8fb1cf621af23446f275f5bf8db1c3800edec9b9894e100ab11c066e2da3801b2ee8ec4e858115aeb8857c13d5ecd6019cee9924c70594c1b672a31f77b87794f22db84a7f3e4f23a1c268daffa06314ca0ed8e9750fc8993c955059c388fe2bd927ff669f6185fdc937e1cbcf6020851084ceafbdb4cb5e72b7d4fe7cad2fdd2e69161bc6a0b991f35b02833b15fd09df7db00e02a2f94f79457a156267d94fe7e415bff0e6c652e1114a1a09c419b0a491336f41b5ffbb58187b877c1b702b1945ac6c168010102000010280000100000000000000000400000000000040000010000000000000000000000000000006e0000000000000000000000000000006f0000000000000000000000000000007064b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d48466"
++  ],
++  "outerSigningBytes": "6461726b626c6f6f6d2f636f6f7264696e61746f722d6e61746976652d706169722f6d656d6265722d6d6573736167652f763100000000116e61746976655f706169725f68656c6c6f00000040313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131310000002032323232323232323232323232323232323232323232323232323232323232320100000000000000070000000000000009000001bf44424e480144424e53016461726b626c6f6f6d2f6e61746976652d617574686f72697a6174696f6e2f636f6d6d6f6e2f7631000102030405060708090a0b0c0d0e0f100000000000000007000000000000000b8ad475855361fdea5e55d4d25a1509a8bd642b6cd46b833911de616f35c259a216ae2c7dc747fc8ce4e9689e4a452ff4521715b2df90080271ccb8fb1cf621af23446f275f5bf8db1c3800edec9b9894e100ab11c066e2da3801b2ee8ec4e858115aeb8857c13d5ecd6019cee9924c70594c1b672a31f77b87794f22db84a7f3e4f23a1c268daffa06314ca0ed8e9750fc8993c955059c388fe2bd927ff669f6185fdc937e1cbcf6020851084ceafbdb4cb5e72b7d4fe7cad2fdd2e69161bc6a0b991f35b02833b15fd09df7db00e02a2f94f79457a156267d94fe7e415bff0e6c652e1114a1a09c419b0a491336f41b5ffbb58187b877c1b702b1945ac6c1680101020000102800001000000000000000004000000000000400000000000000000000000000000000000064000000000000000000000000000000650000000000000000000000000000006607a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c00000000000000000000000000000000",
++  "publicKeys": [
++    "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
++    "64b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d48466"
++  ],
++  "starts": [
++    "44424e53016461726b626c6f6f6d2f6e61746976652d617574686f72697a6174696f6e2f636f6d6d6f6e2f7631000102030405060708090a0b0c0d0e0f100000000000000007000000000000000b8ad475855361fdea5e55d4d25a1509a8bd642b6cd46b833911de616f35c259a216ae2c7dc747fc8ce4e9689e4a452ff4521715b2df90080271ccb8fb1cf621af23446f275f5bf8db1c3800edec9b9894e100ab11c066e2da3801b2ee8ec4e858115aeb8857c13d5ecd6019cee9924c70594c1b672a31f77b87794f22db84a7f3e4f23a1c268daffa06314ca0ed8e9750fc8993c955059c388fe2bd927ff669f6185fdc937e1cbcf6020851084ceafbdb4cb5e72b7d4fe7cad2fdd2e69161bc6a0b991f35b02833b15fd09df7db00e02a2f94f79457a156267d94fe7e415bff0e6c652e1114a1a09c419b0a491336f41b5ffbb58187b877c1b702b1945ac6c16801010200001028000010000000000000000040000000000004000000000000000000000000000000000000640000000000000000000000000000006500000000000000000000000000000066",
++    "44424e53016461726b626c6f6f6d2f6e61746976652d617574686f72697a6174696f6e2f636f6d6d6f6e2f7631000102030405060708090a0b0c0d0e0f100000000000000007000000000000000b8ad475855361fdea5e55d4d25a1509a8bd642b6cd46b833911de616f35c259a216ae2c7dc747fc8ce4e9689e4a452ff4521715b2df90080271ccb8fb1cf621af23446f275f5bf8db1c3800edec9b9894e100ab11c066e2da3801b2ee8ec4e858115aeb8857c13d5ecd6019cee9924c70594c1b672a31f77b87794f22db84a7f3e4f23a1c268daffa06314ca0ed8e9750fc8993c955059c388fe2bd927ff669f6185fdc937e1cbcf6020851084ceafbdb4cb5e72b7d4fe7cad2fdd2e69161bc6a0b991f35b02833b15fd09df7db00e02a2f94f79457a156267d94fe7e415bff0e6c652e1114a1a09c419b0a491336f41b5ffbb58187b877c1b702b1945ac6c168010102000010280000100000000000000000400000000000040000010000000000000000000000000000006e0000000000000000000000000000006f00000000000000000000000000000070"
++  ],
++  "transcriptSHA256": "3df677388939411838369517fd165d0ffdbde09d9acb40a8aa889b65441ceafc",
++  "upstreamSHA256": "92c0c0bff67dae6c240cbfea0b5bff24484182a30a4b2efa5ab0a4832a0b6033"
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_approval.go
+@@ -0,0 +1,91 @@
++package registry
++
++import (
++	"crypto/sha256"
++	"encoding/binary"
++	"errors"
++	"sort"
++	"time"
++)
++
++var ErrNativePairApproval = errors.New("native pair runtime is not explicitly approved")
++var ErrNativePairControl = errors.New("native pair control binding refused")
++
++// Supplied only by trusted coordinator startup configuration, never by a
++// provider message or the model capability table. Approval of this closed
++// native arithmetic/resource policy does NOT relax ordinary model eligibility.
++// In particular it neither invents mlx_nax nor renames the 27B model.
++type NativeRuntimeApproval struct {
++	ID, Model                                                                              string
++	Generation                                                                             uint64
++	PlanSHA256, ArtifactSHA256, NativeRuntimeSHA256, MetallibSHA256, ResourceLibrarySHA256 [32]byte
++	CapabilitySHA256, ResourcePolicySHA256, ProfileSHA256                                  [32]byte
++	Schedule                                                                               uint8
++	MaximumTransportFrame, MaximumPlaintext                                                uint32
++	MaximumRecords, MaximumCumulativePlaintext                                             uint64
++	AllowedChips                                                                           []string
++	NotAfter                                                                               time.Time
++}
++type nativeApprovedRuntime struct {
++	policy    NativeRuntimeApproval
++	canonical []byte
++	binding   [32]byte
++}
++type NativeRuntimeCatalog struct {
++	entries map[string]nativeApprovedRuntime
++}
++
++// The returned catalog owns defensive copies; there is no wire upsert and no
++// mutable public entry. Nil/empty remains disabled. Revocation is one-way per
++// running coordinator; replacement requires a fresh explicitly approved entry.
++func NewNativeRuntimeCatalog(policies []NativeRuntimeApproval) (*NativeRuntimeCatalog, error) {
++	if len(policies) > 64 {
++		return nil, ErrNativePairApproval
++	}
++	c := &NativeRuntimeCatalog{entries: make(map[string]nativeApprovedRuntime, len(policies))}
++	for _, p := range policies {
++		p.AllowedChips = append([]string(nil), p.AllowedChips...)
++		b, e := canonicalNativeRuntimeApproval(p)
++		if e != nil {
++			return nil, e
++		}
++		if _, ok := c.entries[p.ID]; ok {
++			return nil, ErrNativePairApproval
++		}
++		c.entries[p.ID] = nativeApprovedRuntime{p, b, sha256.Sum256(b)}
++	}
++	return c, nil
++}
++func canonicalNativeRuntimeApproval(p NativeRuntimeApproval) ([]byte, error) {
++	if len(p.ID) == 0 || len(p.ID) > 128 || len(p.Model) == 0 || len(p.Model) > 512 || p.Generation == 0 || p.NotAfter.IsZero() || p.NotAfter.UnixNano() <= 0 || len(p.AllowedChips) == 0 || len(p.AllowedChips) > 16 || !sort.StringsAreSorted(p.AllowedChips) {
++		return nil, ErrNativePairApproval
++	}
++	if (p.Schedule != 1 && p.Schedule != 2) || p.MaximumPlaintext == 0 || p.MaximumPlaintext > 16*1024*1024 || p.MaximumTransportFrame < p.MaximumPlaintext+40 || p.MaximumTransportFrame > 16*1024*1024+40 || p.MaximumRecords == 0 || p.MaximumRecords > 1048576 || p.MaximumCumulativePlaintext == 0 || p.MaximumCumulativePlaintext > 4*1024*1024*1024 {
++		return nil, ErrNativePairApproval
++	}
++	b := []byte("darkbloom/coordinator-native-runtime-approval/v1\x00")
++	add := func(s string) { b = binary.BigEndian.AppendUint32(b, uint32(len(s))); b = append(b, s...) }
++	add(p.ID)
++	add(p.Model)
++	b = binary.BigEndian.AppendUint64(b, p.Generation)
++	for _, h := range [][32]byte{p.PlanSHA256, p.ArtifactSHA256, p.NativeRuntimeSHA256, p.MetallibSHA256, p.ResourceLibrarySHA256, p.CapabilitySHA256, p.ResourcePolicySHA256, p.ProfileSHA256} {
++		if h == [32]byte{} {
++			return nil, ErrNativePairApproval
++		}
++		b = append(b, h[:]...)
++	}
++	b = append(b, 1, 1, p.Schedule)
++	b = binary.BigEndian.AppendUint32(b, p.MaximumTransportFrame)
++	b = binary.BigEndian.AppendUint32(b, p.MaximumPlaintext)
++	b = binary.BigEndian.AppendUint64(b, p.MaximumRecords)
++	b = binary.BigEndian.AppendUint64(b, p.MaximumCumulativePlaintext)
++	b = binary.BigEndian.AppendUint64(b, uint64(p.NotAfter.UnixNano()))
++	b = binary.BigEndian.AppendUint32(b, uint32(len(p.AllowedChips)))
++	for i, chip := range p.AllowedChips {
++		if len(chip) == 0 || len(chip) > 128 || (i > 0 && p.AllowedChips[i-1] == chip) {
++			return nil, ErrNativePairApproval
++		}
++		add(chip)
++	}
++	return b, nil
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_connection.go
+@@ -0,0 +1,76 @@
++package registry
++
++import (
++	"bytes"
++	"crypto/tls"
++	"encoding/hex"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++// The API passes r.TLS from its accepted request, not a forwarded header or a
++// provider claim. Explicit trusted TLS proxy deployment support is separate.
++// This is protocol attachment only, never native/runtime approval by itself.
++func (c *NativePairCoordinator) Attach(p *Provider, nonce string, tlsState *tls.ConnectionState) (*NativePairConnection, error) {
++	if c == nil || p == nil || tlsState == nil || !tlsState.HandshakeComplete {
++		return nil, ErrNativePairControl
++	}
++	b, e := hex.DecodeString(nonce)
++	if e != nil || len(b) != 32 || hex.EncodeToString(b) != nonce || bytes.Equal(b, make([]byte, 32)) {
++		return nil, ErrNativePairControl
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if c.closed || c.connections[p] != nil {
++		return nil, ErrNativePairControl
++	}
++	c.registry.mu.RLock()
++	p.mu.Lock()
++	valid := p.registry == c.registry && c.registry.providers[p.ID] == p && p.executionRole == protocol.ExecutionRoleClusterMember && p.memberNonce == nonce
++	p.mu.Unlock()
++	c.registry.mu.RUnlock()
++	if !valid {
++		return nil, ErrNativePairControl
++	}
++	n := &NativePairConnection{coordinator: c, provider: p, nonce: nonce}
++	c.connections[p] = n
++	return n, nil
++}
++func (c *NativePairCoordinator) Detach(n *NativePairConnection) {
++	if c == nil || n == nil {
++		return
++	}
++	c.mu.Lock()
++	if n.coordinator != c || c.connections[n.provider] != n {
++		c.mu.Unlock()
++		return
++	}
++	n.closed = true
++	delete(c.connections, n.provider)
++	s := n.session
++	c.mu.Unlock()
++	if s != nil {
++		c.Cancel(s)
++	}
++}
++func (c *NativePairCoordinator) validConnectionLocked(n *NativePairConnection) bool {
++	return n != nil && n.coordinator == c && !n.closed && c.connections[n.provider] == n
++}
++
++// The coordinator's selector passes exact current Provider objects; no provider
++// can initiate a grant by naming an arbitrary peer or submitting policy hashes.
++func (c *NativePairCoordinator) Connections(m [2]*Provider) ([2]*NativePairConnection, error) {
++	var result [2]*NativePairConnection
++	if c == nil {
++		return result, ErrNativePairControl
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	for i, p := range m {
++		result[i] = c.connections[p]
++		if !c.validConnectionLocked(result[i]) {
++			return [2]*NativePairConnection{}, ErrNativePairControl
++		}
++	}
++	return result, nil
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_fixture_test.go
+@@ -0,0 +1,154 @@
++package registry
++
++import (
++	"context"
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/sha256"
++	"crypto/tls"
++	"encoding/base64"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"math/big"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"nhooyr.io/websocket"
++)
++
++type nativePairFixture struct {
++	r      *Registry
++	c      *NativePairCoordinator
++	p      [2]*Provider
++	n      [2]*NativePairConnection
++	frames [2]chan protocol.NativePairMessage
++	policy NativeRuntimeApproval
++}
++
++func newNativePairFixture(t *testing.T) *nativePairFixture {
++	t.Helper()
++	r, p, request := pairTestRegistry(t)
++	policy := NativeRuntimeApproval{ID: "fixture-explicit-native-policy", Model: request.Model, Generation: 11, PlanSHA256: request.PlanSHA256, Schedule: 2, MaximumPlaintext: 4096, MaximumTransportFrame: 4136, MaximumRecords: 64, MaximumCumulativePlaintext: 262144, AllowedChips: []string{"fixture-chip"}, NotAfter: time.Now().Add(time.Hour)}
++	fields := []*[32]byte{&policy.ArtifactSHA256, &policy.NativeRuntimeSHA256, &policy.MetallibSHA256, &policy.ResourceLibrarySHA256, &policy.CapabilitySHA256, &policy.ResourcePolicySHA256, &policy.ProfileSHA256}
++	for i, h := range fields {
++		*h = sha256.Sum256([]byte(fmt.Sprint("approved-fixture-", i)))
++	}
++	catalog, e := NewNativeRuntimeCatalog([]NativeRuntimeApproval{policy})
++	if e != nil {
++		t.Fatal(e)
++	}
++	f := &nativePairFixture{r: r, p: p, c: NewNativePairCoordinator(r, catalog), policy: policy}
++	t.Cleanup(f.c.Close)
++	for rank, provider := range p {
++		server, client := testWebSocketPair(t)
++		provider.mu.Lock()
++		provider.executionRole = protocol.ExecutionRoleClusterMember
++		provider.memberNonce = strings.Repeat(fmt.Sprint(rank+1), 64)
++		provider.Hardware.ChipName = "fixture-chip"
++		provider.BackendCapacity.Slots = nil
++		provider.CurrentModel = ""
++		provider.WarmModels = nil
++		provider.writer = newProviderWriter(server)
++		provider.mu.Unlock()
++		t.Cleanup(provider.closeWriterNow)
++		// Registry fixture tests use actual WS writers plus explicit test TLS state;
++		// this is not a claim that the helper's cleartext socket is a TLS deployment.
++		f.n[rank], e = f.c.Attach(provider, provider.memberNonce, &tls.ConnectionState{HandshakeComplete: true})
++		if e != nil {
++			t.Fatal(e)
++		}
++		f.frames[rank] = make(chan protocol.NativePairMessage, 32)
++		ctx, cancel := context.WithCancel(context.Background())
++		t.Cleanup(cancel)
++		go func(rank int, client *websocket.Conn) {
++			for {
++				_, b, e := client.Read(ctx)
++				if e != nil {
++					return
++				}
++				var m protocol.NativePairMessage
++				if json.Unmarshal(b, &m) != nil {
++					return
++				}
++				select {
++				case f.frames[rank] <- m:
++				case <-ctx.Done():
++					return
++				}
++			}
++		}(rank, client)
++	}
++	return f
++}
++func (f *nativePairFixture) reserve(t *testing.T) *NativePairSession {
++	t.Helper()
++	s, e := f.c.Reserve(f.n, f.policy.ID, time.Minute)
++	if e != nil {
++		t.Fatal(e)
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairPrepare)
++	}
++	return s
++}
++func (f *nativePairFixture) read(t *testing.T, rank int, kind string) protocol.NativePairMessage {
++	t.Helper()
++	select {
++	case m := <-f.frames[rank]:
++		if m.Type != kind {
++			t.Fatalf("rank%d got %s want %s", rank, m.Type, kind)
++		}
++		return m
++	case <-time.After(2 * time.Second):
++		t.Fatal("bounded public write absent")
++	}
++	return protocol.NativePairMessage{}
++}
++func (f *nativePairFixture) signed(t *testing.T, s *NativePairSession, rank int, kind string, payload []byte) *protocol.NativePairMessage {
++	t.Helper()
++	f.c.mu.Lock()
++	seq := f.n[rank].inboundSequence + 1
++	f.c.mu.Unlock()
++	m := &protocol.NativePairMessage{Type: kind, Version: 1, MemberNonce: f.n[rank].nonce, Epoch: hex.EncodeToString(s.membership.Epoch[:]), Generation: s.membership.Generation, Sequence: seq, Payload: base64.StdEncoding.EncodeToString(payload)}
++	b, e := m.SigningBytes()
++	if e != nil {
++		t.Fatal(e)
++	}
++	digest := sha256.Sum256(b)
++	serial := s.membership.Members[rank].DeviceSerial
++	d := new(big.Int).SetBytes([]byte(serial))
++	x, y := elliptic.P256().ScalarBaseMult(d.Bytes())
++	key := &ecdsa.PrivateKey{PublicKey: ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, D: d}
++	signature, e := ecdsa.SignASN1(rand.Reader, key, digest[:])
++	if e != nil {
++		t.Fatal(e)
++	}
++	m.Signature = base64.StdEncoding.EncodeToString(signature)
++	return m
++}
++func (f *nativePairFixture) prepared(t *testing.T, s *NativePairSession, rank int) {
++	t.Helper()
++	b, _ := s.starts[rank].Canonical()
++	if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairPrepared, b)); e != nil {
++		t.Fatal(e)
++	}
++}
++func (f *nativePairFixture) active(t *testing.T) *NativePairSession {
++	t.Helper()
++	s := f.reserve(t)
++	f.prepared(t, s, 0)
++	f.prepared(t, s, 1)
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairOwnerStart)
++	}
++	return s
++}
++func (f *nativePairFixture) phase(s *NativePairSession) VerifiedPairPhase {
++	f.r.mu.RLock()
++	defer f.r.mu.RUnlock()
++	return s.handle.state.phase
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_handlers.go
+@@ -0,0 +1,173 @@
++package registry
++
++import (
++	"bytes"
++	"crypto/ecdsa"
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/hex"
++	"math"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/attestation"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++// Handle is called by the real provider read loop with its retained attachment,
++// never with a provider ID taken from the message. All peer bytes are public.
++// A failure cancels the exact session; its active devices remain quarantined.
++func (c *NativePairCoordinator) Handle(n *NativePairConnection, m *protocol.NativePairMessage) error {
++	if c == nil {
++		return ErrNativePairControl
++	}
++	c.mu.Lock()
++	e := c.handleLocked(n, m)
++	var s *NativePairSession
++	if n != nil && n.coordinator == c {
++		s = n.session
++	}
++	c.mu.Unlock()
++	if s != nil && (e != nil || (m != nil && m.Type == protocol.TypeNativePairCancel)) {
++		c.Cancel(s)
++	}
++	return e
++}
++func (c *NativePairCoordinator) handleLocked(n *NativePairConnection, m *protocol.NativePairMessage) error {
++	if c.validConnectionLocked(n) && n.inboundSequence == math.MaxUint64 {
++		n.closed = true
++		return ErrNativePairControl
++	}
++	if !c.validConnectionLocked(n) || m == nil || !protocol.IsNativePairInbound(m.Type) || m.Validate() != nil || m.Signature == "" || m.PrepareBeforeUnixNano != 0 || m.ExpiresAtUnixNano != 0 || m.MemberNonce != n.nonce || n.inboundSequence == math.MaxUint64 || m.Sequence != n.inboundSequence+1 {
++		return ErrNativePairControl
++	}
++	s := n.session
++	if s == nil || c.sessions[s.membership.Epoch] != s || m.Epoch != hex.EncodeToString(s.membership.Epoch[:]) || m.Generation != s.membership.Generation {
++		return ErrNativePairControl
++	}
++	rank := 0
++	if s.connections[1] == n {
++		rank = 1
++	}
++	if s.connections[rank] != n {
++		return ErrNativePairControl
++	}
++	if !nativePairSignatureValid(s.membership.Members[rank].SEPublicKey, *m) {
++		return ErrNativePairControl
++	}
++	payload, _ := m.PayloadBytes()
++	// Even release/cancel must use the exact signed connection sequence. Release
++	// remains possible after expiry, but only through the Registry's fresh trust
++	// and original-identity checks plus a complete owner observation below.
++	n.inboundSequence = m.Sequence
++	if m.Type == protocol.TypeNativePairCancel {
++		if !bytes.Equal(payload, []byte("DBNC\x01")) {
++			return ErrNativePairControl
++		}
++		return nil
++	}
++	if m.Type == protocol.TypeNativePairOwnerReleased {
++		if !s.committed || !bytes.Equal(payload, nativePairReleaseReceipt(s.starts[rank])) {
++			return ErrNativePairControl
++		}
++		if e := c.registry.ObserveVerifiedPairOwnerReleased(s.handle, n.provider, s.membership.TranscriptSHA256); e != nil {
++			return e
++		}
++		c.removeReleasedLocked(s)
++		return nil
++	}
++	if s.stopped || c.closed || c.revoked[s.approval.policy.ID] || !time.Now().Before(s.approval.policy.NotAfter) {
++		return ErrNativePairApproval
++	}
++	switch m.Type {
++	case protocol.TypeNativePairPrepared:
++		expected, _ := s.starts[rank].Canonical()
++		if s.committed || !bytes.Equal(payload, expected) {
++			return ErrNativePairControl
++		}
++		if e := c.registry.AcknowledgeVerifiedPairPrepared(s.handle, n.provider, s.membership.TranscriptSHA256); e != nil {
++			return e
++		}
++		state, e := c.registry.VerifiedPairStatus(s.handle)
++		if e != nil {
++			return e
++		}
++		if state.Prepared[0] && state.Prepared[1] {
++			if _, e = c.registry.CommitVerifiedPairOwners(s.handle); e != nil {
++				return e
++			}
++			s.committed = true // No owner-start frame exists before the actual Commit.
++			for r := range s.starts {
++				b, _ := s.starts[r].Canonical()
++				if e = c.enqueueLocked(s, r, protocol.TypeNativePairOwnerStart, b); e != nil {
++					return e
++				}
++			}
++		}
++	case protocol.TypeNativePairHello:
++		if !s.committed || s.hellos[rank] != nil {
++			return ErrNativePairControl
++		}
++		if _, e := c.registry.ValidateVerifiedPair(s.handle); e != nil {
++			return e
++		}
++		if protocol.ValidateNativeAuthorizationHello(payload, s.starts[rank]) != nil {
++			return ErrNativePairControl
++		}
++		s.hellos[rank] = append([]byte(nil), payload...)
++		if s.hellos[0] != nil && s.hellos[1] != nil {
++			b, e := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++			if e != nil {
++				return e
++			}
++			for r := range s.starts {
++				if e = c.enqueueLocked(s, r, protocol.TypeNativePairBinding, b); e != nil {
++					return e
++				}
++			}
++		}
++	case protocol.TypeNativePairConfirmation:
++		if !s.committed || s.hellos[0] == nil || s.hellos[1] == nil || s.confirmations[rank] || len(payload) != 32 {
++			return ErrNativePairControl
++		}
++		if _, e := c.registry.ValidateVerifiedPair(s.handle); e != nil {
++			return e
++		}
++		// This relays the peer's signed MAC, not a claim that the coordinator verified
++		// a secret it does not possess. The child must authenticate it in prelude A.
++		s.confirmations[rank] = true
++		if e := c.enqueueLocked(s, 1-rank, protocol.TypeNativePairPeerConfirmation, payload); e != nil {
++			return e
++		}
++	default:
++		return ErrNativePairControl
++	}
++	return nil
++}
++func nativePairSignatureValid(key string, m protocol.NativePairMessage) bool {
++	encoded, e := base64.StdEncoding.DecodeString(key)
++	if e != nil {
++		return false
++	}
++	public, e := attestation.ParseP256PublicKey(encoded)
++	if e != nil {
++		return false
++	}
++	b, e := m.SigningBytes()
++	if e != nil {
++		return false
++	}
++	signature, e := base64.StdEncoding.DecodeString(m.Signature)
++	if e != nil {
++		return false
++	}
++	digest := sha256.Sum256(b)
++	return ecdsa.VerifyASN1(public, digest[:], signature) // strict DER; no trailing data
++}
++func nativePairReleaseReceipt(start protocol.NativeAuthorizationStart) []byte {
++	b, _ := start.Canonical()
++	digest := sha256.Sum256(b)
++	out := append([]byte("DBNR\x01"), digest[:]...)
++	// native cleanup, authenticated owner lease-release ACK, actual owner transport
++	// termination. A future member implementation may emit this only after all 3.
++	return append(out, 1, 1, 1)
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_relay.go
+@@ -0,0 +1,196 @@
++package registry
++
++import (
++	"context"
++	"encoding/base64"
++	"encoding/hex"
++	"encoding/json"
++	"math"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++func (c *NativePairCoordinator) messageLocked(s *NativePairSession, rank int, kind string, payload []byte) ([]byte, error) {
++	n := s.connections[rank]
++	if n.outboundSequence == math.MaxUint64 {
++		n.closed = true
++		return nil, ErrNativePairControl
++	}
++	m := protocol.NativePairMessage{Type: kind, Version: 1, MemberNonce: n.nonce, Epoch: hex.EncodeToString(s.membership.Epoch[:]), Generation: s.membership.Generation, Sequence: n.outboundSequence + 1, Payload: base64.StdEncoding.EncodeToString(payload), PrepareBeforeUnixNano: s.membership.PrepareBefore.UnixNano(), ExpiresAtUnixNano: s.membership.ExpiresAt.UnixNano()}
++	if m.Validate() != nil {
++		return nil, ErrNativePairControl
++	}
++	b, e := json.Marshal(m)
++	if e != nil || len(b) > protocol.NativePairFrameLimit {
++		return nil, ErrNativePairControl
++	}
++	n.outboundSequence++
++	return b, nil
++}
++func (c *NativePairCoordinator) enqueueLocked(s *NativePairSession, rank int, kind string, payload []byte) error {
++	if s.stopped || s.queuedFrames[rank] >= nativePairQueueFrames || s.queuedBytes[rank] > nativePairQueueBytes-protocol.NativePairFrameLimit {
++		return ErrNativePairControl
++	}
++	b, e := c.messageLocked(s, rank, kind, payload)
++	if e != nil {
++		return e
++	}
++	select {
++	case s.queues[rank] <- b:
++		s.queuedBytes[rank] += len(b)
++		s.queuedFrames[rank]++
++		return nil
++	default:
++		return ErrNativePairControl
++	}
++}
++func (c *NativePairCoordinator) writeLoop(s *NativePairSession, rank int) {
++	defer s.workers.Done()
++	for {
++		select {
++		case <-s.ctx.Done():
++			return
++		case b := <-s.queues[rank]:
++			c.mu.Lock()
++			valid := !s.stopped && !c.closed && !c.revoked[s.approval.policy.ID] && time.Now().Before(s.approval.policy.NotAfter) && c.validConnectionLocked(s.connections[rank])
++			if valid {
++				if s.committed {
++					_, e := c.registry.ValidateVerifiedPair(s.handle)
++					valid = e == nil
++				} else {
++					status, e := c.registry.VerifiedPairStatus(s.handle)
++					valid = e == nil && status.Phase == VerifiedPairPending && time.Now().Before(status.Membership.PrepareBefore)
++				}
++			}
++			c.mu.Unlock()
++			if !valid {
++				c.Cancel(s)
++				return
++			}
++			// The fixed membership deadline is unchanged; the five-second cap bounds
++			// one control write. Cancellation interrupts this through the real writer.
++			deadline := time.Now().Add(5 * time.Second)
++			if s.membership.ExpiresAt.Before(deadline) {
++				deadline = s.membership.ExpiresAt
++			}
++			ctx, cancel := context.WithDeadline(s.ctx, deadline)
++			e := s.connections[rank].provider.WriteTextControl(ctx, b)
++			cancel()
++			c.mu.Lock()
++			s.queuedBytes[rank] -= len(b)
++			s.queuedFrames[rank]--
++			c.mu.Unlock()
++			if e != nil {
++				c.Cancel(s)
++				return
++			}
++		}
++	}
++}
++
++// Cancel first closes real Registry admission. It reserves a separate tiny
++// priority cancel record rather than waiting for the bounded public relay.
++// Cancelling an in-flight real writer may close the socket: that is another
++// stop signal, NEVER a cleanup receipt. No unbounded per-frame goroutines.
++func (c *NativePairCoordinator) Cancel(s *NativePairSession) {
++	if c == nil || s == nil {
++		return
++	}
++	c.mu.Lock()
++	if s.coordinator != c || c.sessions[s.membership.Epoch] != s || s.stopped {
++		c.mu.Unlock()
++		return
++	}
++	s.stopped = true
++	_ = c.registry.CancelVerifiedPair(s.handle)
++	var frames [2][]byte
++	for rank := range frames {
++		frames[rank], _ = c.messageLocked(s, rank, protocol.TypeNativePairCancel, []byte("DBNC\x01"))
++	}
++	c.mu.Unlock()
++	for rank, payload := range frames {
++		p := s.connections[rank].provider
++		if len(payload) == 0 || p.EnqueueText(context.Background(), payload) != nil {
++			p.closeWriterNow()
++		}
++	}
++	// This cannot wait behind WriteTextControl. If its bytes were already in
++	// flight, provider_writer closes that socket to interrupt them.
++	s.stop()
++}
++func (c *NativePairCoordinator) finishWriters(s *NativePairSession) {
++	s.workers.Wait()
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	s.writersEnded = true
++	close(s.writersStopped)
++	for rank := range s.queues {
++	drain:
++		for {
++			select {
++			case <-s.queues[rank]:
++			default:
++				break drain
++			}
++		}
++		s.queuedBytes[rank] = 0
++		s.queuedFrames[rank] = 0
++	}
++	c.removeReleasedLocked(s)
++}
++func (c *NativePairCoordinator) removeReleasedLocked(s *NativePairSession) {
++	if !s.writersEnded {
++		return
++	}
++	c.registry.mu.RLock()
++	released := s.handle.registry == c.registry && s.handle.state != nil && s.handle.state.phase == VerifiedPairReleased
++	c.registry.mu.RUnlock()
++	if !released {
++		return
++	} // Only the actual Registry phase proves its hold ended.
++	if c.sessions[s.membership.Epoch] == s {
++		delete(c.sessions, s.membership.Epoch)
++	}
++	for _, n := range s.connections {
++		if n.session == s {
++			n.session = nil
++		}
++	}
++}
++func (c *NativePairCoordinator) RevokeApproval(id string) {
++	if c == nil {
++		return
++	}
++	c.mu.Lock()
++	if _, ok := c.catalog.entries[id]; !ok {
++		c.mu.Unlock()
++		return
++	}
++	c.revoked[id] = true
++	var list []*NativePairSession
++	for _, s := range c.sessions {
++		if s.approval.policy.ID == id {
++			list = append(list, s)
++		}
++	}
++	c.mu.Unlock()
++	for _, s := range list {
++		c.Cancel(s)
++	}
++}
++func (c *NativePairCoordinator) Close() {
++	if c == nil {
++		return
++	}
++	c.mu.Lock()
++	c.closed = true
++	var list []*NativePairSession
++	for _, s := range c.sessions {
++		list = append(list, s)
++	}
++	c.mu.Unlock()
++	for _, s := range list {
++		c.Cancel(s)
++	}
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_reservation.go
+@@ -0,0 +1,113 @@
++package registry
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/binary"
++	"sort"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++// Reserve is a coordinator selector API, deliberately absent from the member
++// wire protocol. It creates a pending preparation hold; the only owner-start
++// publication is in Handle after both signed receipts and Registry.Commit.
++func (c *NativePairCoordinator) Reserve(m [2]*NativePairConnection, approvalID string, lifetime time.Duration) (*NativePairSession, error) {
++	if c == nil {
++		return nil, ErrNativePairApproval
++	}
++	// Entropy acquisition must not hold the coordinator mutex or delay another
++	// session's cancellation. These IDs confer no authority before Commit.
++	var ownerIDs [2][3][16]byte
++	seenIDs := make(map[[16]byte]bool, 6)
++	for rank := range ownerIDs {
++		for field := range ownerIDs[rank] {
++			id := &ownerIDs[rank][field]
++			if _, e := rand.Read(id[:]); e != nil {
++				return nil, ErrNativePairControl
++			}
++			id[6] = (id[6] & 15) | 64
++			id[8] = (id[8] & 63) | 128
++			if seenIDs[*id] {
++				return nil, ErrNativePairControl
++			}
++			seenIDs[*id] = true
++		}
++	}
++	c.mu.Lock()
++	if c.closed || len(c.sessions) >= nativePairMaximumSessions || !c.validConnectionLocked(m[0]) || !c.validConnectionLocked(m[1]) || m[0] == m[1] || m[0].session != nil || m[1].session != nil {
++		c.mu.Unlock()
++		return nil, ErrNativePairControl
++	}
++	a, ok := c.catalog.entries[approvalID]
++	if !ok || c.revoked[approvalID] || lifetime <= 0 || lifetime > verifiedPairLifetimeLimit || !time.Now().Add(lifetime).Before(a.policy.NotAfter) {
++		c.mu.Unlock()
++		return nil, ErrNativePairApproval
++	}
++	members := [2]*Provider{m[0].provider, m[1].provider}
++	c.mu.Unlock()
++	for _, p := range members {
++		p.mu.Lock()
++		chip := p.Hardware.ChipName
++		p.mu.Unlock()
++		i := sort.SearchStrings(a.policy.AllowedChips, chip)
++		if i == len(a.policy.AllowedChips) || a.policy.AllowedChips[i] != chip {
++			return nil, ErrNativePairApproval
++		}
++	}
++	// The real Registry performs its own atomic bilateral hold. Release our
++	// mutex across its entropy/provider-lock work, then revalidate the exact
++	// attachment and approval. Any concurrent revocation frees only this still-
++	// pending result; no owner can start from it.
++	h, membership, e := c.registry.ReserveVerifiedPair(members, VerifiedPairRequest{Model: a.policy.Model, PlanSHA256: a.policy.PlanSHA256, ProposedRuntimeBindingSHA256: a.binding, Lifetime: lifetime})
++	c.mu.Lock()
++	if e != nil {
++		c.mu.Unlock()
++		return nil, e
++	}
++	if c.closed || c.revoked[approvalID] || len(c.sessions) >= nativePairMaximumSessions || !c.validConnectionLocked(m[0]) || !c.validConnectionLocked(m[1]) || m[0].session != nil || m[1].session != nil || !time.Now().Before(membership.PrepareBefore) || !membership.ExpiresAt.Before(a.policy.NotAfter) {
++		_ = c.registry.CancelVerifiedPair(h)
++		c.mu.Unlock()
++		return nil, ErrNativePairApproval
++	}
++	ctx, stop := context.WithCancel(context.Background())
++	s := &NativePairSession{coordinator: c, handle: h, membership: membership, approval: a, connections: m, ctx: ctx, stop: stop, writersStopped: make(chan struct{})}
++	common := protocol.NativeAuthorizationCommon{Epoch: membership.Epoch, MembershipGeneration: membership.Generation, NativePolicyGeneration: a.policy.Generation, MembershipTranscriptSHA256: membership.TranscriptSHA256, ApprovedNativeBindingSHA256: a.binding, PlanSHA256: a.policy.PlanSHA256, ArtifactSHA256: a.policy.ArtifactSHA256, NativeRuntimeSHA256: a.policy.NativeRuntimeSHA256, CapabilitySHA256: a.policy.CapabilitySHA256, ResourcePolicySHA256: a.policy.ResourcePolicySHA256, ProfileSHA256: a.policy.ProfileSHA256, Schedule: a.policy.Schedule, MaximumTransportFrame: a.policy.MaximumTransportFrame, MaximumPlaintext: a.policy.MaximumPlaintext, MaximumRecords: a.policy.MaximumRecords, MaximumCumulativePlaintext: a.policy.MaximumCumulativePlaintext}
++	for rank := range m {
++		start := protocol.NativeAuthorizationStart{Common: common, Rank: uint8(rank), OwnerIncarnation: ownerIDs[rank][0], LeaseID: ownerIDs[rank][1], LaunchID: ownerIDs[rank][2]}
++		if _, e = start.Canonical(); e != nil {
++			stop()
++			_ = c.registry.CancelVerifiedPair(h)
++			c.mu.Unlock()
++			return nil, e
++		}
++		s.starts[rank] = start
++		s.queues[rank] = make(chan []byte, nativePairQueueFrames)
++	}
++	for rank := range m {
++		start, _ := s.starts[rank].Canonical()
++		payload := []byte("DBNPR\x01")
++		payload = binary.BigEndian.AppendUint32(payload, uint32(len(a.canonical)))
++		payload = append(payload, a.canonical...)
++		payload = append(payload, start...)
++		if e = c.enqueueLocked(s, rank, protocol.TypeNativePairPrepare, payload); e != nil {
++			stop()
++			_ = c.registry.CancelVerifiedPair(h)
++			c.mu.Unlock()
++			return nil, e
++		}
++	}
++	c.sessions[membership.Epoch] = s
++	for _, n := range m {
++		n.session = s
++	}
++	// Publish worker ownership before dropping mu; Cancel may run immediately.
++	s.workers.Add(2)
++	c.mu.Unlock()
++	for rank := range m {
++		go c.writeLoop(s, rank)
++	}
++	go func() { <-h.Done(); c.Cancel(s); c.finishWriters(s) }()
++	return s, nil
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_test.go
+@@ -0,0 +1,280 @@
++package registry
++
++import (
++	"context"
++	"crypto/tls"
++	"encoding/hex"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestNativePairNoSelfApprovalAndNoSoloAttachment(t *testing.T) {
++	f := newNativePairFixture(t)
++	if _, e := f.c.Reserve(f.n, hex.EncodeToString(f.policy.NativeRuntimeSHA256[:]), time.Minute); e == nil {
++		t.Fatal("supplied runtime hash became approval")
++	}
++	if NewNativePairCoordinator(f.r, nil) != nil {
++		t.Fatal("nil catalog enabled")
++	}
++	bad := f.policy
++	bad.MaximumTransportFrame = 4096
++	if _, e := NewNativeRuntimeCatalog([]NativeRuntimeApproval{bad}); e == nil {
++		t.Fatal("omitted AEAD overhead admitted")
++	}
++	p := pairTestMember(t, f.r, "solo-native", "serial-c")
++	p.memberNonce = strings.Repeat("3", 64)
++	if _, e := f.c.Attach(p, p.memberNonce, &tls.ConnectionState{HandshakeComplete: true}); e == nil {
++		t.Fatal("solo attached")
++	}
++	if _, e := f.c.Attach(p, p.memberNonce, nil); e == nil {
++		t.Fatal("no actual TLS attached")
++	}
++}
++func TestNativePairCommitPrecedesStartAndBindingUsesExactHello(t *testing.T) {
++	f := newNativePairFixture(t)
++	s := f.reserve(t)
++	f.prepared(t, s, 0)
++	if f.phase(s) != VerifiedPairPending {
++		t.Fatal("first preparation started owner")
++	}
++	for _, ch := range f.frames {
++		select {
++		case <-ch:
++			t.Fatal("start before both prepared")
++		default:
++		}
++	}
++	f.prepared(t, s, 1)
++	if f.phase(s) != VerifiedPairActive {
++		t.Fatal("missing actual Commit")
++	}
++	for rank := range f.n {
++		m := f.read(t, rank, protocol.TypeNativePairOwnerStart)
++		b, _ := m.PayloadBytes()
++		expected, _ := s.starts[rank].Canonical()
++		if string(b) != string(expected) {
++			t.Fatal("start substituted")
++		}
++	}
++	for rank := range f.n {
++		start, _ := s.starts[rank].Canonical()
++		hello := append([]byte("DBNH\x01"), start...)
++		key := make([]byte, 32)
++		key[0] = byte(9 + rank)
++		hello = append(hello, key...)
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairHello, hello)); e != nil {
++			t.Fatal(e)
++		}
++	}
++	expected, e := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++	if e != nil {
++		t.Fatal(e)
++	}
++	for rank := range f.n {
++		m := f.read(t, rank, protocol.TypeNativePairBinding)
++		b, _ := m.PayloadBytes()
++		if string(b) != string(expected) {
++			t.Fatal("binding not exact")
++		}
++	}
++}
++func TestNativePairCancellationRetainsUntilActualOriginalRelease(t *testing.T) {
++	f := newNativePairFixture(t)
++	s := f.active(t)
++	if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairCancel, []byte("DBNC\x01"))); e != nil {
++		t.Fatal(e)
++	}
++	pairTestDone(t, s.handle)
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("cancel released owners")
++	}
++	for rank := range f.n {
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[rank]))); e != nil {
++			t.Fatal(e)
++		}
++		if rank == 0 && f.phase(s) != VerifiedPairQuarantined {
++			t.Fatal("one rank released pair")
++		}
++	}
++	if f.phase(s) != VerifiedPairReleased {
++		t.Fatal("real bilateral observations did not release")
++	}
++}
++func TestNativePairFalseCleanupAndReplayNeverRelease(t *testing.T) {
++	f := newNativePairFixture(t)
++	s := f.active(t)
++	receipt := nativePairReleaseReceipt(s.starts[0])
++	receipt[len(receipt)-1] = 0
++	m := f.signed(t, s, 0, protocol.TypeNativePairOwnerReleased, receipt)
++	if e := f.c.Handle(f.n[0], m); e == nil {
++		t.Fatal("missing actual transport completion admitted")
++	}
++	if e := f.c.Handle(f.n[0], m); e == nil {
++		t.Fatal("replay admitted")
++	}
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("failed cleanup released native hold")
++	}
++}
++func TestNativePairPreparedCannotLaunchHelloBeforeCommit(t *testing.T) {
++	f := newNativePairFixture(t)
++	s := f.reserve(t)
++	start, _ := s.starts[0].Canonical()
++	hello := append([]byte("DBNH\x01"), start...)
++	hello = append(hello, make([]byte, 32)...)
++	if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairHello, hello)); e == nil {
++		t.Fatal("pre-Commit hello admitted")
++	}
++	if f.phase(s) != VerifiedPairReleased {
++		t.Fatal("never-started pending pair quarantined indefinitely")
++	}
++}
++func TestNativePairRevocationCannotRestoreOriginalGrant(t *testing.T) {
++	f := newNativePairFixture(t)
++	s := f.reserve(t)
++	f.prepared(t, s, 0)
++	f.c.RevokeApproval(f.policy.ID)
++	pairTestDone(t, s.handle)
++	if f.phase(s) != VerifiedPairReleased {
++		t.Fatal("pending revocation retained physical ownership")
++	}
++	b, _ := s.starts[1].Canonical()
++	if e := f.c.Handle(f.n[1], f.signed(t, s, 1, protocol.TypeNativePairPrepared, b)); e == nil {
++		t.Fatal("revoked grant committed")
++	}
++}
++func TestNativePairReconnectCannotReleaseOldActiveOwner(t *testing.T) {
++	f := newNativePairFixture(t)
++	s := f.active(t)
++	old := f.n[0]
++	f.c.Detach(old)
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("disconnect freed active native")
++	}
++	f.r.Disconnect(f.p[0].ID)
++	replacement := pairTestMember(t, f.r, "replacement-a", "serial-a")
++	replacement.mu.Lock()
++	replacement.executionRole = protocol.ExecutionRoleClusterMember
++	replacement.memberNonce = strings.Repeat("4", 64)
++	replacement.mu.Unlock()
++	next, e := f.c.Attach(replacement, replacement.memberNonce, &tls.ConnectionState{HandshakeComplete: true})
++	if e != nil {
++		t.Fatal(e)
++	}
++	m := f.signed(t, s, 0, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[0]))
++	if e = f.c.Handle(next, m); e == nil {
++		t.Fatal("replacement released old owner")
++	}
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("reconnect lost quarantine")
++	}
++}
++func TestNativePairBoundedRelayAndCancellation(t *testing.T) {
++	f := newNativePairFixture(t)
++	s := f.active(t)
++	f.c.mu.Lock()
++	accepted := 0
++	for i := 0; i < 100; i++ {
++		if f.c.enqueueLocked(s, 0, protocol.TypeNativePairBinding, make([]byte, 32768)) != nil {
++			break
++		}
++		accepted++
++	}
++	frames, bytes := s.queuedFrames[0], s.queuedBytes[0]
++	f.c.mu.Unlock()
++	if accepted > nativePairQueueFrames || frames > nativePairQueueFrames || bytes > nativePairQueueBytes {
++		t.Fatal("unbounded relay")
++	}
++	ended := make(chan struct{})
++	go func() { f.c.Cancel(s); close(ended) }()
++	select {
++	case <-ended:
++	case <-time.After(time.Second):
++		t.Fatal("cancel waited on writer")
++	}
++	ctx, stop := context.WithTimeout(context.Background(), time.Second)
++	defer stop()
++	if e := s.WaitControlStopped(ctx); e != nil {
++		t.Fatal("public writers did not join", e)
++	}
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("relay cancellation fabricated release")
++	}
++}
++
++func TestNativePairRevokeRacingSecondPreparationNeverLeavesActive(t *testing.T) {
++	f := newNativePairFixture(t)
++	s := f.reserve(t)
++	f.prepared(t, s, 0)
++	b, _ := s.starts[1].Canonical()
++	m := f.signed(t, s, 1, protocol.TypeNativePairPrepared, b)
++	start := make(chan struct{})
++	finished := make(chan struct{}, 2)
++	go func() { <-start; _ = f.c.Handle(f.n[1], m); finished <- struct{}{} }()
++	go func() { <-start; f.c.RevokeApproval(f.policy.ID); finished <- struct{}{} }()
++	close(start)
++	for i := 0; i < 2; i++ {
++		select {
++		case <-finished:
++		case <-time.After(time.Second):
++			t.Fatal("commit/revoke lock ordering stalled")
++		}
++	}
++	pairTestDone(t, s.handle)
++	phase := f.phase(s)
++	if phase != VerifiedPairReleased && phase != VerifiedPairQuarantined {
++		t.Fatal("revoked grant remained active")
++	}
++}
++func TestNativePairWrongConnectionNonceAndSignatureRefused(t *testing.T) {
++	for _, mutation := range []string{"nonce", "peer", "signature"} {
++		t.Run(mutation, func(t *testing.T) {
++			f := newNativePairFixture(t)
++			s := f.active(t)
++			m := f.signed(t, s, 0, protocol.TypeNativePairCancel, []byte("DBNC\x01"))
++			connection := f.n[0]
++			switch mutation {
++			case "nonce":
++				m.MemberNonce = f.n[1].nonce
++			case "peer":
++				connection = f.n[1]
++			case "signature":
++				m.Signature = "MAYCAQECAQE="
++			}
++			if e := f.c.Handle(connection, m); e == nil {
++				t.Fatal("substituted bound member message admitted")
++			}
++			if f.phase(s) != VerifiedPairQuarantined {
++				t.Fatal("failure cleared active ownership")
++			}
++		})
++	}
++}
++func TestNativePairFixedLifetimeExpiresWithoutOwnerRelease(t *testing.T) {
++	f := newNativePairFixture(t)
++	s, e := f.c.Reserve(f.n, f.policy.ID, 500*time.Millisecond)
++	if e != nil {
++		t.Fatal(e)
++	}
++	original := s.membership.ExpiresAt
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairPrepare)
++		f.prepared(t, s, rank)
++	}
++	for rank := range f.n {
++		m := f.read(t, rank, protocol.TypeNativePairOwnerStart)
++		if m.ExpiresAtUnixNano != original.UnixNano() {
++			t.Fatal("start refreshed lifetime")
++		}
++	}
++	select {
++	case <-s.Done():
++	case <-time.After(2 * time.Second):
++		t.Fatal("original fixed lifetime did not expire")
++	}
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("deadline manufactured owner cleanup")
++	}
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_types.go
+@@ -0,0 +1,92 @@
++package registry
++
++import (
++	"context"
++	"sync"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++const nativePairMaximumSessions = 64
++const nativePairQueueFrames = 16
++const nativePairQueueBytes = 1024 * 1024
++
++// Opaque connection capability. Reconnect, a copied registration nonce, or an
++// ID-only lookup cannot acquire another connection's session. Only Attach after
++// the actual TLS member handshake creates this object; attestation is checked
++// afresh by the real pair Registry when reserving/committing/using it.
++type NativePairConnection struct {
++	coordinator                       *NativePairCoordinator
++	provider                          *Provider
++	nonce                             string
++	inboundSequence, outboundSequence uint64
++	closed                            bool
++	session                           *NativePairSession
++}
++type NativePairSession struct {
++	coordinator    *NativePairCoordinator
++	handle         *VerifiedPairHandle
++	membership     VerifiedPairMembership
++	approval       nativeApprovedRuntime
++	connections    [2]*NativePairConnection
++	starts         [2]protocol.NativeAuthorizationStart
++	hellos         [2][]byte
++	confirmations  [2]bool
++	committed      bool
++	stopped        bool
++	writersEnded   bool
++	writersStopped chan struct{}
++	queues         [2]chan []byte
++	queuedBytes    [2]int // includes the one frame currently in the actual WS writer
++	queuedFrames   [2]int
++	ctx            context.Context
++	stop           context.CancelFunc
++	workers        sync.WaitGroup
++}
++
++// All mutable native session/control fields are protected by mu. Lock order is
++// this mutex -> Registry.mu -> provider mutexes. No write/callback under mu.
++// Native ownership is exclusively the existing Registry/owner lifecycle.
++type NativePairCoordinator struct {
++	mu          sync.Mutex
++	registry    *Registry
++	catalog     *NativeRuntimeCatalog
++	revoked     map[string]bool
++	connections map[*Provider]*NativePairConnection
++	sessions    map[[16]byte]*NativePairSession
++	closed      bool
++}
++
++func NewNativePairCoordinator(r *Registry, c *NativeRuntimeCatalog) *NativePairCoordinator {
++	if r == nil || c == nil || len(c.entries) == 0 {
++		return nil
++	}
++	return &NativePairCoordinator{registry: r, catalog: c, revoked: make(map[string]bool), connections: make(map[*Provider]*NativePairConnection), sessions: make(map[[16]byte]*NativePairSession)}
++}
++
++// Done means admission ended, never that native memory or device leases retired.
++func (s *NativePairSession) Done() <-chan struct{} {
++	if s == nil {
++		return (*VerifiedPairHandle)(nil).Done()
++	}
++	return s.handle.Done()
++}
++func (s *NativePairSession) Cancel() {
++	if s != nil {
++		s.coordinator.Cancel(s)
++	}
++}
++
++// WaitControlStopped joins only the two public-relay workers. Success is NOT
++// evidence that the native owner cleaned up or released its canonical lease.
++func (s *NativePairSession) WaitControlStopped(ctx context.Context) error {
++	if s == nil {
++		return ErrNativePairControl
++	}
++	select {
++	case <-s.writersStopped:
++		return nil
++	case <-ctx.Done():
++		return ctx.Err()
++	}
++}
+--- a/coordinator/registry/provider.go
++++ b/coordinator/registry/provider.go
+@@ -44,6 +44,7 @@
+ type Provider struct {
+ 	// Immutable per connection; never restored from durable provider history.
+ 	executionRole protocol.ExecutionRole
++	memberNonce   string // immutable nonce of the negotiated control-only registration
+ 	ID            string
+ 	Hardware      protocol.Hardware
+ 	Models        []protocol.ModelInfo
+--- a/coordinator/registry/provider_lifecycle.go
++++ b/coordinator/registry/provider_lifecycle.go
+@@ -94,6 +94,7 @@
+ 		Models:                      models,
+ 		Backend:                     msg.Backend,
+ 		executionRole:               msg.ExecutionRole,
++		memberNonce:                 msg.MemberRegistrationNonce,
+ 		ReportedRuntimeCapabilities: normalizeRuntimeCapabilities(msg.RuntimeCapabilities, msg.Hardware),
+ 		RuntimeCapabilities:         nil,
+ 		PublicKey:                   pubKey,
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift
+@@ -0,0 +1,99 @@
++import DarkbloomClusterProtocol
++import Foundation
++
++/// Public-only mirror of coordinator/protocol/native_pair.go. This value does
++/// not authorize a native child; only a future owned, live member handler may
++/// translate an explicitly committed start into prelude A. The existing member
++/// loop does not consume these messages in this increment.
++public struct NativePairMessage: Codable, Sendable, Equatable {
++    public let type: String
++    public let version: UInt8
++    public let memberNonce: String
++    public let epoch: String
++    public let generation: UInt64
++    public let sequence: UInt64
++    public let payload: String
++    public let signature: String?
++    public let prepareBeforeUnixNano: Int64?
++    public let expiresAtUnixNano: Int64?
++
++    public static let maximumFrameBytes = 64 * 1024
++    public static let inboundTypes: Set<String> = ["native_pair_prepared", "native_pair_hello", "native_pair_confirmation", "native_pair_owner_released", "native_pair_cancel"]
++    public static let outboundTypes: Set<String> = ["native_pair_prepare", "native_pair_owner_start", "native_pair_binding", "native_pair_peer_confirmation", "native_pair_cancel"]
++    public enum Invalid: Error { case publicFrame }
++    enum CodingKeys: String, CodingKey {
++        case type, version, epoch, generation, sequence, payload, signature
++        case memberNonce = "member_nonce"
++        case prepareBeforeUnixNano = "prepare_before_unix_nano"
++        case expiresAtUnixNano = "expires_at_unix_nano"
++    }
++    private struct AnyKey: CodingKey {
++        let stringValue: String
++        var intValue: Int? { nil }
++        init?(stringValue: String) { self.stringValue = stringValue }
++        init?(intValue: Int) { return nil }
++    }
++    public init(type: String, memberNonce: String, epoch: String, generation: UInt64, sequence: UInt64,
++                payload: Data, signature: Data? = nil, prepareBeforeUnixNano: Int64? = nil, expiresAtUnixNano: Int64? = nil) throws {
++        self.type = type; version = 1; self.memberNonce = memberNonce; self.epoch = epoch
++        self.generation = generation; self.sequence = sequence; self.payload = payload.base64EncodedString()
++        self.signature = signature?.base64EncodedString()
++        self.prepareBeforeUnixNano = prepareBeforeUnixNano; self.expiresAtUnixNano = expiresAtUnixNano
++        try validate()
++    }
++    public init(from decoder: any Decoder) throws {
++        let keys = try decoder.container(keyedBy: AnyKey.self)
++        guard keys.allKeys.allSatisfy({ CodingKeys(rawValue: $0.stringValue) != nil }) else { throw Invalid.publicFrame }
++        let c = try decoder.container(keyedBy: CodingKeys.self)
++        for key in c.allKeys { guard try !c.decodeNil(forKey: key) else { throw Invalid.publicFrame } }
++        type = try c.decode(String.self, forKey: .type); version = try c.decode(UInt8.self, forKey: .version)
++        memberNonce = try c.decode(String.self, forKey: .memberNonce); epoch = try c.decode(String.self, forKey: .epoch)
++        generation = try c.decode(UInt64.self, forKey: .generation); sequence = try c.decode(UInt64.self, forKey: .sequence)
++        payload = try c.decode(String.self, forKey: .payload); signature = try c.decodeIfPresent(String.self, forKey: .signature)
++        prepareBeforeUnixNano = try c.decodeIfPresent(Int64.self, forKey: .prepareBeforeUnixNano)
++        expiresAtUnixNano = try c.decodeIfPresent(Int64.self, forKey: .expiresAtUnixNano)
++        try validate()
++    }
++    /// Raw-wire entry point: use the existing strict integer/duplicate-key
++    /// scanner before Codable. Adding LF is local framing only, never wire IO.
++    public static func decodePublicFrame(_ data: Data) throws -> Self {
++        guard !data.isEmpty, data.count <= maximumFrameBytes, !data.contains(10) else { throw Invalid.publicFrame }
++        do {
++            var framed = data; framed.append(10)
++            try validateClusterWorkerEnvelope(framed, commandStream: true)
++            return try JSONDecoder().decode(Self.self, from: data)
++        } catch { throw Invalid.publicFrame }
++    }
++    public func validate() throws {
++        guard version == 1, Self.inboundTypes.contains(type) || Self.outboundTypes.contains(type),
++              Self.canonicalHex(memberNonce, bytes: 32), Self.canonicalHex(epoch, bytes: 16),
++              generation > 0, sequence > 0,
++              let bytes = Data(base64Encoded: payload), bytes.count <= 32 * 1024,
++              bytes.base64EncodedString() == payload,
++              (prepareBeforeUnixNano ?? 0) >= 0, (expiresAtUnixNano ?? 0) >= 0 else { throw Invalid.publicFrame }
++        if let signature {
++            guard let bytes = Data(base64Encoded: signature), (8...72).contains(bytes.count),
++                  bytes.base64EncodedString() == signature else { throw Invalid.publicFrame }
++        }
++    }
++    /// Existing Secure Enclave P-256 signs SHA256 of this domain-bound value.
++    /// No traffic secret or inference payload belongs in this message type.
++    public func signingBytes() throws -> Data {
++        try validate()
++        var b = Data("darkbloom/coordinator-native-pair/member-message/v1\0".utf8)
++        for string in [type, memberNonce, epoch] {
++            let bytes = Data(string.utf8); Self.append(UInt32(bytes.count), to: &b); b.append(bytes)
++        }
++        b.append(version); Self.append(generation, to: &b); Self.append(sequence, to: &b)
++        let bytes = Data(base64Encoded: payload)!
++        Self.append(UInt32(bytes.count), to: &b); b.append(bytes)
++        Self.append(UInt64(prepareBeforeUnixNano ?? 0), to: &b); Self.append(UInt64(expiresAtUnixNano ?? 0), to: &b)
++        return b
++    }
++    private static func canonicalHex(_ s: String, bytes: Int) -> Bool {
++        s.utf8.count == bytes * 2 && s.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } && s.utf8.contains { $0 != 48 }
++    }
++    private static func append<T: FixedWidthInteger & UnsignedInteger>(_ x: T, to data: inout Data) {
++        for shift in stride(from: T.bitWidth - 8, through: 0, by: -8) { data.append(UInt8(truncatingIfNeeded: x >> shift)) }
++    }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Protocol/NativePairMessageTests.swift
+@@ -0,0 +1,42 @@
++import CryptoKit
++import Foundation
++import Testing
++@testable import ProviderCore
++
++struct NativePairMessageTests {
++    @Test func publicSigningBytesMatchIndependentGoAndPythonFixture() throws {
++        let hello = try hex("44424e480144424e53016461726b626c6f6f6d2f6e61746976652d617574686f72697a6174696f6e2f636f6d6d6f6e2f7631000102030405060708090a0b0c0d0e0f100000000000000007000000000000000b8ad475855361fdea5e55d4d25a1509a8bd642b6cd46b833911de616f35c259a216ae2c7dc747fc8ce4e9689e4a452ff4521715b2df90080271ccb8fb1cf621af23446f275f5bf8db1c3800edec9b9894e100ab11c066e2da3801b2ee8ec4e858115aeb8857c13d5ecd6019cee9924c70594c1b672a31f77b87794f22db84a7f3e4f23a1c268daffa06314ca0ed8e9750fc8993c955059c388fe2bd927ff669f6185fdc937e1cbcf6020851084ceafbdb4cb5e72b7d4fe7cad2fdd2e69161bc6a0b991f35b02833b15fd09df7db00e02a2f94f79457a156267d94fe7e415bff0e6c652e1114a1a09c419b0a491336f41b5ffbb58187b877c1b702b1945ac6c1680101020000102800001000000000000000004000000000000400000000000000000000000000000000000064000000000000000000000000000000650000000000000000000000000000006607a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c")
++        let m = try NativePairMessage(type: "native_pair_hello", memberNonce: String(repeating: "11", count: 32),
++            epoch: String(repeating: "22", count: 16), generation: 7, sequence: 9, payload: hello)
++        let expected = try hex("49fff06ac2e4b9117f9222129566462a645bcb0541fbb7aa87227c756832af14")
++        #expect(Data(SHA256.hash(data: try m.signingBytes())) == expected)
++        let encoded = try JSONEncoder().encode(m)
++        #expect(try NativePairMessage.decodePublicFrame(encoded) == m)
++    }
++    @Test func ambiguousOrUnknownPublicRecordsAreRefused() throws {
++        let base = #"{"type":"native_pair_hello","version":1,"member_nonce":"1111111111111111111111111111111111111111111111111111111111111111","epoch":"22222222222222222222222222222222","generation":7,"sequence":9,"payload":"AA=="}"#
++        let cases = [
++            String(base.dropLast()) + #", "sequence":9}"#,
++            String(base.dropLast()) + #", "secret":"never-admitted"}"#,
++            base.replacingOccurrences(of: #""sequence":9"#, with: #""sequence":1.0"#),
++            base.replacingOccurrences(of: #""sequence":9"#, with: #""sequence":18446744073709551616"#),
++            base.replacingOccurrences(of: #""payload":"AA==""#, with: #""payload":null"#),
++            base.replacingOccurrences(of: #""payload":"AA==""#, with: #""payload":"AB==""#),
++            base.replacingOccurrences(of: "native_pair_hello", with: "native_pair_unknown"),
++            base + base,
++        ]
++        for value in cases {
++            #expect(throws: NativePairMessage.Invalid.self) { try NativePairMessage.decodePublicFrame(Data(value.utf8)) }
++        }
++    }
++    private func hex(_ s: String) throws -> Data {
++        guard s.utf8.count.isMultiple(of: 2) else { throw NativePairMessage.Invalid.publicFrame }
++        var data = Data(); var i = s.startIndex
++        while i != s.endIndex {
++            let next = s.index(i, offsetBy: 2)
++            guard let v = UInt8(s[i..<next], radix: 16) else { throw NativePairMessage.Invalid.publicFrame }
++            data.append(v); i = next
++        }
++        return data
++    }
++}

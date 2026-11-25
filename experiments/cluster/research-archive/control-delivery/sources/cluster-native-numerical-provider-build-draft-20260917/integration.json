@@ -1,0 +1,151 @@
+{
+  "baseCandidateSHA256": "eb981ab134f01601cc9bfbbdbf2a4594ea14c318f7397bca6686456389268056",
+  "beforeCandidateFiles": 13853,
+  "candidateFiles": 13859,
+  "drainManifestSHA256": "60417b284854105963be1ad2c5d4d85ea658a5f16eb9ee1ce26796cdf4812045",
+  "driverManifestSHA256": "e0d428fb6c7b7ea93d67ff6d31aad8f8ca7e47aec9d8f4918f1c0d64340cf80f",
+  "files": [
+    {
+      "afterSHA256": "62e591cdda2b0760d0881884d2467fad9186c0f45e6c98ed3a6f61eb10479dc6",
+      "beforeSHA256": "3e898aed8ca2ae925529d3b79ed81f1d68e8b8d0d99d713ec74ce12846989faa",
+      "bytes": 16184,
+      "origin": "driver",
+      "path": "provider-swift/Package.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Package.swift"
+    },
+    {
+      "afterSHA256": "237c660384c4544afeecc65255882ae886219c8305ee2302c91739739878c171",
+      "beforeSHA256": "bb81bd82be39f37713cfc012d7395168b56cade67292876f0ffb4e72a0985e23",
+      "bytes": 23449,
+      "origin": "tls-composition",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-tls-composition-correction-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift"
+    },
+    {
+      "afterSHA256": "f57587331aa846781964526bf386569bee4414507bac989a7f7ee927f5df79fa",
+      "beforeSHA256": "f0258ef5f00b62f9ec027465369e26af84b768e0cc32b93ab5587fd924d8011d",
+      "bytes": 14992,
+      "origin": "driver",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift"
+    },
+    {
+      "afterSHA256": "b68c522383747f1f59222b008e6c44fddb6fd5047c8152bb0d08550bf239a635",
+      "beforeSHA256": null,
+      "bytes": 5732,
+      "origin": "driver",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/PrivateClusterTLSAnchor.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/PrivateClusterTLSAnchor.swift"
+    },
+    {
+      "afterSHA256": "5498869d5cee78c49f1005cc6b69e5fee9682b754a3c0e4174e049a5a0bfb711",
+      "beforeSHA256": "d905a20347ebdc1f80cfd8680195e31ef8352b0d3548a48292934afb9ad31859",
+      "bytes": 6288,
+      "origin": "driver",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift"
+    },
+    {
+      "afterSHA256": "de80621a56d2a472b5adeeaa90ef95ef876685e231fe583cd64eab0238477570",
+      "beforeSHA256": null,
+      "bytes": 422,
+      "origin": "driver",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentRequestProvenance.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentRequestProvenance.swift"
+    },
+    {
+      "afterSHA256": "ef9d824184bcb5f727e286774f464cab64726eb07fe02f6201713db088d7e99d",
+      "beforeSHA256": "7a61b6b6c3122e2665bd3215b9c9ef48e9672ae3f589b420a3adbb5cb2f94a8d",
+      "bytes": 25947,
+      "origin": "tls-composition",
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-tls-composition-correction-20260917/proposed/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift"
+    },
+    {
+      "afterSHA256": "648f77eb15518e914c13d251779389e5eb352577a9515d7340dc767eda1b383d",
+      "beforeSHA256": null,
+      "bytes": 6991,
+      "origin": "driver",
+      "path": "provider-swift/Sources/darkbloom/NativeHardwareInput.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/darkbloom/NativeHardwareInput.swift"
+    },
+    {
+      "afterSHA256": "ed8b5ebea379700b32c390e3fb94ef609e9cc624ad80f2f3ed5fe2d57e7f7c05",
+      "beforeSHA256": null,
+      "bytes": 6092,
+      "origin": "driver",
+      "path": "provider-swift/Sources/darkbloom/NativeHardwareRequest.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/darkbloom/NativeHardwareRequest.swift"
+    },
+    {
+      "afterSHA256": "96d32373967fdc819dd73338eba624165812ace168236165839df1b4afcf747d",
+      "beforeSHA256": "6a0b152c8503a8336542d12e8b38dc023aad36f3e23a733d2005a7a4d2f318ae",
+      "bytes": 4582,
+      "origin": "driver",
+      "path": "provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift"
+    },
+    {
+      "afterSHA256": "6edc3bbdaa6d82281bef8b60edea08ed41e85072be0bd3927322b003e4dfd824",
+      "beforeSHA256": null,
+      "bytes": 1712,
+      "origin": "driver",
+      "path": "provider-swift/Sources/darkbloom/StartCommand+NativeHardware.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/darkbloom/StartCommand+NativeHardware.swift"
+    },
+    {
+      "afterSHA256": "5a24d4f5522a13a00534b63eb40dd550a995a96871bfaf4e8f64a381ea9ac447",
+      "beforeSHA256": null,
+      "bytes": 1988,
+      "origin": "driver",
+      "path": "provider-swift/Tests/DarkbloomCLITests/NativeHardwareDriverTests.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Tests/DarkbloomCLITests/NativeHardwareDriverTests.swift"
+    },
+    {
+      "afterSHA256": "3e21d3e0bafc2036b7840403de8ced31bf15008ce52835e85f9853852970fb04",
+      "beforeSHA256": "7e279198d435b89b68287021d16624dd431a39b2820afa8d88caa3a06dd38b24",
+      "bytes": 4601,
+      "origin": "numerical",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift"
+    },
+    {
+      "afterSHA256": "c3d34503e8278a15bbb1ff62286c34a29c9487ada6dfb51a4f6f5694648e1dda",
+      "beforeSHA256": "5dd1cbce7e15f7e4a1d679e244e952d8fd86386465f14215e29b357acb13529f",
+      "bytes": 5652,
+      "origin": "numerical",
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift"
+    },
+    {
+      "afterSHA256": "3794a7305b68f860f9c384641f7d093fc369bad0ac5b2093bd570256b4a7f068",
+      "beforeSHA256": "dedfc0ed9e812988f128222a9cb61769ec7ecddf7e70553eeeb6237e0fa04713",
+      "bytes": 3328,
+      "origin": "numerical",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift"
+    },
+    {
+      "afterSHA256": "309c30e5ef16f82a980c00a689fbc4b6d348cd760a3196cdd1fcd8c83bf63ed8",
+      "beforeSHA256": "dc739cf5b43042a7025aae93cd00826375dc06c60b5ae1fb82f2b13df4717f86",
+      "bytes": 13575,
+      "origin": "numerical",
+      "path": "provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-numerical-evidence-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift"
+    },
+    {
+      "afterSHA256": "5d1fae1ec3b8aa83e2f6468e61620edf2d7087582173b9bd94a57dd7ba8b564e",
+      "beforeSHA256": "6cfe6e914f4d6d46cd872da9c9179fa3f2af34fc04d1d74e66a1dc72d060b0f3",
+      "bytes": 24370,
+      "origin": "endpoint-drain",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-release-eof-drain-correction-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift"
+    }
+  ],
+  "newFiles": 6,
+  "numericalManifestSHA256": "948ef71c633789e321bcf4fc1e61a58bf96edd8578ee357fda07329c4149fb4d",
+  "replacedFiles": 11,
+  "schema": "numerical_provider_composition_v1",
+  "sourceFiles": 13821,
+  "tlsCompositionManifestSHA256": "a4a149f92efffb3d75115786acd3a1c77a5adcd8e8783b86cf1d6d2a5709dc48"
+}

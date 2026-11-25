@@ -1,0 +1,201 @@
+--- /dev/null
++++ b/coordinator/registry/native_pair_cancel_order_test.go
+@@ -0,0 +1,94 @@
++package registry
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++func TestNativePairPendingCancelPublicationPrecedesConnectionReuse(t *testing.T) {
++	f := newNativePairFixture(t)
++	s := f.reserve(t)
++
++	// Exercise the actual cancellation split without a scheduler sleep or an
++	// injected callback. Queued work wakes both real relay workers, which must
++	// see stopped and join while the original cancel publication is paused.
++	f.c.mu.Lock()
++	for rank := range f.n {
++		if e := f.c.enqueueLocked(s, rank, protocol.TypeNativePairBinding, []byte("queued-before-cancel")); e != nil {
++			f.c.mu.Unlock()
++			t.Fatal(e)
++		}
++	}
++	frames, publish := f.c.beginCancellationLocked(s)
++	f.c.mu.Unlock()
++	if !publish {
++		t.Fatal("first cancellation did not claim publication")
++	}
++	published := false
++	defer func() {
++		if !published {
++			f.c.publishCancellation(s, frames)
++		}
++	}()
++
++	ctx, stop := context.WithTimeout(context.Background(), time.Second)
++	defer stop()
++	if e := s.WaitControlStopped(ctx); e != nil {
++		t.Fatal("workers did not reach the publication gap", e)
++	}
++	if f.phase(s) != VerifiedPairReleased {
++		t.Fatal("never-started pending pair retained native ownership")
++	}
++	f.c.mu.Lock()
++	held := s.writersEnded && !s.cancellationPublished && f.c.sessions[s.membership.Epoch] == s
++	for _, n := range f.n {
++		held = held && n.session == s
++	}
++	_, duplicate := f.c.beginCancellationLocked(s)
++	f.c.mu.Unlock()
++	if !held || duplicate {
++		t.Fatal("joined workers lost the original publication obligation")
++	}
++	if _, e := f.c.Reserve(f.n, f.policy.ID, time.Minute); e == nil {
++		t.Fatal("new grant overtook unpublished old cancellation")
++	}
++	for _, ch := range f.frames {
++		select {
++		case <-ch:
++			t.Fatal("stopped relay published queued work")
++		default:
++		}
++	}
++
++	f.c.publishCancellation(s, frames)
++	published = true
++	f.c.mu.Lock()
++	released := s.cancellationPublished && f.c.sessions[s.membership.Epoch] == nil
++	for _, n := range f.n {
++		released = released && n.session == nil
++	}
++	f.c.mu.Unlock()
++	if !released {
++		t.Fatal("completed publication did not release the control attachment")
++	}
++	// Start the replacement before reading either socket, so the assertions
++	// check the actual priority writer's FIFO, not just internal sequence values.
++	next, e := f.c.Reserve(f.n, f.policy.ID, time.Minute)
++	if e != nil {
++		t.Fatal(e)
++	}
++	for rank := range f.n {
++		oldCancel := f.read(t, rank, protocol.TypeNativePairCancel)
++		newPrepare := f.read(t, rank, protocol.TypeNativePairPrepare)
++		if oldCancel.Epoch == newPrepare.Epoch || oldCancel.Generation == newPrepare.Generation || oldCancel.Sequence >= newPrepare.Sequence {
++			t.Fatal("replacement prepare did not follow the original cancel")
++		}
++	}
++	f.c.Cancel(s)
++	if f.phase(next) != VerifiedPairPending {
++		t.Fatal("old cancellation changed replacement grant")
++	}
++}
+--- a/coordinator/registry/native_pair_relay.go
++++ b/coordinator/registry/native_pair_relay.go
+@@ -98,9 +98,19 @@
+ 		return
+ 	}
+ 	c.mu.Lock()
++	frames, publish := c.beginCancellationLocked(s)
++	c.mu.Unlock()
++	if publish {
++		c.publishCancellation(s, frames)
++	}
++}
++
++// The caller holds mu. Claim exactly one terminal publication obligation before
++// Registry Done can wake the worker-join observer. Stopped workers alone do not
++// allow these connections to be reused until that obligation is completed.
++func (c *NativePairCoordinator) beginCancellationLocked(s *NativePairSession) ([2][]byte, bool) {
+ 	if s.coordinator != c || c.sessions[s.membership.Epoch] != s || s.stopped {
+-		c.mu.Unlock()
+-		return
++		return [2][]byte{}, false
+ 	}
+ 	s.stopped = true
+ 	_ = c.registry.CancelVerifiedPair(s.handle)
+@@ -108,7 +118,12 @@
+ 	for rank := range frames {
+ 		frames[rank], _ = c.messageLocked(s, rank, protocol.TypeNativePairCancel, []byte("DBNC\x01"))
+ 	}
+-	c.mu.Unlock()
++	return frames, true
++}
++
++// The caller owns the once-only obligation returned by beginCancellationLocked.
++// No coordinator lock is held across actual writer enqueue or close attempts.
++func (c *NativePairCoordinator) publishCancellation(s *NativePairSession, frames [2][]byte) {
+ 	for rank, payload := range frames {
+ 		p := s.connections[rank].provider
+ 		if len(payload) == 0 || p.EnqueueText(context.Background(), payload) != nil {
+@@ -118,6 +133,10 @@
+ 	// This cannot wait behind WriteTextControl. If its bytes were already in
+ 	// flight, provider_writer closes that socket to interrupt them.
+ 	s.stop()
++	c.mu.Lock()
++	s.cancellationPublished = true
++	c.removeReleasedLocked(s)
++	c.mu.Unlock()
+ }
+ func (c *NativePairCoordinator) finishWriters(s *NativePairSession) {
+ 	s.workers.Wait()
+@@ -140,7 +159,7 @@
+ 	c.removeReleasedLocked(s)
+ }
+ func (c *NativePairCoordinator) removeReleasedLocked(s *NativePairSession) {
+-	if !s.writersEnded {
++	if !s.writersEnded || !s.cancellationPublished {
+ 		return
+ 	}
+ 	c.registry.mu.RLock()
+--- a/coordinator/registry/native_pair_types.go
++++ b/coordinator/registry/native_pair_types.go
+@@ -24,24 +24,25 @@
+ 	session                           *NativePairSession
+ }
+ type NativePairSession struct {
+-	coordinator    *NativePairCoordinator
+-	handle         *VerifiedPairHandle
+-	membership     VerifiedPairMembership
+-	approval       nativeApprovedRuntime
+-	connections    [2]*NativePairConnection
+-	starts         [2]protocol.NativeAuthorizationStart
+-	hellos         [2][]byte
+-	confirmations  [2]bool
+-	committed      bool
+-	stopped        bool
+-	writersEnded   bool
+-	writersStopped chan struct{}
+-	queues         [2]chan []byte
+-	queuedBytes    [2]int // includes the one frame currently in the actual WS writer
+-	queuedFrames   [2]int
+-	ctx            context.Context
+-	stop           context.CancelFunc
+-	workers        sync.WaitGroup
++	coordinator           *NativePairCoordinator
++	handle                *VerifiedPairHandle
++	membership            VerifiedPairMembership
++	approval              nativeApprovedRuntime
++	connections           [2]*NativePairConnection
++	starts                [2]protocol.NativeAuthorizationStart
++	hellos                [2][]byte
++	confirmations         [2]bool
++	committed             bool
++	stopped               bool
++	writersEnded          bool
++	cancellationPublished bool // both terminal enqueue/close attempts completed
++	writersStopped        chan struct{}
++	queues                [2]chan []byte
++	queuedBytes           [2]int // includes the one frame currently in the actual WS writer
++	queuedFrames          [2]int
++	ctx                   context.Context
++	stop                  context.CancelFunc
++	workers               sync.WaitGroup
+ }
+ 
+ // All mutable native session/control fields are protected by mu. Lock order is

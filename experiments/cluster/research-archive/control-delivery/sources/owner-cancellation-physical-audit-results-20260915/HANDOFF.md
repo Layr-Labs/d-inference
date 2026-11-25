@@ -1,0 +1,7 @@
+# Physical cancellation/recovery audit
+
+Both retained physical cohorts pass the prospective policy without a runtime/checker correction. The before-first case reports zero observed tokens and no clean finish; the after-first-decode case reports exactly [271,8839] and cancels before another decision. Each case keeps2,216,442,591reserved bytes through the early release attempt, releases only after actual request retirement, then opens a fresh membership/request and returns the expected128-token sequence.
+
+Before-first resource samples123/125 have minima6,642,335,744B /10,734,944,256B. After-decode samples178/181 have minima6,603,948,032B /11,251,400,704B. All607 raw samples reproduce free-page arithmetic and report AC, zero swap, pressure1 and at least6GiBfree. Both generations in each cohort have native cleanup and authenticated owner-lease ACK observations; final journals are empty, no children remain, and the temporary alias is removed with interface/bridge/management state preserved.
+
+The policy manifest was frozen before reading either candidate and rehashed unchanged afterward. Each comparison includes exact input pins. The audit executed only Python CPU checks/read-only local snapshots. No model/native/GPU/network work or main edits occurred. Selected-token recovery is not a new full numerical comparison. Zero observed tokens is not an active-kernel observation; cleanup may rely on owned process fencing. Same-epoch reuse, product HTTP recovery and performance remain outside this qualification.

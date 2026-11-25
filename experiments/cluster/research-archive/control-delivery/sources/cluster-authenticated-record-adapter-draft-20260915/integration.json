@@ -1,0 +1,130 @@
+{
+  "files": [
+    {
+      "base": {
+        "path": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Package.swift",
+        "sha256": "ca0b58ea4616f89d298bfdd81905026d3c161c559b648b1d631da49ab7579f0f",
+        "sizeBytes": 1980
+      },
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Package.swift",
+        "sha256": "5ae0b8127a339867e87b34784531bd44acd617ff2d05dae49c1b95e3716240ad",
+        "sizeBytes": 2150
+      },
+      "path": "libs/darkbloom-cluster/Package.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift",
+        "sha256": "26f263f64a8aa18c6c5085b7b6a4ccf1ed1d1cdd6b4def7620404ccdc88b46a0",
+        "sizeBytes": 5008
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift"
+    },
+    {
+      "base": {
+        "path": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift",
+        "sha256": "5ec2749839feec80425e83e847c61ed49632c4758361f7101b5d1eb6c3b9dff8",
+        "sizeBytes": 6381
+      },
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift",
+        "sha256": "23bfc1d43fcc4335ffefc72ec9b5defa3cec81c96bb45567529fffff4b22c351",
+        "sizeBytes": 8657
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordByteIO.swift",
+        "sha256": "19d003d8292c6d1f461d295f1d63476321a4e1623a57036dfc273e6ca3c1a78f",
+        "sizeBytes": 3380
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordByteIO.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordChannel.swift",
+        "sha256": "6d81628e5780612cbedde71b82e5c5e3fd53ef30cc3810ea97e974a788fead9d",
+        "sizeBytes": 4824
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordChannel.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordTransport.swift",
+        "sha256": "6f20e605f1d0116f192907f3966e3aeeb1c234e6491279a1be7a32a2eb0b23ca",
+        "sizeBytes": 7333
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordTransport.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordByteIO.swift",
+        "sha256": "d8a823051dd69cc13a1bd6cd6f69363a4a2fccc5cc36dcbd64b262509ce21d19",
+        "sizeBytes": 894
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordByteIO.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordFraming.swift",
+        "sha256": "1bed76a6016cc18ef4a35b45c2af305bfe5ce1342c925d9e74bd6bcda55effce",
+        "sizeBytes": 2467
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordFraming.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordState.swift",
+        "sha256": "91577a9cf2b9a7d274846e13274764825e3cb1de1459d869955b1d21027b1e61",
+        "sizeBytes": 6801
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordState.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferAccounting.swift",
+        "sha256": "aab036c9991f35e40f2a7d8a0283c8fc54c73f40b3e36f52a1515f6b5e36339d",
+        "sizeBytes": 4990
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferAccounting.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferExpectation.swift",
+        "sha256": "151f673993b3391d4fd0ba937c04d2d6531fb23bd248f46a5b608f97ddc96a57",
+        "sizeBytes": 2285
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferExpectation.swift"
+    },
+    {
+      "base": null,
+      "candidate": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-authenticated-record-adapter-draft-20260915/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTypes.swift",
+        "sha256": "723e1e63d9b6f8fc0a38f47b94152fa026fba478d05642494b6aab05f6940366",
+        "sizeBytes": 5685
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTypes.swift"
+    }
+  ],
+  "noProductionEnablement": true,
+  "requiredNextGates": [
+    "Foundation/CryptoKit adapter fixture compile/run",
+    "actual native bridge dtype/storage/numerical/cancellation checks",
+    "reviewed native JACCL padding/send-length correction",
+    "coordinator authorization and native fresh-key handshake",
+    "complete model call-site context/wrapping/refusal",
+    "qualified host allocator/scratch plus actual Ready/reserve/live admission"
+  ],
+  "schema": "private_authenticated_record_adapter_integration_v1"
+}

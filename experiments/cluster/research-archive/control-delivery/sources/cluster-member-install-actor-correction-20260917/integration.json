@@ -1,0 +1,14 @@
+{
+  "schema": "cluster_member_install_actor_correction_v1",
+  "priorWrapper": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917",
+  "priorWrapperSHA256": "432f24932fcab4c16d05978e72bc2d067f9a2d7a02c3780f0af1cb9813ca78f2",
+  "priorOutput": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-checks-2-20260917",
+  "files": [
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-member-install-actor-correction-20260917/proposed/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift",
+      "beforeSHA256": "190c737c02c5ddd71fc552c1b973c05645384c8be3a4280731cf787e87f41801",
+      "afterSHA256": "6a0b152c8503a8336542d12e8b38dc023aad36f3e23a733d2005a7a4d2f318ae"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+--- a/guards.py
++++ b/guards.py
+@@ -35,7 +35,7 @@
+ def verify_overlay():
+     verify_frozen(BASE)
+     verify_frozen(ORIGINAL, ORIGINAL_SHA)
+-    for root, expected in ((UPSTREAM, UPSTREAM_SHA), (OVERLAY, OVERLAY_SHA), (B_OVERLAY, B_OVERLAY_SHA, ORIGINAL, ORIGINAL_SHA, FAILED)):
++    for root, expected in ((UPSTREAM, UPSTREAM_SHA), (OVERLAY, OVERLAY_SHA), (B_OVERLAY, B_OVERLAY_SHA)):
+         verify_frozen(root, expected)
+     # Only the 25 member and two B Swift files are composed. The separate Go
+     # qualification/integration may proceed without changing this Swift input.
+--- a/HANDOFF.md
++++ b/HANDOFF.md
+@@ -43,7 +43,7 @@
+ After root review and a compiler/preparation grant, run sequentially:
+ 
+ ```sh
+-cd /Users/developer/DarkbloomDev/cluster-research/cluster-member-actor-await-correction-20260916
++cd /Users/developer/DarkbloomDev/cluster-research/cluster-member-actor-await-retry-20260916
+ /usr/bin/python3 -B prepare_retry.py --apply
+ /usr/bin/python3 -B run.py --phase swift-tests --prepared /Users/developer/DarkbloomDev/cluster-research/coordinator-native-pair-swift-build-1-20260916/actor-await-correction-1 --attempt 2
+ /usr/bin/python3 -B run.py --phase swift-build --prepared /Users/developer/DarkbloomDev/cluster-research/coordinator-native-pair-swift-build-1-20260916/actor-await-correction-1 --attempt 2
+@@ -54,3 +54,9 @@
+ checks Python syntax, exact two-line inverse, unchanged inherited helpers, and
+ the pinned original diagnostics/preimages. Provider native-grant invocation and
+ encrypted RDMA remain outside this qualification.
++
++This successor retains the first actor-await draft manifest `09cd59b7`, whose
++source-only wrapper self-check refused an incorrectly expanded verification
++tuple before any preparation or compiler. The sole code correction is that tuple;
++the two Swift sources, result checks and preparation logic remain byte-exact.
++`author-wrapper-correction.patch` records this small successor delta.

@@ -13,10 +13,8 @@ enum CoordinatorRequestSigningKeys {
 
     static func pin(for environment: BuildEnvironment) -> Pin {
         switch environment {
-        // key_id e7d53f46617e9494, logged by the production coordinator at startup.
-        case .prod: Pin(publicKeys: ["gvBKtKYQ8p/v1nY5kvhtUGMMvJUoznS9Rjj59QjPusM="], requireSignature: false)
-        // key_id 7c638fff1a85dd4a, logged by the DevNet coordinators at startup.
-        case .dev: Pin(publicKeys: ["wyhB/FIT7Nk4Mg2CVK2rBDpv730sGR6mG3AtgjaUg9s="], requireSignature: false)
+        case .prod: Pin(publicKeys: [], requireSignature: false)
+        case .dev: Pin(publicKeys: [], requireSignature: false)
         case .staging: Pin(publicKeys: [], requireSignature: false)
         }
     }

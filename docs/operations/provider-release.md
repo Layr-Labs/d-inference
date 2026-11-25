@@ -183,8 +183,9 @@ refreshed platform snapshot carries that wording.
 The served installer still names `darkbloom enroll`, so that hidden command keeps
 running (`provider-swift/Sources/darkbloom/EnrollCommand.swift`).
 
-The release sets these modes before signing. `scripts/provider-signing-validation.py`
-`stage` (`copy_executable`) gives the CLI, the enclave and fan helpers and both
+The release gives every packaged executable mode `0755` before signing.
+`scripts/provider-signing-validation.py` `stage` (`copy_executable`,
+`stage_cluster_helpers`) gives the CLI, the enclave and fan helpers and both
 cluster helpers mode `0755`, whatever mode the build left: a build under
 `umask 077` leaves its products `0700`. `unpack` (`check_executable_modes`)
 refuses an unsigned app in which any of them, or any other Mach-O file in the

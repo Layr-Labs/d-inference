@@ -49,6 +49,15 @@ def write_app_with_cluster_helpers(app, omit=None, metallib=b"metal kernels", pa
         path.chmod(0o755 if name.startswith("darkbloom-") else 0o644)
 
 
+def write_release_app(app, cli=PROD_NAMES["cliName"], enclave=PROD_NAMES["enclaveName"]):
+    """A synthetic app with the CLI, the enclave and fan helpers and the cluster helpers, each mode 0755."""
+    write_app_with_cluster_helpers(app)
+    for path in [app / "Contents/MacOS" / cli, app / "Contents/MacOS" / enclave,
+                 app / "Contents/Helpers" / VALIDATION.FAN_HELPER]:
+        path.write_bytes(MACHO_ARM64)
+        path.chmod(0o755)
+
+
 def cluster_helper_source(root):
     """The directory scripts/build-cluster-helpers.sh leaves: both helpers with their Metal library and paged source."""
     source = root / "cluster-helpers"
@@ -146,11 +155,7 @@ class SigningValidationTests(unittest.TestCase):
         (source / "validation-inputs").mkdir(parents=True)
         app_contents = source / app / "Contents"
         app_contents.mkdir(parents=True)
-        write_app_with_cluster_helpers(source / app)
-        for path in [app_contents / "MacOS" / executable, app_contents / "MacOS" / enclave,
-                     app_contents / "Helpers" / VALIDATION.FAN_HELPER]:
-            path.write_bytes(MACHO_ARM64)
-            path.chmod(0o755)
+        write_release_app(source / app, cli=executable, enclave=enclave)
         for relative, mode in (modes or {}).items():
             (app_contents / relative).chmod(mode)
         info = {"CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": version,
@@ -289,10 +294,12 @@ class SigningValidationTests(unittest.TestCase):
                 # Only the executables change mode; the build outputs keep theirs and every byte.
                 self.assertEqual((app / "Contents/MacOS/mlx.metallib").stat().st_mode & 0o777,
                                  (root / "mlx.metallib").stat().st_mode & 0o777)
-                for product, name in [(PRODUCTS["cli"], PROD_NAMES["cliName"]), (VALIDATION.FAN_HELPER, None)]:
-                    self.assertEqual((products / product).stat().st_mode & 0o777, 0o700)
-                    packaged = app / ("Contents/MacOS/" + name if name else "Contents/Helpers/" + product)
-                    self.assertEqual(packaged.read_bytes(), (products / product).read_bytes())
+                macos, helpers = app / "Contents/MacOS", app / "Contents/Helpers"
+                for built, packaged in [(products / PRODUCTS["cli"], macos / PROD_NAMES["cliName"]),
+                                        (products / PRODUCTS["enclave"], macos / PROD_NAMES["enclaveName"]),
+                                        (products / VALIDATION.FAN_HELPER, helpers / VALIDATION.FAN_HELPER)]:
+                    self.assertEqual(built.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual(packaged.read_bytes(), built.read_bytes())
                 archive = root / "unsigned-provider.tar.gz"
                 with tarfile.open(archive, "w:gz") as output:
                     output.add(root / "stage", arcname=".")
@@ -314,7 +321,7 @@ class SigningValidationTests(unittest.TestCase):
                        *[f"Helpers/{name}" for name in VALIDATION.CLUSTER_HELPER_EXECUTABLES]]
         for relative in executables:
             # Modes every supported Python's tar extraction keeps as archived.
-            for mode in [0o700, 0o744, 0o644]:
+            for mode in [0o700, 0o711, 0o744, 0o644]:
                 with self.subTest(executable=relative, mode=f"{mode:04o}"), \
                         tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
@@ -328,10 +335,7 @@ class SigningValidationTests(unittest.TestCase):
         for scenario in ["valid", "extra-macho", "missing-fan", "fan-symlink"]:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 app = Path(temporary) / PROD_NAMES["appBundleName"]
-                write_app_with_cluster_helpers(app)
-                for path in self.executable_paths(app)[:3]:
-                    path.write_bytes(MACHO_ARM64)
-                    path.chmod(0o755)
+                write_release_app(app)
                 fan = app / "Contents/Helpers" / VALIDATION.FAN_HELPER
                 if scenario == "extra-macho":
                     (app / "Contents/Resources/tool").write_bytes(MACHO_ARM64)
@@ -361,10 +365,7 @@ class SigningValidationTests(unittest.TestCase):
             with self.subTest(command=command), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 unsigned = root / "qualified-unsigned"
-                write_app_with_cluster_helpers(unsigned / PROD_NAMES["appBundleName"])
-                for path in self.executable_paths(unsigned / PROD_NAMES["appBundleName"])[:3]:
-                    path.write_bytes(MACHO_ARM64)
-                    path.chmod(0o755)
+                write_release_app(unsigned / PROD_NAMES["appBundleName"])
                 app = root / "bundle" / PROD_NAMES["appBundleName"]
                 app.parent.mkdir()
                 environment = dict(os.environ, UNSIGNED_ROOT=str(unsigned), APP_NAME=PROD_NAMES["appBundleName"],

@@ -623,6 +623,7 @@ public enum LaunchAgent: Sendable {
         ToolStreamPreparation.streamGLMToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
         QwenJSONSchemaRewrite.environmentKey,
+        ToolConstraintSchemaCompiler.PropertyNames.environmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
         "DARKBLOOM_GEMMA4_MTP_COMMAND_BUFFERS",

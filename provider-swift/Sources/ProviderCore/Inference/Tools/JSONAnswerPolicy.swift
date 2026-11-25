@@ -94,7 +94,8 @@ enum JSONAnswerPolicy {
         acceptsTokenConstraints: Bool = false,
         families: Families = .current,
         glm: Bool = glmEnabled,
-        widensSchemas: Bool = QwenJSONSchemaRewrite.enabled
+        widensSchemas: Bool = QwenJSONSchemaRewrite.enabled,
+        propertyNames: ToolConstraintSchemaCompiler.PropertyNames = .response
     ) -> JSONAnswerConstraint? {
         guard let profile = profile(modelID: modelID, modelType: modelType, families: families,
                                     servesDistributedPair: servesDistributedPair,
@@ -108,7 +109,7 @@ enum JSONAnswerPolicy {
         }
         if phase == .reasoning, !profile.constrainsReasoning { return nil }
         guard case let (answer, widening)? = QwenJSONSchemaRewrite.answerFormat(format, profile: profile,
-                  widens: widensSchemas) else {
+                  widens: widensSchemas, propertyNames: servesDistributedPair ? .identifiers : propertyNames) else {
             return declined(profile, "schema outside the constrained subset")
         }
         guard let phase else {

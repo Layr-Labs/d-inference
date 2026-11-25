@@ -51,17 +51,20 @@ enum QwenJSONSchemaRewrite {
     }
 
     /// The format to constrain, and how it widens the request's, or nil.
-    static func answerFormat(_ format: OpenAIResponseFormat, profile: JSONAnswerProfile, widens: Bool)
+    static func answerFormat(_ format: OpenAIResponseFormat, profile: JSONAnswerProfile, widens: Bool,
+                             propertyNames: ToolConstraintSchemaCompiler.PropertyNames = .response)
         -> (format: JSONAnswerFormat, widening: Widening?)? {
         func compiled(_ candidate: OpenAIResponseFormat) -> JSONAnswerFormat? {
-            try? JSONAnswerFormat(candidate, forbidding: profile.contentMarkers, family: profile.family)
+            try? JSONAnswerFormat(candidate, forbidding: profile.contentMarkers, family: profile.family,
+                                  propertyNames: propertyNames)
         }
         if let exact = compiled(format) { return (exact, nil) }
         guard widens, widenedFamilies.contains(profile.family), format.type == .jsonSchema,
               var payload = format.jsonSchema else { return nil }
         let schema = payload.schema
         for (relaxing, widening) in [(false, Widening.rewritten), (true, .relaxed)] {
-            guard let rewritten = ResponseSchemaRewrite.subset(schema, relaxingAssertions: relaxing) else { continue }
+            guard let rewritten = ResponseSchemaRewrite.subset(schema, relaxingAssertions: relaxing,
+                                                                propertyNames: propertyNames) else { continue }
             payload.schema = rewritten
             if let answer = compiled(.jsonSchema(payload)) { return (answer.unchecked(), widening) }
         }

@@ -195,7 +195,7 @@ struct QwenStrictToolSchema: Sendable {
             root.removeValue(forKey: "additionalProperties")
         }
         if root["type"] == nil { root["type"] = .string("object") }
-        return try ToolConstraintSchemaCompiler.compileResponseSchema(.object(root))
+        return try ToolConstraintSchemaCompiler.compileResponseSchema(.object(root), propertyNames: .identifiers)
     }
 
     /// What the grammar admits for one parameter. The caller's schema and the

@@ -86,6 +86,20 @@ enum ToolConstraintSchemaError: LocalizedError, Equatable {
 }
 
 enum ToolConstraintSchemaCompiler {
+    enum PropertyNames {
+        case identifiers, json
+
+        static let environmentKey = "DARKBLOOM_JSON_RESPONSE_PROPERTY_NAMES"
+        static let response = PropertyNames(environmentValue: ProcessInfo.processInfo.environment[environmentKey])
+
+        init(environmentValue: String?) {
+            let value = environmentValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            self = ["1", "on", "true", "yes"].contains(value) ? .json : .identifiers
+        }
+
+        var maxBytes: Int { self == .json ? 256 : 64 }
+    }
+
     static let maxTools = 64
     static let maxProperties = 128
     static let maxDepth = 16
@@ -157,9 +171,11 @@ enum ToolConstraintSchemaCompiler {
     /// type. Without the normalizer's render metadata an allow-all `{}` stays
     /// unsupported instead of compiling to a forced argument's free string,
     /// and every node must declare what it accepts.
-    static func compileResponseSchema(_ raw: MLXLMCommon.JSONValue) throws -> ToolValueSchema {
+    static func compileResponseSchema(
+        _ raw: MLXLMCommon.JSONValue, propertyNames: PropertyNames = .response
+    ) throws -> ToolValueSchema {
         let schema = try compileSchema(
-            raw, depth: 0, path: "json_schema.schema", allowRenderMetadata: false)
+            raw, depth: 0, path: "json_schema.schema", allowRenderMetadata: false, propertyNames: propertyNames)
         guard grammarCost(schema) <= maxGrammarComplexity else {
             throw ToolConstraintSchemaError.unsupported(
                 "json_schema grammar exceeds the \(maxGrammarComplexity)-unit safety limit")
@@ -184,10 +200,16 @@ enum ToolConstraintSchemaCompiler {
         }
         if case .object(let properties)? = object["properties"] {
             for (name, child) in properties.sorted(by: { $0.key < $1.key }) {
-                try requireExplicitResponseTypes(child, path: "\(path).properties.\(name)")
+                try requireExplicitResponseTypes(child, path: propertyPath(path, name))
             }
         }
         if let items = object["items"] { try requireExplicitResponseTypes(items, path: "\(path).items") }
+    }
+
+    /// Preserve identifier diagnostics; never place arbitrary response-key
+    /// text (possibly multiline) in a diagnostic.
+    private static func propertyPath(_ path: String, _ name: String) -> String {
+        ToolChoicePromptPolicy.isValidFunctionName(name) ? "\(path).properties.\(name)" : "\(path).properties[]"
     }
 
     private static func grammarCost(_ schema: ToolValueSchema) -> Int {
@@ -206,7 +228,7 @@ enum ToolConstraintSchemaCompiler {
                 boundedGrammarAdd(
                     $0,
                     boundedGrammarAdd(
-                        $1.name.utf8.count + 2,
+                        $1.name.utf8.reduce(2) { $0 + ($1 < 32 ? 6 : ($1 == 34 || $1 == 92 ? 2 : 1)) },
                         grammarCost($1.schema)))
             }
         case .array(let items, _, let maxItems, _):
@@ -255,7 +277,8 @@ enum ToolConstraintSchemaCompiler {
         _ raw: SchemaJSONValue,
         depth: Int,
         path: String,
-        allowRenderMetadata: Bool
+        allowRenderMetadata: Bool,
+        propertyNames: PropertyNames = .identifiers
     ) throws -> ToolValueSchema {
         guard depth <= maxDepth else {
             throw ToolConstraintSchemaError.unsupported(
@@ -328,7 +351,7 @@ enum ToolConstraintSchemaCompiler {
             return try compileObject(
                 object, finiteValues: enumValues, nullable: nullable,
                 depth: depth, path: path,
-                allowRenderMetadata: allowRenderMetadata)
+                allowRenderMetadata: allowRenderMetadata, propertyNames: propertyNames)
         case "array":
             guard enumValues == nil else {
                 throw ToolConstraintSchemaError.unsupported(
@@ -351,7 +374,7 @@ enum ToolConstraintSchemaCompiler {
             return .array(
                 items: try compileSchema(
                     items, depth: depth + 1, path: "\(path).items",
-                    allowRenderMetadata: allowRenderMetadata),
+                    allowRenderMetadata: allowRenderMetadata, propertyNames: propertyNames),
                 minItems: minItems,
                 maxItems: maxItems,
                 nullable: nullable)
@@ -432,7 +455,8 @@ enum ToolConstraintSchemaCompiler {
         nullable: Bool,
         depth: Int,
         path: String,
-        allowRenderMetadata: Bool
+        allowRenderMetadata: Bool,
+        propertyNames: PropertyNames
     ) throws -> ToolValueSchema {
         guard finiteValues == nil else {
             throw ToolConstraintSchemaError.unsupported(
@@ -452,6 +476,9 @@ enum ToolConstraintSchemaCompiler {
             throw ToolConstraintSchemaError.invalid(
                 "\(path) has more than \(maxProperties) properties")
         }
+        if propertyNames == .json, !rawProperties.keys.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 }) {
+            throw ToolConstraintSchemaError.unsupported("response property names must be 1–256 UTF-8 bytes")
+        }
         let required: Set<String>
         if let value = object["required"] {
             guard case .array(let values) = value else {
@@ -460,7 +487,9 @@ enum ToolConstraintSchemaCompiler {
             }
             var names = Set<String>()
             for value in values {
-                guard case .string(let name) = value, rawProperties[name] != nil else {
+                guard case .string(let name) = value, propertyNames != .json || name.utf8.count <= propertyNames.maxBytes,
+                      let index = rawProperties.index(forKey: name),
+                      propertyNames != .json || rawProperties[index].key.utf8.elementsEqual(name.utf8) else {
                     throw ToolConstraintSchemaError.invalid(
                         "\(path).required contains an undeclared property")
                 }
@@ -488,15 +517,15 @@ enum ToolConstraintSchemaCompiler {
         var properties: [ToolValueSchema.Property] = []
         properties.reserveCapacity(rawProperties.count)
         for (name, raw) in rawProperties.sorted(by: { $0.key < $1.key }) {
-            guard ToolChoicePromptPolicy.isValidFunctionName(name) else {
+            if !ToolChoicePromptPolicy.isValidFunctionName(name) {
                 throw ToolConstraintSchemaError.unsupported(
                     "\(path) property names must match ^[a-zA-Z0-9_-]{1,64}$")
             }
             properties.append(.init(
                 name: name,
                 schema: try compileSchema(
-                    raw, depth: depth + 1, path: "\(path).properties.\(name)",
-                    allowRenderMetadata: allowRenderMetadata),
+                    raw, depth: depth + 1, path: propertyPath(path, name),
+                    allowRenderMetadata: allowRenderMetadata, propertyNames: propertyNames),
                 required: required.contains(name)))
         }
         return .object(

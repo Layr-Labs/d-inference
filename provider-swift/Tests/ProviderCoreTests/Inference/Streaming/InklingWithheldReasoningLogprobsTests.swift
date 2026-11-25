@@ -6,9 +6,10 @@ import MLXLMServer
 import Testing
 
 @testable import ProviderCore
+@testable import ProviderCoreFoundation
 
-/// Inkling 2 with reasoning withheld and `logprobs` on: the thought the model
-/// still writes, and every frame marker, never return as logprob entries
+/// Inkling 2 with `logprobs` on, its reasoning returned or withheld: the
+/// thought and every frame marker never return as logprob entries
 /// (`InklingWithheldReasoningLogprobsFilter`); answer and call tokens keep
 /// theirs. The scheduler applies the filter before the SDK's encoders, so the
 /// streamed and non-streamed responses agree.
@@ -126,11 +127,26 @@ struct InklingWithheldReasoningLogprobsTests {
             Issue.record("an Inkling request must get the Inkling filter")
             return
         }
-        for (withholds, logprobs) in [(false, true), (true, false), (false, false)] {
+        for (withholds, logprobs) in [(true, false), (false, false)] {
             #expect(
                 WithheldReasoningLogprobs.forRequest(
                     withholdsReasoning: withholds, logprobs: logprobs, inklingChannels: true,
                     startsInThought: false) == nil)
+        }
+        #expect(
+            WithheldReasoningLogprobs.forRequest(
+                withholdsReasoning: false, logprobs: true, inklingChannels: false, startsInThought: false) == nil)
+    }
+
+    /// An Inkling request that asks for logprobs gets its filter whether it
+    /// returns or withholds the thought.
+    @Test(arguments: [false, true])
+    func anInklingRequestWithLogprobsAlwaysGetsItsFilter(withholds: Bool) throws {
+        let filter = WithheldReasoningLogprobs.forRequest(
+            withholdsReasoning: withholds, logprobs: true, inklingChannels: true, startsInThought: false)
+        guard case .inkling(_)? = filter else {
+            Issue.record("withholds \(withholds): an Inkling request with logprobs must get the Inkling filter")
+            return
         }
     }
 
@@ -138,15 +154,19 @@ struct InklingWithheldReasoningLogprobsTests {
 
     /// The scheduler's event order for one request: each token's filtered
     /// entries, then the router's events for its text.
-    static func schedulerEvents(_ tokens: [String]) throws -> [MLXServerGenerationEvent] {
+    /// As the scheduler builds it: `forRequest` decides the filter, and no
+    /// filter relays every entry.
+    static func schedulerEvents(_ tokens: [String], withholds: Bool = true) throws -> [MLXServerGenerationEvent] {
         var router = NativeToolStreamRouter(
-            handler: nil, requiresToolCall: false, nativePrefix: nil, tools: nil, withholdReasoning: true,
+            handler: nil, requiresToolCall: false, nativePrefix: nil, tools: nil, withholdReasoning: withholds,
             streamedCalls: nil, nativeInklingChannels: true, inklingStreamsCalls: false,
             withheldReasoningHeartbeat: false)
-        var filter = try inklingFilter()
+        var filter = WithheldReasoningLogprobs.forRequest(
+            withholdsReasoning: withholds, logprobs: true, inklingChannels: true, startsInThought: false)
         var events: [MLXServerGenerationEvent] = []
         for token in tokens {
-            let visible = filter.visible(entries([token]))
+            let requested = entries([token])
+            let visible = filter?.visible(requested) ?? requested
             if !visible.isEmpty { events.append(.logprobs(visible)) }
             events += try router.process(token)
         }
@@ -224,5 +244,103 @@ struct InklingWithheldReasoningLogprobsTests {
         #expect(entries.isEmpty)
         #expect(text.isEmpty)
         #expect(try await Self.streamed(Self.thought).isEmpty)
+    }
+
+    // MARK: - Every reasoning form
+
+    /// The three ways a request sets Inkling's thinking: on and unset return
+    /// the thought as reasoning, off withholds it.
+    enum Form: String, CaseIterable, Sendable {
+        case on, off, unset
+
+        var json: String {
+            switch self {
+            case .on: return #","reasoning":{"enabled":true}"#
+            case .off: return #","reasoning":{"enabled":false}"#
+            case .unset: return ""
+            }
+        }
+
+        /// Whether the scheduler withholds the thought, decided as it decides it.
+        func withholds() throws -> Bool {
+            let body = Data(
+                (#"{"model":"m","messages":[{"role":"user","content":"hi"}],"logprobs":true,"top_logprobs":1"#
+                    + json + "}").utf8)
+            let type = Inkling2ModelIdentity.modelType
+            return Inkling2PromptContract.withholdsReasoning(
+                try ProviderLoop.decodeOpenAIRequest(body, modelType: type),
+                controls: ProviderLoop.extractChatTemplateControls(from: body), modelType: type)
+        }
+    }
+
+    /// Streamed: the entries' tokens, their first alternatives and the content deltas, in order.
+    static func streamedWithContent(_ tokens: [String], withholds: Bool) async throws
+        -> (entries: [String], tops: [String?], content: String)
+    {
+        let service = MLXOpenAIService(engine: Fixture(events: try schedulerEvents(tokens, withholds: withholds)))
+        var entries: [String] = [], tops: [String?] = [], content = ""
+        for try await frame in try await service.streamChatCompletionFrames(request: request(stream: true)) {
+            for line in frame.split(separator: "\n") where line.hasPrefix("data: ") && line != "data: [DONE]" {
+                guard
+                    let object = try JSONSerialization.jsonObject(with: Data(line.dropFirst(6).utf8))
+                        as? [String: Any],
+                    let choice = (object["choices"] as? [[String: Any]])?.first
+                else { continue }
+                if let delta = choice["delta"] as? [String: Any], let text = delta["content"] as? String {
+                    content += text
+                }
+                guard let logprobs = choice["logprobs"] as? [String: Any],
+                    let items = logprobs["content"] as? [[String: Any]]
+                else { continue }
+                for item in items {
+                    entries.append(item["token"] as? String ?? "")
+                    tops.append(((item["top_logprobs"] as? [[String: Any]])?.first)?["token"] as? String)
+                }
+            }
+        }
+        return (entries, tops, content)
+    }
+
+    /// Every form, streamed and not: the entries are exactly the answer's
+    /// tokens, they join to `content`, and each keeps its top alternative.
+    @Test(arguments: Form.allCases, [false, true])
+    func everyFormReturnsOnlyTheAnswersEntries(form: Form, stream: Bool) async throws {
+        let withholds = try form.withholds()
+        #expect(withholds == (form == .off))
+        let tokens = Self.thought + Self.answer
+        if stream {
+            let (entries, tops, content) = try await Self.streamedWithContent(tokens, withholds: withholds)
+            #expect(entries == Self.answerTokens, "\(form)")
+            #expect(entries.joined() == content, "\(form)")
+            #expect(tops == entries.map { Optional($0) }, "\(form)")
+        } else {
+            let events = try Self.schedulerEvents(tokens, withholds: withholds)
+            let service = MLXOpenAIService(engine: Fixture(events: events))
+            let response = try await service.createChatCompletion(request: Self.request(stream: false))
+            let choice = try #require(response.choices.first)
+            let entries = choice.logprobs?.content ?? []
+            guard case .text(let content) = choice.message.content else {
+                Issue.record("\(form): no text content")
+                return
+            }
+            #expect(entries.map(\.token) == Self.answerTokens, "\(form)")
+            #expect(entries.map(\.token).joined() == content, "\(form)")
+            #expect(entries.map { $0.topLogprobs.first?.token } == entries.map { Optional($0.token) }, "\(form)")
+        }
+    }
+
+    /// Every form, streamed and not: a row that only thinks returns no entries.
+    @Test(arguments: Form.allCases, [false, true])
+    func everyFormReturnsNoEntriesForAThoughtOnlyRow(form: Form, stream: Bool) async throws {
+        let withholds = try form.withholds()
+        let tokens = Self.thought + ["<|content_model_end_sampling|>"]
+        if stream {
+            #expect(try await Self.streamedWithContent(tokens, withholds: withholds).entries.isEmpty, "\(form)")
+        } else {
+            let events = try Self.schedulerEvents(tokens, withholds: withholds)
+            let service = MLXOpenAIService(engine: Fixture(events: events))
+            let response = try await service.createChatCompletion(request: Self.request(stream: false))
+            #expect((try #require(response.choices.first).logprobs?.content ?? []).isEmpty, "\(form)")
+        }
     }
 }

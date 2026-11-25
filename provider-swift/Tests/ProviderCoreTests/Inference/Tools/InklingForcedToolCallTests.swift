@@ -277,6 +277,44 @@ struct InklingForcedToolCallTests {
         #expect(calls.first?.function.arguments == ["expression": .string("0")])
     }
 
+    // MARK: - OpenRouter's tool-choice bodies
+
+    /// OpenRouter's endpoint tests for Inkling 2 Mini, as it sends them
+    /// upstream (`tool_choice` required on a greeting with `calculate`; named
+    /// `calculate` on a weather question with both tools; reasoning on and off).
+    static let openRouterBodies: [(task: String, body: String)] = [
+        ("reasoning-enabled-tool-choice-required", #"{"model":"thinkingmachines/Inkling-2-Mini","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"Hi, how are you?"}],"max_tokens":65536,"tools":[{"type":"function","function":{"name":"calculate","description":"Perform a mathematical calculation","strict":true,"parameters":{"type":"object","properties":{"expression":{"type":"string","description":"The mathematical expression to evaluate, e.g. 2 + 2"}},"additionalProperties":false,"required":["expression"]}}}],"tool_choice":"required","reasoning_effort":"high","chat_template_kwargs":{"thinking":true,"enable_thinking":true},"reasoning":{"enabled":true,"effort":"high"}}"#),
+        ("reasoning-enabled-tool-choice-function", #"{"model":"thinkingmachines/Inkling-2-Mini","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"What is the weather like in Boston, MA in fahrenheit?"}],"max_tokens":65536,"tools":[{"type":"function","function":{"name":"get_current_weather","description":"Get the current weather in a given location","strict":true,"parameters":{"type":"object","properties":{"location":{"type":"string","description":"The city and state, e.g. San Francisco, CA"},"unit":{"type":"string","enum":["celsius","fahrenheit"]}},"additionalProperties":false,"required":["location","unit"]}}},{"type":"function","function":{"name":"calculate","description":"Perform a mathematical calculation","strict":true,"parameters":{"type":"object","properties":{"expression":{"type":"string","description":"The mathematical expression to evaluate, e.g. 2 + 2"}},"additionalProperties":false,"required":["expression"]}}}],"tool_choice":{"type":"function","function":{"name":"calculate"}},"reasoning_effort":"high","chat_template_kwargs":{"thinking":true,"enable_thinking":true},"reasoning":{"enabled":true,"effort":"high"}}"#),
+        ("reasoning-disabled-tool-choice-required", #"{"model":"thinkingmachines/Inkling-2-Mini","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"Hi, how are you?"}],"max_tokens":65536,"tools":[{"type":"function","function":{"name":"calculate","description":"Perform a mathematical calculation","strict":true,"parameters":{"type":"object","properties":{"expression":{"type":"string","description":"The mathematical expression to evaluate, e.g. 2 + 2"}},"additionalProperties":false,"required":["expression"]}}}],"tool_choice":"required","chat_template_kwargs":{"thinking":false,"enable_thinking":false},"reasoning":{"enabled":false}}"#),
+        ("reasoning-disabled-tool-choice-function", #"{"model":"thinkingmachines/Inkling-2-Mini","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"What is the weather like in Boston, MA in fahrenheit?"}],"max_tokens":65536,"tools":[{"type":"function","function":{"name":"get_current_weather","description":"Get the current weather in a given location","strict":true,"parameters":{"type":"object","properties":{"location":{"type":"string","description":"The city and state, e.g. San Francisco, CA"},"unit":{"type":"string","enum":["celsius","fahrenheit"]}},"additionalProperties":false,"required":["location","unit"]}}},{"type":"function","function":{"name":"calculate","description":"Perform a mathematical calculation","strict":true,"parameters":{"type":"object","properties":{"expression":{"type":"string","description":"The mathematical expression to evaluate, e.g. 2 + 2"}},"additionalProperties":false,"required":["expression"]}}}],"tool_choice":{"type":"function","function":{"name":"calculate"}},"chat_template_kwargs":{"thinking":false,"enable_thinking":false},"reasoning":{"enabled":false}}"#),
+    ]
+
+    @Test(arguments: openRouterBodies.map(\.task))
+    func openRoutersToolChoiceBodiesAreFramed(task: String) throws {
+        let body = try #require(Self.openRouterBodies.first { $0.task == task }).body
+        // Tools, choice, messages and budget as sent (the coordinator's own
+        // handling of the reasoning fields is not under test here).
+        let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data(body.utf8))
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "inkling2_loop")
+        #expect(prepared.mode.requiresInferenceConstraint)
+        let constraint = try InklingForcedToolConstraint(mode: prepared.mode, tools: #require(prepared.compiledTools),
+            allowsParallel: prepared.allowsParallelCalls, tokenizer: T(), vocabulary: Self.vocabulary(),
+            maxTokens: request.maxTokens ?? 65_536)
+        // A greeting is not an answer: no text opens, only `calculate` does.
+        #expect(Self.walk("<|message_model|><|content_text|>I am doing well", constraint) == nil)
+        let header = try #require(Self.walk("<|message_model|>", constraint))
+        #expect(constraint.allowedTokenIDs(state: header, remainingTokens: 60_000).filter { $0 < 256 }
+            == [Int(Character("c").asciiValue!)])
+        let output = Self.thought("A calculate call is required.")
+            + Self.call("calculate", #"{"name":"calculate","args":{"expression":"2 + 2"}}"#)
+            + "<|content_model_end_sampling|>"
+        #expect(Self.walk(output, constraint) == -1)
+        // The strict schema holds: no other key, no missing expression.
+        #expect(Self.walk(Self.call("calculate", #"{"name":"calculate","args":{}}"#), constraint) == nil)
+        #expect(Self.walk(Self.call("calculate", #"{"name":"calculate","args":{"expression":"1","unit":"c"}}"#),
+                          constraint) == nil)
+    }
+
     // MARK: - Refusals and the switch
 
     @Test func autoAndNoneAreNotFramed() throws {

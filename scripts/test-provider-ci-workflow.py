@@ -365,11 +365,15 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # Each selection starts loaded with its job's fixed work (Prompt
         # Parity, the isolated processes), so with the
         # checked-in weights the planned shards end together: the last shard's
-        # fixed work does not outgrow a selection's share, and only one suite
-        # does. A suite is never split, so on 5 shards BootSecurityServeLoopTests
-        # (`.serialized`, 170 s) is its selection's whole load: its job ends
-        # with it, within 10 s, and the other jobs end within 10 s of each
-        # other. Any other suite 10 s longer than the shortest job fails here.
+        # fixed work does not outgrow a selection's share. A suite is never
+        # split, so a suite longer than a share would end its job last: the
+        # only one, BootSecurityServeLoopTests (`.serialized`, 170 s on 4x24),
+        # is the own-process class (OWN_PROCESS_SUITES). No selection plans
+        # it; job 1 runs it in a process of its own beside its selections, on
+        # test-provider-1's 12x32 lane. Any other suite 10 s longer than the
+        # shortest job fails here, and the jobs' planned loads end within 10 s
+        # of each other; job 1 also waits for that process before Prompt
+        # Parity.
         # The gates run in Provider Gates, beside the shards.
         # Selections 1..N-1 need suites (`selection` refuses an empty one); the
         # last runs the unweighted suites even when the plan gives it none.
@@ -379,13 +383,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         weights = shards.load_weights()
         assigned, loads = shards.assignment(selections, weights, PROVIDER_PROCESSES)
         jobs = [max(loads[first:first + PROVIDER_PROCESSES]) for first in range(0, selections, PROVIDER_PROCESSES)]
-        others = sorted(jobs)[:-1]
-        self.assertLess(max(others) - min(others), 10, jobs)
-        oversized = {key: seconds for key, seconds in weights.items()
+        self.assertLess(max(jobs) - min(jobs), 10, jobs)
+        oversized = {key for key, seconds in weights.items()
                      if key.split(".", 1)[0] not in shards.PARALLEL_MODULES and seconds >= min(jobs) + 10}
-        self.assertLessEqual(set(oversized), {"ProviderCoreTests.BootSecurityServeLoopTests"}, jobs)
-        self.assertLess(max(jobs) - max([min(jobs), *oversized.values()]), 10, jobs)
+        self.assertLessEqual(oversized, set(shards.own_process_suites(PROVIDER_PROCESSES)), jobs)
+        self.assertEqual([key for keys in assigned for key in keys if key in shards.OWN_PROCESS_SUITES], [])
         self.assertTrue(all(assigned[:-1]), [len(keys) for keys in assigned])
+        self.assertRegex(self.jobs["route"], r"(?m)^        test-provider-1 macos_arm64 .* balanced 12x32$")
 
     def test_existing_required_check_requires_every_lane_even_after_failures(self):
         job = self.jobs["provider-test-gate"]

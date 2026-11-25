@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-24
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -237,12 +237,28 @@ gave each later slot 15 s less work; the processes of a shard now start
 together, so each selection gets the same share. Replaying four dev runs'
 measured seconds through both plans, the longest shard ends 15 to 35 s
 sooner. Without `PROVIDER_TEST_PROCESSES` (the release qualification lane), a shard
-runs one selection, as before:
+runs one selection and no own process, as before:
 
 | Class | Process | Suites |
 |---|---|---|
 | Parallel | After selection 1, in its process slot, with Swift Testing's default parallelism | The test targets whose dependency closure has no MLX, Metal or cluster runtime (`PARALLEL_MODULES`) |
+| Own process (`own`) | With several processes per shard: one more `--no-parallel` process in shard 1, beside its selections | `BootSecurityServeLoopTests` (`OWN_PROCESS_SUITES`). No numbered selection plans it, and the last one skips it |
 | Serial | One `--no-parallel` process per selection | All other suites. Selections 1 to N-1 take suites by measured seconds (`scripts/provider-test-shard-weights.json`). The last selection runs every suite that no other selection picks, so a new suite always runs |
+
+Each of the 25 tests of `BootSecurityServeLoopTests` verifies the test host's
+real code signature. Alone in a selection of a 4x24 shard it ran 167 to 250 s;
+in the 35 green pull-request rounds of 2026-11-23 its shard was the slowest
+4x24 shard in 20 and the last provider job in 16. On 12x32 it ran 117 s in
+one process (SDK 27 qualification). It now runs on shard 1, the 12x32 lane, in
+a process of its own with its own `TMPDIR` and state files. That process runs
+the command line its selection ran: `--no-parallel`, the suite's `--filter`
+and the isolated-process `--skip`. The planner does not load shard 1's
+selections with it, and the 15 selections share the other suites, 130 s each
+instead of 139.6 s (and 170 s for the suite's selection). Shard 1's Prompt
+Parity now starts after this process, so shard 1 ends about this process plus
+Prompt Parity after its products. Modelled on the rounds of 2026-11-23 (not
+measured), the last provider shard ends about 11 s sooner at the median, and
+shard 1 becomes the last provider job in about 10 of the 35 rounds.
 
 Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
 `PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)
@@ -273,8 +289,10 @@ The `Provider Tests` gate requires the job.
 Each shard then lists the suite with `swift test list` from its own
 build and fails unless each of its selections executed exactly its plan
 (`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
-Parity run executed every listed test of its suite, and the last shard checks
-that the plans of all selections list every test once. With every shard
+Parity run executed every listed test of its suite and that its own process
+executed exactly its plan, the listed tests of `OWN_PROCESS_SUITES`
+(`shard-own.json`), and the last shard checks that the plans of all
+selections, that process's included, list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
 The executed counts (`provider-test-shards.py counts`) never come from the
 merged console either, where a SwiftPM warning can split the

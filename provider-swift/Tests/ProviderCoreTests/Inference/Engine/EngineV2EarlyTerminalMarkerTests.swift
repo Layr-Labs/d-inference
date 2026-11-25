@@ -141,6 +141,7 @@ struct EngineV2EarlyTerminalMarkerTests {
             request: .init(model: "early-terminal", messages: [], max_tokens: 10),
             requestId: "held", firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 60_000))
         for await _ in stream {}
+        #expect(engine.requests.map(\.terminalPrecedesCheckpointPublication) == [optIn])
         // Read before the 60 s bound: nothing is overdue yet.
         _ = await bridge.backendSlotCapacity(now: ContinuousClock.now + .seconds(30))
         #expect(telemetry.events(operation: "ssd_answered_unretired").isEmpty)
@@ -161,6 +162,7 @@ struct EngineV2EarlyTerminalMarkerTests {
         while await bridge._testLivePumpCount() > 0, ContinuousClock.now < limit {
             try await Task.sleep(for: .milliseconds(1))
         }
+        #expect(await bridge._testLivePumpCount() == 0)
         _ = await bridge.backendSlotCapacity(now: pastBound + .seconds(10))
         let recovered = telemetry.events(operation: "ssd_answered_unretired_recovered")
         #expect(recovered.count == (optIn ? 1 : 0))

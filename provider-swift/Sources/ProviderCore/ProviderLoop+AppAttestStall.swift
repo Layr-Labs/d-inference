@@ -207,6 +207,7 @@ extension ProviderLoop {
             await resumeServingAfterUpdate()
             return true
         }
+        usageHistory.flush()
         do {
             try appAttestRestart(.stallRestart, route)
         } catch {

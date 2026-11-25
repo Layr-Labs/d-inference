@@ -2613,3 +2613,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         TelemetryClient.shared.emit(event)
     }
 }
+
+extension MultiModelBatchSchedulerEngine {
+    /// Red control: declared so the new tests compile. It records exactly what
+    /// the scheduler records today (every withheld text as reasoning); the
+    /// scheduler itself doesn't call it.
+    static func recordWithheldReasoning(_ text: String, on usageSignal: EngineV2RequestUsageSignal,
+                                        nativeInklingChannels: Bool) {
+        usageSignal.recordWithheldReasoning(text)
+    }
+}

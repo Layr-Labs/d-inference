@@ -1834,14 +1834,34 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     encoder.outputFormatting = [.sortedKeys]
     let data = try encoder.encode(fullInferenceProfile())
     #expect(data.count <= 4096, "full profile encoded to \(data.count) bytes")
-    // And the whole terminal frame carrying it stays well clear of any
-    // coordinator frame limit.
+}
+
+@Test func worstCaseCompletionFrameStaysUnder64KiB() throws {
+    // The completion always carries the sealed usage, whose stop string
+    // grows with the caller's. The byte bound is on that sealed copy
+    // (`SealedTerminalFields.maxStopSequenceBytes`), not on requests: here the
+    // longest sealed stop string, of the characters JSON escapes longest
+    // (six bytes each), beside the largest usage, a 64-hex response hash, a
+    // DER signature of the longest P-256 length and the full profile.
+    let stop = String(repeating: "\u{01}", count: 4096)
+    let usage = UsageInfo(
+        promptTokens: .max, completionTokens: .max, reasoningTokens: .max, cacheOutcome: .hit, cacheTier: .ssd,
+        cachedTokens: .max, prefillTokensSaved: .max, cacheStageMs: 1e300)
+    let terminal = SealedTerminalFields(
+        finishReason: .stop, stopSequence: stop, responseHash: String(repeating: "f", count: 64),
+        seSignature: Data(repeating: 0xff, count: 72).base64EncodedString())
+    #expect(terminal.stopSequence == stop)
+    let provider = NodeKeyPair.generate()
+    let consumer = NodeKeyPair.generate()
+    let sealer = ResponseFrameSealer(
+        keyPair: provider, sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes))
     let frame = try ProviderProtocolCodec.encodeProviderMessage(
         .inferenceComplete(ProviderMessage.InferenceComplete(
             requestId: "0f3c2b8e-6b1a-4c8f-9d2e-7a5b3c1d9e0f",
-            usage: UsageInfo(promptTokens: 812, completionTokens: 147, reasoningTokens: 12),
+            usage: usage,
+            encryptedUsage: try sealer.sealUsage(usage, terminal: terminal),
             profile: fullInferenceProfile())))
-    #expect(frame.count <= 4096 + 512)
+    #expect(frame.count < 64 << 10, "worst-case completion encoded to \(frame.count) bytes")
 }
 
 @Test func profilerBackendSlotCapacityRoundTripsTelemetry() throws {

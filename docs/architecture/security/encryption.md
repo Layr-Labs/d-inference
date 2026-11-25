@@ -82,7 +82,9 @@ only it, and every chunk is still an ordinary NaCl box
 
 The sealed usage also carries the response's terminal fields: the finish
 reason, the caller's stop string that ended it, the response hash and its
-Secure Enclave signature. `inference_complete` never carries their clear
+Secure Enclave signature; a matched stop string longer than 4096 UTF-8 bytes
+is left out of it whole, never cut, so a completion stays far below any frame
+limit. `inference_complete` never carries their clear
 copies, on any connection, so on the wire only the holder of the attempt's
 session key reads them; a usage that cannot be sealed ends the request with
 `encryption_failure`. The clear usage counts and the profile's counts, timings

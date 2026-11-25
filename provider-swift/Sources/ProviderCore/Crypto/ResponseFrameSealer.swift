@@ -116,11 +116,25 @@ struct SealedTerminalFields: Equatable, Sendable {
         case cancelled
     }
 
-    var finishReason: FinishReason
-    /// The caller's stop string that ended the response, if one did.
-    var stopSequence: String?
-    var responseHash: String
-    var seSignature: String?
+    /// The longest matched stop string sealed, in UTF-8 bytes. A longer one
+    /// is left out whole, never cut, and the finish reason still says `stop`,
+    /// so a completion stays far below any frame limit. It bounds this sealed
+    /// copy only: a request may carry longer stop strings.
+    static let maxStopSequenceBytes = 4096
+
+    let finishReason: FinishReason
+    /// The caller's stop string that ended the response, if one did and it
+    /// fits `maxStopSequenceBytes`.
+    let stopSequence: String?
+    let responseHash: String
+    let seSignature: String?
+
+    init(finishReason: FinishReason, stopSequence: String?, responseHash: String, seSignature: String?) {
+        self.finishReason = finishReason
+        self.stopSequence = stopSequence.flatMap { $0.utf8.count <= Self.maxStopSequenceBytes ? $0 : nil }
+        self.responseHash = responseHash
+        self.seSignature = seSignature
+    }
 
     /// The finish reason of a response whose last streamed frame named
     /// `streamed`: a stream the coordinator cancelled is `cancelled`, a

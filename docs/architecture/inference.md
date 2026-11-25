@@ -2541,6 +2541,21 @@ yields the terminal events, and the coordinator pays the request as delivered.
 An unpaid stop counts wherever it lands: the frames loop may not have sent the
 finished answer yet, and nothing is paid for it.
 
+A dropped connection does not stop a request whose sealed body carries a
+resume id and whose frame carries no receipt nonce
+([request resume v1](../reference/protocol-messages.md#request-resume-v1)).
+Its chunks go through `ResumableResponse`
+(`provider-swift/Sources/ProviderCore/Coordinator/RequestResume.swift`), which
+seals each to the dispatch now bound and keeps its plaintext, up to 4 MiB, in a
+`ResponseTextBuffer`; the terminal's response hash and sealed usage are built
+for the dispatch that receives it. At the disconnect such a request is held:
+its generation keeps its slot, power assertion and request id inside the loop,
+and only its output is kept. A matching dispatch from a surviving coordinator
+takes every kept chunk, resealed to its own session key, and then the live ones;
+at the end of the window (15 s after the disconnect or after the generation's
+end) an unmatched one is cancelled with the cause `connectionLost`, its output
+dropped (`ProviderLoop+RequestResume.swift`).
+
 While an answer runs, `darkbloom status` lists it (`Answers in progress`), since
 the served counters move only at its finish. Each capacity tick,
 `ProviderLoop.refreshRunningRequests` reads every bridge's active requests

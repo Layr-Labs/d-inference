@@ -176,6 +176,10 @@ extension CoordinatorClient {
                     serviceReservationID: request.serviceReservationID)
                 return
             }
+            var signature = CoordinatorSignatureCheck.notChecked
+            if config.requestVerifier.checksRequests {
+                signature = request.coordinatorSignature == nil ? .unsigned : .verified
+            }
             if config.requestVerifier.checksRequests, let refusal = config.requestVerifier.check(
                 request, senderPublicKey: senderKeyBytes, ciphertext: cipherBytes,
                 recipientPublicKey: config.publicKey.flatMap { Data(base64Encoded: $0) },
@@ -207,7 +211,8 @@ extension CoordinatorClient {
                 serviceReservationID: request.serviceReservationID,
                 promptWork: request.promptWork,
                 gemmaPromptContract: request.gemmaPromptContract,
-                frameCachePolicy: request.frameCachePolicy
+                frameCachePolicy: request.frameCachePolicy,
+                coordinatorSignature: signature
             ))
 
         case .cancel(let cancel):

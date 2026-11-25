@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-24
+> Last updated: 2026-11-25
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -357,6 +357,8 @@ connection, first.
 | `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
 | `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`). Each plan of a roster registration's `plans[]` names its generation `mode` (omitted is `pipeline_v1`) and that mode's `cuts`: none for `tensor_parallel_v1`, one fewer than `members` for every other mode (`provider-swift/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift`, `ClusterPlan.cutCount`; `darkbloom-platform:coordinator/protocol/cluster_generation_mode.go`, `ClusterPlanModeCutCount`). The provider does not encode `tensor_parallel_shares` yet, so a setup with unequal tensor-parallel shares is refused at registration (`provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberRoster.swift`, `NativePairMemberRoster`). A plan for a model approval also carries `runtime`, exactly `native_runtime_sha256`, `capability_sha256`, `resource_policy_sha256` and `profile_sha256` (64 lowercase hex, nonzero), from the member's own saved setup; it is left out of a plan for a build-pinned approval and is part of the plan both members must register byte for byte (`ClusterPlan.runtime`, `samePlacement`; [model approvals](configuration.md#model-approvals)) |
 | `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
+| `request_resume_protocol` | `int` | `Int?` | opt | `1`: the provider keeps an interrupted request's work for a matching dispatch ([request resume v1](#request-resume-v1)). A coordinator puts `_darkbloom_resume_id` in the sealed body only for a provider that registered `1`. Never on the member role; older coordinators ignore it |
+| `resumable_requests` | `[]string` | `[String]?` | opt | The resume ids (64 lowercase hex each) of the requests the provider holds or runs, newest first: at most 64, and never more than it runs at once. A routing hint only: unsigned, it grants nothing, and a false entry costs only the coordinator's wait. Omitted when empty |
 
 An attested registration is encoded by the raw-attestation encoder, not the
 Codable one (`provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift`,
@@ -1397,6 +1399,60 @@ prefix-cache evidence at all (`EngineV2Bridge.prefixCacheEvidenceCallbacks`,
 the local [`/metrics`](../provider/direct-mode.md#cache-policy-of-local-requests)
 (`darkbloom_cache_policy_requests_total`).
 
+#### Request resume v1
+
+A coordinator can also put a resume id in the encrypted body, only for a
+provider that registered `request_resume_protocol: 1`: the top-level member
+`_darkbloom_resume_id`, 64 lowercase hexadecimal characters (any other value
+reads as absent). The provider never derives it and never echoes it. Like
+`_darkbloom_cache`, it never reaches the model: the request decoders ignore it
+(`RequestResume.BodyProbe`,
+`provider-swift/Sources/ProviderCore/Coordinator/RequestResume.swift`). The
+platform side, which writes it and resends the call, is the coordinator's
+failover design, phase 5.
+
+When the connection drops, the provider keeps each request whose body carried
+a resume id and whose frame carried no `cache_receipt_nonce`: its generation
+runs on and its output (every chunk and the terminal usage) stays in process
+memory. Every other in-flight request is cancelled at once, as before. It holds
+at most 64 such requests, and never more than it runs at once; a request whose
+output passes 4 MiB is not kept. The next `register` lists their ids in
+`resumable_requests`. A held request ends 15 s after the disconnect, or 15 s
+after the end of its generation when that is later (monotonic clock): then it
+is cancelled with the cause `connectionLost` and its output dropped, unanswered
+and unpaid (`ProviderLoop+RequestResume.swift`).
+
+An `inference_request` takes a held request's answer only when all of these
+hold (`RequestResume.refusal`):
+
+| Check | Rule |
+|---|---|
+| Resume id | its decrypted body carries the held id; one dispatch per id: a second runs as new |
+| Body | SHA-256 of its exact decrypted body bytes equals the held request's, compared in constant time; the provider keeps the digest, not the body |
+| Session key | its `ephemeral_public_key` differs from the held request's, so a copy of the dead coordinator's frame takes nothing |
+| Outer fields | `cache_scope`, `prefix_cache_protocol`, `cache_receipt_boundary_mode`, `cache_repeated_prefix_tokens`, `tool_schema_metadata_protocol`, `gemma_prompt_contract` and the body's `model` equal the held request's |
+| Receipts | it carries no `cache_receipt_nonce`: the held output has no receipt that could be bound to a new nonce |
+| Role | not a pair or cluster request: a member never resumes |
+| Signature | when the build pins coordinator request-signing keys, it carries a `coordinator_signature` that verifies (one that fails, or a missing one under `requireSignature`, never reaches the loop) |
+
+A dispatch that fails any check runs as new. A frame that names a held
+request's own `request_id` gets no answer. On a match the provider sends
+`inference_accepted`, then every response chunk from the first as ordinary
+`inference_response_chunk` frames under the new `request_id`, sealed to the new
+session key with its static key `K` as sender and numbered from 0 for the new
+sealer; then, once the generation ends, `inference_complete` with the whole
+usage, `resumed: true`, the sealed usage after the last chunk, and a response
+hash over the new `request_id`. A generation still running streams what it kept,
+then continues live. The old `request_id` is forgotten: a `cancel` naming it
+stops nothing, and a `cancel` naming the new one stops the generation; a second
+frame under the new `request_id` gets no answer either. The window counts from
+the moment the provider's connection reader sees the socket end. The new
+dispatch acquires no service lease of its own, so its `service_reservation_id`
+is released right after `inference_accepted`; the held generation keeps the
+lease of the dead coordinator's reservation, and that reservation's release,
+under its old id, goes out on the new connection when the generation's
+pipeline ends.
+
 A decrypted body that nests objects and arrays more than 64 deep
 (`JSONNestingLimit.maximumDepth`,
 `provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`) or holds
@@ -1880,6 +1936,7 @@ Go `UsageInfo` · Swift `UsageInfo`.
 | `cache_tier` | `string` | `PrefixCacheTier?` | opt |
 | `cached_tokens`, `prefill_tokens_saved` | `int` | `UInt64?` | opt |
 | `cache_stage_ms` | `float64` | `Double?` | opt — the one provider-side duration outside `profile` |
+| `resumed` | `bool` | `Bool` | opt — `true` only on the `inference_complete` usage (plaintext and sealed) of a dispatch that took a held request's answer ([request resume v1](#request-resume-v1)); omitted otherwise. The provider asserts it, unsigned: informational only. The coordinator never uses it for pricing, payout or any money decision |
 
 ## Model unloading
 

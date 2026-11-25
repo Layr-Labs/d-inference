@@ -22,7 +22,8 @@ public enum CoordinatorClientCodec {
         memberRegistrationNonce: String? = nil,
         clusterResume: ClusterMembership.Resume? = nil,
         appAttestResumeNonce: String? = nil,
-        busy: ProviderBusy? = nil
+        busy: ProviderBusy? = nil,
+        resumableRequests: [String] = []
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -99,7 +100,13 @@ public enum CoordinatorClientCodec {
             // A member away in its session's disconnect grace claims it here.
             clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil,
             busy: busy,
-            gemmaPromptContract: GemmaPromptContract.advertisedVersion
+            gemmaPromptContract: GemmaPromptContract.advertisedVersion,
+            // Request resume v1: never on a member's control connection (pair
+            // and cluster requests are never resumed). The held list is a
+            // routing hint, newest first: the newest 64 at most.
+            requestResumeProtocol: memberMode ? nil : RequestResume.protocolVersion,
+            resumableRequests: memberMode || resumableRequests.isEmpty
+                ? nil : Array(resumableRequests.prefix(RequestResume.maxHeldRequests))
         ))
     }
 
@@ -121,7 +128,8 @@ public enum CoordinatorClientCodec {
         memberRegistrationNonce: String? = nil,
         clusterResume: ClusterMembership.Resume? = nil,
         appAttestResumeNonce: String? = nil,
-        busy: ProviderBusy? = nil
+        busy: ProviderBusy? = nil,
+        resumableRequests: [String] = []
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -142,7 +150,8 @@ public enum CoordinatorClientCodec {
                 memberRegistrationNonce: memberRegistrationNonce,
                 clusterResume: clusterResume,
                 appAttestResumeNonce: appAttestResumeNonce,
-                busy: busy
+                busy: busy,
+                resumableRequests: resumableRequests
             )
         )
     }

@@ -390,6 +390,11 @@ public struct UsageInfo: Codable, Sendable, Equatable {
     public var cachedTokens: UInt64?
     public var prefillTokensSaved: UInt64?
     public var cacheStageMs: Double?
+    /// True only on the terminal of a dispatch that took a held request's
+    /// output (request resume v1, `RequestResume`); omitted otherwise. The
+    /// Mac asserts it, unsigned: informational only, never an input to
+    /// pricing, payout or any money decision.
+    public var resumed: Bool
 
     enum CodingKeys: String, CodingKey {
         case promptTokens = "prompt_tokens"
@@ -400,6 +405,7 @@ public struct UsageInfo: Codable, Sendable, Equatable {
         case cachedTokens = "cached_tokens"
         case prefillTokensSaved = "prefill_tokens_saved"
         case cacheStageMs = "cache_stage_ms"
+        case resumed
     }
 
     public init(
@@ -410,8 +416,10 @@ public struct UsageInfo: Codable, Sendable, Equatable {
         cacheTier: PrefixCacheTier? = nil,
         cachedTokens: UInt64? = nil,
         prefillTokensSaved: UInt64? = nil,
-        cacheStageMs: Double? = nil
+        cacheStageMs: Double? = nil,
+        resumed: Bool = false
     ) {
+        self.resumed = resumed
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.reasoningTokens = reasoningTokens
@@ -433,6 +441,7 @@ public struct UsageInfo: Codable, Sendable, Equatable {
         self.cachedTokens = try c.decodeIfPresent(UInt64.self, forKey: .cachedTokens)
         self.prefillTokensSaved = try c.decodeIfPresent(UInt64.self, forKey: .prefillTokensSaved)
         self.cacheStageMs = try c.decodeIfPresent(Double.self, forKey: .cacheStageMs)
+        self.resumed = try c.decodeIfPresent(Bool.self, forKey: .resumed) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -445,6 +454,7 @@ public struct UsageInfo: Codable, Sendable, Equatable {
         try c.encodeIfPresent(cachedTokens, forKey: .cachedTokens)
         try c.encodeIfPresent(prefillTokensSaved, forKey: .prefillTokensSaved)
         try c.encodeIfPresent(cacheStageMs, forKey: .cacheStageMs)
+        if resumed { try c.encode(true, forKey: .resumed) }
     }
 }
 

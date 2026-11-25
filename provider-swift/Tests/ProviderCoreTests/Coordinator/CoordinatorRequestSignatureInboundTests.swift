@@ -110,10 +110,56 @@ struct CoordinatorRequestSignatureInboundTests {
         }
         var served: [String] = []
         for await event in events {
-            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
+            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
         }
         #expect(served == frames.map { $0.0 }.filter { !refused.contains($0) })
         #expect(released == refused.map { reservations[$0] ?? "missing" })
+    }
+
+    /// The loop learns what the receive path found, for request resume: with a pinned key, a verified signature or
+    /// none (when the pin does not require one); without one, nothing was checked. A request whose signature fails, or
+    /// that a requiring pin finds unsigned, never reaches the loop (the tests above), so it can take no held answer.
+    @Test func theLoopLearnsTheSignatureVerdict() async throws {
+        var signed = try sealedRequest(id: "signed", reservation: UUID().uuidString)
+        signed.coordinatorSignature = sign(signed, with: coordinatorKey)
+        let unsigned = try sealedRequest(id: "unsigned", reservation: UUID().uuidString)
+        var forged = try sealedRequest(id: "forged", reservation: UUID().uuidString)
+        forged.coordinatorSignature = sign(forged, with: Curve25519.Signing.PrivateKey())
+        #expect(await verdicts(after: [signed, unsigned, forged], verifier: verifier(required: false))
+            == ["signed": .verified, "unsigned": .unsigned])
+        #expect(await verdicts(after: [unsigned], verifier: verifier(required: true)) == [:])
+        #expect(await verdicts(after: [signed, unsigned], verifier: .none)
+            == ["signed": .notChecked, "unsigned": .notChecked])
+    }
+
+    private func verdicts(after requests: [CoordinatorMessage.InferenceRequest],
+                          verifier: CoordinatorRequestVerifier) async -> [String: CoordinatorSignatureCheck] {
+        let client = CoordinatorClient(config: .init(
+            url: "",
+            hardware: HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max",
+                chipFamily: .m4, chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
+                cpuCores: .init(total: 16, performance: 12, efficiency: 4),
+                gpuCores: 40, memoryBandwidthGbs: 546),
+            models: [], backendName: "mlx-swift", publicKey: provider.publicKeyBase64,
+            requestVerifier: verifier),
+            stats: AtomicProviderStats(), state: ProviderState(), liveAPNsToken: { nil })
+        let (_, continuation) = AsyncStream<OutboundMessage>.makeStream()
+        let router = await client.outboundRouter
+        router.activate(continuation)
+        let (events, _) = await client.start()
+        for request in requests {
+            let wire = try! ProviderProtocolCodec.encodeCoordinatorMessage(.inferenceRequest(request))
+            await client.handleIncomingFrame(wire, receivedAt: .now)
+        }
+        await client.shutdown()
+        continuation.finish()
+        var verdicts: [String: CoordinatorSignatureCheck] = [:]
+        for await event in events {
+            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, let signature) = event {
+                verdicts[id] = signature
+            }
+        }
+        return verdicts
     }
 
     private func verifier(required: Bool) -> CoordinatorRequestVerifier {
@@ -178,7 +224,7 @@ struct CoordinatorRequestSignatureInboundTests {
         }
         var served: [String] = []
         for await event in events {
-            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
+            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
         }
         return (served, released)
     }

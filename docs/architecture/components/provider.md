@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-25
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -139,8 +139,12 @@ the [protocol-1 resumption responder](../../reference/protocol-messages.md#app-a
 without requiring the worker flag. It is synchronous, with no Apple operation,
 model-state change or key persistence. It proves custody only; the platform decides
 whether the new connection may serve. Unexpected disconnect still cancels that
-connection's inference requests; this does not resume interrupted completions
-or prove two-minute engine continuity.
+connection's inference requests, except the ones a coordinator marked
+resumable ([request resume v1](../../reference/protocol-messages.md#request-resume-v1)):
+those keep running for up to 15 s, and a matching dispatch from a surviving
+coordinator, on the new connection, takes their whole answer. Endpoint
+resumption itself does not resume interrupted completions or prove two-minute
+engine continuity.
 
 A link can die with no TCP reset and no close frame, for example when the
 coordinator node is hard-reset. `sessionLoop` pings every `pingInterval` and

@@ -201,9 +201,17 @@ extension ProviderLoop {
         promptWork: PromptWork? = nil,
         gemmaPromptContract: Int? = nil,
         frameCachePolicy: RequestCachePolicy = .default,
+        coordinatorSignature: CoordinatorSignatureCheck = .notChecked,
         send: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
     ) async {
+        // A frame that names a held request's own id is a copy of the dead
+        // coordinator's dispatch (request resume v1): it neither runs nor
+        // touches the held request's bookkeeping, which is keyed by that id.
+        if namesHeldRequest(requestId) {
+            logger.warning("[\(requestId)] Ignoring a dispatch that names a held request")
+            return
+        }
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
         }
@@ -417,6 +425,29 @@ extension ProviderLoop {
             return
         }
 
+        // Request resume v1 (`ProviderLoop+RequestResume.swift`): a body with
+        // a resume id may take the output of the request held under it. Only
+        // its SHA-256 is kept, never a second copy of the body. Pair and
+        // cluster requests are never resumed.
+        let resumeIdentity: RequestResume.Identity? = isClusterMember ? nil : inbound.extensions.resumeID.map {
+            RequestResume.Identity(
+                resumeID: $0, body: decryptedData, sessionKey: senderKey,
+                outer: .init(
+                    model: chatRequest.model, cacheScope: authenticatedCacheScope,
+                    prefixCacheProtocol: prefixCacheProtocol, cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                    cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
+                    toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+                    gemmaPromptContract: gemmaPromptContract))
+        }
+        if let resumeIdentity, attachHeldRequest(
+            requestId: requestId, candidate: resumeIdentity, cacheReceiptNonce: frameCache.receiptNonce,
+            signature: coordinatorSignature, send: send)
+        {
+            // The held generation answers it; this frame's reservation and
+            // bookkeeping end here (the defer above).
+            return
+        }
+
         // A content part type no engine serves is refused before acceptance,
         // as the shared request preparation refuses it on the local API
         // (`OpenAIRequestValidationError.unsupportedContentPart`), on one Mac
@@ -585,7 +616,7 @@ extension ProviderLoop {
         if let afterTokenRegistered = afterTokenRegisteredForTesting { await afterTokenRegistered(requestId) }
         // Me first: a request that gave way to the owner (`giveWayToOwner`)
         // ends with this one terminal, before or after its stream started.
-        let sendGaveWayRefusal: @Sendable () -> Void = { [state] in
+        let sendGaveWayRefusal: @Sendable (SendHandle) -> Void = { [state] send in
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
@@ -597,7 +628,7 @@ extension ProviderLoop {
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during admission")
-            if token.gaveWay { sendGaveWayRefusal() }
+            if token.gaveWay { sendGaveWayRefusal(send) }
             return
         }
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
@@ -671,7 +702,7 @@ extension ProviderLoop {
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during model load")
-            if token.gaveWay { sendGaveWayRefusal() }
+            if token.gaveWay { sendGaveWayRefusal(send) }
             return
         }
 
@@ -805,7 +836,7 @@ extension ProviderLoop {
         if token.gaveWay {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request gave way to the owner before its stream started")
-            sendGaveWayRefusal()
+            sendGaveWayRefusal(send)
             return
         }
 
@@ -823,6 +854,15 @@ extension ProviderLoop {
         let terminalMemory = terminalMemoryForTesting
         receiptTransferredToTask = true
         profile.mark(.taskSpawned)
+        // A request with a resume id and no receipt to bind is resumable: its
+        // response goes through `ResumableResponse`, which keeps it for a
+        // dispatch from a surviving coordinator. The receipt of a request
+        // with a nonce cannot be bound to another dispatch's nonce, so such a
+        // request is cancelled at a disconnect, as every request was before.
+        let resumable: ResumableResponse? = frameCache.receiptNonce != nil ? nil : resumeIdentity.flatMap {
+            registerResumableRequest(requestId: requestId, identity: $0, send: send)
+        }
+        let taskSend = resumable?.controlHandle() ?? send
         let task = Task.detached {
             // Runs last: the decrypted body is released, and its zeroing
             // queued, only after this request's response (every chunk and the
@@ -889,7 +929,7 @@ extension ProviderLoop {
                                 fallbackReason: .deadline),
                             profile: profile),
                         fallbackFailure: .capacity,
-                        send: send)
+                        send: taskSend)
                     return true
                 } catch {
                     return false
@@ -901,7 +941,7 @@ extension ProviderLoop {
             let endAfterGivingWay: @Sendable (Int, Int) -> Void = { framesEmitted, bytesEmitted in
                 log.info("[\(requestId)] Gave way to the owner while queued; the coordinator re-routes it")
                 finalizeProfile(framesEmitted, bytesEmitted, false, nil)
-                sendGaveWayRefusal()
+                sendGaveWayRefusal(taskSend)
             }
 
             if rejectExpiredDeadline() { return }
@@ -928,33 +968,49 @@ extension ProviderLoop {
                             code: .encryptionFailure, statusCode: 502),
                         profile: profile),
                     fallbackFailure: .policy,
-                    send: send)
+                    send: taskSend)
                 return
             }
             if rejectExpiredDeadline() { return }
             let responseSealer = ResponseFrameSealer(keyPair: kp, sharedKey: sharedKey)
+            resumable?.start(sealer: responseSealer)
+
+            let failChunkEncryption: @Sendable () -> Bool = {
+                log.error("[\(requestId)] response-chunk encryption failed")
+                providerStats.incrementChunkEncryptionErrors()
+                finalizeProfile(0, 0, false, nil)
+                lookupReceiptFinalizer.sendTerminal(
+                    .inferenceError(
+                        requestId: requestId,
+                        failure: InferenceFailure(
+                            code: .encryptionFailure, statusCode: 502),
+                        profile: profile),
+                    fallbackFailure: .policy,
+                    send: taskSend)
+                return false
+            }
 
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
             /// immediately.  Uses the precomputed DH shared key so each
             /// call is ~1-2 us (symmetric-only), not ~150 us.
             let emitSSE: @Sendable (String) -> Bool = { sseData in
+                // A resumable request's chunk goes through its response path,
+                // which seals it to the dispatch now bound and keeps it for a
+                // later one. `dropped`: nothing will take this output, so the
+                // generation stops.
+                if let resumable {
+                    switch resumable.emit(sseData) {
+                    case .sent: return true
+                    case .dropped: return false
+                    case .sealFailed: return failChunkEncryption()
+                    }
+                }
                 let encryptedPayload: EncryptedPayload
                 do {
                     encryptedPayload = try responseSealer.sealFrame(sseData.utf8)
                 } catch {
-                    log.error("[\(requestId)] response-chunk encryption failed")
-                    providerStats.incrementChunkEncryptionErrors()
-                    finalizeProfile(0, 0, false, nil)
-                    lookupReceiptFinalizer.sendTerminal(
-                        .inferenceError(
-                            requestId: requestId,
-                            failure: InferenceFailure(
-                                code: .encryptionFailure, statusCode: 502),
-                            profile: profile),
-                        fallbackFailure: .policy,
-                        send: send)
-                    return false
+                    return failChunkEncryption()
                 }
 
                 // Direct send: bypass the OutboundRouter → AsyncStream →
@@ -1122,7 +1178,7 @@ extension ProviderLoop {
                                 terminalCause: .cancelled),
                             profile: profile),
                         fallbackFailure: .policy,
-                        send: send)
+                        send: taskSend)
                     return
                 }
                 if let failure = error as? PreContentDeadlineFailure {
@@ -1138,7 +1194,7 @@ extension ProviderLoop {
                                 fallbackReason: .deadline),
                             profile: profile),
                         fallbackFailure: .capacity,
-                        send: send)
+                        send: taskSend)
                     return
                 }
                 let reason = classifyInferenceErrorReason(error)
@@ -1200,7 +1256,7 @@ extension ProviderLoop {
                                 templateControls: templateControls)),
                         profile: profile),
                     fallbackFailure: failure.statusCode == 503 ? .capacity : .policy,
-                    send: send)
+                    send: taskSend)
                 return
             }
 
@@ -1501,7 +1557,7 @@ extension ProviderLoop {
                             failure: failure,
                             profile: profile),
                         fallbackFailure: failure.statusCode == 503 ? .capacity : .policy,
-                        send: send)
+                        send: taskSend)
                     return
                 }
             }
@@ -1561,7 +1617,7 @@ extension ProviderLoop {
                                 terminalCause: .cancelled),
                             profile: profile),
                         fallbackFailure: .policy,
-                        send: send)
+                        send: taskSend)
                     return
                 }
                 if completionTokens == 0 {
@@ -1665,15 +1721,17 @@ extension ProviderLoop {
             // Update state
             await me.updateAggregateCapacity()
 
-            // Send completion
+            // Send completion. A resumable request's terminal is built where it
+            // goes (`ResumableResponse.complete`): its response hash and sealed
+            // usage bind the dispatch that receives it.
             let seSignStart = SuspendingClock.now
-            let attestation = computeResponseAttestation(
+            let attestation: (hash: String, signature: String?)? = resumable != nil ? nil : computeResponseAttestation(
                 identity: signingIdentity,
                 requestId: requestId,
                 completionTokens: UInt64(max(completionTokens, 0)),
                 response: hashedOutput
             )
-            let seSignDuration = SuspendingClock.now - seSignStart
+            let seSignDuration: Duration? = attestation == nil ? nil : SuspendingClock.now - seSignStart
             let cacheResult = remoteCache.scope == nil ? nil : v2UsageSignal.lookupResult
             let usageInfo = UsageInfo(
                 promptTokens: UInt64(max(0, promptTokens)),
@@ -1699,28 +1757,41 @@ extension ProviderLoop {
                     f.set(.toolCallsBreakingDeclaration, Int64(toolCalls.breakingDeclaration))
                 }
             }
-            let encryptedUsage: EncryptedPayload?
-            do {
-                encryptedUsage = try responseSealer.sealUsage(usageInfo)
-            } catch {
-                log.error("[\(requestId)] usage encryption failed")
-                providerStats.incrementChunkEncryptionErrors()
-                encryptedUsage = nil
-            }
-            finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceComplete(
-                    requestId: requestId,
+            if let resumable {
+                finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, nil)
+                // Such a request carries no receipt nonce: nothing to send.
+                lookupReceiptFinalizer.finalize(failure: .policy)
+                resumable.complete(ResumableResponse.Completion(
                     usage: usageInfo,
                     stopSequence: v2UsageSignal.matchedStopSequence,
-                    seSignature: attestation.signature,
-                    responseHash: attestation.hash,
-                    // Live builder: SendHandle.send stamps flush/terminal_sent,
-                    // the codec materializes the wire object at encode time.
+                    completionTokens: UInt64(max(completionTokens, 0)),
+                    response: hashedOutput,
                     profile: profile,
-                    encryptedUsage: encryptedUsage),
-                fallbackFailure: .policy,
-                send: send)
+                    signer: signingIdentity))
+            } else if let attestation {
+                let encryptedUsage: EncryptedPayload?
+                do {
+                    encryptedUsage = try responseSealer.sealUsage(usageInfo)
+                } catch {
+                    log.error("[\(requestId)] usage encryption failed")
+                    providerStats.incrementChunkEncryptionErrors()
+                    encryptedUsage = nil
+                }
+                finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
+                lookupReceiptFinalizer.sendTerminal(
+                    .inferenceComplete(
+                        requestId: requestId,
+                        usage: usageInfo,
+                        stopSequence: v2UsageSignal.matchedStopSequence,
+                        seSignature: attestation.signature,
+                        responseHash: attestation.hash,
+                        // Live builder: SendHandle.send stamps flush/terminal_sent,
+                        // the codec materializes the wire object at encode time.
+                        profile: profile,
+                        encryptedUsage: encryptedUsage),
+                    fallbackFailure: .policy,
+                    send: taskSend)
+            }
 
             log.info(
                 "[\(requestId)] Complete\(cancelledMidStream ? " (cancelled mid-stream, partial settle)" : ""): "

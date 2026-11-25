@@ -138,31 +138,48 @@ extension ProviderLoop {
         modelSwitchTask?.cancel()
         clearAutopilotControl()
         logger.warning(.coordinatorDisconnected)
-        // Cancel all in-flight requests on disconnect -- the coordinator
-        // will not route responses for a dead connection.
-        await cancelAllInflight(cause: .connectionLost)
+        // A request whose sealed body carries a resume id keeps running, and
+        // its output is kept for a matching dispatch from a surviving
+        // coordinator (`ProviderLoop+RequestResume.swift`). Every other
+        // in-flight request is cancelled at once -- the coordinator will not
+        // route responses for a dead connection.
+        let disconnectedAt: ContinuousClock.Instant =
+            coordinatorDisconnectStamps.isEmpty ? .now : coordinatorDisconnectStamps.removeFirst()
+        let held = holdResumableRequests(at: disconnectedAt)
+        await cancelAllInflight(cause: .connectionLost, keeping: held)
     }
 
     /// `cause`: the connection dropped, or this Mac stops (a forced drain or
-    /// a shutdown whose drain timed out).
-    internal func cancelAllInflight(cause: InferenceEarlyEndCause) async {
-        let requestIds = Array(inflightTasks.keys)
+    /// a shutdown whose drain timed out). `kept`: the held resumable requests
+    /// a dropped connection leaves running, with their accounting.
+    internal func cancelAllInflight(cause: InferenceEarlyEndCause, keeping kept: Set<String> = []) async {
+        let requestIds = inflightTasks.keys.filter { !kept.contains($0) }
         for requestId in requestIds {
             await handleCancellation(requestId: requestId, receivedFromCoordinator: false, localCause: cause)
         }
         // A native task can have registered during one of those actor hops.
         // Retain its exact handle before clearing maps; legacy behavior stays.
-        for (requestID, task) in inflightTasks {
+        for (requestID, task) in inflightTasks where !kept.contains(requestID) {
             if let modelID = requestToModel[requestID], nativeMiMoLoads[modelID] != nil {
                 retainNativeMiMoHostConsumer(task, modelID: modelID)
                 task.cancel()
             }
         }
-        inflightTasks.removeAll()
-        completedBeforeTaskRegistration.removeAll()
-        inflightProfiles.removeAll()
-        if !requestToModel.isEmpty {
-            powerAssertion.releaseAll()
+        closeResumableRequests(except: kept)
+        inflightTasks = inflightTasks.filter { kept.contains($0.key) }
+        completedBeforeTaskRegistration = completedBeforeTaskRegistration.filter { kept.contains($0) }
+        inflightProfiles = inflightProfiles.filter { kept.contains($0.key) }
+        if kept.isEmpty {
+            if !requestToModel.isEmpty {
+                powerAssertion.releaseAll()
+            }
+        } else {
+            // Held requests keep their assertions; each other one still
+            // mapped gives its own back.
+            for requestID in requestToModel.keys
+            where !kept.contains(requestID) && !requestID.hasPrefix(Self.engineV2RecoveryPinPrefix) {
+                powerAssertion.release()
+            }
         }
         // Preserve wedge-recovery pins: they are NOT inflight requests —
         // they keep the idle monitor and the eviction filters off a slot
@@ -171,12 +188,13 @@ extension ProviderLoop {
         // disconnect-driven mass cancel must not strip that protection.
         // (Pins never hold a power assertion, so releaseAll is unaffected.)
         requestToModel = requestToModel.filter {
-            $0.key.hasPrefix(Self.engineV2RecoveryPinPrefix)
+            kept.contains($0.key) || $0.key.hasPrefix(Self.engineV2RecoveryPinPrefix)
         }
         syncWarmModelState()
     }
 
     internal func finishInflightRequest(requestId: String) async {
+        resumableRequestFinished(requestId)
         acceptedLifecycleRequests.remove(requestId)
         coordinatorCancelledAt.removeValue(forKey: requestId)
         let completedTask = inflightTasks.removeValue(forKey: requestId)

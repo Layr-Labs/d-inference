@@ -256,6 +256,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _refusingNewWorkForGood = false
     private var _ownerPausesPublic = false
     private var _busy: ProviderBusy? = nil
+    private var _resumableRequests: [String] = []
     private var _modelAdmissionDrains: Set<String> = []
     private var _memberPairSlotModel: String? = nil
 
@@ -414,6 +415,15 @@ public final class ProviderState: @unchecked Sendable {
     public var busy: ProviderBusy? {
         get { lock.withLock { _busy } }
         set { lock.withLock { _busy = newValue } }
+    }
+
+    /// The resume ids of the resumable requests the loop holds or runs,
+    /// newest first (`ProviderLoop+RequestResume.swift`). Every registration
+    /// lists them, so a reconnect that registers before the loop has seen
+    /// the disconnect still lists the requests it is about to hold.
+    var resumableRequests: [String] {
+        get { lock.withLock { _resumableRequests } }
+        set { lock.withLock { _resumableRequests = newValue } }
     }
 
     /// Model admission mirrors are separate from whole-provider draining:

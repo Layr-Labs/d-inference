@@ -232,7 +232,17 @@ extension ProviderLoop {
     /// Cancels beside the work FIFO: neither the connection reader nor the
     /// FIFO waits for it to reach the engine.
     private func startCoordinatorCancellation(_ requestId: String) {
-        Task { await handleCancellation(requestId: requestId) }
+        // Request resume v1: a cancel for an attached dispatch stops the
+        // generation it took; one that names a held request's own id names a
+        // dispatch no coordinator holds, and stops nothing.
+        guard let target = coordinatorCancelTarget(requestId) else {
+            coordinatorCancelReasons.removeValue(forKey: requestId)
+            return
+        }
+        if target != requestId, let reason = coordinatorCancelReasons.removeValue(forKey: requestId) {
+            coordinatorCancelReasons[target] = reason
+        }
+        Task { await handleCancellation(requestId: target) }
     }
 
     /// Waits until every released admission has returned.

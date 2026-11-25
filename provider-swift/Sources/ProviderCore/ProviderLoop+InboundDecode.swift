@@ -260,6 +260,10 @@ struct InboundChatExtensions {
     private(set) var sealedPrefixCache: SealedPrefixCacheMetadata?
     /// The sealed member's `cache_policy`, whatever its nonce or scope.
     private(set) var cachePolicy: RequestCachePolicy = .default
+    /// The coordinator's resume id for this request (`_darkbloom_resume_id`,
+    /// `RequestResume`). Like `_darkbloom_cache`, the member never reaches
+    /// the model: the request decoders ignore it.
+    private(set) var resumeID: String?
 
     init(from data: Data) {
         struct Whole: Decodable {
@@ -291,5 +295,6 @@ struct InboundChatExtensions {
         let cacheProbe = try? SealedPrefixCacheMetadata.BodyProbe(from: decoder)
         sealedPrefixCache = cacheProbe?.value
         cachePolicy = cacheProbe?.cachePolicy ?? .default
+        resumeID = (try? RequestResume.BodyProbe(from: decoder))?.value
     }
 }

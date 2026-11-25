@@ -57,6 +57,14 @@ final class ResponseTextBuffer {
         return try body(String(decoding: UnsafeRawBufferPointer(start: storage, count: count), as: UTF8.self))
     }
 
+    /// Calls `body` with the bytes in `range`, without copying them. Keep the
+    /// pointer to the call.
+    func withBytes<R>(in range: Range<Int>, _ body: (UnsafeRawBufferPointer) throws -> R) rethrows -> R {
+        precondition(range.lowerBound >= 0 && range.upperBound <= count, "range outside the buffer")
+        guard let storage, !range.isEmpty else { return try body(UnsafeRawBufferPointer(start: nil, count: 0)) }
+        return try body(UnsafeRawBufferPointer(start: storage.advanced(by: range.lowerBound), count: range.count))
+    }
+
     private func append(_ bytes: UnsafeRawBufferPointer) {
         guard let source = bytes.baseAddress, !bytes.isEmpty else { return }
         reserve(count + bytes.count)

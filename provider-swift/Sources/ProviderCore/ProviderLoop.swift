@@ -685,6 +685,24 @@ public actor ProviderLoop {
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
 
+    /// Request resume v1 (`ProviderLoop+RequestResume.swift`): each resumable
+    /// request by its generation's own request id, that request id by resume
+    /// id, and the generation an attached dispatch's request id names.
+    internal var resumableRequests: [String: ResumableRequestEntry] = [:]
+    internal var resumableRequestByResumeID: [String: String] = [:]
+    internal var attachedResumeRequests: [String: String] = [:]
+    internal var resumableRequestSequence: UInt64 = 0
+    internal var heldRequestExpiryTask: Task<Void, Never>?
+    /// `RequestResume.window`; tests set it.
+    internal var requestResumeWindow: Duration = RequestResume.window
+    /// `RequestResume.maxBufferedOutputBytes`; tests set it.
+    internal var requestResumeMaxBufferedBytes = RequestResume.maxBufferedOutputBytes
+    /// When the connection-control reader saw each connection end, oldest
+    /// first, one per `.disconnected` the work loop has not handled yet
+    /// (`noteCoordinatorDisconnect`): the resume window counts from the
+    /// disconnect, not from when work ahead of it let the handler run.
+    internal var coordinatorDisconnectStamps: [ContinuousClock.Instant] = []
+
     /// A detached task can finish before the actor stores it in `inflightTasks`.
     /// Track that edge so the post-spawn registration does not leave a stale task.
     internal var completedBeforeTaskRegistration = Set<String>()

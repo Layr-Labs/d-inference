@@ -974,7 +974,9 @@ A coordinator that advertises `trust_status.coordinator_features`
 `response_hash` and `se_signature` only inside `encrypted_usage`, which it
 opens with the attempt's session key; every other coordinator gets the clear
 copies and a usage sealed without them, as before. If the usage cannot be
-sealed, the clear copies are sent
+sealed, a coordinator that reads the sealed fields gets `inference_error`
+`encryption_failure` (502), never the clear copies; any other coordinator gets
+`inference_complete` with the clear copies and no `encrypted_usage`
 (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`,
 `handleInferenceRequest`).
 | `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker ([coordinator/internal/observation/profile/profiler_provider.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/observation/profile/profiler_provider.go)). Observability only. Field list and validation: [../architecture/system-profiler.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/system-profiler.md) |

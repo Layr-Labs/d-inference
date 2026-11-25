@@ -821,6 +821,7 @@ extension ProviderLoop {
         // chunk back from its JSON delta.
         let me = self
         let terminalMemory = terminalMemoryForTesting
+        let usageSealFails = usageSealFailsForTesting
         receiptTransferredToTask = true
         profile.mark(.taskSpawned)
         let task = Task.detached {
@@ -932,7 +933,8 @@ extension ProviderLoop {
                 return
             }
             if rejectExpiredDeadline() { return }
-            let responseSealer = ResponseFrameSealer(keyPair: kp, sharedKey: sharedKey)
+            let responseSealer = ResponseFrameSealer(
+                keyPair: kp, sharedKey: sharedKey, failsUsageSeal: usageSealFails)
 
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
@@ -1715,10 +1717,22 @@ extension ProviderLoop {
             } catch {
                 log.error("[\(requestId)] usage encryption failed")
                 providerStats.incrementChunkEncryptionErrors()
+                // Such a coordinator never gets the clear copies: the request
+                // fails as one whose frame cannot be sealed does.
+                if terminal != nil {
+                    finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            failure: InferenceFailure(code: .encryptionFailure, statusCode: 502),
+                            profile: profile),
+                        fallbackFailure: .policy,
+                        send: send)
+                    return
+                }
                 encryptedUsage = nil
             }
-            // Without a sealed usage, the clear copies are the only ones.
-            let sendsClearTerminal = terminal == nil || encryptedUsage == nil
+            let sendsClearTerminal = terminal == nil
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(

@@ -19,12 +19,16 @@ final class ResponseFrameSealer: Sendable {
     /// Frames sealed so far, which is also the next frame's number. Held
     /// across each seal so that a number goes to exactly one box.
     private let sealedFrames = os.OSAllocatedUnfairLock<UInt64>(initialState: 0)
+    /// Tests only: the usage seal throws, as a failed seal would.
+    private let failsUsageSeal: Bool
 
-    init(keyPair: NodeKeyPair, sharedKey: Data, prefix: [UInt8] = ResponseFrameSealer.randomPrefix()) {
+    init(keyPair: NodeKeyPair, sharedKey: Data, prefix: [UInt8] = ResponseFrameSealer.randomPrefix(),
+         failsUsageSeal: Bool = false) {
         precondition(prefix.count == Self.prefixLength)
         self.keyPair = keyPair
         self.sharedKey = sharedKey
         self.prefix = prefix
+        self.failsUsageSeal = failsUsageSeal
     }
 
     /// Seals the next frame of the response.
@@ -41,7 +45,8 @@ final class ResponseFrameSealer: Sendable {
     /// under the number after the last frame. Sealing it ends the sequence:
     /// call it once, after the last frame.
     func sealUsage(_ usage: UsageInfo, terminal: SealedTerminalFields? = nil) throws -> EncryptedPayload {
-        try sealedFrames.withLockUnchecked { count in
+        if failsUsageSeal { throw CryptoError.encryptionFailed }
+        return try sealedFrames.withLockUnchecked { count in
             let body = try Self.usageEncoder.encode(
                 SealedResponseUsage(frameCount: count, usage: usage, terminal: terminal))
             let payload = try keyPair.encryptPayloadFast(sharedKey: sharedKey, plaintext: body, nonce: nonce(count))

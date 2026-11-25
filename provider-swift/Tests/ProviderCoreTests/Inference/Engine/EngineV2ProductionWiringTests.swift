@@ -30,6 +30,7 @@ import MLXNN
 import Testing
 
 @testable import ProviderCore
+@testable import ProviderCoreFoundation
 
 // MARK: - Scripted CBv2Engine stub (same shape as EngineV2BridgeTests)
 
@@ -122,6 +123,8 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
     /// (`…assistant\n<think>\n`) without touching the default per-id
     /// behavior the logprob assertions rely on.
     var decodeOverride: String?
+    /// Extra special-token ids the vocabulary resolves, beside `</s>`.
+    var tokenIds: [String: Int] = [:]
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         Array(repeating: 0, count: text.count)
@@ -132,7 +135,7 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
         if let decodeOverride { return decodeOverride }
         return tokenIds.map { "t\($0)" }.joined()
     }
-    func convertTokenToId(_ token: String) -> Int? { ["</s>": 2][token] }
+    func convertTokenToId(_ token: String) -> Int? { tokenIds[token] ?? ["</s>": 2][token] }
     func convertIdToToken(_ id: Int) -> String? {
         if id == 2 { return "</s>" }
         guard id >= 0, id < 128, let scalar = UnicodeScalar(id) else { return nil }
@@ -2598,5 +2601,91 @@ struct PrefillDeadlineProductionConfigTests {
             EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
                 configuredMode: .enforce,
                 environment: unsupportedWithLegacyOff))
+    }
+}
+
+// MARK: - Inkling 2 thinking off: the optional thought ban reaches the engine
+
+/// With `Inkling2ThinkingOffPolicy` switched on, a thinking-off Inkling 2
+/// request submits with a −100 bias on the thought opener, on the coordinator
+/// path (beside the sealed-body overrides) and the local API (beside the
+/// request's own fields); switched off it submits exactly as before.
+@Suite("EngineV2 production wiring: Inkling 2 thinking off")
+struct EngineV2InklingThinkingOffWiringTests {
+    static let model = "thinkingmachines/Inkling-2-Mini"
+    static let opener = 200_010
+
+    private static func tokenizer() -> TokenizerHandle {
+        TokenizerHandle(WiringStubTokenizer(tokenIds: ["<|content_thinking|>": opener]))
+    }
+
+    private static func scriptedEngine() -> WiringScriptedEngine {
+        WiringScriptedEngine(script: .stream([
+            .delta(text: "<|message_model|><|content_text|>Hi<|end_message|>", tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+    }
+
+    private static func thinkingOffRequest(_ extra: String = "") throws -> OpenAIChatCompletionRequest {
+        let body = Data((#"{"model":"thinkingmachines/Inkling-2-Mini","messages":[{"role":"user","content":"hi"}],"#
+            + #""reasoning":{"enabled":false}"# + extra + "}").utf8)
+        return try ProviderLoop.decodeOpenAIRequest(body, modelType: Inkling2ModelIdentity.modelType)
+    }
+
+    /// Submits `request` once and returns the engine's submitted sampling.
+    private static func submittedSampling(
+        _ providerEngine: MultiModelBatchSchedulerEngine, _ engine: WiringScriptedEngine,
+        _ request: OpenAIChatCompletionRequest, switchedOn: Bool
+    ) async throws -> CBv2SamplingParams? {
+        try await Inkling2ThinkingOffPolicy.$switchedOn.withValue(switchedOn) {
+            let stream = try await providerEngine.streamChatCompletion(request: request)
+            _ = try? await recordServerStream(stream)
+        }
+        return engine.submitted.last?.sampling
+    }
+
+    @Test("coordinator path: the ban joins the sealed-body overrides")
+    func coordinatorPathCarriesTheBan() async throws {
+        for switchedOn in [true, false] {
+            let engine = Self.scriptedEngine()
+            let bridge = makeBridge(engine: engine, modelId: Self.model)
+            let providerEngine = MultiModelBatchSchedulerEngine(
+                registryProvider: { @Sendable in
+                    [Self.model: .init(tokenizer: Self.tokenizer(), modelType: Inkling2ModelIdentity.modelType,
+                                       engineV2Bridge: bridge)]
+                },
+                engineV2Sampling: EngineV2SamplingOverrides(logitBias: ["7": -1], seed: 42))
+            let sampling = try await Self.submittedSampling(
+                providerEngine, engine, try Self.thinkingOffRequest(), switchedOn: switchedOn)
+            #expect(engine.submitted.count == 1)
+            #expect(sampling?.logitBias == (switchedOn ? [7: -1, Self.opener: -100] : [7: -1]), "\(switchedOn)")
+            #expect(sampling?.seed == 42)
+        }
+    }
+
+    @Test("local API: the ban joins the request's own logit_bias and seed")
+    func localAPICarriesTheBan() async throws {
+        for switchedOn in [true, false] {
+            let engine = Self.scriptedEngine()
+            let bridge = makeBridge(engine: engine, modelId: Self.model)
+            let providerEngine = MultiModelBatchSchedulerEngine(
+                acquire: { modelId in
+                    MultiModelBatchSchedulerEngine.AcquiredModel(
+                        tokenizer: Self.tokenizer(),
+                        releaseToken: OneShotRelease(release: { _ in }, modelId: modelId),
+                        modelType: Inkling2ModelIdentity.modelType,
+                        engineV2Bridge: bridge)
+                },
+                tokenizerProvider: { _ in
+                    .init(tokenizer: Self.tokenizer(), modelType: Inkling2ModelIdentity.modelType)
+                },
+                availableModels: { [Self.model] })
+            let sampling = try await Self.submittedSampling(
+                providerEngine, engine, try Self.thinkingOffRequest(#","logit_bias":{"7":2.5},"seed":9"#),
+                switchedOn: switchedOn)
+            #expect(engine.submitted.count == 1)
+            #expect(sampling?.logitBias == (switchedOn ? [7: 2.5, Self.opener: -100] : [7: 2.5]), "\(switchedOn)")
+            #expect(sampling?.seed == 9)
+        }
     }
 }

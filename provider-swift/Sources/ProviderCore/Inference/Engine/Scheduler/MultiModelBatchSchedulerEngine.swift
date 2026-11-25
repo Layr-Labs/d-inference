@@ -628,6 +628,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // there, so GLM routes reasoning to that channel whenever it is withheld.
         let withholdsReasoning = ProviderPromptContractPipeline.withholdsReasoning(
             request, controls: templateControls, modelType: modelType)
+        // Inkling 2 with thinking off may also keep the model from opening a
+        // thought (`Inkling2ThinkingOffPolicy`), on the coordinator path and the
+        // local API alike.
+        let bansThought = Inkling2ThinkingOffPolicy.bansThought(
+            request, controls: templateControls, modelType: modelType)
+        let requestSampling = Inkling2ThinkingOffPolicy.requestSampling(
+            overlay: engineV2Sampling, request: request, bansThought: bansThought,
+            tokenToId: { tokenizer.inner.convertTokenToId($0) })
         let glmWithholdsReasoning = GLM5NextPromptPolicy.withholdsReasoning(templateControls, modelType: modelType)
         // GLM images and video on the tensor-parallel pair: the product's own
         // media preparation on this leader, the vision tower on rank 0.
@@ -895,8 +903,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             openAIRequest: visionRequest, defaultMaxTokens: defaultMaxTokens,
                             logprobs: engineV2Logprobs != nil ? true : nil,
                             topLogprobs: engineV2Logprobs?.topLogprobs,
-                            logitBias: engineV2Sampling?.logitBias,
-                            seed: engineV2Sampling?.seed),
+                            logitBias: requestSampling?.logitBias,
+                            seed: requestSampling?.seed),
                         requestId: visionRequestId,
                         cacheScope: requestCacheScope,
                         cacheEnabled: cacheEnabled,
@@ -934,7 +942,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         let base = visionRequest
                         let continuationId = visionRequestId + "-exit"
                         let defaultMaxTokens = defaultMaxTokens
-                        let sampling = engineV2Sampling
+                        let sampling = requestSampling
                         let measurementPurpose = measurementPurpose
                         let cacheScope = requestCacheScope
                         let cacheEnabled = cacheEnabled
@@ -1298,16 +1306,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     promptTokens: promptTokens,
                     // Sampling/stop/max-token translation reuses the OpenAI →
                     // internal request mapping (`EngineV2Translation` reads the
-                    // internal shape). `logprobs`/`top_logprobs` and
-                    // Sealed-body sampling controls arrive through
-                    // `engineV2Sampling` and override the decoded upstream
-                    // fields. Standalone requests use the upstream fields.
+                    // internal shape). `logprobs`/`top_logprobs` arrive through
+                    // `engineV2Logprobs`. Sealed-body sampling controls
+                    // (`engineV2Sampling`) override the decoded upstream fields;
+                    // standalone requests use the upstream fields.
+                    // `requestSampling` adds Inkling 2's thought ban to either.
                     request: Self.translate(
                         openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
                         logprobs: engineV2Logprobs != nil ? true : nil,
                         topLogprobs: engineV2Logprobs?.topLogprobs,
-                        logitBias: engineV2Sampling?.logitBias,
-                        seed: engineV2Sampling?.seed,
+                        logitBias: requestSampling?.logitBias,
+                        seed: requestSampling?.seed,
                         // Exact Flint matches stops on its answer channel only.
                         engineStopStrings: modelType != "flint", nativeReasoningBudget: nativeReasoningBudget),
                     requestId: requestId,
@@ -1358,7 +1367,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let base = request
             let continuationId = requestId + "-exit"
             let defaultMaxTokens = defaultMaxTokens
-            let sampling = engineV2Sampling
+            let sampling = requestSampling
             let measurementPurpose = measurementPurpose
             let cacheScope = requestCacheScope
             let cacheEnabled = cacheEnabled

@@ -63,21 +63,28 @@ struct SSDPrefixCacheFactoryPathTests {
         #expect(!SSDPrefixCacheFactory.ephemeralAllowed(environment: [:]))
     }
 
-    @Test("the early-terminal and strict-fsync opt-ins accept only the documented true words")
+    @Test("the strict-fsync opt-in accepts only the documented true words")
     func optInFlagWords() {
-        let flags: [(String, ([String: String]) -> Bool)] = [
-            (SSDPrefixCachePolicy.terminalBeforePublicationFlag, SSDPrefixCachePolicy.terminalBeforePublication),
-            (SSDPrefixCachePolicy.strictFsyncFlag, SSDPrefixCachePolicy.strictFsync),
-        ]
-        for (key, isOn) in flags {
-            for accepted in ["1", "true", "TRUE", "yes", "Yes", "on", " on ", "\ttrue\t"] {
-                #expect(isOn([key: accepted]), "\(key)=\(accepted)")
-            }
-            for refused in ["", "0", "false", "no", "off", "enabled", "2", "on\n"] {
-                #expect(!isOn([key: refused]), "\(key)=\(refused)")
-            }
-            #expect(!isOn([:]), "\(key) unset")
+        let key = SSDPrefixCachePolicy.strictFsyncFlag
+        for accepted in ["1", "true", "TRUE", "yes", "Yes", "on", " on ", "\ttrue\t"] {
+            #expect(SSDPrefixCachePolicy.strictFsync(environment: [key: accepted]), "\(key)=\(accepted)")
         }
+        for refused in ["", "0", "false", "no", "off", "enabled", "2", "on\n"] {
+            #expect(!SSDPrefixCachePolicy.strictFsync(environment: [key: refused]), "\(key)=\(refused)")
+        }
+        #expect(!SSDPrefixCachePolicy.strictFsync(environment: [:]), "\(key) unset")
+    }
+
+    @Test("the early terminal is on unless set to a documented false word")
+    func earlyTerminalDefaultsOn() {
+        let key = SSDPrefixCachePolicy.terminalBeforePublicationFlag
+        for refused in ["0", "false", "FALSE", "no", "No", "off", " off ", "\tfalse\t"] {
+            #expect(!SSDPrefixCachePolicy.terminalBeforePublication(environment: [key: refused]), "\(key)=\(refused)")
+        }
+        for kept in ["", "1", "true", "on", "enabled", "2", "off\n"] {
+            #expect(SSDPrefixCachePolicy.terminalBeforePublication(environment: [key: kept]), "\(key)=\(kept)")
+        }
+        #expect(SSDPrefixCachePolicy.terminalBeforePublication(environment: [:]), "\(key) unset")
     }
 
     @Test("model folder name is the first 12 hex digits of the model id hash")

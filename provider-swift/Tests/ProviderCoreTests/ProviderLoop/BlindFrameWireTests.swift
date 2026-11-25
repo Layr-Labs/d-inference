@@ -55,7 +55,8 @@ struct BlindFrameWireTests {
         }
         let submissions = fixture.engine.ordinarySubmissionCount
         #expect(await fixture.stop(task))
-        let error = try #require(try #require(done).inferenceErrors.first { $0.requestId == requestId })
+        let snapshot = try #require(done)
+        let error = try #require(snapshot.inferenceErrors.first { $0.requestId == requestId })
         #expect(error.statusCode == 400)
         #expect(error.refusalReason?.rawValue == "sealed_for_blind_request")
         #expect(submissions == 0)

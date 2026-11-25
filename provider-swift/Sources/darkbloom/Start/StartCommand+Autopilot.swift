@@ -125,14 +125,14 @@ extension Start {
                 throw CancellationError()
             } catch {
                 try Task.checkCancellation()
-                if error is ModelArtifactBusy { held.insert(model.id) }
+                if error is SelectedModelBusy { held.insert(model.id) }
                 excluded(model.id, error)
             }
         }
         try Task.checkCancellation()
         if let approved, Set(verified) != approved {
             // An enrolled build that is on disk and eligible but whose write lease another process holds now (an
-            // Autopilot download or update in progress, `ModelArtifactBusy`) doesn't stop the start while another
+            // Autopilot download or update in progress, `SelectedModelBusy`) doesn't stop the start while another
             // enrolled model verified: the recorded inventory is saved unchanged, and the provider's own start
             // hashes that build again before it joins the Autopilot set it reports. A build that fails its check,
             // or a model missing from disk or the catalog, or no longer eligible, still refuses.

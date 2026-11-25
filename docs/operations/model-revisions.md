@@ -155,10 +155,10 @@ version with identical bytes.
 4. Let eligible providers download while serving their existing revisions.
    Providers then stagger their model-scoped drains, switch snapshots and
    announce the new hash through `models_update`. While a download or switch
-   holds a model's write lease, another process that checks or removes the
-   model gets `ModelArtifactBusy` ("being downloaded, updated or verified by
-   another process"); an Autopilot `darkbloom start` keeps such a recorded
-   model and starts. No per-model binary release,
+   holds a model's write lease, a start's verification of that model reports
+   `SelectedModelBusy` ("being downloaded, updated or verified by another
+   process"); an Autopilot `darkbloom start` keeps such a recorded model and
+   starts. No per-model binary release,
    alias edit or manual fleet download command is needed after support is installed.
 
 5. If this model participates in cache routing, qualify and derive the new

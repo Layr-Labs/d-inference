@@ -769,7 +769,7 @@ inventory check (`Start.PickerReserveMode`, `Start.resolveFallbackSelection` in
 
 Autopilot inventory verification names each cached model before checking its bytes.
 If another process holds that model’s update/verification lock, the check reports
-the busy model immediately (`ModelArtifactBusy`). An ordinary start with saved consent
+the busy model immediately (`SelectedModelBusy`). An ordinary start with saved consent
 keeps such a model: when at least one other enrolled model verified, it prints
 `Keeping <model> in the recorded Autopilot inventory`, saves the recorded inventory
 unchanged and starts; the serving process hashes that build again when it starts,

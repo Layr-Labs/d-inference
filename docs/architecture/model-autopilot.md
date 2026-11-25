@@ -29,7 +29,7 @@ has no Autopilot (`start --autopilot` is refused for it) and leaves the saved
 answer as it is. An ordinary start with saved consent verifies the recorded
 inventory without changing it (`Start.verifiedAutopilotInventory`): a recorded
 build that is on disk and eligible but whose write lease another process holds
-at that moment (`ModelArtifactBusy`, for example an Autopilot download in
+at that moment (`SelectedModelBusy`, for example an Autopilot download in
 progress) is named and kept, and the start goes on while another recorded build
 verified; the serving process hashes it again when it starts
 (`attachWeightHashes`), and only a hashed build joins the Autopilot set. A build

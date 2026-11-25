@@ -16,7 +16,7 @@ final class BlindRequestBounds: Sendable {
 
     let maxTokens: Int
     let promptTokenBound: Int
-    private let state = OSAllocatedUnfairLock<(admitted: Bool, exceeded: Bool)>(initialState: (false, false))
+    private let state = os.OSAllocatedUnfairLock<(admitted: Bool, exceeded: Bool)>(initialState: (false, false))
 
     init(_ terms: BlindServingTerms) {
         maxTokens = terms.maxTokens

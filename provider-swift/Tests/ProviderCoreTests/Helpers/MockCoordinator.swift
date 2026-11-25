@@ -430,6 +430,14 @@ public final class MockCoordinator: @unchecked Sendable {
         try await sendCoordinatorMessage(msg)
     }
 
+    /// Pushes one coordinator frame as raw JSON, whatever members it has.
+    public func pushRawFrame(_ object: [String: Any]) async throws {
+        let outbound: WebSocketOutboundWriter? = lock.withLock { activeOutbound }
+        guard let outbound else { throw MockCoordinatorError.noActiveWebSocket }
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        try await outbound.write(.text(json))
+    }
+
     public func pushCancel(requestId: String) async throws {
         let msg = CoordinatorMessage.cancel(.init(requestId: requestId))
         try await sendCoordinatorMessage(msg)

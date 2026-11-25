@@ -465,7 +465,9 @@ private func fullyPopulatedRegister(attestation: RawJSON) throws -> ProviderMess
         clusterModels: [sampleModel()],
         clusterMembership: membership,
         busy: ProviderBusy(reason: .addon, sinceMs: 1_700_000_000_000, addon: "io.darkbloom.sandbox"),
-        gemmaPromptContract: 2)
+        gemmaPromptContract: 2,
+        requestResumeProtocol: 1,
+        resumableRequests: [String(repeating: "d", count: 64)])
 }
 
 /// The fields of `register` left empty (nil, empty, `false`, zero or the solo

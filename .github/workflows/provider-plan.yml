@@ -38,6 +38,9 @@ on:
       skip:
         description: "'true' when a successful run already tested this tree"
         value: ${{ jobs.components.outputs.skip }}
+      warm_provider_cache:
+        description: "'true' when a dev push that runs no provider test (a tested tree, or no provider change) still builds the provider lane to save its Swift build cache: the push moves the cache's dependency tier"
+        value: ${{ jobs.components.outputs.warm_provider_cache }}
       tested_run:
         value: ${{ jobs.components.outputs.tested_run }}
       tree:
@@ -174,6 +177,7 @@ jobs:
       changed_cluster: ${{ steps.paths.outputs.cluster || 'false' }}
       changes_result: ${{ steps.paths.outcome }}
       skip: ${{ steps.lookup.outputs.skip }}
+      warm_provider_cache: ${{ steps.choose.outputs.warm_provider_cache || 'false' }}
       tested_run: ${{ steps.lookup.outputs.tested_run }}
       tree: ${{ steps.tree.outputs.tree }}
       base: ${{ steps.tree.outputs.base }}
@@ -236,7 +240,13 @@ jobs:
             --workflow-ref "$WORKFLOW_REF" --event "$EVENT" --sha "$SHA" --tree "$TREE" \
             --base "$BASE" --head "$HEAD" --components "$SELECTED" --run-id "$RUN_ID"
       # Runs after any earlier failure unless the run is cancelled: a failed
-      # lookup has already answered "test".
+      # lookup has already answered "test". A push to dev that runs no
+      # provider build (its tree was already tested, or its change selects no
+      # provider test) saves no provider build cache. When it moves that
+      # cache's dependency tier (a gitlink or a dependency manifest:
+      # scripts/ci-component-paths.py), pull requests on the new tier would
+      # find no dev entry to restore, so the provider build still runs there
+      # and saves one (warm_provider_cache); no test job runs.
       - name: Choose the components to test
         id: choose
         if: ${{ !cancelled() }}
@@ -246,10 +256,16 @@ jobs:
           PROVIDER: ${{ steps.paths.outputs.provider }}
           CLUSTER: ${{ steps.paths.outputs.cluster }}
           MIMO_AUDIO: ${{ steps.paths.outputs.mimo_audio }}
+          DEPENDENCY_TIER: ${{ steps.paths.outputs.dependency_tier }}
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
           GPU_LABELED: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-gpu-ci' || contains(github.event.pull_request.labels.*.name, 'run-gpu-ci')) }}
         run: |
+          WARM_PROVIDER_CACHE=false
+          if [ "$RUN_TESTS" = true ] && [ "$EVENT_NAME" = push ] && [ "$REF" = refs/heads/dev ] &&
+            [ "$DEPENDENCY_TIER" = true ] && { [ "$SKIP" = true ] || [ "$PROVIDER" != true ]; }; then
+            WARM_PROVIDER_CACHE=true
+          fi
           if [ "$RUN_TESTS" != true ] || [ "$SKIP" = true ]; then PROVIDER=false CLUSTER=false MIMO_AUDIO=false; fi
           CLUSTER_GPU=false
           if [ "$CLUSTER" = true ] && {
@@ -264,6 +280,7 @@ jobs:
             echo "cluster=$CLUSTER"
             echo "cluster_gpu=$CLUSTER_GPU"
             echo "mimo_audio=$MIMO_AUDIO"
+            echo "warm_provider_cache=$WARM_PROVIDER_CACHE"
           } >> "$GITHUB_OUTPUT"
 
   # Chooses a Darkbloom Sandbox or the Blacksmith fallback for the macOS jobs
@@ -332,7 +349,7 @@ jobs:
         test-provider-5 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
         test-provider-gates macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
         build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
-        build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
+        build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ (needs.components.outputs.provider == 'true' || needs.components.outputs.warm_provider_cache == 'true') && 1 || 0 }} balanced 12x32
         cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
         test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
         test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24

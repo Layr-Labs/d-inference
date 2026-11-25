@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 import subprocess
 
+from provider_release_cache.identity import dependency_file
+
 
 COMPONENTS = ("provider", "cluster", "mimo_audio")
 COMMON = (
@@ -133,25 +135,54 @@ def full_run(event_name, event):
     return False
 
 
-def changed_paths(event_name, event):
-    """The changed paths, or None when every component runs."""
+def diff_range(event_name, event):
+    """The change's (base, head) commits, or None when every component runs."""
     if event_name == "workflow_dispatch" or full_run(event_name, event):
         return None
     if event_name == "pull_request":
         base = revision(event["pull_request"]["base"]["sha"])
         head = revision(event["pull_request"]["head"]["sha"])
-        base = git("merge-base", base, head).decode().strip()
-    elif event_name == "push":
+        return git("merge-base", base, head).decode().strip(), head
+    if event_name == "push":
         head = revision(event["after"])
         before = event["before"]
         if before == "0" * 40:
             return None  # New branch: no trustworthy previous snapshot; run all.
-        base = revision(before)
-    else:
-        raise ValueError(f"Unsupported event: {event_name}")
+        return revision(before), head
+    raise ValueError(f"Unsupported event: {event_name}")
+
+
+def changed_paths(span):
+    """The paths `span` (diff_range) changes, or None when every component runs."""
+    if span is None:
+        return None
     # Include both ends of moves and preserve whitespace/newlines in filenames.
-    diff = git("diff", "--name-only", "--no-renames", "-z", base, head, "--")
+    diff = git("diff", "--name-only", "--no-renames", "--ignore-submodules=none", "-z", *span, "--")
     return [os.fsdecode(path) for path in diff.split(b"\0") if path]
+
+
+GITLINK_MODE = "160000"
+
+
+def moves_dependency_tier(span):
+    """Whether the change moves the Swift build cache's dependency tier.
+
+    That tier (scripts/provider-ci-cache.py) hashes every gitlink and every
+    dependency manifest (Package.swift, Package.resolved, .gitmodules), so its
+    commit inputs change only when the diff changes a gitlink or such a file
+    (the toolchain, which the cache key also binds, is not in the diff).
+    Without a diff (every component runs) it may have moved.
+    """
+    if span is None:
+        return True
+    records = git("diff", "--raw", "--no-renames", "--ignore-submodules=none", "--no-abbrev", "-z",
+                  *span, "--").split(b"\0")
+    # `:<old mode> <new mode> <old id> <new id> <status>` and its path, per change.
+    for record, path in zip(records[0::2], records[1::2]):
+        modes = record.decode("ascii").lstrip(":").split()[:2]
+        if GITLINK_MODE in modes or dependency_file(os.fsdecode(path)):
+            return True
+    return False
 
 
 def main():
@@ -161,12 +192,17 @@ def main():
     parser.add_argument("--output", default=os.environ.get("GITHUB_OUTPUT"))
     args = parser.parse_args()
     event = json.loads(Path(args.event_path).read_text())
-    paths = changed_paths(args.event_name, event)
+    span = diff_range(args.event_name, event)
+    paths = changed_paths(span)
     # Pull requests and pushes select alike: a push diffs against the
     # branch's previous commit (`before`); without one, everything runs.
     # Master pushes and pull requests into master select everything.
     selected = dict.fromkeys(COMPONENTS, True) if paths is None else classify(paths)
+    # Not a component: whether a dev push of a tested tree still builds the
+    # provider lane to save its cache (provider-plan.yml).
+    tier = moves_dependency_tier(span)
     output = "".join(f"{name}={str(enabled).lower()}\n" for name, enabled in selected.items())
+    output += f"dependency_tier={str(tier).lower()}\n"
     if args.output:
         with open(args.output, "a") as destination:
             destination.write(output)

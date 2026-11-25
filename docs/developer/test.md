@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-24
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -338,9 +338,11 @@ once more from nothing if that build fails. The test jobs build nothing: they
 download their lane's products and refuse products of another commit or
 toolchain version. Only a push to `dev` or `master` saves a build; a pull request
 restores its base branch's entry and saves nothing
-([CI caching](build.md#ci-caching)). A push whose tree a pull request run
-already tested runs no test job; the build jobs of the components the push
-changed save their caches.
+([CI caching](build.md#ci-caching)). A push whose tree a successful run of
+the same workflow already tested runs no test job and no build job, except
+`Build provider test products` on a `dev` push that moves the provider build
+cache's dependency tier, which builds and saves the caches without tests
+([CI workflows](build.md#ci-workflows)).
 
 Provider Gates runs the MiMo audio gate (`testNativeAudioRelease`),
 whose fixture needs the 1.87 GB pinned audio codec, only when the gate's

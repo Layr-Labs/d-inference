@@ -38,7 +38,8 @@ extension EngineV2Bridge {
     /// provider-log line and an `engine_health` event (`ssd_answered_unretired`,
     /// `ssd_answered_unretired_recovered`).
     func emitAnsweredUnretiredTransitionIfNeeded(now: ContinuousClock.Instant) {
-        let oldest = answeredUnretired.values.min().map { $0.duration(to: now) } ?? .zero
+        // An answer recorded after the caller read `now` is not older than zero.
+        let oldest = answeredUnretired.values.min().map { max(.zero, $0.duration(to: now)) } ?? .zero
         let overdue = oldest >= Self.answeredUnretiredWarnAfter
         guard overdue != lastAnsweredUnretiredOverdueEmitted else { return }
         lastAnsweredUnretiredOverdueEmitted = overdue
@@ -54,7 +55,7 @@ extension EngineV2Bridge {
         emit(EngineHealthEvent.make(
             severity: overdue ? .warn : .info,
             message: overdue
-                ? "engine_v2: answered request not retired" : "engine_v2: answered requests retired",
+                ? "engine_v2: answered request not retired" : "engine_v2: no answered request overdue",
             operation: overdue ? "ssd_answered_unretired" : "ssd_answered_unretired_recovered",
             model: modelId, kvBackend: kvBackendKind.rawValue,
             extra: ["answered_unretired": .int(count), "oldest_answered_unretired_ms": .int(oldestMs)]))

@@ -15,6 +15,8 @@ import MLXLMServer
 /// The process switch and the admission of GPT-OSS `auto` requests to
 /// `GPTOSSAutoToolConstraint`.
 enum GPTOSSAutoToolGrammar {
+    static let redControlKeepsHints = true
+
     /// An off word (`off`, `false`, `0`, `none`, `no` or `disabled`, any case,
     /// surrounding space ignored) restores unconstrained `auto` calls. Read
     /// once at launch. Not `DARKBLOOM_GPTOSS_`: that prefix is part of the SSD
@@ -121,7 +123,7 @@ enum GPTOSSAutoToolGrammar {
     /// Every other node, and a declaration without such a type, is returned
     /// unchanged.
     static func withoutRenderHintTypes(_ tool: OpenAITool) -> OpenAITool {
-        guard let parameters = tool.function.parameters else { return tool }
+        guard !redControlKeepsHints, let parameters = tool.function.parameters else { return tool }
         let unhinted = withoutRenderHintTypes(parameters, depth: 0)
         guard unhinted != parameters else { return tool }
         var copy = tool

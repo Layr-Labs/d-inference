@@ -25,9 +25,67 @@ import ProviderCoreFoundation
 ///   `<|message_tool|>NAME<|content_text|>...`.
 /// - Content: a list renders each part as its own block, so a message's text
 ///   parts reach the template as parts, in order (`textParts(of:)`).
+/// - System turns: with thinking on, a system message rendered after the
+///   conversation began kept the model searching its thought for where that
+///   instruction sat until the loop guard ended the row with no answer. Such a
+///   turn renders in place as a user turn with the same content; the system
+///   messages before the first other turn stay system
+///   (`laterSystemTurnsAsUser`). In place, an earlier turn's prompt stays a
+///   prefix of the next one's, so prefix-cache reuse holds.
 /// - Output: `Inkling2OutputChannels`. The template has no tool-choice control,
 ///   so required/named calls are prompt-forced and validated per frame.
 enum Inkling2PromptContract {
+    /// An off word (`0`, `false`, `off` or `no`, in any case, surrounding
+    /// space ignored) renders later system turns as system again, as the
+    /// template does. Read once at launch.
+    static let laterSystemEnvironmentKey = "DARKBLOOM_INKLING_LATER_SYSTEM_AS_USER"
+    static let laterSystemTurnsAsUser = isLaterSystemAsUserEnabled(
+        ProcessInfo.processInfo.environment[laterSystemEnvironmentKey])
+
+    static func isLaterSystemAsUserEnabled(_ value: String?) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return true }
+        return !["0", "false", "off", "no"].contains(value)
+    }
+
+    /// Every system message after the first other turn becomes a user turn
+    /// in place, content unchanged; the leading system messages, tool turns
+    /// and order are untouched. Nothing changes when `enabled` is false.
+    static func normalizeSystemMessages(
+        _ messages: [[String: any Sendable]], enabled: Bool = laterSystemTurnsAsUser
+    ) -> [[String: any Sendable]] {
+        guard enabled else { return messages }
+        var conversationStarted = false
+        return messages.map { message in
+            guard (message["role"] as? String) == "system" else {
+                conversationStarted = true
+                return message
+            }
+            guard conversationStarted else { return message }
+            var message = message
+            message["role"] = "user"
+            return message
+        }
+    }
+
+    /// The typed messages of the media path, the same way.
+    static func normalizeSystemMessages(
+        _ messages: [OpenAIChatMessage], enabled: Bool = laterSystemTurnsAsUser
+    ) -> [OpenAIChatMessage] {
+        guard enabled else { return messages }
+        var conversationStarted = false
+        return messages.map { message in
+            guard message.role == .system else {
+                conversationStarted = true
+                return message
+            }
+            guard conversationStarted else { return message }
+            var message = message
+            message.role = .user
+            return message
+        }
+    }
+
     /// The served type. The text and vision sub-configs never serve alone.
     static func applies(modelType: String?) -> Bool {
         Inkling2ModelIdentity.isNativeType(modelType)

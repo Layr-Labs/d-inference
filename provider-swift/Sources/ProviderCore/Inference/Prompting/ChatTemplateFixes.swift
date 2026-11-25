@@ -40,6 +40,9 @@ enum ChatTemplateFixes {
         var normalized = Qwen35TemplateFix.applies(to: context)
             ? Qwen35TemplateFix.normalizeMessages(sanitized)
             : sanitized
+        if Inkling2PromptContract.applies(modelType: context.modelType) {
+            normalized = Inkling2PromptContract.normalizeSystemMessages(normalized)
+        }
         try Qwen35TemplateFix.validateUserQuery(normalized, context: context)
 
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
@@ -60,6 +63,9 @@ enum ChatTemplateFixes {
         _ messages: [OpenAIChatMessage],
         context: ChatTemplateFixContext
     ) -> [OpenAIChatMessage] {
+        if Inkling2PromptContract.applies(modelType: context.modelType) {
+            return Inkling2PromptContract.normalizeSystemMessages(messages)
+        }
         guard Qwen35TemplateFix.applies(to: context) else { return messages }
         return Qwen35TemplateFix.normalizeMessages(messages)
     }

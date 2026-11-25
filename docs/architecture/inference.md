@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-24
+> Last updated: 2026-11-25
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -52,8 +52,10 @@ on overflow. This does not classify parser source spans: reasoning/tool entries
 still attach to the next visible content, and trailing entries without visible
 content are discarded on stream termination. No token metadata enters telemetry.
 The scheduler limits entries to the requested alternatives and drops those of
-withheld reasoning (`WithheldReasoningLogprobsFilter`) before either encoder sees
-them. One exception keeps the vLLM-style contract on the coordinator relay: for
+withheld reasoning (`WithheldReasoningLogprobsFilter` for `<think>` spans;
+`InklingWithheldReasoningLogprobsFilter` for Inkling 2, which classifies each
+entry by the message its token lands in, as `Inkling2OutputChannels` reads the
+output, and also drops the frame markers) before either encoder sees them. One exception keeps the vLLM-style contract on the coordinator relay: for
 GLM5-Next and the Nemotron Super owner (`ProviderLoop.logprobsCoverReasoning`)
 the scheduler or the owner appends entries to an `EngineV2LogprobsChannel` before
 the text they precede, and the frames loop splices them into reasoning and content
@@ -6796,7 +6798,9 @@ keys and media are refused. When a request sets `reasoning.exclude` true,
 `include_reasoning` false or `reasoning.enabled` false, `NativeToolStreamRouter`
 withholds the generated reasoning, so chat completions, the Responses API and
 the coordinator relay return only content and tool calls. The withheld tokens
-still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
+still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`,
+except Inkling 2's thought with thinking turned off, which counts only in
+`completion_tokens` (`MultiModelBatchSchedulerEngine.recordWithheldReasoning`);
 the response hash covers only emitted output, and withheld reasoning counts as
 first output for the first-content deadline. The provider loop gathers the
 emitted output (for the response hash), the delivered text (for the

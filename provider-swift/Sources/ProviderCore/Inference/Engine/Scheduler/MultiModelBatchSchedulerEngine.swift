@@ -2012,10 +2012,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.
-                var reasoningLogprobs = withholdReasoning && engineV2Logprobs != nil
-                    ? WithheldReasoningLogprobsFilter(
-                        startsInThought: nativeReasoningPrefix == ReasoningPromptProbe.thinkOpen)
-                    : nil
+                // Inkling 2 frames its thoughts as messages, not `<think>` spans.
+                var reasoningLogprobs = WithheldReasoningLogprobs.forRequest(
+                    withholdsReasoning: withholdReasoning, logprobs: engineV2Logprobs != nil,
+                    inklingChannels: nativeInklingChannels,
+                    startsInThought: nativeReasoningPrefix == ReasoningPromptProbe.thinkOpen)
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
@@ -2120,7 +2121,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             do {
                                 let events = try router.process(text)
                                 // Before any later frame: see recordWithheldReasoning.
-                                usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                                Self.recordWithheldReasoning(router.takeWithheldReasoning(), on: usageSignal,
+                                    nativeInklingChannels: nativeInklingChannels)
                                 for routed in events { emit(routed) }
                             } catch {
                                 await cancelUpstream()
@@ -2290,7 +2292,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         flushed += try router.process(answerTail)
                     }
                     flushed += try router.finishText(cutAtLimit: cutAtLimit)
-                    usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                    Self.recordWithheldReasoning(router.takeWithheldReasoning(), on: usageSignal,
+                        nativeInklingChannels: nativeInklingChannels)
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
@@ -2611,5 +2614,24 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             "reason": .string(reason),
         ])
         TelemetryClient.shared.emit(event)
+    }
+}
+
+extension MultiModelBatchSchedulerEngine {
+    /// Records reasoning the router withheld. Inkling 2 withholds its thought
+    /// only when the request turned thinking off
+    /// (`Inkling2PromptContract.withholdsReasoning`): that thought is not
+    /// reasoning the request asked for, so it ends the pre-content interval but
+    /// isn't counted in `reasoning_tokens`; its tokens stay in
+    /// `completion_tokens`. Reasoning another model withholds because the
+    /// client declined to receive it (`reasoning.exclude`) is still counted.
+    static func recordWithheldReasoning(_ text: String, on usageSignal: EngineV2RequestUsageSignal,
+                                        nativeInklingChannels: Bool) {
+        guard !text.isEmpty else { return }
+        if nativeInklingChannels {
+            usageSignal.recordWithheldOutput()
+        } else {
+            usageSignal.recordWithheldReasoning(text)
+        }
     }
 }

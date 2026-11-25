@@ -1,6 +1,0 @@
-### The logs now show where a re-formed pair spends its time before its first call
-
-- Each cluster worker writes one `darkbloom-owner-phases-v1` line once it is ready: how long each step of its start took after its start-up hardening (configuration, lease, credentials, orphan-memory check, JACCL bootstrap, model load, readiness), and inside the load the JACCL group, the data-plane keying with the other Mac, the link probe, the model file check, the weight reads, the copies into GPU memory and the GPU waits. It names the session's epoch and generation, the rank, the model, the mode and the stage cut.
-- The worker's `darkbloom-load-memory-v1` lines carry the same durations as new `phase_*_ms` fields after their own. A load that fails shows how far it got.
-- Each pair member logs one `darkbloom-pair-owner-timeline-v1` line per session: from the cancel of the previous session and the stop of its owner to the new prepare, the prepare, the commit, the owner's launch and the worker's first readiness. A `darkbloom-pair-session-heartbeat-v1` line follows each heartbeat a change of the session's report sends.
-- All durations come from the uptime clock. The lines change no behaviour and carry no key, credential or request.

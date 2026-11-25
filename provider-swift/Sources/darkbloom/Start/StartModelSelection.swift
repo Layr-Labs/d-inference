@@ -19,8 +19,10 @@ extension Start {
         guard !hosted.isEmpty else { throw ValidationError("No models selected.") }
         try Task.checkCancellation()
         let cached = autopilot ? try await inventory(hosted) : nil
-        // The inventory holds only downloaded catalog models that verified, so a
-        // model found only on disk is missing here even when nothing failed.
+        // The inventory holds downloaded catalog models that verified, plus, on an
+        // ordinary start with saved consent, a recorded model whose write lease
+        // another process held while it was checked (`verifiedAutopilotInventory`),
+        // so a model found only on disk is missing here even when nothing failed.
         // Name the models: blaming verification hides which one to drop.
         if let cached {
             let missing = hosted.filter { !cached.contains($0) }

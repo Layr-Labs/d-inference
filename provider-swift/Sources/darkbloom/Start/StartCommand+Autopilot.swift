@@ -91,7 +91,9 @@ extension Start {
         return try await Self.verifiedAutopilotInventory(local: local, catalog: catalog.models,
             memoryGb: Double(snapshot.hardware?.memoryGb ?? 0), runtimeCapabilities: runtimeCapabilities,
             approved: approved, verifying: { print("    Verifying \($0)...") }, verify: { try await verifier.verifySelectedModel($0) },
-            excluded: { printError("Not reporting \($0): downloaded build could not be verified (\($1)).") })
+            excluded: { printError("Not reporting \($0): downloaded build could not be verified (\($1)).") },
+            keptUnverified: { printError("Keeping \($0) in the recorded Autopilot inventory: an Autopilot download or "
+                + "update holds it now; the provider hashes it again when it starts, before it reports it.") })
     }
 
     static func verifiedAutopilotInventory(
@@ -99,10 +101,12 @@ extension Start {
         runtimeCapabilities: Set<ProviderRuntimeCapability>, approved: Set<String>? = nil,
         verifying: (String) -> Void = { _ in },
         verify: (CatalogModel) async throws -> Void,
-        excluded: (String, any Error) -> Void = { _, _ in }
+        excluded: (String, any Error) -> Void = { _, _ in },
+        keptUnverified: (String) -> Void = { _ in }
     ) async throws -> [String] {
         let byID = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var verified: [String] = []
+        var held = Set<String>()
         var seen = Set<String>()
         for model in local.sorted(by: { $0.id < $1.id }) {
             // The same rules decide which cached builds a running provider
@@ -121,11 +125,22 @@ extension Start {
                 throw CancellationError()
             } catch {
                 try Task.checkCancellation()
+                if error is SelectedModelBusy { held.insert(model.id) }
                 excluded(model.id, error)
             }
         }
         try Task.checkCancellation()
         if let approved, Set(verified) != approved {
+            // An enrolled build that is on disk and eligible but whose write lease another process holds now (an
+            // Autopilot download or update in progress, `SelectedModelBusy`) doesn't stop the start while another
+            // enrolled model verified: the recorded inventory is saved unchanged, and the provider's own start
+            // hashes that build again before it joins the Autopilot set it reports. A build that fails its check,
+            // or a model missing from disk or the catalog, or no longer eligible, still refuses.
+            let unchecked = approved.subtracting(verified)
+            if !verified.isEmpty, unchecked.isSubset(of: held) {
+                for id in unchecked.sorted() { keptUnverified(id) }
+                return try validatedAutopilotSelection(Array(approved))
+            }
             throw ValidationError("Could not validate every enrolled model. The recorded Autopilot inventory is unchanged; retry start, or explicitly refresh it with \(BuildEnvironment.current.cliName) autopilot models.")
         }
         guard !verified.isEmpty else {

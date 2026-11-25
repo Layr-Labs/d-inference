@@ -560,6 +560,9 @@ public actor ProviderLoop {
     /// Test seam, false in production: every later coordinator request's usage
     /// seal fails, as a failed seal would.
     internal var usageSealFailsForTesting = false
+    /// Test seam, false in production: every later blind request's usage
+    /// signature fails, as a failed signer would.
+    internal var blindUsageSigningFailsForTesting = false
     #endif
     /// Test seam, nil in production: awaited by a coordinator request's
     /// handler right after its cancellation token is registered, so a test

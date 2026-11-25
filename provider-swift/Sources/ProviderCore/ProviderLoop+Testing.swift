@@ -144,6 +144,12 @@ extension ProviderLoop {
         usageSealFailsForTesting = fails
     }
 
+    /// Test seam: every later blind request's usage signature fails, as a
+    /// failed signer would.
+    func setBlindUsageSigningFailsForTesting(_ fails: Bool) {
+        blindUsageSigningFailsForTesting = fails
+    }
+
     /// Test seam: startup collects its posture with the real collector, on these
     /// boot-settings command results and kernel SIP value (`applySecurityHardening`).
     func setBootSettingsReadingForTesting(commands: SecurityCommandRunner, kernelSIP: SIPConfiguration?) {

@@ -909,6 +909,7 @@ extension ProviderLoop {
         let terminalMemory = terminalMemoryForTesting
         #if DEBUG
         let usageSealFails = usageSealFailsForTesting
+        let blindUsageSigningFails = blindUsageSigningFailsForTesting
         #endif
         // A blind request's signed bounds, which every engine submission of it
         // is held to (`BlindRequestBounds`).
@@ -1835,6 +1836,9 @@ extension ProviderLoop {
                 let chunkCount = responseSealer.framesSealed
                 encryptedUsage = try responseSealer.sealUsage(usageInfo, terminal: terminalFields)
                 if let blindFrame {
+                    #if DEBUG
+                    if blindUsageSigningFails { throw CryptoError.encryptionFailed }
+                    #endif
                     blindUsage = try Self.signedBlindUsage(
                         blindFrame, requestId: requestId, usage: usageInfo, finishReason: terminalFields.finishReason,
                         chunkCount: chunkCount, framesSHA256: responseSealer.framesSHA256,

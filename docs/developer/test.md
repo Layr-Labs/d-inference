@@ -1191,6 +1191,7 @@ coordinator key:
 | A blind frame the provider cannot verify, and a blind body on an ordinary frame: refused, never served | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/BlindFrameWireTests.swift` |
 | A served blind request's signed usage (its terms, the clear usage, the frames' and sealed usage's digests, the signature), a usage that cannot be sealed ending the request with `encryption_failure`, and none on an ordinary completion | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/BlindUsageServeTests.swift` |
 | The response sealer's digest of its frames, kept only when asked (a blind request), and the shared vector's sealed bytes with or without it | `provider-swift/Tests/ProviderCoreTests/Crypto/ResponseFrameSealerTests.swift` |
+| A blind request whose usage cannot be signed ends with `encryption_failure`, sending no unsigned usage or clear terminal field | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/BlindUsageSigningFailureTests.swift` |
 | A cluster member refuses a blind request with `posture` | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/ClusterMemberLoopTests.swift` |
 | The managed Nemotron Super owner, serving the raw body, generates at most the signed output bound | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/NemotronSuperManagedSlotTests+Blind.swift` |
 

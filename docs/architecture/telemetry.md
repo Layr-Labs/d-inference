@@ -1,6 +1,6 @@
 # Provider telemetry
 
-> Last updated: 2026-10-23
+> Last updated: 2026-11-25
 
 Provider diagnostics travel on typed heartbeats and terminal profiles. The Swift event-emitter facade is inert; do not add prompt or completion content to heartbeats or profiles. The [wire schema](../reference/telemetry-schema.md) and [protocol reference](../reference/protocol-messages.md) define the boundary.
 
@@ -30,6 +30,17 @@ bucket ceilings and closed phase/cache/contention values, with at most 32
 engine-local aggregate buckets. Warm-pool planning retains numeric work means
 in memory; process logs and event emitters omit the measured prompt/output
 means and work rates.
+
+### Terminal profile categories
+
+The `profile` on `inference_complete` and `inference_error` is clear text, so
+it carries only counts, timings and closed-set categories. Its engine
+`finish_reason` is `stop`, `length`, `cancelled` or `error`: a stop string's
+finish, and any other engine reason, reads as `stop`, applied where the profile
+is encoded (`EngineFinishReason.clearWireValue`, `EngineProfile.saturatedToWireRanges`,
+`provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`). Which
+stop string ended a response travels only in the sealed usage
+([`inference_complete`](../reference/protocol-messages.md#inference_complete)).
 
 ### Autopilot busy reasons and stalled transitions
 

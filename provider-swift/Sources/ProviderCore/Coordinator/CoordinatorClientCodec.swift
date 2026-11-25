@@ -99,7 +99,13 @@ public enum CoordinatorClientCodec {
             // A member away in its session's disconnect grace claims it here.
             clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil,
             busy: busy,
-            gemmaPromptContract: GemmaPromptContract.advertisedVersion
+            gemmaPromptContract: GemmaPromptContract.advertisedVersion,
+            terminalFieldsSealed: SealedTerminalFields.protocolVersion,
+            // A member never serves blind requests.
+            blindProtocol: memberMode ? nil : config.blindRequests?.protocolVersion,
+            requestSigning: memberMode ? nil : config.blindRequests.flatMap {
+                ProviderRequestSigning(pins: $0.pins, now: Date())
+            }
         ))
     }
 
@@ -205,22 +211,11 @@ public enum CoordinatorClientCodec {
                 encryptedData: encryptedData
             ))
 
-        case .inferenceComplete(
-            let requestId,
-            let usage,
-            let stopSequence,
-            let seSignature,
-            let responseHash,
-            let profile,
-            let encryptedUsage
-        ):
+        case .inferenceComplete(let requestId, let usage, let profile, let encryptedUsage):
             return .inferenceComplete(ProviderMessage.InferenceComplete(
                 requestId: requestId,
                 usage: usage,
                 encryptedUsage: encryptedUsage,
-                stopSequence: stopSequence,
-                seSignature: seSignature,
-                responseHash: responseHash,
                 // Materialized HERE (encode time) so `terminal_sent_us` /
                 // `flush_us` stamped by SendHandle.send are included and
                 // `total_us` covers the outbound-queue wait.

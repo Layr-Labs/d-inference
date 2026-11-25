@@ -265,8 +265,7 @@ struct PrefixCacheEvidenceSequencerTests {
 
     private func terminal(requestID: String = "r", completed: Bool = false) -> OutboundMessage {
         if completed {
-            return .inferenceComplete(requestId: requestID, usage: UsageInfo(promptTokens: 1, completionTokens: 1),
-                stopSequence: nil, seSignature: nil, responseHash: nil)
+            return .inferenceComplete(requestId: requestID, usage: UsageInfo(promptTokens: 1, completionTokens: 1))
         }
         return .inferenceError(requestId: requestID, failure: InferenceFailure(code: .internalFailure, statusCode: 500))
     }
@@ -277,7 +276,7 @@ struct PrefixCacheEvidenceSequencerTests {
             case .prefixCacheLookupV2(let lookup): "lookup:\(lookup.requestId)"
             case .prefixCacheReadyV2(let ready): "ready:\(ready.requestId)"
             case .inferenceError(let requestID, _, _): "error:\(requestID)"
-            case .inferenceComplete(let requestID, _, _, _, _, _, _): "complete:\(requestID)"
+            case .inferenceComplete(let requestID, _, _, _): "complete:\(requestID)"
             default: "unexpected"
             }
         }

@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -196,13 +197,16 @@ class JobsAPI(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def job(name, status, conclusion=None):
-    return {"name": name, "status": status, "conclusion": conclusion}
+def job(name, status, conclusion=None, steps=()):
+    return {"name": name, "status": status, "conclusion": conclusion,
+            "steps": [{"name": step, "status": state} for step, state in steps]}
 
 
 PLAN = job("plan / route / Select Runners", "completed", "success")
 SHARD = job("Tests / Provider Unit Tests (shard 1)", "in_progress")
 BUILD = "Tests / Build provider test products"
+CLUSTER_BUILD = "Tests / Build cluster test products"
+WORKFLOW = ROOT / ".github/workflows/provider-tests.yml"
 
 
 class WaitTests(unittest.TestCase):
@@ -253,6 +257,54 @@ class WaitTests(unittest.TestCase):
         # One line per change of state, not one per poll.
         self.assertEqual(printed.count("in_progress"), 1)
         self.assertIn("waited 45 s for the provider products", printed)
+
+    def test_polls_every_few_seconds_once_the_build_job_uploads_its_products(self):
+        building = (("Build provider test products", "in_progress"), ("Upload provider test products", "pending"))
+        uploading = (("Build provider test products", "completed"), ("Upload provider test products", "in_progress"))
+        uploaded = (("Build provider test products", "completed"), ("Upload provider test products", "completed"))
+        server = self.serve([job(BUILD, "in_progress", steps=building)], [job(BUILD, "in_progress", steps=uploading)],
+                            [job(BUILD, "in_progress", steps=uploaded)], [job(BUILD, "completed", "success")])
+        failure, printed, waited = self.wait()
+        self.assertIsNone(failure, printed)
+        self.assertEqual(waited, 15 + products.UPLOAD_POLL_SECONDS * 2)
+        self.assertEqual(len(server.requests), 4)
+        self.assertEqual(printed.count("Upload provider test products started"), 1)
+
+    def test_a_failed_request_during_the_upload_keeps_the_usual_retry(self):
+        uploading = (("Build provider test products", "completed"), ("Upload provider test products", "in_progress"))
+        self.serve([job(BUILD, "in_progress", steps=uploading)], 502, [job(BUILD, "completed", "success")])
+        failure, printed, waited = self.wait()
+        self.assertIsNone(failure, printed)
+        self.assertEqual(waited, products.UPLOAD_POLL_SECONDS + 15)
+
+    def test_a_skipped_upload_after_a_failed_build_also_polls_every_few_seconds(self):
+        skipped = (("Build provider test products", "completed"), ("Upload provider test products", "completed"))
+        self.serve([job(BUILD, "in_progress", steps=skipped)], [job(BUILD, "completed", "failure")])
+        failure, _, waited = self.wait()
+        self.assertIn("ended failure", failure)
+        self.assertEqual(waited, products.UPLOAD_POLL_SECONDS)
+
+    def test_only_its_own_lanes_upload_step_shortens_the_poll(self):
+        other = (("Upload cluster test products", "in_progress"), ("Upload provider test products", "pending"))
+        self.serve([job(BUILD, "in_progress", steps=other)], [job(BUILD, "completed", "success")])
+        failure, printed, waited = self.wait()
+        self.assertIsNone(failure, printed)
+        self.assertEqual(waited, 15)
+        self.serve([job(CLUSTER_BUILD, "in_progress", steps=(("Upload cluster test products", "in_progress"),))],
+                   [job(CLUSTER_BUILD, "completed", "success")])
+        failure, printed, waited = self.wait("cluster")
+        self.assertIsNone(failure, printed)
+        self.assertEqual(waited, products.UPLOAD_POLL_SECONDS)
+
+    def test_each_build_job_uploads_its_products_in_the_named_step(self):
+        workflow = WORKFLOW.read_text()
+        for lane, build in products.BUILD_JOBS.items():
+            with self.subTest(lane=lane):
+                job_text = re.split(r"\n  [a-z][a-z0-9-]*:\n", workflow.split(f"    name: {build}\n", 1)[1], maxsplit=1)[0]
+                self.assertRegex(job_text, re.escape(f"      - name: {products.UPLOAD_STEPS[lane]}\n")
+                                 + r"(?:        .+\n)*?" + re.escape(
+                                     "        uses: ./.github/actions/provider-ci-products\n"
+                                     f"        with:\n          lane: {lane}\n          direction: upload\n"))
 
     def test_a_build_that_did_not_succeed_fails_at_once(self):
         for conclusion in ("failure", "cancelled", "skipped", "timed_out"):

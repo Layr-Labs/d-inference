@@ -228,7 +228,13 @@ final class InklingForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendabl
         }
     }
 
+    /// Red control: nothing is framed; every token is admitted and the state never moves.
     func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
+        vocabulary.pieceTokenIDs + [framing.messageModel, framing.contentThinking, framing.endMessage,
+            framing.invokeToolJSON, framing.endOfSampling, 200004, 200022, 200057]
+    }
+
+    func framedAllowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
         lock.lock(); defer { lock.unlock() }
         guard remainingTokens > 0, phases.indices.contains(state) else { return [] }
         switch phases[state] {
@@ -280,7 +286,9 @@ final class InklingForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendabl
     /// `nextState` interns only host-confirmed tokens.
     var allowsChainedDecode: Bool { true }
 
-    func nextState(state: Int, tokenID: Int) -> Int? {
+    func nextState(state: Int, tokenID: Int) -> Int? { 0 }
+
+    func framedNextState(state: Int, tokenID: Int) -> Int? {
         lock.lock(); defer { lock.unlock() }
         guard phases.indices.contains(state) else { return nil }
         let next: Phase

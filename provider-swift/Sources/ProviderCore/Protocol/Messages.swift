@@ -264,6 +264,10 @@ public enum ProviderMessage: Sendable, Equatable {
         /// is excluded from routing before its first heartbeat. Omitted
         /// otherwise; older coordinators ignore it.
         public var busy: ProviderBusy?
+        /// This provider seals a response's terminal fields inside its usage
+        /// on every connection (`SealedTerminalFields`); omitted by older
+        /// providers.
+        public var terminalFieldsSealed: Int?
 
         public init(
             hardware: HardwareInfo,
@@ -299,9 +303,11 @@ public enum ProviderMessage: Sendable, Equatable {
             clusterModels: [ModelInfo]? = nil,
             clusterMembership: ClusterMembership? = nil,
             busy: ProviderBusy? = nil,
-            gemmaPromptContract: Int? = nil
+            gemmaPromptContract: Int? = nil,
+            terminalFieldsSealed: Int? = nil
         ) {
             self.gemmaPromptContract = gemmaPromptContract
+            self.terminalFieldsSealed = terminalFieldsSealed
             self.executionRole = executionRole
             self.memberRegistrationNonce = memberRegistrationNonce
             self.clusterModels = clusterModels
@@ -441,14 +447,18 @@ public enum ProviderMessage: Sendable, Equatable {
     public struct InferenceComplete: Sendable, Equatable {
         public var requestId: String
         public var usage: UsageInfo
-        /// `usage` and the response's frame count, sealed after the last
-        /// response frame in the same sequence (`ResponseFrameSealer`).
-        /// `usage` stays for coordinators that read only the plaintext copy.
-        /// Omitted on the wire when nil.
+        /// `usage`, the response's frame count and its terminal fields
+        /// (`SealedTerminalFields`), sealed after the last response frame in
+        /// the same sequence (`ResponseFrameSealer`). `usage` stays for
+        /// coordinators that read only the plaintext copy. Omitted on the
+        /// wire when nil.
         public var encryptedUsage: EncryptedPayload?
-        public var stopSequence: String?
-        public var seSignature: String?
-        public var responseHash: String?
+        /// Clear terminal fields of a frame from an older provider: decoded,
+        /// never encoded or set here. This provider sends them only inside
+        /// `encryptedUsage`.
+        public fileprivate(set) var stopSequence: String?
+        public fileprivate(set) var seSignature: String?
+        public fileprivate(set) var responseHash: String?
         /// Profiler per-attempt profile (slice 2). OBSERVABILITY ONLY — the
         /// coordinator decodes it after the terminal has been fully processed
         /// and it never influences routing, billing, or client bytes. Omitted
@@ -459,17 +469,11 @@ public enum ProviderMessage: Sendable, Equatable {
             requestId: String,
             usage: UsageInfo,
             encryptedUsage: EncryptedPayload? = nil,
-            stopSequence: String? = nil,
-            seSignature: String? = nil,
-            responseHash: String? = nil,
             profile: InferenceProfile? = nil
         ) {
             self.requestId = requestId
             self.usage = usage
             self.encryptedUsage = encryptedUsage
-            self.stopSequence = stopSequence
-            self.seSignature = seSignature
-            self.responseHash = responseHash
             self.profile = profile
         }
     }
@@ -1001,6 +1005,7 @@ extension ProviderMessage: Codable {
         case toolConstraintProtocol = "tool_constraint_protocol"
         case toolConstraintModels = "tool_constraint_models"
         case gemmaPromptContract = "gemma_prompt_contract"
+        case terminalFieldsSealed = "terminal_fields_sealed"
         case modelAutopilot = "model_autopilot"
         case autopilotInventory = "autopilot_inventory"
         // Heartbeat
@@ -1148,6 +1153,7 @@ extension ProviderMessage: Codable {
             if let version = r.gemmaPromptContract, version > 1 {
                 try container.encode(version, forKey: .gemmaPromptContract)
             }
+            try container.encodeIfPresent(r.terminalFieldsSealed, forKey: .terminalFieldsSealed)
             try Self.encodeBusy(r.busy, into: &container)
 
         case .heartbeat(let h):
@@ -1200,9 +1206,8 @@ extension ProviderMessage: Codable {
             try container.encode(c.requestId, forKey: .requestId)
             try container.encode(c.usage, forKey: .usage)
             try container.encodeIfPresent(c.encryptedUsage, forKey: .encryptedUsage)
-            try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
-            try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
-            try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
+            // `stop_sequence`, `se_signature` and `response_hash` are never
+            // written: they travel only inside `encrypted_usage`.
             // Saturated at the canonical wire boundary so EVERY producer path
             // (builder, early rejects, tests) stays inside the coordinator's
             // accepted ranges; idempotent over an already-saturated profile.
@@ -1435,7 +1440,8 @@ extension ProviderMessage: Codable {
                 clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels),
                 clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership),
                 busy: try Self.decodeBusy(from: container),
-                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract)
+                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract),
+                terminalFieldsSealed: try container.decodeIfPresent(Int.self, forKey: .terminalFieldsSealed)
             ))
 
         case .heartbeat:
@@ -1483,15 +1489,16 @@ extension ProviderMessage: Codable {
             ))
 
         case .inferenceComplete:
-            self = .inferenceComplete(InferenceComplete(
+            var complete = InferenceComplete(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
                 encryptedUsage: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedUsage),
-                stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
-                seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
-                responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash),
                 profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
-            ))
+            )
+            complete.stopSequence = try container.decodeIfPresent(String.self, forKey: .stopSequence)
+            complete.seSignature = try container.decodeIfPresent(String.self, forKey: .seSignature)
+            complete.responseHash = try container.decodeIfPresent(String.self, forKey: .responseHash)
+            self = .inferenceComplete(complete)
 
         case .inferenceError:
             // The legacy free-form `error` key is deliberately decoded and

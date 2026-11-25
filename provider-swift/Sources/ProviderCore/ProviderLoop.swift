@@ -54,7 +54,7 @@ public final class SendHandle: @unchecked Sendable {
     /// terminal that overtook a chunk would make it drop the chunk's tail.
     public func send(_ message: OutboundMessage) {
         switch message {
-        case .inferenceComplete(_, _, _, _, _, let profile, _),
+        case .inferenceComplete(_, _, let profile, _),
             .inferenceError(_, _, let profile):
             if let profile {
                 let flushStart = SuspendingClock.now
@@ -549,6 +549,11 @@ public actor ProviderLoop {
     /// terminal read of MLX's allocator (active and peak bytes), for the same
     /// reason.
     internal var terminalMemoryForTesting: (@Sendable () -> (active: Int64, peak: Int64))?
+    #if DEBUG
+    /// Test seam, false in production: every later coordinator request's usage
+    /// seal fails, as a failed seal would.
+    internal var usageSealFailsForTesting = false
+    #endif
     /// Test seam, nil in production: awaited by a coordinator request's
     /// handler right after its cancellation token is registered, so a test
     /// can give way at that point and check the handler's exits.

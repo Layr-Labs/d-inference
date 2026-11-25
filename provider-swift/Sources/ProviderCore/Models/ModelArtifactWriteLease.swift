@@ -54,3 +54,20 @@ final class ModelArtifactWriteLease: @unchecked Sendable {
     func release() { flock(descriptor, LOCK_UN) }
     deinit { close(descriptor) }
 }
+
+/// Red control: declared so the new tests compile; nothing throws it here.
+public struct ModelArtifactBusy: Error, CustomStringConvertible, LocalizedError, Sendable {
+    public let modelID: String
+    public let operation: String
+
+    public init(modelID: String, operation: String) {
+        self.modelID = modelID
+        self.operation = operation
+    }
+
+    public var description: String {
+        "download failed: \(modelID) is being downloaded, updated or verified by another process; retry \(operation) after it finishes"
+    }
+
+    public var errorDescription: String? { description }
+}

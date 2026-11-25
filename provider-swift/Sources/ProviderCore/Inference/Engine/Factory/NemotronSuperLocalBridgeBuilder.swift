@@ -710,6 +710,11 @@ enum NemotronSuperLocalBridgeBuilder {
                         detail: $0.status.failure)
                 },
                 prefixCacheConstructionFailure: complete?.status.failure,
+                // Super's binding answers only after the request's cleanup
+                // (`NemotronSuperLocalBinding`), which follows publication, so
+                // an early terminal would end nothing sooner. It would leave a
+                // wedged request's answer waiting on a retirement that may not come.
+                terminalBeforeCheckpointPublication: false,
                 makeEngine: {
                     try EngineV2Factory.assembleProductionBuild(
                         model: assembly.target, tokenizer: tokenizer.inner, prefixCache: nil,

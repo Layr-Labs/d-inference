@@ -179,6 +179,7 @@ public enum EngineV2Factory {
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure? = nil,
+        terminalBeforeCheckpointPublication: Bool? = nil,
         logitsWidth: Int? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> EngineV2Factory.ProductionBuild
@@ -254,6 +255,7 @@ public enum EngineV2Factory {
                     ?? build.glm5NextMaximumContextTokens
                     ?? Qwen4SupportPolicy.contextLimit(
                         modelID: modelId, environment: runtimePolicyEnvironment),
+                terminalBeforeCheckpointPublication: terminalBeforeCheckpointPublication,
                 glm5NextNativeOwner: glmOwner,
                 logitsWidth: logitsWidth,
                 emitTelemetry: emitTelemetry

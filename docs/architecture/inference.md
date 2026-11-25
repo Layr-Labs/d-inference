@@ -2315,9 +2315,11 @@ its client terminal does not wait for its complete-checkpoint write, while the
 service and KV reservations, staging and the ready receipt are released at
 retirement, after that write settles (`EngineV2Bridge+Submission.swift`). Seeded
 requests, every request on a native-tracked engine (GLM-5.3-Flash, MiMo V2.6),
-whose loop ignores the flag (`EngineLoopV2.finishRequest`), and every request
-when the variable is negative keep the terminal after publication: seeded
-sampling reuses a stable engine ID. The pump times each request that carries the
+whose loop ignores the flag (`EngineLoopV2.finishRequest`), every Nemotron
+Super request, and every request when the variable is negative keep the
+terminal after publication. Seeded sampling reuses a stable engine ID; Super's
+binding answers only after the request's cleanup, so its bridge never sets the
+flag (`NemotronSuperLocalBridgeBuilder`, `NemotronSuperLocalBinding`). The pump times each request that carries the
 flag from its terminal to its retirement; one that retires at least
 1 ms after its answer is marked with that time in the provider log and an
 `engine_health` event (`EngineV2Bridge.noteRetirementAfterTerminal`,
@@ -2676,7 +2678,7 @@ thread
 A donor's stream retires only after its complete checkpoint is published
 (`EngineLoopV2.finishAfterCompletePrefixPublication`), so export time holds the
 donor's rows and reservations. It is added to the response's end only where the
-terminal follows publication: seeded donors, native-tracked engines, and every
+terminal follows publication: seeded donors, Nemotron Super, native-tracked engines, and every
 donor when `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` is negative
 ([early terminal](#prompt-completion-measurements-and-qualified-profiles)).
 At a quantized checkpoint precision, export encodes each older attention row

@@ -7,6 +7,7 @@
 - The request's rows, KV reservation and service allowance are still held until the write settles, as before.
 - A follow-up that arrives before the write settles can't use that checkpoint yet: it restores an earlier one, if any,
   and prefills the rest.
-- Seeded requests, and engines on the native tracked profile (GLM-5.3-Flash, MiMo), keep the old order.
+- Seeded requests, Nemotron Super, and engines on the native tracked profile (GLM-5.3-Flash, MiMo), keep the old
+  order.
 - `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION=0` restores the old order for every request; set it in the
   shell for `darkbloom start`, which writes it into the provider's launchd job.

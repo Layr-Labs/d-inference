@@ -8,7 +8,8 @@ import Testing
 /// A served blind request's completion as the coordinator receives it from
 /// `ProviderLoop.run()`: beside the clear usage and the sealed usage, a usage
 /// statement this Mac signs over the request's terms, the usage, and digests of
-/// the frames and the sealed usage it sent.
+/// the frames and the sealed usage it sent. A usage it cannot seal ends the
+/// request with `encryption_failure` instead.
 @Suite("Blind usage in the serve loop", .serialized)
 struct BlindUsageServeTests {
     /// The field names of a usage statement, in signed order.
@@ -18,13 +19,14 @@ struct BlindUsageServeTests {
         "finish_reason", "chunk_count", "frames_sha256", "sealed_usage_sha256", "issued_at_ms",
     ]
 
+    /// `data` as a JSON object.
     static func object(_ data: Data) throws -> [String: Any] {
         try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
-    /// The completion frame of `requestID`, as sent.
-    static func completeFrame(_ fixture: ServeLoopFixture, _ requestID: String) throws -> [String: Any] {
-        let frames = try fixture.mock.snapshot().inferenceCompleteFrames.map(object)
+    /// The completion frame of `requestID` in `snapshot`, as sent.
+    static func completeFrame(_ snapshot: CapturedMessages, _ requestID: String) throws -> [String: Any] {
+        let frames = try snapshot.inferenceCompleteFrames.map(object)
         return try #require(frames.first { $0["request_id"] as? String == requestID })
     }
 
@@ -44,7 +46,7 @@ struct BlindUsageServeTests {
         let snapshot = try #require(done)
         #expect(await fixture.stop(task))
 
-        let complete = try Self.completeFrame(fixture, requestID)
+        let complete = try Self.completeFrame(snapshot, requestID)
         let signed = try #require(complete["blind_usage"] as? [String: Any])
         let statement = try #require(signed["statement"] as? [String: Any])
         #expect(Set(statement.keys) == Set(Self.fields))
@@ -68,23 +70,23 @@ struct BlindUsageServeTests {
         // The digests are of the frames and the sealed usage as sent.
         let chunks = snapshot.inferenceChunks.filter { $0.requestId == requestID }
         #expect(statement["chunk_count"] as? Int == chunks.count)
-        var frames = SHA256()
+        var framesDigest = SHA256()
         for chunk in chunks {
             let payload = try #require(chunk.encryptedData)
-            let box = try #require(Data(base64Encoded: payload.ciphertext))
-            frames.update(data: box)
+            framesDigest.update(data: try #require(Data(base64Encoded: payload.ciphertext)))
         }
-        #expect(statement["frames_sha256"] as? String == Data(frames.finalize()).base64EncodedString())
+        #expect(statement["frames_sha256"] as? String == Data(framesDigest.finalize()).base64EncodedString())
         let sealed = try #require(complete["encrypted_usage"] as? [String: Any])
         let sealedText = try #require(sealed["ciphertext"] as? String)
         let sealedBytes = try #require(Data(base64Encoded: sealedText))
-        #expect(statement["sealed_usage_sha256"] as? String == Data(SHA256.hash(data: sealedBytes)).base64EncodedString())
+        #expect(statement["sealed_usage_sha256"] as? String
+            == Data(SHA256.hash(data: sealedBytes)).base64EncodedString())
         let sender = try #require(sealed["ephemeral_public_key"] as? String)
         let opened = try Self.object(request.client.decryptPayload(
             EncryptedPayload(ephemeralPublicKey: sender, ciphertext: sealedText)))
         #expect(opened["chunk_count"] as? Int == chunks.count)
 
-        // The signature covers the fields' string forms in order.
+        // The signature covers the domain, then each field's string form, in order.
         var bytes = Data()
         func append(_ text: String) {
             withUnsafeBytes(of: UInt32(text.utf8.count).bigEndian) { bytes.append(contentsOf: $0) }
@@ -103,8 +105,31 @@ struct BlindUsageServeTests {
         let key = try P256.Signing.PublicKey(
             rawRepresentation: #require(Data(base64Encoded: fixture.signer.publicKeyBase64)))
         let signatureText = try #require(signed["signature"] as? String)
-        let signature = try P256.Signing.ECDSASignature(derRepresentation: #require(Data(base64Encoded: signatureText)))
+        let signature = try P256.Signing.ECDSASignature(
+            derRepresentation: #require(Data(base64Encoded: signatureText)))
         #expect(key.isValidSignature(signature, for: bytes))
+    }
+
+    @Test("a blind request whose usage cannot be sealed ends with encryption_failure, never a completion or a refusal")
+    func unsealableUsage() async throws {
+        let (fixture, task) = try await BlindRequestServeTests.serving()
+        await fixture.loop.setUsageSealFailsForTesting(true)
+        let recipient = await fixture.loop.keyPair.publicKeyBytes
+        let request = BlindRequestFixture()
+        let requestID = request.requestID
+        try await fixture.mock.pushInferenceRequest(try request.frame(recipient: recipient))
+        try await fixture.awaitSubmissions(1)
+        fixture.completeSubmission(0)
+        let done = try await fixture.mock.waitForSnapshot(timeout: .seconds(10)) {
+            ServeLoopFixture.terminalCount($0, requestId: requestID) > 0
+        }
+        let snapshot = try #require(done)
+        #expect(await fixture.stop(task))
+        #expect(!snapshot.inferenceComplete.contains { $0.requestId == requestID })
+        let error = try #require(snapshot.inferenceErrors.first { $0.requestId == requestID })
+        #expect(error.failureCode == .encryptionFailure)
+        #expect(error.statusCode == 502)
+        #expect(error.blindRefusal == nil)
     }
 
     @Test("an ordinary request's completion carries no blind usage")
@@ -114,11 +139,12 @@ struct BlindUsageServeTests {
         try await fixture.pushChatRequest(requestId: requestID)
         try await fixture.awaitSubmissions(1)
         fixture.completeSubmission(0)
-        _ = try await fixture.mock.waitForSnapshot(timeout: .seconds(10)) {
+        let done = try await fixture.mock.waitForSnapshot(timeout: .seconds(10)) {
             ServeLoopFixture.terminalCount($0, requestId: requestID) > 0
         }
+        let snapshot = try #require(done)
         #expect(await fixture.stop(task))
-        #expect(try Self.completeFrame(fixture, requestID)["blind_usage"] == nil)
+        #expect(try Self.completeFrame(snapshot, requestID)["blind_usage"] == nil)
     }
 }
 #endif

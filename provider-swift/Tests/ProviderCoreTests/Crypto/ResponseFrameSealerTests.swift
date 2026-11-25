@@ -86,6 +86,25 @@ struct ResponseFrameSealerTests {
             "chunk_count", "usage", "finish_reason", "stop_sequence", "response_hash", "se_signature"])
     }
 
+    @Test("a matched stop string longer than the sealed bound is left out whole, never cut")
+    func longStopSequenceIsOmitted() throws {
+        let hash = String(repeating: "e", count: 64)
+        // The bound is on UTF-8 bytes: "é" is two.
+        let fits = String(repeating: "é", count: 4096 / 2)
+        let over = fits + "a"
+        #expect(SealedTerminalFields(finishReason: .stop, stopSequence: fits, responseHash: hash, seSignature: nil)
+            .stopSequence == fits)
+        let omitted = SealedTerminalFields(finishReason: .stop, stopSequence: over, responseHash: hash, seSignature: nil)
+        #expect(omitted.stopSequence == nil)
+
+        let (sealer, _, consumer) = try makeSealer()
+        let payload = try sealer.sealUsage(UsageInfo(promptTokens: 1, completionTokens: 1), terminal: omitted)
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: consumer.decryptPayload(payload)) as? [String: Any])
+        #expect(Set(object.keys) == ["chunk_count", "usage", "finish_reason", "response_hash"])
+        #expect(object["finish_reason"] as? String == "stop")
+    }
+
     @Test("a response without a stop sequence or signature leaves them out of the sealed usage")
     func absentTerminalFieldsAreOmitted() throws {
         let (sealer, _, consumer) = try makeSealer()

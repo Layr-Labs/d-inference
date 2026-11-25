@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Backend } from '../src/main/backend';
 import { startAction } from '../src/renderer/components/onboarding/startPlan';
-import type { Resource, Snapshot } from '../src/shared/contracts';
+import type { Action, Resource, Snapshot } from '../src/shared/contracts';
 import { pairedMac } from './onboardingFixtures';
 
 // A real (unsigned) runtime executable in an isolated HOME. It records every
@@ -234,4 +234,93 @@ it('posts the onboarding’s paired start as JSON with no model and no local API
   expect(posted[0].body).toMatch(
     /^\{"action":"start","models":\[\],"local":false,"id":"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}"\}$/,
   );
+});
+
+// A connected runtime that records the body of each action it is posted.
+async function runtimeRecordingActions() {
+  const posted: string[] = [];
+  const server = createServer((request, response) => {
+    if (request.url === '/control/v1/state')
+      return void response.end(
+        JSON.stringify({ protocol: 1, models: [], machine: {}, observed_at: 0 }),
+      );
+    let body = '';
+    request.on('data', (chunk) => (body += chunk));
+    request.on('end', () => {
+      posted.push(body);
+      response.writeHead(202, { 'Content-Type': 'application/json' });
+      response.end(
+        JSON.stringify({ id: 'x', action: 'download', state: 'running', started_at: 0 }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const dir = path.join(home, 'desktop');
+  await mkdir(dir);
+  const record = path.join(dir, 'connection.json');
+  const port = (server.address() as AddressInfo).port;
+  await writeFile(
+    record,
+    JSON.stringify({ version: 1, port, pid: process.pid, token: 't'.repeat(40) }),
+  );
+  await chmod(record, 0o600);
+  process.env.DARKBLOOM_DESKTOP_DIR = dir;
+  process.env.DARKBLOOM_DESKTOP_ATTACH_ONLY = '1';
+  const backend = new Backend(false);
+  await backend.connect();
+  return { backend, posted, close: () => server.close() };
+}
+
+// The runtime reads at most 16,384 bytes of an action body (provider DesktopHTTP).
+it('posts an action up to the runtime body limit and refuses one byte more', async () => {
+  const runtime = await runtimeRecordingActions();
+  const overhead = JSON.stringify({ action: 'download', model: '', id: 'x'.repeat(36) }).length;
+  const download = (bytes: number): Action => ({ action: 'download', model: 'm'.repeat(bytes) });
+  await runtime.backend.act(download(16_384 - overhead));
+  await expect(runtime.backend.act(download(16_385 - overhead))).rejects.toThrow(
+    'Backend action too large',
+  );
+  // Fewer characters than the limit, but two UTF-8 bytes each.
+  await expect(
+    runtime.backend.act({ action: 'download', model: '\u00e9'.repeat(9_000) }),
+  ).rejects.toThrow('Backend action too large');
+  runtime.close();
+  expect(runtime.posted.map((body) => Buffer.byteLength(body))).toEqual([16_384]);
+});
+
+it('stops serializing an oversized action at the field that exceeds the limit', async () => {
+  const runtime = await runtimeRecordingActions();
+  let laterFieldSerialized = false;
+  const action = {
+    action: 'stop',
+    padding: 'x'.repeat(1_000_000),
+    later: {
+      toJSON() {
+        laterFieldSerialized = true;
+        return null;
+      },
+    },
+  } as unknown as Action;
+  await expect(runtime.backend.act(action)).rejects.toThrow('Backend action too large');
+  runtime.close();
+  expect(runtime.posted).toEqual([]);
+  expect(laterFieldSerialized).toBe(false);
+});
+
+it('refuses an action whose array holes would each serialize as null', async () => {
+  const runtime = await runtimeRecordingActions();
+  const holes: unknown[] = [];
+  holes.length = 1_000_000;
+  let elementsRead = 0;
+  const counted = new Proxy(holes, {
+    get(target, key, receiver) {
+      if (typeof key === 'string' && /^\d+$/.test(key)) elementsRead++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const action = { action: 'stop', holes: counted } as unknown as Action;
+  await expect(runtime.backend.act(action)).rejects.toThrow('Backend action too large');
+  runtime.close();
+  expect(runtime.posted).toEqual([]);
+  expect(elementsRead).toBeLessThanOrEqual(16_384);
 });

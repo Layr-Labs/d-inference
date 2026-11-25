@@ -22,6 +22,8 @@ const runtimeRequirement =
 // `desktop ensure` may wait for a launchd bootout, one restart, and the new API's version.
 const ensureTimeoutMs = 90_000;
 const installTimeoutMs = 10 * 60_000;
+// The runtime reads at most this many bytes of an action body (provider `DesktopHTTP`).
+const maxActionBytes = 16_384;
 const resources = new Set<Resource>([
   'state',
   'cloud',
@@ -66,6 +68,22 @@ function compatible(snapshot: Snapshot) {
   )
     throw new Error('Incompatible backend protocol');
   return snapshot;
+}
+// An action comes from the renderer at any size. Serializing stops as soon as the body must
+// exceed what the runtime reads, so an oversized action is refused without being copied whole.
+function actionBody(action: Action & { id: string }) {
+  let leastBytes = 0;
+  const body = JSON.stringify(action, function (this: unknown, key: string, value: unknown) {
+    // An array element adds at least one byte (`null` for a hole or undefined); an object
+    // property adds at least its key, unless omitted. A string adds a byte per character.
+    const inArray = Array.isArray(this);
+    if (inArray || value !== undefined)
+      leastBytes += (inArray ? 0 : key.length) + (typeof value === 'string' ? value.length : 1);
+    if (leastBytes > maxActionBytes) throw new Error('Backend action too large');
+    return value;
+  });
+  if (Buffer.byteLength(body) > maxActionBytes) throw new Error('Backend action too large');
+  return body;
 }
 
 export class Backend extends EventEmitter {
@@ -179,7 +197,7 @@ export class Backend extends EventEmitter {
       throw new Error('Unsafe discovery record');
     this.connection = validateDiscovery(JSON.parse(await readFile(file, 'utf8')));
   }
-  async request<T>(resource: string, body?: unknown): Promise<T> {
+  async request<T>(resource: string, body?: string): Promise<T> {
     if (!this.connection) throw new Error('Runtime is not connected');
     const response = await fetch(
       `http://127.0.0.1:${this.connection.port}/control/v1/${resource}`,
@@ -191,7 +209,7 @@ export class Backend extends EventEmitter {
           Authorization: `Bearer ${this.connection.token}`,
           ...(body ? { 'Content-Type': 'application/json' } : {}),
         },
-        body: body ? JSON.stringify(body) : undefined,
+        body,
       },
     );
     const text = await response.text();
@@ -204,8 +222,8 @@ export class Backend extends EventEmitter {
     if (!resources.has(resource)) throw new Error('Unknown resource');
     return this.request<T>(resource);
   }
-  act(action: Action) {
-    return this.request<Operation>('actions', { ...action, id: crypto.randomUUID() });
+  async act(action: Action) {
+    return this.request<Operation>('actions', actionBody({ ...action, id: crypto.randomUUID() }));
   }
   async openHardwareEvents(signal: AbortSignal) {
     if (!this.connection) throw new Error('Runtime is not connected');

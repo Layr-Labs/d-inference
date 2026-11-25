@@ -1,0 +1,5 @@
+### Provider CI: each unit-test shard lists its suite while its tests run
+
+- Every Provider Unit Tests shard checks its selections against `swift test list` of its own build (`Check this shard's selections against the suite list`). That step read the list after the tests and took 10.5 s p50 (14 s p90) at the end of the last shard in 34 green rounds of 2026-11-23 (8 s on the last shard of run 45344316700).
+- A new step, `List the provider suites beside the tests`, now reads it in the background (`scripts/ci-background-step.py`) right before `Run Swift tests`, on the same condition, at a lower priority than the tests. It uses the test processes' `--ignore-lock --disable-build-manifest-caching`, so no process of the shard waits for another on `.build`, and writes its coverage profile outside the shard's profiles, so the merged coverage is unchanged.
+- The audit waits for that list, fails as before if listing fails, and fails at once if the list never started. The list, the plans, the audit and every test are unchanged.

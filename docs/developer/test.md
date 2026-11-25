@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-24
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -270,8 +270,11 @@ Provider Gates runs no selection, so it has no audit of its own: each gate
 fails when it executes no test or skips one (`scripts/run-nested-suite.sh`).
 The `Provider Tests` gate requires the job.
 
-Each shard then lists the suite with `swift test list` from its own
-build and fails unless each of its selections executed exactly its plan
+Each shard lists the suite with `swift test list` from its own build while
+its tests run, in a background step at a lower priority. The step passes the
+test processes' `--ignore-lock --disable-build-manifest-caching` and keeps its
+coverage profile out of the shard's. After the tests, each shard fails unless
+each of its selections executed exactly its plan
 (`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard

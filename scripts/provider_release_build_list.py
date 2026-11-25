@@ -41,8 +41,9 @@ import urllib.request
 
 DOCUMENT_TYPE = 'darkbloom-provider-builds'
 JWS_TYPE = 'darkbloom-provider-builds+jws'
-APP_ID = 'SLDQ2GJ6TL.io.darkbloom.provider'
 TEAM_ID = 'SLDQ2GJ6TL'
+BUNDLE_ID = 'io.darkbloom.provider'
+APP_ID = f'{TEAM_ID}.{BUNDLE_ID}'
 ENVIRONMENT = 'production'
 DAY = 24 * 3600
 LIFETIME = 8 * DAY
@@ -126,6 +127,10 @@ def version_key(version):
     return tuple(int(part) for part in version.split('.'))
 
 
+def matches(pattern, value):
+    return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
 # The document.
 
 def check_build(build):
@@ -134,7 +139,7 @@ def check_build(build):
     checks = (('version', VERSION), ('code_directory_hash', DIGEST), ('binary_sha256', DIGEST),
               ('source_commit', COMMIT))
     for field, pattern in checks:
-        if not isinstance(build[field], str) or not pattern.fullmatch(build[field]):
+        if not matches(pattern, build[field]):
             raise ValueError(f'Invalid build {field}')
     if type(build['revoked']) is not bool:
         raise ValueError('Invalid build revoked')
@@ -147,12 +152,12 @@ def check_document(document):
     for field, value in expected.items():
         if type(document[field]) is not type(value) or document[field] != value:
             raise ValueError(f'The list document {field} must be {value!r}')
-    for field in ('seq', 'issued_at', 'expires_at'):
-        if type(document[field]) is not int or document[field] < (1 if field == 'seq' else 0):
+    for field, minimum in (('seq', 1), ('issued_at', 0), ('expires_at', 0)):
+        if type(document[field]) is not int or document[field] < minimum:
             raise ValueError(f'Invalid list {field}')
     if not 0 < document['expires_at'] - document['issued_at'] <= LIFETIME:
         raise ValueError('A list expires after its issue time and at most 8 days after it')
-    if not isinstance(document['min_version'], str) or not VERSION.fullmatch(document['min_version']):
+    if not matches(VERSION, document['min_version']):
         raise ValueError('Invalid list min_version')
     builds = document['builds']
     if not isinstance(builds, list) or not builds:
@@ -311,6 +316,7 @@ def signing_input(document, kid):
 def size_warning(document):
     """None while the signing input is under half of the signer's limit, else a
     warning; refuses a list over the limit."""
+    # Every Ed25519 key ID has the same length, so any key gives the signer's size.
     size = len(signing_input(document, key_id(TEST_PUBLIC_KEY)))
     if size > SIGNING_INPUT_LIMIT:
         raise ValueError(f'The list\'s signing input is {size} bytes, over the signer\'s limit of '
@@ -331,11 +337,16 @@ def sign_list(document, signer_):
     return text + '.' + b64url(signature)
 
 
-def verify_list(jws, keys, openssl, now, minimum_seq=1, allow_expired=False):
-    """The document of a list that verifies with one of `keys`; refuses anything else."""
+def jws_parts(jws):
+    """The header, payload and signature of a compact JWS, still base64url-encoded."""
     if not isinstance(jws, str) or not COMPACT_JWS.fullmatch(jws):
         raise ValueError('Not a compact JWS')
-    encoded_header, encoded_payload, encoded_signature = jws.split('.')
+    return jws.split('.')
+
+
+def verify_list(jws, keys, openssl, now, minimum_seq=1, allow_expired=False):
+    """The document of a list that verifies with one of `keys`; refuses anything else."""
+    encoded_header, encoded_payload, encoded_signature = jws_parts(jws)
     header = unb64url(encoded_header)
     public = next((public for kid, public in keys if protected_header(kid) == header), None)
     if public is None:
@@ -354,9 +365,7 @@ def verify_list(jws, keys, openssl, now, minimum_seq=1, allow_expired=False):
 
 def unverified_document(jws):
     """The document a list carries, without its signature checked."""
-    if not isinstance(jws, str) or not COMPACT_JWS.fullmatch(jws):
-        raise ValueError('Not a compact JWS')
-    return parse_document(unb64url(jws.split('.')[1]))
+    return parse_document(unb64url(jws_parts(jws)[1]))
 
 
 def read_list(path):
@@ -376,10 +385,6 @@ def build_entry(payload):
     return entry
 
 
-def change_text(change):
-    return json.dumps(change, sort_keys=True)
-
-
 def check_change(change):
     operation = change.get('operation') if isinstance(change, dict) else None
     fields = {'release': {'operation', 'build'}, 'republish': {'operation'},
@@ -393,11 +398,15 @@ def check_change(change):
     if operation == 'revoke':
         versions = change['versions']
         if (not isinstance(versions, list) or not versions or len(set(versions)) != len(versions)
-                or not all(isinstance(version, str) and VERSION.fullmatch(version) for version in versions)):
+                or not all(matches(VERSION, version) for version in versions)):
             raise ValueError('A revocation names one or more distinct versions')
     if operation == 'floor':
-        if not isinstance(change['min_version'], str) or not VERSION.fullmatch(change['min_version']):
+        if not matches(VERSION, change['min_version']):
             raise ValueError('Invalid min_version')
+
+
+def next_seq(current):
+    return 1 if current is None else current['seq'] + 1
 
 
 def next_contents(current, change, history=()):
@@ -452,7 +461,7 @@ def successor(current, change, now, history=()):
     floor, builds = next_contents(current, change, history)
     issued = int(now)
     document = {'v': 1, 'typ': DOCUMENT_TYPE, 'app_id': APP_ID, 'environment': ENVIRONMENT,
-                'seq': 1 if current is None else current['seq'] + 1, 'issued_at': issued,
+                'seq': next_seq(current), 'issued_at': issued,
                 'expires_at': issued + LIFETIME, 'min_version': floor, 'builds': builds}
     check_document(document)
     return document
@@ -463,7 +472,7 @@ def check_successor(current, document, change, history=()):
     (the dates aside: issued no earlier than the current list, for 8 days)."""
     check_document(document)
     floor, builds = next_contents(current, change, history)
-    expected_seq = 1 if current is None else current['seq'] + 1
+    expected_seq = next_seq(current)
     if document['seq'] != expected_seq:
         raise ValueError(f'The next list has sequence number {expected_seq}, not {document["seq"]}')
     if current is not None and document['issued_at'] < current['issued_at']:
@@ -472,8 +481,7 @@ def check_successor(current, document, change, history=()):
         raise ValueError('The next list expires 8 days after its issue time')
     if document['min_version'] != floor:
         raise ValueError(f'The next list has min_version {floor}, not {document["min_version"]}')
-    canonical = lambda entries: json.dumps(entries, separators=(',', ':'), sort_keys=True)
-    if canonical(document['builds']) != canonical(builds):
+    if json.dumps(document['builds'], sort_keys=True) != json.dumps(builds, sort_keys=True):
         raise ValueError({'release': 'A release list adds exactly that release\'s build',
                           'republish': 'A re-publication keeps every build byte for byte',
                           'revoke': 'A revocation only flips the named builds to revoked',
@@ -528,13 +536,15 @@ def published_build(bundle, version, run=subprocess.run):
     """(code_directory_hash, binary_sha256) recomputed from a published release
     bundle with tar and codesign, after codesign verifies the app against the
     Developer ID requirement of our team."""
+    # Imported here: it reads the provider identity file on import, which only
+    # this step needs.
     import provider_release_identity
     names = provider_release_identity.github_env(version)
     with tempfile.TemporaryDirectory(prefix='provider-build-list-bundle-') as directory:
         # Native tar restores the signing extended attributes.
         run(['/usr/bin/tar', '-xzf', str(bundle), '-C', directory], check=True, timeout=600)
         app = Path(directory) / names['APP_NAME']
-        requirement = (f'anchor apple generic and identifier "io.darkbloom.provider" and '
+        requirement = (f'anchor apple generic and identifier "{BUNDLE_ID}" and '
                        f'certificate leaf[subject.OU] = "{TEAM_ID}"')
         run(['codesign', '--verify', '--deep', '--strict', f'-R={requirement}', str(app)], check=True, timeout=600)
         display = run(['codesign', '-d', '--verbose=4', str(app / 'Contents/MacOS' / names['CLI_NAME'])],
@@ -594,8 +604,7 @@ def newest_and_history(lists, keys, openssl, now):
         if document['seq'] != seq:
             raise ValueError(f'The asset {sequence_name(seq)} holds sequence {document["seq"]}')
         documents.append(document)
-    seq, jws = lists[-1]
-    newest = verify_list(jws, keys, openssl, now, allow_expired=True)
+    newest = verify_list(lists[-1][1], keys, openssl, now, allow_expired=True)
     return newest, documents
 
 

@@ -105,7 +105,7 @@ def change_of(args, document=None):
             raise ValueError(f'The prepared list does not list version {args.version}')
         return {'operation': 'release', 'build': build}
     if operation == 'revoke':
-        return {'operation': 'revoke', 'versions': [version.strip() for version in args.versions.split(',')]}
+        return {'operation': 'revoke', 'versions': [version.strip() for version in (args.versions or '').split(',')]}
     if operation == 'floor':
         return {'operation': 'floor', 'min_version': args.min_version}
     return {'operation': 'republish'}
@@ -166,7 +166,7 @@ def prepare(args, openssl, now):
     document = lists.successor(current, change, now, history)
     output.mkdir(parents=True, exist_ok=False)
     (output / PREPARED_DOCUMENT).write_bytes(lists.document_bytes(document))
-    (output / PREPARED_CHANGE).write_text(lists.change_text(change) + '\n')
+    (output / PREPARED_CHANGE).write_text(json.dumps(change, sort_keys=True) + '\n')
     if jws is not None:
         (output / PREPARED_CURRENT).write_text(jws)
     warning = lists.size_warning(document)
@@ -276,6 +276,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
 
+    def keys_argument(command):
+        command.add_argument('--keys', type=Path, default=lists.PINNED_KEYS, help='pinned provider-release keys')
+
     def change_arguments(command):
         command.add_argument('operation', choices=lists.OPERATIONS)
         command.add_argument('--publication', type=Path,
@@ -283,38 +286,37 @@ def main(argv=None):
         command.add_argument('--version', help='release, off CI: the released version')
         command.add_argument('--versions', help='revoke: the versions to revoke, comma-separated')
         command.add_argument('--min-version', help='floor: the new min_version')
-
-    def state_arguments(command):
         command.add_argument('--release', default='provider-builds', help='the release that holds the lists')
-        command.add_argument('--keys', type=Path, default=lists.PINNED_KEYS, help='pinned provider-release keys')
+        keys_argument(command)
 
-    command = commands.add_parser('prepare')
-    change_arguments(command)
-    state_arguments(command)
-    command.add_argument('--seed', type=Path, help='dry run: start from this dry-run-seed directory')
-    command.add_argument('--output', type=Path, required=True)
-
-    for name in ('sign', 'publish'):
-        command = commands.add_parser(name)
+    def prepared_arguments(command):
         change_arguments(command)
-        state_arguments(command)
         command.add_argument('--prepared', type=Path, required=True, help="prepare's output directory")
         command.add_argument('--document-sha256', required=True, help="the prepared document's SHA-256")
         command.add_argument('--dry-run', action='store_true')
-        if name == 'sign':
-            command.add_argument('--signer', required=True)
-            command.add_argument('--bundle', type=Path, help='release: the published release bundle')
-            command.add_argument('--output', type=Path, required=True)
-        else:
-            command.add_argument('--list-dir', type=Path, required=True, help="sign's output directory")
+
+    command = commands.add_parser('prepare')
+    change_arguments(command)
+    command.add_argument('--seed', type=Path, help='dry run: start from this dry-run-seed directory')
+    command.add_argument('--output', type=Path, required=True)
+
+    command = commands.add_parser('sign')
+    prepared_arguments(command)
+    command.add_argument('--signer', required=True)
+    command.add_argument('--bundle', type=Path, help='release: the published release bundle')
+    command.add_argument('--output', type=Path, required=True)
+
+    command = commands.add_parser('publish')
+    prepared_arguments(command)
+    command.add_argument('--list-dir', type=Path, required=True, help="sign's output directory")
 
     command = commands.add_parser('check')
     command.add_argument('--url', required=True)
-    command.add_argument('--keys', type=Path, default=lists.PINNED_KEYS)
+    keys_argument(command)
 
     command = commands.add_parser('verify')
     command.add_argument('--list', type=Path, required=True)
-    command.add_argument('--keys', type=Path, default=lists.PINNED_KEYS)
+    keys_argument(command)
     command.add_argument('--minimum-seq', type=int, default=1)
 
     command = commands.add_parser('dry-run-seed')

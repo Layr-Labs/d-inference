@@ -1214,8 +1214,8 @@ Dry run, until a signing key is configured:
   `PROVIDER_BUILD_LIST_PUBLISHING`; a dispatched change starts from
   `scripts/provider-release-build-list-dry-run.json`, signed with the test key;
 - `sign --dry-run --signer test` and `publish --dry-run` check everything, show
-  the publication plan and upload nothing. Every job refuses a ref other than
-  the default branch.
+  the publication plan and upload nothing. The workflow's `prepare` and
+  `publish` jobs refuse a ref other than the default branch.
 
 Check a list by hand (OpenSSL 3 is required; set `OPENSSL` on macOS, whose
 `/usr/bin/openssl` is LibreSSL):

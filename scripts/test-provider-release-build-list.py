@@ -3,6 +3,7 @@
 without credentials, network or uploads. Needs the OpenSSL 3 command line
 (`OPENSSL`, else `openssl` on PATH)."""
 import copy
+import functools
 import hashlib
 import importlib.util
 import io
@@ -233,12 +234,14 @@ class Keys(unittest.TestCase):
 
     def test_key_files_are_checked(self):
         good = json.loads(lists.keys_text([Signer().public_key]))['keys'][0]
+        # The test key's standard base64 has a '/', so its URL-safe spelling differs.
+        slashed = json.loads(lists.keys_text([lists.TEST_PUBLIC_KEY]))['keys'][0]
         cases = {
             'three keys': {'keys': json.loads(lists.keys_text([Signer().public_key for _ in range(3)]))['keys']},
             'wrong kid': {'keys': [dict(good, kid=RFC_8037_THUMBPRINT)]},
             'short key': {'keys': [{'kid': lists.key_id(b'x' * 31), 'public_key': 'eHh4' * 10 + 'eA=='}]},
-            'url-safe base64': {'keys': [dict(good, public_key=good['public_key'].replace('+', '-').replace('/', '_'))]}
-            if ('+' in good['public_key'] or '/' in good['public_key']) else {'keys': [dict(good, extra=1)]},
+            'url-safe base64': {'keys': [dict(slashed, public_key=slashed['public_key'].replace('/', '_'))]},
+            'extra field': {'keys': [dict(good, extra=1)]},
             'duplicate': {'keys': [good, good]},
             'not an object': [good],
         }
@@ -246,7 +249,7 @@ class Keys(unittest.TestCase):
             with self.subTest(case=label), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / 'keys.json'
                 path.write_text(json.dumps(content))
-                with self.assertRaises((ValueError, Exception)):
+                with self.assertRaises(ValueError):
                     lists.load_keys(path)
 
 
@@ -481,7 +484,8 @@ class CommandLine(unittest.TestCase):
         return dict(line.split('=', 1) for line in (self.root / 'output').read_text().splitlines())[name]
 
     def dry_run(self, operation, *change):
-        seed, prepared, signed = self.root / 'seed', self.root / 'prepared', self.root / 'signed'
+        root = self.root / operation
+        seed, prepared, signed = root / 'seed', root / 'prepared', root / 'signed'
         self.cli('dry-run-seed', '--output', seed)
         self.cli('prepare', operation, *change, '--seed', seed, '--output', prepared)
         digest = self.output('document_sha256')
@@ -507,14 +511,19 @@ class CommandLine(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'pinned key ID'):
             lists.verify_list(jws, lists.load_keys(), OPENSSL, signed_document['issued_at'])
 
+    def test_a_change_needs_its_own_inputs(self):
+        seed = self.root / 'seed'
+        self.cli('dry-run-seed', '--output', seed)
+        for argv in (['revoke'], ['revoke', '--versions', ''], ['floor'], ['republish', '--versions', '0.10.18'],
+                     ['revoke', '--min-version', '0.10.19', '--versions', '0.10.18']):
+            with self.subTest(argv=argv), self.assertRaises(ValueError):
+                self.cli('prepare', *argv, '--seed', seed, '--output', self.root / 'unused')
+        self.assertFalse((self.root / 'unused').exists())
+
     def test_dry_run_revocation_and_floor(self):
         _, signed, _, _ = self.dry_run('revoke', '--versions', '0.10.18')
         builds = lists.unverified_document((signed / lists.LIST_NAME).read_text())['builds']
         self.assertEqual([entry['revoked'] for entry in builds], [True, False])
-        for directory in ('seed', 'prepared', 'signed'):
-            for path in sorted((self.root / directory).iterdir(), reverse=True):
-                path.unlink()
-            (self.root / directory).rmdir()
         _, signed, _, _ = self.dry_run('floor', '--min-version', '0.10.19')
         listed = lists.unverified_document((signed / lists.LIST_NAME).read_text())
         self.assertEqual((listed['min_version'], [entry['version'] for entry in listed['builds']]),
@@ -613,8 +622,8 @@ class CommandLine(unittest.TestCase):
         digest = lists.document_sha256(nxt)
         args = SimpleNamespace(operation='republish', prepared=prepared, document_sha256=digest, dry_run=False,
                                list_dir=signed, release='provider-builds', keys=keys)
-        with mock.patch.object(lists, 'published_lists', lambda release, repository: PUBLISHED_LISTS(
-                release, repository, github)), mock.patch('sys.stdout', io.StringIO()):
+        published = functools.partial(PUBLISHED_LISTS, run=github)
+        with mock.patch.object(lists, 'published_lists', published), mock.patch('sys.stdout', io.StringIO()):
             CLI.publish(args, OPENSSL, NOW, run=github)
         uploads = [command for command in github.commands if command[:3] == ['gh', 'release', 'upload']]
         self.assertEqual([Path(command[4]).name for command in uploads], ['provider-builds-4.jws', 'provider-builds.jws'])
@@ -623,8 +632,7 @@ class CommandLine(unittest.TestCase):
         self.assertEqual(github.assets[lists.LIST_NAME], jws)
         # Again: the numbered list now exists, so the newest list is no longer
         # the one the document was prepared from.
-        with mock.patch.object(lists, 'published_lists', lambda release, repository: PUBLISHED_LISTS(
-                release, repository, github)), self.assertRaisesRegex(ValueError, 'prepare again'):
+        with mock.patch.object(lists, 'published_lists', published), self.assertRaisesRegex(ValueError, 'prepare again'):
             CLI.publish(args, OPENSSL, NOW, run=github)
 
     def test_check_states(self):
@@ -656,13 +664,13 @@ def jobs(text):
     return dict(zip(parts[1::2], parts[2::2]))
 
 
-def code(text):
+def uncommented(text):
     return re.sub(r'(?m)^\s*#.*\n', '', text)
 
 
 class Workflows(unittest.TestCase):
     def test_the_list_workflow_holds_no_credential_and_publishes_nothing(self):
-        text = code(WORKFLOW)
+        text = uncommented(WORKFLOW)
         self.assertIn('\npermissions: {}\n', text)
         for forbidden in ('secrets.', 'id-token', 'environment:', 'contents: write', 'pull_request'):
             self.assertNotIn(forbidden, text)
@@ -677,7 +685,7 @@ class Workflows(unittest.TestCase):
             self.assertRegex(action, r'^actions/[a-z-]+@[0-9a-f]{40}$')
 
     def test_schedules_wait_for_the_variable_and_the_default_branch(self):
-        text = code(WORKFLOW)
+        text = uncommented(WORKFLOW)
         trigger = text.split('\non:\n', 1)[1].split('\npermissions:', 1)[0]
         self.assertEqual(re.findall(r"cron: '([^']+)'", trigger), ['41 7 * * *'])
         workflow_jobs = jobs(text)

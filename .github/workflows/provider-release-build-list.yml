@@ -157,6 +157,11 @@ jobs:
     concurrency:
       group: provider-build-list-publication
       cancel-in-progress: false
+    env:
+      OPERATION: ${{ inputs.operation }}
+      VERSIONS: ${{ inputs.versions }}
+      MIN_VERSION: ${{ inputs.min_version }}
+      DOCUMENT_SHA256: ${{ needs.prepare.outputs.document_sha256 }}
     steps:
       - name: Refuse any ref but the default branch
         env:
@@ -178,22 +183,12 @@ jobs:
             --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
             --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/prepared"
       - name: Sign the prepared list with the test key (dry run)
-        env:
-          OPERATION: ${{ inputs.operation }}
-          VERSIONS: ${{ inputs.versions }}
-          MIN_VERSION: ${{ inputs.min_version }}
-          DOCUMENT_SHA256: ${{ needs.prepare.outputs.document_sha256 }}
         run: |
           python3 scripts/provider-release-build-list.py sign "$OPERATION" \
             --versions "$VERSIONS" --min-version "$MIN_VERSION" \
             --prepared "$RUNNER_TEMP/prepared" --document-sha256 "$DOCUMENT_SHA256" \
             --dry-run --signer test --output "$RUNNER_TEMP/signed"
       - name: Check the signed list and show its publication plan (dry run)
-        env:
-          OPERATION: ${{ inputs.operation }}
-          VERSIONS: ${{ inputs.versions }}
-          MIN_VERSION: ${{ inputs.min_version }}
-          DOCUMENT_SHA256: ${{ needs.prepare.outputs.document_sha256 }}
         run: |
           python3 scripts/provider-release-build-list.py publish "$OPERATION" \
             --versions "$VERSIONS" --min-version "$MIN_VERSION" \

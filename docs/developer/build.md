@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-24
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -322,9 +322,12 @@ the provider shards, the cluster jobs, the CI plan checks and the `Provider Test
 requests and pushes run the same jobs; only pushes save caches.
 
 The plan has three jobs, one after another. The first, `Resolve the commit to
-test`, resolves a dispatch's `ref` (it does nothing on other events). The
-second, `Plan the components to test`, runs the component classifier
-(`scripts/ci-component-paths.py`), then the tree lookup
+test`, resolves a dispatch's `ref`; it runs on a dispatch only, and on every
+other event it is skipped, so the second starts at once. The second, `Plan the
+components to test`, runs the component classifier
+(`scripts/ci-component-paths.py`) on a blobless clone with only `scripts/` and
+the top-level files checked out (the classifier diffs commits, not the working
+tree), then the tree lookup
 (`scripts/ci-tested-tree.py`, only when the classifier succeeded), then
 chooses the components the test jobs run: the classifier's, or none when the
 tree was tested. A failed or skipped lookup leaves the components to test. A

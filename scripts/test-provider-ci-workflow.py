@@ -1322,16 +1322,17 @@ class ProviderCIWorkflowTests(unittest.TestCase):
 
     def test_every_checkout_reuses_master_git_and_falls_back_to_a_cold_checkout(self):
         # The gate checks out only the tree lookup's script, the plan job the
-        # full blobless history its classifier diffs (the lookup script with
-        # it), and the CI plan checks the files they read (blobs on demand),
-        # all without the .git cache.
+        # full blobless history its classifier diffs with only scripts/ (and
+        # the top-level files) in its working tree, and the CI plan checks the
+        # files they read (blobs on demand), all without the .git cache.
         gate = self.jobs["provider-test-gate"]
         self.assertEqual(gate.count("actions/checkout@"), 1)
         self.assertIn("sparse-checkout: scripts/ci-tested-tree.py\n", gate)
         plan = self.jobs["components"]
         self.assertEqual(plan.count("actions/checkout@"), 1)
         self.assertEqual([option for option in checkout_options(step_blocks(plan)[0]) if option],
-                         ["fetch-depth: 0", "filter: blob:none", "persist-credentials: false"])
+                         ["fetch-depth: 0", "filter: blob:none", "sparse-checkout: scripts",
+                          "persist-credentials: false"])
         self.assertNotIn("actions/cache", plan)
         plan_checks = self.jobs["ci-plan-checks"]
         self.assertEqual(plan_checks.count("actions/checkout@"), 1)

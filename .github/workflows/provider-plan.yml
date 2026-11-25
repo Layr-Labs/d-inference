@@ -64,9 +64,12 @@ jobs:
   # no branch holds (a fork's pull request) is refused and nothing runs. With
   # `pr` (`-f pr=<n>`, and `ref` only as its head) it is that pull request's
   # test merge commit, the head merged with its base, for a head in this
-  # repository.
+  # repository. Every other event tests the event's own commit, so the job
+  # runs on a dispatch only; elsewhere it is skipped and the plan starts at
+  # once, with this job's outputs empty.
   commit:
     name: Resolve the commit to test
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -87,7 +90,6 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Resolve the dispatch's ref
         id: resolve
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           REF: ${{ github.event.inputs.ref }}
           PR: ${{ github.event.inputs.pr }}
@@ -154,8 +156,9 @@ jobs:
   # the classifier's, or none when the tree was tested. changes_result is the
   # classifier step's outcome; the Provider Tests gate fails on anything but
   # `success`. A failed or skipped lookup leaves skip empty: "test". A
-  # dispatch's `ref` is resolved first (job `commit`); when that fails, nothing
-  # is classified (changes_result `skipped`), so nothing is tested.
+  # dispatch's `ref` is resolved first (job `commit`, skipped on every other
+  # event); when a dispatch's resolution fails or is cancelled, nothing is
+  # classified (changes_result `skipped`), so nothing is tested.
   components:
     name: Plan the components to test
     needs: commit
@@ -183,17 +186,20 @@ jobs:
       # base and head; on a push, the pushed commit; on a dispatch, the commit
       # its `ref` names (job `commit`), whose tree the API reads.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        if: ${{ inputs.run_tests && needs.commit.result == 'success' }}
+        if: ${{ inputs.run_tests && (needs.commit.result == 'success' || needs.commit.result == 'skipped') }}
         with:
           fetch-depth: 0
-          # The classifier diffs trees and walks commits; it reads no file
-          # contents outside the checkout, so a blobless clone is enough.
+          # The classifier diffs commits and their trees and the lookup runs
+          # a script, so a blobless clone with only scripts/ and the top-level
+          # files checked out (about 5 MiB of the tree's 480 MiB) is enough: a
+          # changed path outside the working tree is still in the diff.
           filter: blob:none
+          sparse-checkout: scripts
           persist-credentials: false
       # Its outcome is the plan's changes_result; the job goes on to choose.
       - name: Classify complete base-to-head Git diff
         id: paths
-        if: ${{ inputs.run_tests && needs.commit.result == 'success' }}
+        if: ${{ inputs.run_tests && (needs.commit.result == 'success' || needs.commit.result == 'skipped') }}
         continue-on-error: true
         run: python3 scripts/ci-component-paths.py
       # The lookup needs the classifier's components: a record must cover them.

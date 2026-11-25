@@ -1,0 +1,67 @@
+.scene {
+  position: relative;
+  min-height: 190px;
+  height: 250px;
+  flex: 1;
+  isolation: isolate;
+  transition: opacity 0.5s;
+}
+.scene[data-active='false'] {
+  opacity: 0.35;
+}
+.canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.captions {
+  position: absolute;
+  inset: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+.captions span:nth-child(2) {
+  margin-left: -7%;
+}
+.coreLabels {
+  position: absolute;
+  left: 34%;
+  top: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+.coreLabels span {
+  position: absolute;
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  transform: translateX(-50%);
+  background: var(--panel-bg);
+  padding: 3px 7px;
+  border-radius: 5px;
+}
+.coreLabels span:first-child {
+  top: 49%;
+}
+.coreLabels span:last-child {
+  top: 88%;
+}
+.accessible {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+@media (max-height: 760px) {
+  .scene {
+    min-height: 155px;
+    height: 200px;
+  }
+}

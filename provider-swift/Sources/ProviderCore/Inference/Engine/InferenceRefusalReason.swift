@@ -10,6 +10,9 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
     case missingSenderKey = "missing_sender_key"
     case undecryptableRequest = "undecryptable_request"
     case reservedToolSchemaMetadata = "reserved_tool_schema_metadata"
+    /// A body sealed as a blind request (`_darkbloom_blind`) on a frame that
+    /// is not one: it is served only under its signed blind terms.
+    case sealedForBlindRequest = "sealed_for_blind_request"
 
     // The chat body (`ProviderLoop.decodeInboundChatRequest`).
     case malformedBody = "malformed_body"
@@ -49,6 +52,7 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
         case .missingSenderKey: "The request is missing its sender key."
         case .undecryptableRequest: "The request could not be decrypted."
         case .reservedToolSchemaMetadata: "A tool schema uses a reserved metadata key."
+        case .sealedForBlindRequest: "The request was sealed as a blind request but did not arrive as one."
         case .malformedBody: "The request body is not a valid chat completion request."
         case .invalidMessages: "A message is malformed or has an unsupported content part."
         case .unsupportedMessageRole: "A message has an unsupported role."

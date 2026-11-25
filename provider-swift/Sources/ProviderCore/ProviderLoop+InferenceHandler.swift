@@ -201,9 +201,16 @@ extension ProviderLoop {
         promptWork: PromptWork? = nil,
         gemmaPromptContract: Int? = nil,
         frameCachePolicy: RequestCachePolicy = .default,
-        send: SendHandle,
+        blind: BlindFrame? = nil,
+        send coordinatorSend: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
     ) async {
+        // A blind request's refusals that follow from its opened body leave as
+        // one signed closed reason, from every site below (`BlindContentRefusal`).
+        let blindContentRefusal = blind.map { _ in BlindContentRefusal(requestId: requestId, signer: signer) }
+        let send = blindContentRefusal.map { refusal in
+            coordinatorSend.mappingControlMessages { refusal.map($0) }
+        } ?? coordinatorSend
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
         }
@@ -237,7 +244,9 @@ extension ProviderLoop {
             cacheReceiptNonce: cacheReceiptNonce,
             repeatedPrefixTokens: cacheRepeatedPrefixTokens)
         var receiptCallbacks: PrefixCacheReceiptEmitter.Callbacks = (nil, nil)
-        if prefixCacheProtocol != 2 {
+        // A blind request's cache plan is the signed scope alone: no receipt
+        // is bound to a nonce from its clear frame.
+        if prefixCacheProtocol != 2 && blind == nil {
             receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
                 requestID: requestId,
                 nonce: frameCache.receiptNonce,
@@ -259,6 +268,20 @@ extension ProviderLoop {
         func rejectInvalidRequest(_ refusal: InferenceRefusalReason) {
             reject(InferenceFailure(code: .invalidRequest, statusCode: 400), refusal: refusal)
         }
+        // A blind request's refusals, signed by this Mac (`blindRefusalFailure`),
+        // from here and from its inference task.
+        let blindSigner = signer
+        let blindLog = logger
+        let refuseBlind: @Sendable (BlindRefusal) -> Void = { refusal in
+            let failure = Self.blindRefusalFailure(refusal, requestId: requestId, signer: blindSigner)
+            InferenceFailureLogger(logger: blindLog).record(requestId: requestId, failure: failure)
+            blindLog.info("[\(requestId)] blind request refused: \(refusal.reason.rawValue)")
+            // The reason alone: no profile beside it.
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(requestId: requestId, failure: failure, profile: nil),
+                fallbackFailure: .policy,
+                send: send)
+        }
         // The decrypted body, held until this function's last message (the
         // settling in the `defer` below included) has gone to `send`; the
         // inference task holds its own reference.
@@ -279,6 +302,11 @@ extension ProviderLoop {
         // slot can retire after the dispatcher let this request through, so
         // the refusal runs after the reservation and receipt owners exist:
         // the defer above releases the reservation and settles the receipt.
+        // A cluster member or pair never serves a blind request.
+        if blind != nil && isClusterMember {
+            refuseBlind(BlindRefusal(.posture))
+            return
+        }
         if isClusterMember && clusterPairSlot == nil {
             lookupReceiptFinalizer.sendTerminal(
                 Self.clusterMemberInferenceRefusal(requestId),
@@ -328,6 +356,40 @@ extension ProviderLoop {
             return
         }
 
+        // A blind request: the client sealed the body to this Mac and the
+        // coordinator relayed it unopened under the terms it signed. The
+        // frame and this Mac's posture are checked before the body is opened.
+        let blindFrame: VerifiedBlindFrame?
+        if let blind {
+            switch admitBlindFrame(blind, requestId: requestId, serviceReservationID: serviceReservationID,
+                                   senderPublicKey: senderKey, ciphertext: ciphertext) {
+            case .success(let verified):
+                blindFrame = verified
+                blindContentRefusal?.arm(verified)
+            case .failure(let refusal):
+                refuseBlind(refusal)
+                return
+            }
+        } else {
+            blindFrame = nil
+        }
+        // A blind request is served by the values the coordinator signed, an
+        // absent one included, never by their clear copies in the frame.
+        let servedToolSchemaMetadataProtocol: Int? = blindFrame.map { $0.signature.payload.toolSchemaMetadataProtocol }
+            ?? toolSchemaMetadataProtocol
+        let servedGemmaPromptContract: Int? = blindFrame.map { $0.signature.payload.gemmaPromptContract }
+            ?? gemmaPromptContract
+        let servedPromptWork: PromptWork? = blindFrame.map { $0.signature.payload.promptWork } ?? promptWork
+        // Refuses the body; a blind request's refusal names `blindReason`
+        // instead, signed.
+        func rejectInvalidBody(_ refusal: InferenceRefusalReason, blind blindReason: BlindRefusalReason) {
+            if let blindFrame {
+                refuseBlind(blindFrame.refusal(blindReason))
+            } else {
+                rejectInvalidRequest(refusal)
+            }
+        }
+
         let decryptedData: Data
         do {
             decryptedData = try keyPair.decrypt(
@@ -335,7 +397,7 @@ extension ProviderLoop {
                 ciphertext: ciphertext
             )
         } catch {
-            rejectInvalidRequest(.undecryptableRequest)
+            rejectInvalidBody(.undecryptableRequest, blind: .sealUnopenable)
             return
         }
         heldBody = decryptedData
@@ -352,14 +414,14 @@ extension ProviderLoop {
 
         // Every parse below recurses per JSON level on this task's stack.
         if JSONNestingLimit.refuses(decryptedData) {
-            rejectInvalidRequest(.malformedBody)
+            rejectInvalidBody(.malformedBody, blind: .bindingMissing)
             return
         }
 
-        if toolSchemaMetadataProtocol != ToolSchemaNormalization.metadataProtocolVersion,
+        if servedToolSchemaMetadataProtocol != ToolSchemaNormalization.metadataProtocolVersion,
             ToolSchemaNormalization.containsReservedMetadata(in: decryptedData)
         {
-            rejectInvalidRequest(.reservedToolSchemaMetadata)
+            rejectInvalidBody(.reservedToolSchemaMetadata, blind: .contentUnsupported)
             return
         }
 
@@ -393,17 +455,41 @@ extension ProviderLoop {
             // the coordinator in plaintext and is logged server-side, so interpolating
             // the raw error could resurface a prompt fragment in coordinator logs
             // (defense-in-depth for the "coordinator never sees plaintext" invariant).
-            rejectInvalidRequest(InferenceRefusalReason(chatDecodeFailure: error))
+            rejectInvalidBody(InferenceRefusalReason(chatDecodeFailure: error), blind: .bindingMissing)
             return
         }
         let chatRequest = inbound.request
+        // A blind body is held to its signed terms; a body sealed as one is
+        // served only as one.
+        let blindTerms: BlindServingTerms?
+        if let blindFrame {
+            switch checkBlindBody(inbound, frame: blindFrame) {
+            case .success(let terms): blindTerms = terms
+            case .failure(let refusal):
+                refuseBlind(refusal)
+                return
+            }
+        } else {
+            guard inbound.extensions.blindBinding == .absent else {
+                rejectInvalidRequest(.sealedForBlindRequest)
+                return
+            }
+            blindTerms = nil
+        }
         // The coordinator's plan. It selects the template controls below; the
         // cache context the request is served with is settled once the slot's
-        // model type is known (`ToolCallHistoryNullCache`).
-        let plannedCache = frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
+        // model type is known (`ToolCallHistoryNullCache`). A blind request's
+        // scope is the signed account scope, narrowed by the client's salt;
+        // the client's own `_darkbloom_cache` is not read.
+        let plannedCache = blindFrame.map {
+            RemotePrefixCacheContext(
+                cacheScope: BlindBodyCheck.cacheScope(
+                    signed: $0.signature.payload.cacheScope, salt: blindTerms?.cacheSalt),
+                cacheReceiptNonce: nil, repeatedPrefixTokens: nil)
+        } ?? frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
         // Unlike the scope, the policy needs no matching nonce (it can only
         // narrow), and a plaintext frame hint narrows it further.
-        let cachePolicy = inbound.extensions.cachePolicy.narrowed(by: frameCachePolicy)
+        let cachePolicy = (blindFrame == nil ? inbound.extensions.cachePolicy : .default).narrowed(by: frameCachePolicy)
         RequestCachePolicyCounters.shared.recordRequest(cachePolicy)
         profile.mark(.parsed)
 
@@ -454,7 +540,7 @@ extension ProviderLoop {
         // the Gemma 4 prompt contract the coordinator planned and counted it with.
         let templateControls = inbound.extensions.templateControls.servingCoordinatorRequest(
             planned: plannedCache.scope != nil || plannedCache.receiptNonce != nil,
-            gemmaPromptContract: gemmaPromptContract)
+            gemmaPromptContract: servedGemmaPromptContract)
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
         // honored by the EngineV2 path (see EngineV2Logprobs.swift).
@@ -824,6 +910,9 @@ extension ProviderLoop {
         #if DEBUG
         let usageSealFails = usageSealFailsForTesting
         #endif
+        // A blind request's signed bounds, which every engine submission of it
+        // is held to (`BlindRequestBounds`).
+        let blindBounds = blindTerms.map(BlindRequestBounds.init)
         receiptTransferredToTask = true
         profile.mark(.taskSpawned)
         let task = Task.detached {
@@ -1035,7 +1124,7 @@ extension ProviderLoop {
                     guard let me else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID) }
                     return try await me.nativeMiMoConsumerLease(modelID: modelID, entry: entry)
                 },
-                promptWork: promptWork
+                promptWork: servedPromptWork
             )
             }
 
@@ -1054,6 +1143,7 @@ extension ProviderLoop {
             // $0 for the request. This is the C1 fix.
             var streamingRequest = chatRequest
             streamingRequest.stream = true
+            if let blindTerms { streamingRequest.maxTokens = blindTerms.maxTokens }
             var forcedStreamOptions = streamingRequest.streamOptions
                 ?? OpenAIStreamOptions()
             forcedStreamOptions.includeUsage = true
@@ -1086,11 +1176,19 @@ extension ProviderLoop {
                 // one (`giveWayToOwner`).
                 frames = try await MeFirstDarkbloomRequest.$id.withValue(requestId) {
                     try await InklingWithheldReasoningHeartbeat.$enabled.withValue(true) {
-                        try await service.streamChatCompletionFrames(request: streamingRequest)
+                        try await BlindRequestBounds.$current.withValue(blindBounds) {
+                            try await service.streamChatCompletionFrames(request: streamingRequest)
+                        }
                     }
                 }
                 if rejectExpiredDeadline() { return }
             } catch {
+                // A blind prompt over its signed bound is refused before generation.
+                if let blindFrame, blindBounds?.promptBoundExceeded == true {
+                    finalizeProfile(0, 0, false, nil)
+                    refuseBlind(blindFrame.refusal(.promptBoundExceeded))
+                    return
+                }
                 // A cancel that lands while the stream is STARTING — the
                 // consumer cancelled during prompt templating or the v0.7.5
                 // vision-feature construction (`handleCancellation` cancels
@@ -1378,6 +1476,15 @@ extension ProviderLoop {
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
+                                // A blind request is served only on an engine
+                                // path that held it to its bounds: anything else
+                                // ends before its first output leaves.
+                                if let blindFrame, let blindBounds, !blindBounds.wereApplied {
+                                    log.error("[\(requestId)] blind request reached no bounded engine path")
+                                    finalizeProfile(framesEmitted, bytesEmitted, false, nil)
+                                    refuseBlind(blindFrame.refusal(.posture))
+                                    return
+                                }
                                 // Me first: claimed before the first output
                                 // frame goes out, once per request, so one
                                 // that gave way to the owner sends none and
@@ -1480,6 +1587,11 @@ extension ProviderLoop {
                     log.info("[\(requestId)] Cancelled while waiting on next frame")
                     cancelledMidStream = true
                     profile.mark(.cancelAborted)
+                } else if let blindFrame, blindBounds?.promptBoundExceeded == true {
+                    // An engine path that reports its refusal in the stream.
+                    finalizeProfile(framesEmitted, bytesEmitted, false, nil)
+                    refuseBlind(blindFrame.refusal(.promptBoundExceeded))
+                    return
                 } else {
                     let failure = Self.sanitizedInferenceFailure(
                         from: error,

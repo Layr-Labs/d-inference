@@ -2760,6 +2760,28 @@ are otherwise those of an uncached request, or of a cache hit with tier
 `DARKBLOOM_LOCAL_CACHE_POLICY` instead ([local
 API](../provider/direct-mode.md#cache-policy-of-local-requests)).
 
+### Blind request bounds
+
+A [blind request](../reference/protocol-messages.md#blind-requests) is held
+to the bounds the coordinator signed on every engine path it can take. The
+handler sets the task-local `BlindRequestBounds.current` around the stream's
+start, and the bridge checks it in every submission
+(`EngineV2Bridge.submitTokenized`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`),
+which the scheduler engine, the loop-exit continuation and the managed
+Nemotron Super owner all submit through, and in every output budget it sizes
+(`EngineV2Bridge.outputTokens`), which bounds a submission's limit, the
+budget a loop exit's continuation is cut from and the managed Super owner's
+limit for a raw body that names none. The first submission's tokenized
+prompt must fit `prompt_token_bound`: a longer one is refused before
+admission (`prompt_bound_exceeded`), and its lookup settles as a policy
+refusal. A later submission (a loop exit's continuation) carries the
+request's own output and is not compared. No budget exceeds the signed
+`max_tokens`, so neither does the request's whole output. A blind request whose stream reaches its first
+content without a submission having applied the bounds ends there, refused
+with `posture` (`ProviderLoop.handleInferenceRequest`,
+`provider-swift/Sources/ProviderCore/Blind/BlindRequestBounds.swift`).
+
 ### `CBv2RequestTiming`
 
 Stamped by the engine thread only; instants are nanoseconds from the enqueue

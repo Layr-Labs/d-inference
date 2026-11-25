@@ -100,7 +100,12 @@ public enum CoordinatorClientCodec {
             clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil,
             busy: busy,
             gemmaPromptContract: GemmaPromptContract.advertisedVersion,
-            terminalFieldsSealed: SealedTerminalFields.protocolVersion
+            terminalFieldsSealed: SealedTerminalFields.protocolVersion,
+            // A member never serves blind requests.
+            blindProtocol: memberMode ? nil : config.blindRequests?.protocolVersion,
+            requestSigning: memberMode ? nil : config.blindRequests.flatMap {
+                ProviderRequestSigning(pins: $0.pins, now: Date())
+            }
         ))
     }
 

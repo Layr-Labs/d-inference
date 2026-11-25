@@ -73,6 +73,13 @@ public final class SendHandle: @unchecked Sendable {
         fn(message)
     }
 
+    /// This handle, with `transform` applied to every message it sends on the
+    /// control path; chunks keep the direct path.
+    func mappingControlMessages(_ transform: @escaping @Sendable (OutboundMessage) -> OutboundMessage) -> SendHandle {
+        let fn = self.fn
+        return SendHandle({ fn(transform($0)) }, chunkSender: chunkSender)
+    }
+
     /// Inference-chunk hot path. Encodes + writes the frame directly to the live
     /// NWConnection via the ChunkSender (no actor hop, no AsyncStream, no
     /// cooperative-pool scheduling gap). Falls back to the control path when no
@@ -944,6 +951,12 @@ public actor ProviderLoop {
 
     /// Cached security posture from startup verification.
     internal var securityPosture: SecurityPosture?
+
+    /// The coordinator request-signing keys blind requests are verified
+    /// against (`BlindRequestRegistration.pinnedKeys`).
+    internal var blindRequestPins = BlindRequestRegistration.pinnedKeys(for: .current)
+    /// Client nonces of blind requests already served (`checkBlindBody`).
+    internal var servedBlindClientNonces = CoordinatorServedRequests()
 
     #if DEBUG
     /// Stand-ins for the boot-settings reading (its command results and the kernel

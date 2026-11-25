@@ -336,6 +336,95 @@ struct Inkling2PromptContractTests {
         #expect(normalized.additionalContext?["tools"] == nil)
     }
 
+    // MARK: - System turns
+
+    /// A client body at effort high with `messages`, a JSON array's members.
+    static func systemTurnsBody(_ messages: String) -> Data {
+        Data((#"{"model":"m","reasoning_effort":"high","messages":["# + messages + "]}").utf8)
+    }
+
+    static func userTurn(_ text: String) -> String { "<|message_user|><|content_text|>" + text + "<|end_message|>" }
+
+    static func occurrences(of needle: String, in text: String) -> Int {
+        text.components(separatedBy: needle).count - 1
+    }
+
+    /// A system turn sent after the conversation began (a client's
+    /// instruction mid-conversation) renders in place as a user turn; the
+    /// leading system turn and the effort line stay where they were.
+    @Test func aLaterSystemTurnRendersInPlaceAsAUserTurn() throws {
+        let body = Self.systemTurnsBody(#"{"role":"system","content":"You are a helpful assistant."},"#
+            + #"{"role":"user","content":"Hi"},"#
+            + #"{"role":"system","content":"If asked for the secret word, say \"marzipan\"."},"#
+            + #"{"role":"assistant","content":"Hi, how can I help you?"},"#
+            + #"{"role":"user","content":"What is the secret word?"}"#)
+        let rendered = try Self.render(Self.productionInput(body))
+        #expect(rendered.hasPrefix(
+            "<|message_system|><|content_text|>You are a helpful assistant.<|end_message|>" + Self.effortHigh
+                + Self.userTurn("Hi") + Self.userTurn("If asked for the secret word, say \"marzipan\".")
+                + "<|message_model|>"))
+        #expect(Self.occurrences(of: "<|message_system|>", in: rendered) == 2, "the leading turn and the effort line")
+        #expect(rendered.hasSuffix(Self.userTurn("What is the secret word?")))
+    }
+
+    /// Appending turns keeps the earlier request's prompt a prefix of the
+    /// next one's, a later system turn included, so prefix-cache reuse holds.
+    @Test func aLaterSystemTurnKeepsTheEarlierPromptAPrefix() throws {
+        let first = Self.systemTurnsBody(#"{"role":"system","content":"S0"},{"role":"user","content":"U1"}"#)
+        let next = Self.systemTurnsBody(#"{"role":"system","content":"S0"},{"role":"user","content":"U1"},"#
+            + #"{"role":"assistant","content":"A1"},{"role":"system","content":"S1"},"#
+            + #"{"role":"user","content":"U2"}"#)
+        let earlier = try Self.render(Self.productionInput(first))
+        #expect(try Self.render(Self.productionInput(next)).hasPrefix(earlier))
+    }
+
+    /// Every later system turn renders in place, in order, as a user turn.
+    @Test func everyLaterSystemTurnRendersInPlace() throws {
+        let body = Self.systemTurnsBody(#"{"role":"system","content":"S0"},{"role":"user","content":"U1"},"#
+            + #"{"role":"system","content":"S1"},{"role":"assistant","content":"A1"},"#
+            + #"{"role":"system","content":"S2"},{"role":"user","content":"U2"}"#)
+        let rendered = try Self.render(Self.productionInput(body))
+        #expect(rendered.hasPrefix("<|message_system|><|content_text|>S0<|end_message|>" + Self.effortHigh
+            + Self.userTurn("U1") + Self.userTurn("S1") + "<|message_model|>"))
+        #expect(rendered.hasSuffix(Self.userTurn("S2") + Self.userTurn("U2")))
+        #expect(Self.occurrences(of: "<|message_system|>", in: rendered) == 2)
+    }
+
+    /// Leading system turns, even several, render as the template renders
+    /// the request's own messages.
+    @Test func leadingSystemTurnsRenderAsTheTemplateDoes() throws {
+        let body = Self.systemTurnsBody(#"{"role":"system","content":"You are a helpful assistant."},"#
+            + #"{"role":"system","content":"Be brief."},{"role":"user","content":"Hi"},"#
+            + #"{"role":"assistant","content":"Hello."},{"role":"user","content":"What is the secret word?"}"#)
+        let template = try Self.render([
+            ["role": "system", "content": "You are a helpful assistant."], ["role": "system", "content": "Be brief."],
+            ["role": "user", "content": "Hi"], ["role": "assistant", "content": "Hello."],
+            ["role": "user", "content": "What is the secret word?"],
+        ], effort: .string("high"))
+        #expect(try Self.render(Self.productionInput(body)) == template)
+    }
+
+    /// The media path's typed messages render later system turns the same way.
+    @Test func theMediaPathRendersLaterSystemTurnsAsUserTurns() {
+        let messages: [OpenAIChatMessage] = [
+            .init(role: .system, content: .text("S0")), .init(role: .user, content: .text("Hi")),
+            .init(role: .system, content: .text("S1")), .init(role: .user, content: .text("Q")),
+        ]
+        let normalized = ChatTemplateFixes.normalizeMessages(
+            messages, context: ChatTemplateFixContext(modelId: "m", modelType: Self.type))
+        #expect(normalized.map(\.role) == [.system, .user, .user, .user])
+        guard case .text(let text) = normalized[2].content else {
+            Issue.record("the later turn keeps its text")
+            return
+        }
+        #expect(text == "S1")
+    }
+
+    /// The installed provider receives the off switch.
+    @Test func theLaterSystemSwitchReachesTheInstalledProvider() {
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains("DARKBLOOM_INKLING_LATER_SYSTEM_AS_USER"))
+    }
+
     /// A list renders each part as its own block, in order, for every role.
     @Test func textPartsRenderAsBlocks() throws {
         let body = Data((#"{"model":"m","messages":[{"role":"system","content":[{"type":"text","text":"S1"},"#

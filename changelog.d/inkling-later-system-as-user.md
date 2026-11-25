@@ -1,0 +1,3 @@
+### Inkling 2 Mini reads system messages sent mid-conversation
+
+A system message sent after the conversation began now renders in place as a user turn with the same content for Inkling 2 Mini; system messages at the start stay system. Rendered as a system turn there, such an instruction could keep the model's reasoning searching for it until the request ended at its token limit with no answer. Rendering it in place keeps an earlier request's prompt a prefix of the next one's, so cached prompts are still reused. `DARKBLOOM_INKLING_LATER_SYSTEM_AS_USER=0` renders later system messages as system again.

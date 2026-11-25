@@ -91,7 +91,7 @@ final class BlindContentRefusal: Sendable {
     }
 
     func arm(_ verified: VerifiedBlindFrame) {
-        frame.withLock { $0 = verified }
+        // Control: the mapping is never armed.
     }
 
     func map(_ message: OutboundMessage) -> OutboundMessage {

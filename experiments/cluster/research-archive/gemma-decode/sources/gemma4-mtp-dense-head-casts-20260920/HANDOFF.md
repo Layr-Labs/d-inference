@@ -1,0 +1,7 @@
+# Required head-cast correction
+
+Apply this one-file successor after dense scope cfc44f7f. Independent source review found that each ordinary M1 head QMM in that first freeze would construct its own metadata casts for F32 hidden, while the original budget charges only one head-cast pair. The first freeze must not execute alone.
+
+The corrected head requires the actual registered BF16 scale/bias dtype and existing BF16/F32 hidden domain. Native ops.cpp `validate_mode_with_type` obtains BF16 from those two metadata inputs; `quantized_matmul` promotes it with the input dtype. Thus its exact common dtype equals the admitted hidden dtype. The correction constructs one scale cast and one bias cast to that dtype before mapping rows. Each M1 QMM receives the SAME roots; native astype at unchanged dtype is identity. No parameter mutation, arithmetic reassociation, additional evaluation, native/model admission or gathered override is introduced. Original one-pair headCast budget now covers this pair; four independently rounded output-row addends stay unchanged.
+
+Required validation remains the full target-width same-build ordinary/verification row and all-KV comparison. This source change is uncompiled and unexecuted. It preserves every other byte of the first freeze. `composition.json` pins both predecessors and the actual native promotion implementation. Root composes this last for the shared Runtime path.

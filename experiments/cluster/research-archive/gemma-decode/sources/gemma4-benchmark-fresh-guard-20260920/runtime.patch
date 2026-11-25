@@ -1,0 +1,249 @@
+--- originals/Gemma4BenchmarkEntry.swift
++++ Runtime/Gemma4BenchmarkEntry.swift
+@@ -18,27 +18,34 @@
+         let guardMetrics = Gemma4BenchmarkGuardMetrics()
+         weak var releasedGroup: Collective?
+         return try MLX.withError { native in
+-            func check() throws {
++            func check(_ supplied: Gemma4BenchmarkGuardObservation?) throws {
++                let owned = supplied == nil ? Gemma4BenchmarkGuardObservation(mode: .entry, deadline: deadline) : nil
++                defer { owned?.close() }
++                let observation = supplied ?? owned!
+                 try guardMetrics.measure(.entryGuard) {
+                     try guardMetrics.measure(.outerNativeFault) { try native.check() }
+                     guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Gemma benchmark lifetime expired") }
+-                    try guardMetrics.measure(.environmentGuard) { try QwenResidentResourceEnvironment.require(observationTiming: guardMetrics.observeOS) }
+-                    let os = try QwenDenseStageLoadResources.requireInitial(observationTiming: guardMetrics.observeOS)
++                    let os = try guardMetrics.measure(.environmentGuard) {
++                        try observation.read(for: .entry, deadline: deadline, observationTiming: guardMetrics.observeOS)
++                    }
++                    try QwenDenseStageLoadPolicy.requireInitial(os, now: DispatchTime.now().uptimeNanoseconds)
+                     guard os.pressureLevel == 1 else { throw ProbeError("Gemma benchmark requires pressure level1") }
+                     try guardMetrics.measure(.outerNativeFault) { try native.check() }
+                 }
++                try owned?.finish(deadline: deadline)
+             }
++            func freshCheck() throws { try check(nil) }
+             do {
+-                try check()
++                try freshCheck()
+                 let bytes: Data = try autoreleasepool {
+                     let group: Collective? = input.job.rank == nil ? nil : try Collective(transport: .jaccl)
+                     releasedGroup = group
+                     let sidecars = try Gemma4BenchmarkSidecars(directory: input.job.outputDirectory)
+                     return try Gemma4BenchmarkRuntime.execute(input, deadline: deadline, group: group, sidecars: sidecars, guardMetrics: guardMetrics, check: check)
+                 }
+-                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try freshCheck()
+                 guard releasedGroup == nil else { throw ProbeError("Gemma benchmark collective remains retained") }
+-                Memory.clearCache(); try check()
++                Memory.clearCache(); try freshCheck()
+                 guard Memory.cacheMemory == 0,
+                       var report = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
+                     throw ProbeError("Gemma benchmark release/report validation failed")
+@@ -47,6 +54,7 @@
+                 report["collectiveReleased"] = input.job.rank != nil
+                 report["nativeCacheBytesAfterRelease"] = Memory.cacheMemory
+                 report["guardMetrics"] = try JSONSerialization.jsonObject(with: canonicalJSONData(guardMetrics.snapshot()))
++                report["guardObservationPolicy"] = Gemma4BenchmarkGuardInvocation.schema
+                 let result = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .withoutEscapingSlashes])
+                 guard result.count <= 8_388_608 else { throw ProbeError("Gemma benchmark report exceeds8MiB") }
+                 return result
+--- /dev/null
++++ Runtime/Gemma4BenchmarkGuardInvocation.swift
+@@ -0,0 +1,46 @@
++import Foundation
++
++/// CPU-only scope chronology. This carries no resource or process authority.
++struct Gemma4BenchmarkGuardInvocation {
++    static let schema = "gemma4_invocation_fresh_observation_v1"
++    enum Consumer: Equatable { case entry, owner }
++    enum Mode: Equatable { case entry, owner, combined }
++    enum Failure: String, Error, CustomStringConvertible {
++        case closed, invalidConfiguration, expired, wrongConsumer, staleObservation, incomplete
++        var description: String { "Gemma guard invocation: " + rawValue }
++    }
++    private let mode: Mode, deadline: UInt64, created: UInt64, maximumAge: UInt64
++    private var uses = 0, closed = false
++    var expectedUses: Int { mode == .combined ? 3 : 1 }
++
++    init(mode: Mode, deadline: UInt64, created: UInt64, maximumAge: UInt64) {
++        self.mode = mode; self.deadline = deadline; self.created = created; self.maximumAge = maximumAge
++    }
++    private func current(expectedDeadline: UInt64, now: UInt64) throws {
++        guard !closed else { throw Failure.closed }
++        guard maximumAge > 0, deadline > created, expectedDeadline == deadline else {
++            throw Failure.invalidConfiguration
++        }
++        guard now >= created, now < deadline, now-created <= maximumAge else { throw Failure.expired }
++    }
++    func preflight(_ consumer: Consumer, expectedDeadline: UInt64, now: UInt64) throws {
++        try current(expectedDeadline: expectedDeadline, now: now)
++        let expected: Consumer = mode == .owner || (mode == .combined && uses == 1) ? .owner : .entry
++        guard uses < expectedUses, consumer == expected else { throw Failure.wrongConsumer }
++    }
++    mutating func accept(_ consumer: Consumer, started: UInt64, completed: UInt64,
++                         expectedDeadline: UInt64, now: UInt64) throws {
++        try preflight(consumer, expectedDeadline: expectedDeadline, now: now)
++        guard started >= created, completed >= started, now >= completed,
++              completed-started <= maximumAge, now-completed <= maximumAge else {
++            throw Failure.staleObservation
++        }
++        uses += 1
++    }
++    mutating func finish(expectedDeadline: UInt64, now: UInt64) throws {
++        try current(expectedDeadline: expectedDeadline, now: now)
++        guard uses == expectedUses else { throw Failure.incomplete }
++        close()
++    }
++    mutating func close() { closed = true }
++}
+--- /dev/null
++++ Runtime/Gemma4BenchmarkGuardObservation.swift
+@@ -0,0 +1,41 @@
++import Foundation
++
++/// At most one genuine snapshot for entry→owner→entry, or a standalone check.
++/// Created inside a synchronous check and invalidated in its defer. Never held
++/// by a model, wire, session, resource owner, timer, or async closure.
++final class Gemma4BenchmarkGuardObservation {
++    private var invocation: Gemma4BenchmarkGuardInvocation
++    private var observation: QwenDenseStageLoadOSObservation?
++
++    init(mode: Gemma4BenchmarkGuardInvocation.Mode, deadline: UInt64) {
++        invocation = .init(mode: mode, deadline: deadline,
++            created: DispatchTime.now().uptimeNanoseconds,
++            maximumAge: QwenDenseStageLoadPolicy.maximumObservationAgeNanoseconds)
++    }
++    func read(for consumer: Gemma4BenchmarkGuardInvocation.Consumer, deadline: UInt64,
++              observationTiming: ((UInt64) -> Void)?) throws -> QwenDenseStageLoadOSObservation {
++        do {
++            try invocation.preflight(consumer, expectedDeadline: deadline,
++                                     now: DispatchTime.now().uptimeNanoseconds)
++            // The first reader is the existing native environment/OS reader.
++            // No externally supplied observation or reader callback is accepted.
++            let value: QwenDenseStageLoadOSObservation
++            if let observation { value = observation }
++            else { value = try QwenResidentResourceEnvironment.observe(observationTiming: observationTiming) }
++            let now = DispatchTime.now().uptimeNanoseconds
++            try QwenDenseStageLoadPolicy.requireInitial(value, now: now)
++            try invocation.accept(consumer, started: value.startedNanoseconds,
++                completed: value.completedNanoseconds, expectedDeadline: deadline, now: now)
++            observation = value
++            return value
++        } catch { close(); throw error }
++    }
++    func finish(deadline: UInt64) throws {
++        do {
++            try invocation.finish(expectedDeadline: deadline, now: DispatchTime.now().uptimeNanoseconds)
++            observation = nil
++        } catch { close(); throw error }
++    }
++    func close() { invocation.close(); observation = nil }
++    deinit { close() }
++}
+--- originals/Gemma4BenchmarkResourceOwner.swift
++++ Runtime/Gemma4BenchmarkResourceOwner.swift
+@@ -66,18 +66,25 @@
+         try check()
+     }
+ 
+-    func check() throws {
+-        try guardMetrics.measure(.ownerGuard) { try checkObservedResources() }
+-    }
+-
+-    private func checkObservedResources() throws {
++    func check(observation supplied: Gemma4BenchmarkGuardObservation? = nil) throws {
++        let owned = supplied == nil ? Gemma4BenchmarkGuardObservation(mode: .owner, deadline: deadline) : nil
++        defer { owned?.close() }
++        let observation = supplied ?? owned!
++        try guardMetrics.measure(.ownerGuard) {
++            try checkObservedResources(observation: observation, finishObservation: owned != nil)
++        }
++    }
++
++    private func checkObservedResources(observation: Gemma4BenchmarkGuardObservation, finishObservation: Bool) throws {
+         do {
+             guard phase != .failed, !progress.failed,
+                   DispatchTime.now().uptimeNanoseconds < deadline else {
+                 throw ProbeError("Gemma resource owner failed or expired")
+             }
+-            try guardMetrics.measure(.environmentGuard) { try QwenResidentResourceEnvironment.require(observationTiming: guardMetrics.observeOS) }
+-            let os = try QwenDenseStageLoadResources.requireInitial(observationTiming: guardMetrics.observeOS)
++            let os = try guardMetrics.measure(.environmentGuard) {
++                try observation.read(for: .owner, deadline: deadline, observationTiming: guardMetrics.observeOS)
++            }
++            try QwenDenseStageLoadPolicy.requireInitial(os, now: DispatchTime.now().uptimeNanoseconds)
+             guard os.pressureLevel == 1 else { throw ProbeError("Gemma benchmark requires exact pressure level1") }
+             let native = guardMetrics.measure(.nativeSnapshot) { QwenDenseStageLoadResources.observeNative() }
+             guard native.activeBytes >= 0, native.cacheBytes == 0,
+@@ -110,6 +117,7 @@
+             observations = try sum([observations, 1]); minimumFree = min(minimumFree, os.actualFreeBytes)
+             maximumActive = max(maximumActive, native.activeBytes); maximumPeak = max(maximumPeak, native.peakBytes)
+             guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Gemma deadline expired during observation") }
++            if finishObservation { try observation.finish(deadline: deadline) }
+         } catch { phase = .failed; progress.poison(); throw error }
+     }
+ 
+--- originals/Gemma4BenchmarkRuntime.swift
++++ Runtime/Gemma4BenchmarkRuntime.swift
+@@ -20,15 +20,16 @@
+ enum Gemma4BenchmarkRuntime {
+     static func execute(_ input: Gemma4BenchmarkInput, deadline: UInt64, group: Collective?,
+                         sidecars: Gemma4BenchmarkSidecars, guardMetrics: Gemma4BenchmarkGuardMetrics,
+-                        check: () throws -> Void) throws -> Data {
++                        check: (Gemma4BenchmarkGuardObservation?) throws -> Void) throws -> Data {
+         weak var releasedModel: Module?
+         return try withoutActuallyEscaping(check) { borrowedCheck in
+             try MLX.withError { native in
+-                func outerCheck() throws {
++                func scopedOuterCheck(_ observation: Gemma4BenchmarkGuardObservation?) throws {
+                     try guardMetrics.measure(.outerNativeFault) { try native.check() }
+-                    try borrowedCheck()
++                    try borrowedCheck(observation)
+                     try guardMetrics.measure(.outerNativeFault) { try native.check() }
+                 }
++                func outerCheck() throws { try scopedOuterCheck(nil) }
+                 do {
+                     let environment = ProcessInfo.processInfo.environment
+                     _ = try QwenLongPrefillArithmeticEnvironment.admit(environment)
+@@ -45,7 +46,14 @@
+                         requests: input.requests, residualDType: input.job.dtype,
+                         captureEvidence: input.job.captureEvidence, prefillPolicy: input.job.prefill, deadline: deadline, guardMetrics: guardMetrics)
+                     func checked() throws {
+-                        try guardMetrics.measure(.logicalGuard) { try outerCheck(); try owner.check(); try outerCheck() }
++                        try guardMetrics.measure(.logicalGuard) {
++                            let observation = Gemma4BenchmarkGuardObservation(mode: .combined, deadline: deadline)
++                            defer { observation.close() }
++                            try scopedOuterCheck(observation)
++                            try owner.check(observation: observation)
++                            try scopedOuterCheck(observation)
++                            try observation.finish(deadline: deadline)
++                        }
+                     }
+                     var releaseWire: Gemma4BenchmarkWire?
+                     let loadStarted = DispatchTime.now().uptimeNanoseconds
+--- originals/QwenResidentRequestResources.swift
++++ Runtime/QwenResidentRequestResources.swift
+@@ -84,6 +84,12 @@
+ 
+ enum QwenResidentResourceEnvironment {
+     static func require(observationTiming: ((UInt64) -> Void)? = nil) throws {
++        _ = try observe(observationTiming: observationTiming)
++    }
++
++    /// Same live AC/power/thermal/OS gate, returning its validated observation.
++    /// Default require callers retain exactly one fresh read and discard it.
++    static func observe(observationTiming: ((UInt64) -> Void)? = nil) throws -> QwenDenseStageLoadOSObservation {
+         guard let unmanaged = IOPSCopyPowerSourcesInfo() else { throw ProbeError("Cannot observe resident power source") }
+         let info = unmanaged.takeRetainedValue()
+         let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String?
+@@ -92,7 +98,7 @@
+               thermal == .nominal || thermal == .fair else {
+             throw ProbeError("Resident execution requires AC, normal power mode and nominal/fair thermal state")
+         }
+-        _ = try QwenDenseStageLoadResources.requireInitial(observationTiming: observationTiming)
++        return try QwenDenseStageLoadResources.requireInitial(observationTiming: observationTiming)
+     }
+ 
+     static func allocationBound(_ bytes: Int) throws -> Int {

@@ -1,0 +1,61 @@
+--- /Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/execute_physical.py
++++ /Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-root-review-20260917/execute_gemma_attempt2.py
+@@ -5,10 +5,11 @@
+ from pathlib import Path
+ import sys
+ 
+-ROOT = Path(__file__).resolve().parent
++ROOT = Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917')
++sys.path.insert(0, str(ROOT))
+ INPUTS = ROOT / 'preparation-1'
+ SOURCE = ROOT / 'source'
+-ACTIONS = ROOT / 'physical-actions-1'
++ACTIONS = ROOT / 'physical-actions-2'
+ from check_process import run_owned
+ sys.path[:0] = [str(SOURCE), str(SOURCE / 'package')]
+ from reference_binding import FULL_DIRECTORY, FULL_RUN, FULL_RUN_SHA
+@@ -31,9 +32,17 @@
+ 
+ def main():
+     parser = argparse.ArgumentParser(allow_abbrev=False)
+-    parser.add_argument('action', choices=['copy', 'stages', 'collect-stage0', 'collect-stage1', 'compare'])
++    parser.add_argument('action', choices=['stages', 'collect-stage0', 'collect-stage1', 'compare'])
+     parser.add_argument('--preparation-sha256', required=True)
+     args = parser.parse_args()
++    prior = ROOT / 'physical-actions-1/stages/action/receipt.json'
++    assert sha(prior) == 'b6b789be01546f779303b08bacbf0c673660a500d71a0ee6c2aca8b9cd69cb6b'
++    previous = json.loads(prior.read_text())
++    assert previous['aliasRelease']['restored'] and previous['retirement']['journalsEmpty'] and previous['retirement']['nativeProcessesAbsent']
++    assert previous['retirement']['observationErrors'] == []
++    for path, expected in [('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-root-review-20260917/resource-preparation-1/rank0.receipt.json', 'b4767465552533d99c9495a6ce616efd53749736aaa6a0577cac7a9e9a557148'), ('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-root-review-20260917/resource-preparation-1/rank1.receipt.json', '7a879319ff150ae80c9b538e422ef636c5ffa57fb8a5fe952a762859ff5d7765')]:
++        assert sha(Path(path)) == expected
++        assert json.loads(Path(path).read_text())['passed'] is True
+     assert sha(INPUTS / 'receipt.json') == args.preparation_sha256
+     check_source(args.preparation_sha256)
+     prepared = json.loads((INPUTS / 'receipt.json').read_text())
+@@ -52,7 +61,7 @@
+     def pin(label, flag):
+         if label == 'full':
+             return [flag, str(FULL_RUN), '--full-run-sha256', FULL_RUN_SHA]
+-        previous = ACTIONS / label
++        previous = (ROOT / 'physical-actions-1' if label == 'copy' else ACTIONS) / label
+         outer = json.loads((previous / 'receipt.json').read_text())
+         assert outer['status'] == 'passed' and outer['bindingSHA256'] == binding_sha
+         path = previous / 'action/receipt.json'
+@@ -63,14 +72,14 @@
+         command += ['copy'] + bound_args
+         timeout = 800
+     elif args.action in ('full', 'stages'):
+-        command += ['run', '--mode', args.action, '--attempt', '1'] + bound_args
++        command += ['run', '--mode', args.action, '--attempt', '2'] + bound_args
+         command += pin('copy', '--copy-proof')
+         if args.action == 'stages':
+             command += ['--full-dir', str(FULL_DIRECTORY)]
+             command += pin('full', '--full-run-receipt')
+         timeout = 540
+     elif args.action.startswith('collect-'):
+-        command += ['collect', '--mode', args.action[len('collect-'):], '--attempt', '1'] + bound_args
++        command += ['collect', '--mode', args.action[len('collect-'):], '--attempt', '2'] + bound_args
+         timeout = 90
+     else:
+         command += ['compare'] + bound_args

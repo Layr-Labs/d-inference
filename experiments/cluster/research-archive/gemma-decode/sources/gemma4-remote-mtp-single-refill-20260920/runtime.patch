@@ -1,0 +1,107 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift
+@@ -4,9 +4,11 @@
+     let schema: String, role: String
+     let localMTPJob: String, localMTPJobSHA256: String
+     let targetNativeSHA256: String, assistantNativeSHA256: String, embeddingIdentitySHA256: String
++    let refillPolicy: String?
+     var rank: Int { role == "target" ? 1 : 0 }
+     func validate() throws {
+         guard schema == "gemma4_remote_mtp_cohort_job_v1", ["target","assistant"].contains(role),
++              (refillPolicy == nil || refillPolicy == "single_for_depth_one_v1"),
+               [localMTPJobSHA256,targetNativeSHA256,assistantNativeSHA256,embeddingIdentitySHA256].allSatisfy(qwenStageWireIsSHA256),
+               localMTPJob.hasPrefix("/"), localMTPJob.utf8.count <= 2048, !localMTPJob.contains("\0"),
+               URL(fileURLWithPath:localMTPJob).standardizedFileURL.path == localMTPJob else {
+@@ -23,6 +25,7 @@
+     let scopeSHA256: String
+     let denseProjectionEnabled: Bool
+     let verificationDepth: Gemma4RemoteMTPDepth
++    let producerRefillPolicy: Gemma4RemoteMTPRefillPolicy
+     var benchmark: Gemma4BenchmarkInput { local.benchmark }
+     init(url: URL, denseProjectionEnabled: Bool = false,
+          headPolicy: Gemma4MTPDenseProjection.HeadPolicy = .serialM1) throws {
+@@ -36,11 +39,14 @@
+         let local = try Gemma4LocalMTPInput(url:URL(fileURLWithPath:job.localMTPJob),qualifyConditioning:false,
+             denseProjectionEnabled:denseProjectionEnabled,headPolicy:headPolicy)
+         let verificationDepth = try Gemma4RemoteMTPDepth(maximumDraftTokens:local.job.maximumDraftTokens)
++        let producerRefillPolicy = try Gemma4RemoteMTPRefillPolicy(explicitPolicy:job.refillPolicy,
++            verificationDepth:verificationDepth.maximumDraftTokens)
+         guard local.benchmark.job.buildIdentitySHA256 == (job.rank == 1 ? job.targetNativeSHA256 : job.assistantNativeSHA256) else {
+             throw ProbeError("Remote MTP requires the actual local native identity")
+         }
+         self.job = job; self.local = local; self.denseProjectionEnabled = denseProjectionEnabled
+         self.verificationDepth = verificationDepth
++        self.producerRefillPolicy = producerRefillPolicy
+         // Local paths/role are intentionally excluded from the bilateral scope.
+         // Both exact local input files remain independently bound by parent jobs.
+         scopeSHA256 = sha256(Data((["gemma4_remote_mtp_cohort_v1",local.benchmark.job.membershipEpoch,
+@@ -49,6 +55,7 @@
+             local.benchmark.plan.fingerprint,local.benchmark.job.promptFileSHA256,
+             verificationDepth.scopeComponent,"buffer=5","targetRank=1","assistantRank=0",
+             "capture=\(local.job.captureEvidence)"]+local.benchmark.requests.map(\.fingerprint)
++            + producerRefillPolicy.scopeComponents
+             + (local.targetProjectionPolicy.map { ["targetProjection="+$0] } ?? [])).joined(separator:"\n").utf8))
+     }
+     func requestScope(_ ordinal: Int) throws -> AsyncMTPProposalLedger.Scope {
+@@ -85,6 +92,11 @@
+             "metadataOnly":true,"actualAllocatorBoundsApplied":false,"mtpEnabled":true,"remoteAssistant":true,
+             "servingEnabled":false,"runtimeExecutionAuthorized":false,"numericalComparisonPerformed":false,
+             "physicalRetirementEstablished":false]
++        if producerRefillPolicy != .paired {
++            report["producerRefillPolicy"] = producerRefillPolicy.rawValue
++            report["maximumProducerRefillGrant"] = 1
++            report["maximumProducerLookaheadGrant"] = 2
++        }
+         if let policy = local.targetProjectionPolicy { report["targetProjectionPolicy"] = policy }
+         return try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys,.withoutEscapingSlashes])
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
+@@ -12,6 +12,7 @@
+         let timing: Gemma4RemoteMTPVerificationTiming
+     }
+     private let channel: Gemma4MTPPullChannel
++    private let producerRefillPolicy: Gemma4RemoteMTPRefillPolicy
+     private(set) var ledger: AsyncMTPProposalLedger
+     private var branch: AsyncMTPProposalLedger.BranchID?
+     private var outstanding: AsyncMTPProposalLedger.Grant?
+@@ -23,13 +24,15 @@
+     private var failed = false, stopped = false
+ 
+     init(channel: Gemma4MTPPullChannel, scope: AsyncMTPProposalLedger.Scope, requestSHA256: String,
+-         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int) throws {
++         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int,
++         producerRefillPolicy: Gemma4RemoteMTPRefillPolicy = .paired) throws {
+         let mirror = try Gemma4MTPPullMirror(scope:scope,requestSHA256:requestSHA256,
+             inputFrontier:initialFrontier,seed:initialSeed,maximumInputFrontier:maximumInputFrontier)
+         guard channel.role == .target, channel.scopeSHA256 == mirror.scopeSHA256 else {
+             throw ProbeError("Remote MTP target channel differs from the original request")
+         }
+         self.channel = channel; ledger = mirror.ledger; highestProduced = initialFrontier
++        self.producerRefillPolicy = producerRefillPolicy
+     }
+ 
+     /// The caller supplies an ACTUALLY reconciled window from this same session.
+@@ -71,7 +74,9 @@
+             try requireActive()
+             guard (1...2).contains(draftCount), !ledger.requiresBranchRetirement else { throw ProbeError("Remote MTP fill requires a usable branch") }
+             while highestProduced - ledger.inputFrontier < draftCount {
+-                try grant(min(2,ledger.proposalCredit),check:check)
++                let count = try producerRefillPolicy.exposedGrant(draftCount:draftCount,
++                    proposalCredit:ledger.proposalCredit)
++                try grant(count,check:check)
+                 try pull(check:check)
+             }
+         } catch { failed = true; throw error }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
+@@ -68,7 +68,8 @@
+                     controlOperations:controlOperations,controlLifetimeCheck:controlLifetimeCheck)
+                 let target = try Gemma4MTPPullTarget(channel:channel,scope:input.requestScope(ordinal),
+                     requestSHA256:input.resourceRequestSHA256,initialFrontier:session.committedTokens,
+-                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens)
++                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens,
++                    producerRefillPolicy:input.producerRefillPolicy)
+                 lifetime.target = target
+                 func reseed(_ window: Gemma4OwnedMTPWindow) throws {
+                     try target.reseed(after:window,session:session,admitSend:{ plan in

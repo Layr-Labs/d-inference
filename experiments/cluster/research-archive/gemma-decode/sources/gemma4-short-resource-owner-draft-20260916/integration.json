@@ -1,0 +1,76 @@
+{
+  "bodyReturnsBoundedMetadataOnly": true,
+  "closedCandidateCut": 10,
+  "forwardManifest": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-registered-forward-draft-20260916/manifest.json",
+    "sha256": "92a73443abcd0ae9e54604ba3d8e8e0aa2a84642f41702b34d4f84665e8954e5",
+    "sizeBytes": 3389
+  },
+  "mainChanged": false,
+  "metadataCandidateCuts": [
+    8,
+    10,
+    12,
+    15
+  ],
+  "nativeDriverAndComparatorStillRequired": true,
+  "nativePrerequisites": "/Users/developer/DarkbloomDev/cluster-research/gemma4-registered-forward-draft-20260916/integration.json",
+  "overlay": [
+    {
+      "afterSHA256": "fede1ad64b2c1c72171ee2957caaac4dbb27d4e371a8d99ce1756d747d21f02f",
+      "beforeSHA256": null,
+      "beforeSource": null,
+      "bytes": 1490,
+      "mainDestination": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OrderedLoadProgress.swift",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OrderedLoadProgress.swift",
+      "source": "proposed/Gemma4OrderedLoadProgress.swift"
+    },
+    {
+      "afterSHA256": "40181b288dd7537b82e7cb15e85574eb4fd0aa4c06901863bc5dc424ff4b22f1",
+      "beforeSHA256": "fe416486dd6229c7cc58cc3679ee3a76025271323bb8dabb386de7141f8b248f",
+      "beforeSource": "/Users/developer/DarkbloomDev/cluster-research/gemma4-registered-forward-draft-20260916/proposed/Gemma4RegisteredForwardEntry.swift",
+      "bytes": 4451,
+      "mainDestination": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredForwardEntry.swift",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredForwardEntry.swift",
+      "source": "proposed/Gemma4RegisteredForwardEntry.swift"
+    },
+    {
+      "afterSHA256": "e794fd12fc12503d1d3aa9ede2f8ce7b4b788e72eac685d9e2e9f807e793c4b2",
+      "beforeSHA256": "671b31a5f04b602ab3e5dfa5e8703d41f4972359892233a8ab224b12b0d44116",
+      "beforeSource": "/Users/developer/DarkbloomDev/cluster-research/gemma4-registered-forward-draft-20260916/proposed/Gemma4RegisteredMaterialization.swift",
+      "bytes": 6880,
+      "mainDestination": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredMaterialization.swift",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredMaterialization.swift",
+      "source": "proposed/Gemma4RegisteredMaterialization.swift"
+    },
+    {
+      "afterSHA256": "dc7d89559d5e283dac37a5e6a814c386e6320f69e46181d9e98f85652bc26b42",
+      "beforeSHA256": null,
+      "beforeSource": null,
+      "bytes": 3624,
+      "mainDestination": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCorrectness.swift",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCorrectness.swift",
+      "source": "proposed/Gemma4ShortCorrectness.swift"
+    },
+    {
+      "afterSHA256": "bcbb7e162437d64a3f34dc745db8faabeef0fd79f5946f157f93f13e0f95dc08",
+      "beforeSHA256": null,
+      "beforeSource": null,
+      "bytes": 9224,
+      "mainDestination": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceBudget.swift",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceBudget.swift",
+      "source": "proposed/Gemma4ShortResourceBudget.swift"
+    },
+    {
+      "afterSHA256": "43011820abe3ed7740655a4da25313fe0916a673c1164304d89712d1c5eeb22f",
+      "beforeSHA256": null,
+      "beforeSource": null,
+      "bytes": 11819,
+      "mainDestination": "/Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceOwner.swift",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceOwner.swift",
+      "source": "proposed/Gemma4ShortResourceOwner.swift"
+    }
+  ],
+  "qualifiedWindowWorkspace": "/Users/developer/DarkbloomDev/cluster-research/gemma4-windowed-state-build-20260916/workspace",
+  "schema": "gemma4_short_operational_overlay_v1"
+}

@@ -1,0 +1,42 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift
+@@ -14,7 +14,7 @@
+ 
+     func validate() throws {
+         guard schema == "gemma4_resident_benchmark_v1", ["full", "stage0", "stage1"].contains(mode),
+-              [128,256,1024,4096,8192].contains(promptCount), chunkSize == 128, outputCount == 16, [8,10].contains(cut),
++              [128,256,1024,4096,8192].contains(promptCount), [64,128].contains(chunkSize), outputCount == 16, [6,7,8,10].contains(cut),
+               (1...300).contains(timeoutSeconds), requestIDs.count == 4, Set(requestIDs).count == 4,
+               (requestIDs + [membershipEpoch]).allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+               [promptFileSHA256, buildIdentitySHA256].allSatisfy(qwenStageWireIsSHA256),
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
+@@ -4,9 +4,9 @@
+ /// A bound callback is metadata only; only the closed live owner can admit work.
+ struct Gemma4BenchmarkResourceBudget {
+     static func requireCandidateCut(_ plan: Gemma4LayerStagePlan) throws {
+-        guard [8,10].contains(plan.stages[0].sourceLayerEnd),
++        guard [6,7,8,10].contains(plan.stages[0].sourceLayerEnd),
+               plan.stages[1].sourceLayerStart == plan.stages[0].sourceLayerEnd else {
+-            throw ProbeError("Gemma resident benchmark operational owner requires the explicit cut8 or cut10 candidate")
++            throw ProbeError("Gemma resident benchmark operational owner requires the explicit cut6/cut7/cut8/cut10 candidate")
+         }
+     }
+     struct ArrayTerm: Encodable { let name: String; let bytes: Int }
+@@ -27,14 +27,14 @@
+     static func derive(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
+         request: QwenLayerStageGenerationRequest, captureEvidence: Bool, bound: (Int) throws -> Int
+     ) throws -> Self {
+-        guard [128,256,1024,4096,8192].contains(request.promptCount), request.chunkSize == 128, request.outputCount == 16,
++        guard [128,256,1024,4096,8192].contains(request.promptCount), [64,128].contains(request.chunkSize), request.outputCount == 16,
+               request.stopTokenIDs.isEmpty, request.maximumTokens == request.promptCount + 16,
+               request.profile.identifier == "registered_gemma4_26b_forward_validation_v1",
+               request.profile.vocabularySize == 262_144, request.profile.hiddenSize == 2816,
+               request.profile.maximumPromptTokens == 8192, request.profile.maximumChunkTokens == 512,
+               request.profile.maximumOutputTokens == 128, request.profile.maximumContextTokens == 8320,
+               ["float16", "bfloat16", "float32"].contains(request.profile.activationDType) else {
+-            throw ProbeError("Gemma short resource budget requires closed P128…8192/C128/O16/no-stop geometry")
++            throw ProbeError("Gemma short resource budget requires closed P128…8192/C64-or128/O16/no-stop geometry")
+         }
+         let selected = try Gemma4ForwardSelection.make(plan: plan, target: target)
+         let globals: [Int]

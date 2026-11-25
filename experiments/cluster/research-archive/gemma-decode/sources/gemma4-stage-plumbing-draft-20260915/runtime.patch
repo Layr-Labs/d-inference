@@ -1,0 +1,655 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ArtifactMetadata.swift
+@@ -0,0 +1,72 @@
++import Foundation
++
++/// An exact retained-header profile. It is never a payload or native execution permit.
++struct Gemma4ArtifactMetadata {
++    static let configurationSHA256 = "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa"
++    static let manifestSHA256 = "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd"
++    static let indexSHA256 = "5455e83705bbdd4e3702c7d4f9d49d4900e84533036628f74500538075dd5c80"
++    static let artifactAggregateSHA256 = "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
++    static let headerSHA256 = [
++        "model-00001-of-00003.safetensors": "5b3e8f2c593f5b291ffa3322540141bf909f454c917888957816273c53c9c735",
++        "model-00002-of-00003.safetensors": "f1624d695581287157a8472d87224197d0a67d50ce5fd439af3ff45444ddd6dc",
++        "model-00003-of-00003.safetensors": "52b3a65b791a2f0a1dd345291979ed5429388992ad12d824032b923bf9300a7a",
++    ]
++    let originalConfiguration: Data
++    let text: Gemma4TextMetadata
++    let sources: [LayerStageSourceTensor]
++    let excludedSourceNames: [String]
++    let sourceInventorySHA256: String
++    let fingerprint: String
++    let actualPayloadVerificationEstablished = false
++    let runtimeExecutionAuthorized = false
++
++    private init(configuration: Data, text: Gemma4TextMetadata, sources: [LayerStageSourceTensor], excluded: [String]) throws {
++        originalConfiguration = configuration; self.text = text
++        self.sources = sources; excludedSourceNames = excluded
++        sourceInventorySHA256 = sha256(try canonicalJSONData(sources))
++        fingerprint = sha256(Data(["gemma4-26b-retained-header-profile-v1", Self.configurationSHA256,
++            Self.manifestSHA256, Self.indexSHA256, Self.artifactAggregateSHA256, sourceInventorySHA256,
++            "payloadVerified=false", "executionAuthorized=false"].joined(separator: "\n").utf8))
++    }
++
++    static func admit(configuration: Data, manifest: Data, index: Data,
++                      headers: [LayerStageCapturedTensorHeader]) throws -> Self {
++        guard (1...1_048_576).contains(configuration.count), (1...1_048_576).contains(manifest.count),
++              (1...2_097_152).contains(index.count), sha256(configuration) == configurationSHA256,
++              sha256(manifest) == manifestSHA256, sha256(index) == indexSHA256,
++              headers.count == 3, Set(headers.map(\.sourceFile)) == Set(headerSHA256.keys),
++              headers.allSatisfy({ (1...2_097_152).contains($0.data.count) && sha256($0.data) == headerSHA256[$0.sourceFile] }) else {
++            throw ProbeError("Gemma retained config/manifest/index/header identity differs")
++        }
++        try validateWorkerJSON(manifest)
++        let declared = try JSONDecoder().decode(CheckpointManifest.self, from: manifest)
++        guard declared.aggregate_sha256 == artifactAggregateSHA256, declared.file_count == 10,
++              declared.total_size_bytes == 15_641_239_295,
++              declared.files.count == 10,
++              try QwenLongPrefillCheckedBytes.sum(declared.files.map(\.size_bytes)) == declared.total_size_bytes,
++              declared.files.first(where: { $0.path == "config.json" })?.sha256 == configurationSHA256 else {
++            throw ProbeError("Gemma declared manifest semantics differ")
++        }
++        let text = try Gemma4TextMetadata.decode(configuration)
++        let sources = try LayerStageCapturedTensorHeaders.parse(manifest: declared, index: index, headers: headers)
++        let excluded = try validateSourceInventory(sources, text: text)
++        return try .init(configuration: configuration, text: text, sources: sources, excluded: excluded)
++    }
++
++    static func validateSourceInventory(_ sources: [LayerStageSourceTensor], text: Gemma4TextMetadata) throws -> [String] {
++        let expected = try Gemma4TensorInventory.expectedText(text)
++        let actual = sources.filter { $0.layout.canonicalName.hasPrefix("language_model.") }
++        let excluded = sources.filter { !$0.layout.canonicalName.hasPrefix("language_model.") }
++        guard sources.count == 1697, Set(sources.map { $0.layout.canonicalName }).count == sources.count,
++              actual.count == 1339, expected.count == actual.count,
++              Set(actual.map { $0.layout.canonicalName }) == Set(expected.keys),
++              actual.allSatisfy({ expected[$0.layout.canonicalName] == $0.layout }),
++              excluded.count == 358,
++              excluded.filter({ $0.layout.canonicalName.hasPrefix("vision_tower.") }).count == 355,
++              excluded.filter({ $0.layout.canonicalName.hasPrefix("embed_vision.") }).count == 3,
++              try QwenLongPrefillCheckedBytes.sum(actual.map { $0.layout.byteCount }) == 14_467_688_508 else {
++            throw ProbeError("Gemma source tensor ownership, packed geometry or exclusions differ")
++        }
++        return excluded.map { $0.layout.canonicalName }.sorted()
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LayerStagePlan.swift
+@@ -0,0 +1,68 @@
++import Foundation
++
++/// Two-rank text partition over an exact header profile, with no native capability.
++struct Gemma4LayerStagePlan {
++    let artifact: Gemma4ArtifactMetadata
++    let stages: [Gemma4StageConstructionDescriptor]
++    let mappings: [LayerStageTensorMapping]
++    let replication: [LayerStageTiedEmbeddingReplication]
++    let conservation: LayerStageStorageConservation
++    let fingerprint: String
++
++    init(artifact: Gemma4ArtifactMetadata, cut: Int) throws {
++        guard (1..<artifact.text.globalLayerCount).contains(cut) else { throw ProbeError("Gemma cut must be in 1..<30") }
++        let stages = try [
++            Gemma4StageConstructionDescriptor(artifact: artifact, rank: 0, sourceLayerRange: 0..<cut),
++            Gemma4StageConstructionDescriptor(artifact: artifact, rank: 1, sourceLayerRange: cut..<30),
++        ]
++        let embedding = Gemma4TensorInventory.prefix + "embed_tokens"
++        let group = LayerStageTiedEmbeddingReplication(id: "gemma4-source-tied-embedding-v1",
++            canonicalModule: embedding, sourceNames: ["biases", "scales", "weight"].map { embedding + "." + $0 },
++            ingressRank: 0, outputRank: 1)
++        let excluded = Set(artifact.excludedSourceNames)
++        let mappings = try artifact.sources.filter { !excluded.contains($0.layout.canonicalName) }.map { source in
++            let name = source.layout.canonicalName
++            if group.sourceNames.contains(name) {
++                return LayerStageTensorMapping(source: source, destinations: [
++                    .init(rank: 0, localName: name, role: .ingressEmbedding, globalLayerIndex: nil),
++                    .init(rank: 1, localName: name, role: .tiedOutputEmbedding, globalLayerIndex: nil),
++                ], replicationGroupID: group.id)
++            }
++            if name == Gemma4TensorInventory.prefix + "norm.weight" {
++                return LayerStageTensorMapping(source: source,
++                    destinations: [.init(rank: 1, localName: name, role: .finalNorm, globalLayerIndex: nil)], replicationGroupID: nil)
++            }
++            guard let location = Gemma4StageConstructionDescriptor.layerPath(name) else {
++                throw ProbeError("Unowned Gemma canonical tensor")
++            }
++            let rank = location.index < cut ? 0 : 1
++            let stage = stages[rank]
++            let local = Gemma4TensorInventory.prefix + "layers.\(location.index - stage.sourceLayerStart)." + location.suffix
++            return LayerStageTensorMapping(source: source,
++                destinations: [.init(rank: rank, localName: local, role: .layer, globalLayerIndex: location.index)], replicationGroupID: nil)
++        }
++        let conservation = try LayerStageStorageConservation.validate(sources: artifact.sources,
++            mappings: mappings, excludedSourceNames: artifact.excludedSourceNames, allowedReplication: [group])
++        guard conservation.selectedSourceTensorCount == 1339, conservation.destinationTensorCount == 1342,
++              conservation.additionalReplicaBytes == 415_236_096,
++              conservation.selectedSourcePayloadBytes == 14_467_688_508,
++              conservation.excludedPayloadBytes == 1_140_925_536 else { throw ProbeError("Gemma partition accounting differs") }
++        self.artifact = artifact; self.stages = stages; self.mappings = mappings; replication = [group]
++        self.conservation = conservation
++        fingerprint = sha256(Data(["gemma4-text-two-stage-plan-v1", artifact.fingerprint,
++            stages[0].fingerprint, stages[1].fingerprint, conservation.fingerprint,
++            "payloadVerified=false", "executionAuthorized=false"].joined(separator: "\n").utf8))
++    }
++
++    /// Actual later inventories must match the admitted model mapping, not just totals.
++    func validateStorage(mappings candidate: [LayerStageTensorMapping], excludedSourceNames: [String]) throws -> LayerStageStorageConservation {
++        let sorted = candidate.sorted { $0.source.layout.canonicalName < $1.source.layout.canonicalName }
++        guard sorted == mappings, excludedSourceNames.sorted() == artifact.excludedSourceNames else {
++            throw ProbeError("Gemma actual mapping/global indices/exclusions differ from admitted Plan")
++        }
++        let result = try LayerStageStorageConservation.validate(sources: artifact.sources,
++            mappings: sorted, excludedSourceNames: excludedSourceNames, allowedReplication: replication)
++        guard result == conservation else { throw ProbeError("Gemma storage accounting is not repeatable") }
++        return result
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4StageConstructionDescriptor.swift
+@@ -0,0 +1,83 @@
++import Foundation
++
++enum LayerStageResponsibility: String, Codable {
++    case ingressResidual, finalLogits
++}
++
++struct Gemma4StageConstructionDescriptor: Encodable, Equatable {
++    struct Layer: Encodable, Equatable {
++        let globalIndex: Int
++        let localIndex: Int
++        let kind: Gemma4StageAttentionKind
++    }
++    struct QuantizationMapping: Encodable, Equatable {
++        let sourcePath: String
++        let localPath: String
++        let policy: Gemma4AffineQuantization
++    }
++    let originalConfiguration: Data
++    let sourceConfigurationSHA256: String
++    let rank: Int
++    let sourceLayerStart: Int
++    let sourceLayerEnd: Int
++    let globalLayerCount: Int
++    let layers: [Layer]
++    let responsibility: LayerStageResponsibility
++    /// Quantizer-only table. Never use it to rewrite the full decoder's geometry.
++    let localQuantization: Data
++    let quantizationMappings: [QuantizationMapping]
++    let fingerprint: String
++    let nativeExecutionAuthorized = false
++
++    var sourceLayerRange: Range<Int> { sourceLayerStart..<sourceLayerEnd }
++    var finalPromptLayerGlobalIndex: Int? { responsibility == .finalLogits ? globalLayerCount - 1 : nil }
++
++    init(artifact: Gemma4ArtifactMetadata, rank: Int, sourceLayerRange: Range<Int>) throws {
++        let count = artifact.text.globalLayerCount
++        guard (0...1).contains(rank), !sourceLayerRange.isEmpty,
++              sourceLayerRange.lowerBound >= 0, sourceLayerRange.upperBound <= count,
++              (rank == 0 ? sourceLayerRange.lowerBound == 0 && sourceLayerRange.upperBound < count
++                         : sourceLayerRange.lowerBound > 0 && sourceLayerRange.upperBound == count) else {
++            throw ProbeError("Gemma stage role/range is invalid")
++        }
++        let layers = sourceLayerRange.map {
++            Layer(globalIndex: $0, localIndex: $0 - sourceLayerRange.lowerBound, kind: artifact.text.layerKinds[$0])
++        }
++        var table = artifact.text.quantizationDefaults.jsonObject
++        var mappings: [QuantizationMapping] = []
++        for path in artifact.text.quantizationOverrides.keys.sorted() {
++            guard let location = Self.layerPath(path) else { throw ProbeError("Gemma quantization path is not canonical") }
++            if sourceLayerRange.contains(location.index) {
++                let local = Gemma4TensorInventory.prefix + "layers.\(location.index - sourceLayerRange.lowerBound)." + location.suffix
++                guard table[local] == nil, let policy = artifact.text.quantizationOverrides[path] else {
++                    throw ProbeError("Gemma local quantization path collides")
++                }
++                // Preserve the source spelling: mode inherits affine from the default.
++                table[local] = ["bits": policy.bits, "group_size": policy.groupSize]
++                mappings.append(.init(sourcePath: path, localPath: local, policy: policy))
++            }
++        }
++        let local = try JSONSerialization.data(withJSONObject: table, options: [.sortedKeys])
++        let responsibility: LayerStageResponsibility = rank == 0 ? .ingressResidual : .finalLogits
++        let identity = ["gemma4-stage-construction-descriptor-v1", artifact.fingerprint,
++            Gemma4ArtifactMetadata.configurationSHA256, "rank=\(rank)",
++            "globalLayers=\(count)", "range=\(sourceLayerRange.lowerBound):\(sourceLayerRange.upperBound)",
++            responsibility.rawValue, sha256(try canonicalJSONData(layers)), sha256(local),
++            sha256(try canonicalJSONData(mappings)), "executionAuthorized=false"]
++        originalConfiguration = artifact.originalConfiguration
++        sourceConfigurationSHA256 = Gemma4ArtifactMetadata.configurationSHA256
++        self.rank = rank; sourceLayerStart = sourceLayerRange.lowerBound; sourceLayerEnd = sourceLayerRange.upperBound
++        globalLayerCount = count; self.layers = layers; self.responsibility = responsibility
++        localQuantization = local; quantizationMappings = mappings
++        fingerprint = sha256(Data(identity.joined(separator: "\n").utf8))
++    }
++
++    static func layerPath(_ name: String) -> (index: Int, suffix: String)? {
++        let prefix = Gemma4TensorInventory.prefix + "layers."
++        guard name.hasPrefix(prefix) else { return nil }
++        let fields = name.dropFirst(prefix.count).split(separator: ".", omittingEmptySubsequences: false)
++        guard fields.count > 1, let first = fields.first, let index = Int(first),
++              String(index) == String(first), (0..<30).contains(index), fields.allSatisfy({ !$0.isEmpty }) else { return nil }
++        return (index, fields.dropFirst().joined(separator: "."))
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TensorInventory.swift
+@@ -0,0 +1,55 @@
++import Foundation
++
++enum Gemma4TensorInventory {
++    static let prefix = "language_model.model."
++
++    static func expectedText(_ metadata: Gemma4TextMetadata) throws -> [String: LayerStageTensorLayout] {
++        var result: [String: LayerStageTensorLayout] = [:]
++        func tensor(_ name: String, _ dtype: String, _ shape: [Int]) throws {
++            let width = dtype == "U32" ? 4 : 2
++            guard result[name] == nil else { throw ProbeError("Duplicate expected Gemma tensor") }
++            result[name] = try LayerStageTensorLayout(canonicalName: name, shape: shape,
++                sourceDType: dtype, byteCount: QwenLongPrefillCheckedBytes.product(shape + [width]))
++        }
++        func quantized(_ module: String, _ shape: [Int], bits: Int = 4) throws {
++            guard let width = shape.last, width % 64 == 0, [4, 8].contains(bits) else {
++                throw ProbeError("Gemma packed projection width/policy differs")
++            }
++            try tensor(module + ".weight", "U32", Array(shape.dropLast()) + [width / (32 / bits)])
++            for suffix in ["scales", "biases"] {
++                try tensor(module + "." + suffix, "BF16", Array(shape.dropLast()) + [width / 64])
++            }
++        }
++        let h = metadata.hiddenSize, experts = metadata.expertCount
++        let shared = metadata.sharedIntermediateSize, expertWidth = metadata.expertIntermediateSize
++        try quantized(prefix + "embed_tokens", [metadata.vocabularySize, h])
++        try tensor(prefix + "norm.weight", "BF16", [h])
++        for (index, kind) in metadata.layerKinds.enumerated() {
++            let base = prefix + "layers.\(index)."
++            for name in ["input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm",
++                "post_feedforward_layernorm", "post_feedforward_layernorm_1",
++                "pre_feedforward_layernorm_2", "post_feedforward_layernorm_2"] {
++                try tensor(base + name + ".weight", "BF16", [h])
++            }
++            try tensor(base + "layer_scalar", "BF16", [1])
++            try tensor(base + "router.scale", "BF16", [h])
++            try tensor(base + "router.per_expert_scale", "BF16", [experts])
++            try quantized(base + "router.proj", [experts, h], bits: 8)
++            for (name, output, input) in [("gate_proj", shared, h), ("up_proj", shared, h), ("down_proj", h, shared)] {
++                try quantized(base + "mlp." + name, [output, input], bits: 8)
++            }
++            for (name, output, input) in [("gate_proj", expertWidth, h), ("up_proj", expertWidth, h), ("down_proj", h, expertWidth)] {
++                try quantized(base + "experts.switch_glu." + name, [experts, output, input])
++            }
++            let head = kind == .sliding ? metadata.slidingHeadDimension : metadata.fullHeadDimension
++            let kv = kind == .sliding ? metadata.slidingKVHeads : metadata.fullKVHeads
++            for (name, output, input) in [("q_proj", metadata.queryHeads * head, h),
++                ("k_proj", kv * head, h), ("o_proj", h, metadata.queryHeads * head)] {
++                try quantized(base + "self_attn." + name, [output, input])
++            }
++            if kind == .sliding { try quantized(base + "self_attn.v_proj", [kv * head, h]) }
++            for name in ["q_norm", "k_norm"] { try tensor(base + "self_attn." + name + ".weight", "BF16", [head]) }
++        }
++        return result
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TextMetadata.swift
+@@ -0,0 +1,102 @@
++import Foundation
++
++enum Gemma4StageAttentionKind: String, Codable {
++    case sliding = "sliding_attention"
++    case full = "full_attention"
++}
++
++struct Gemma4AffineQuantization: Encodable, Equatable {
++    let bits: Int
++    let groupSize: Int
++    let mode: String
++    var jsonObject: [String: Any] { ["bits": bits, "group_size": groupSize, "mode": mode] }
++}
++
++/// Closed metadata for this artifact. It selects no native kernel or execution profile.
++struct Gemma4TextMetadata: Encodable, Equatable {
++    let layerKinds: [Gemma4StageAttentionKind]
++    let hiddenSize = 2816
++    let vocabularySize = 262144
++    let sharedIntermediateSize = 2112
++    let expertIntermediateSize = 704
++    let expertCount = 128
++    let expertsPerToken = 8
++    let slidingWindow = 1024
++    let queryHeads = 16
++    let slidingKVHeads = 8
++    let fullKVHeads = 2
++    let slidingHeadDimension = 256
++    let fullHeadDimension = 512
++    let quantizationDefaults = Gemma4AffineQuantization(bits: 4, groupSize: 64, mode: "affine")
++    let quantizationOverrides: [String: Gemma4AffineQuantization]
++    var globalLayerCount: Int { layerKinds.count }
++
++    private init(kinds: [Gemma4StageAttentionKind], overrides: [String: Gemma4AffineQuantization]) {
++        layerKinds = kinds; quantizationOverrides = overrides
++    }
++
++    static func decode(_ configuration: Data) throws -> Self {
++        guard (1...1_048_576).contains(configuration.count),
++              let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
++              root["model_type"] as? String == "gemma4",
++              let text = root["text_config"] as? [String: Any],
++              text["model_type"] as? String == "gemma4_text" else { throw ProbeError("Gemma stage metadata requires the original text wrapper") }
++        let integers = ["num_hidden_layers": 30, "hidden_size": 2816, "vocab_size": 262144,
++            "intermediate_size": 2112, "moe_intermediate_size": 704, "num_experts": 128,
++            "top_k_experts": 8, "sliding_window": 1024, "num_attention_heads": 16,
++            "num_key_value_heads": 8, "num_global_key_value_heads": 2, "head_dim": 256,
++            "global_head_dim": 512, "num_kv_shared_layers": 0, "hidden_size_per_layer_input": 0,
++            "max_position_embeddings": 262144]
++        for (key, expected) in integers {
++            guard BoundedProbeInput.integer(text[key]) == expected else {
++                throw ProbeError("Unsupported Gemma stage geometry: \(key)")
++            }
++        }
++        func boolean(_ value: Any?, _ expected: Bool) -> Bool {
++            guard let number = value as? NSNumber, String(cString: number.objCType) == "c" else { return false }
++            return number.boolValue == expected
++        }
++        guard boolean(root["tie_word_embeddings"], true), boolean(text["tie_word_embeddings"], true),
++              boolean(text["attention_k_eq_v"], true), boolean(text["enable_moe_block"], true),
++              boolean(text["use_double_wide_mlp"], false), boolean(text["attention_bias"], false),
++              text["use_bidirectional_attention"] as? String == "vision",
++              text["dtype"] as? String == "bfloat16",
++              text["hidden_activation"] as? String == "gelu_pytorch_tanh",
++              (text["final_logit_softcapping"] as? NSNumber)?.doubleValue == 30 else {
++            throw ProbeError("Unsupported Gemma embedding, attention, dtype or activation policy")
++        }
++        let kinds = (0..<30).map { ($0 + 1) % 6 == 0 ? Gemma4StageAttentionKind.full : .sliding }
++        guard text["layer_types"] as? [String] == kinds.map(\.rawValue),
++              let rope = text["rope_parameters"] as? [String: Any],
++              let sliding = rope["sliding_attention"] as? [String: Any],
++              let full = rope["full_attention"] as? [String: Any],
++              sliding["rope_type"] as? String == "default", (sliding["rope_theta"] as? NSNumber)?.doubleValue == 10000,
++              full["rope_type"] as? String == "proportional", (full["rope_theta"] as? NSNumber)?.doubleValue == 1000000,
++              (full["partial_rotary_factor"] as? NSNumber)?.doubleValue == 0.25 else {
++            throw ProbeError("Gemma global layer or rotary policy differs")
++        }
++        var overrides: [String: Gemma4AffineQuantization] = [:]
++        for index in 0..<30 {
++            for module in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] {
++                overrides["language_model.model.layers.\(index).\(module)"] = .init(bits: 8, groupSize: 64, mode: "affine")
++            }
++        }
++        for key in ["quantization", "quantization_config"] {
++            guard let table = root[key] as? [String: Any], table.count == 123,
++                  BoundedProbeInput.integer(table["bits"]) == 4,
++                  BoundedProbeInput.integer(table["group_size"]) == 64,
++                  table["mode"] as? String == "affine",
++                  Set(table.keys) == Set(overrides.keys).union(["bits", "group_size", "mode"]) else {
++                throw ProbeError("Gemma quantization defaults/override paths differ")
++            }
++            for path in overrides.keys {
++                guard let entry = table[path] as? [String: Any], Set(entry.keys) == ["bits", "group_size"],
++                      BoundedProbeInput.integer(entry["bits"]) == 8,
++                      BoundedProbeInput.integer(entry["group_size"]) == 64 else {
++                    throw ProbeError("Gemma explicit shared/router quantization differs")
++                }
++            }
++        }
++        return .init(kinds: kinds, overrides: overrides)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageCapturedTensorHeaders.swift
+@@ -0,0 +1,69 @@
++import Foundation
++
++struct LayerStageCapturedTensorHeader {
++    let sourceFile: String
++    let data: Data
++}
++
++/// Pure projection of already captured header/index bytes. No file is opened or authenticated.
++enum LayerStageCapturedTensorHeaders {
++    static func parse(manifest: CheckpointManifest, index: Data,
++                      headers: [LayerStageCapturedTensorHeader]) throws -> [LayerStageSourceTensor] {
++        guard (1...32).contains(headers.count), (1...2_097_152).contains(index.count),
++              Set(headers.map(\.sourceFile)).count == headers.count,
++              manifest.files.count == manifest.file_count, (1...64).contains(manifest.files.count),
++              Set(manifest.files.map(\.path)).count == manifest.files.count else {
++            throw ProbeError("Captured header inputs exceed bounds or duplicate files")
++        }
++        try validateWorkerJSON(index)
++        struct Index: Decodable {
++            struct Metadata: Decodable { let total_size: Int }
++            let metadata: Metadata
++            let weight_map: [String: String]
++        }
++        let decoded = try JSONDecoder().decode(Index.self, from: index)
++        let files = Dictionary(uniqueKeysWithValues: manifest.files.map { ($0.path, $0) })
++        guard Set(headers.map(\.sourceFile)) == Set(files.keys.filter { $0.hasSuffix(".safetensors") }),
++              (1...4096).contains(decoded.weight_map.count) else { throw ProbeError("Captured index/file coverage differs") }
++        var result: [String: LayerStageSourceTensor] = [:]
++        for capture in headers {
++            guard (1...2_097_152).contains(capture.data.count), let file = files[capture.sourceFile],
++                  file.size_bytes >= 8 + capture.data.count else { throw ProbeError("Invalid captured header size") }
++            try validateWorkerJSON(capture.data)
++            guard let object = try JSONSerialization.jsonObject(with: capture.data) as? [String: Any],
++                  object["__metadata__"] as? [String: String] == ["format": "mlx"] else {
++                throw ProbeError("Captured header format differs")
++            }
++            var spans: [Range<Int>] = []
++            for (name, raw) in object where name != "__metadata__" {
++                guard result[name] == nil, result.count < 4096,
++                      let entry = raw as? [String: Any], Set(entry.keys) == ["dtype", "shape", "data_offsets"],
++                      let shapeValues = entry["shape"] as? [Any],
++                      let offsetValues = entry["data_offsets"] as? [Any], offsetValues.count == 2,
++                      let dtype = entry["dtype"] as? String else { throw ProbeError("Malformed or duplicate captured tensor") }
++                let shape = shapeValues.compactMap { BoundedProbeInput.integer($0) }
++                let offsets = offsetValues.compactMap { BoundedProbeInput.integer($0) }
++                guard shape.count == shapeValues.count, offsets.count == 2,
++                      offsets[0] >= 0, offsets[1] > offsets[0],
++                      offsets[1] <= file.size_bytes - 8 - capture.data.count,
++                      decoded.weight_map[name] == capture.sourceFile else { throw ProbeError("Captured tensor extent/index mismatch") }
++                let layout = try LayerStageTensorLayout(canonicalName: name, shape: shape,
++                    sourceDType: dtype, byteCount: offsets[1] - offsets[0])
++                result[name] = try LayerStageSourceTensor(layout: layout, sourceFile: capture.sourceFile,
++                    sourceOffset: QwenLongPrefillCheckedBytes.sum([8, capture.data.count, offsets[0]]))
++                spans.append(offsets[0]..<offsets[1])
++            }
++            var end = 0
++            for span in spans.sorted(by: { $0.lowerBound < $1.lowerBound }) {
++                guard span.lowerBound == end else { throw ProbeError("Captured tensor extents overlap or contain gaps") }
++                end = span.upperBound
++            }
++            guard end == file.size_bytes - 8 - capture.data.count else { throw ProbeError("Captured extents do not cover declared payload") }
++        }
++        guard Set(result.keys) == Set(decoded.weight_map.keys),
++              try QwenLongPrefillCheckedBytes.sum(result.values.map { $0.layout.byteCount }) == decoded.metadata.total_size else {
++            throw ProbeError("Captured tensor coverage or byte total differs from index")
++        }
++        return result.values.sorted { $0.layout.canonicalName < $1.layout.canonicalName }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageStorageConservation.swift
+@@ -0,0 +1,114 @@
++import Foundation
++
++struct LayerStageStorageConservation: Encodable, Equatable {
++    struct Rank: Encodable, Equatable {
++        let rank: Int
++        let tensorCount: Int
++        let logicalPayloadBytes: Int
++    }
++    let sourceTensorCount: Int
++    let sourcePayloadBytes: Int
++    let excludedTensorCount: Int
++    let excludedPayloadBytes: Int
++    let selectedSourceTensorCount: Int
++    let selectedSourcePayloadBytes: Int
++    let destinationTensorCount: Int
++    let destinationPayloadBytes: Int
++    let additionalReplicaBytes: Int
++    let ranks: [Rank]
++    let fingerprint: String
++    let payloadVerificationEstablished = false
++    let actualAllocationEstablished = false
++
++    static func validate(sources: [LayerStageSourceTensor], mappings: [LayerStageTensorMapping],
++                         excludedSourceNames: [String],
++                         allowedReplication: [LayerStageTiedEmbeddingReplication]) throws -> Self {
++        guard (1...4096).contains(sources.count), mappings.count <= sources.count,
++              Set(sources.map { $0.layout.canonicalName }).count == sources.count,
++              Set(excludedSourceNames).count == excludedSourceNames.count,
++              Set(mappings.map { $0.source.layout.canonicalName }).count == mappings.count,
++              allowedReplication.count <= 1 else { throw ProbeError("Stage source/mapping coverage is duplicated or unbounded") }
++        let byName = Dictionary(uniqueKeysWithValues: sources.map { ($0.layout.canonicalName, $0) })
++        let excluded = Set(excludedSourceNames), selected = Set(mappings.map { $0.source.layout.canonicalName })
++        guard excluded.isSubset(of: Set(byName.keys)), selected.isDisjoint(with: excluded),
++              selected.union(excluded) == Set(byName.keys) else {
++            throw ProbeError("Stage mapping does not exactly partition selected and excluded sources")
++        }
++        var groupBySource: [String: LayerStageTiedEmbeddingReplication] = [:]
++        for group in allowedReplication {
++            let suffixes: Set<String> = ["weight", "scales", "biases"]
++            guard !group.id.isEmpty, group.id.utf8.count <= 128,
++                  group.ingressRank == 0, group.outputRank == 1,
++                  Set(group.sourceNames) == Set(suffixes.map { group.canonicalModule + "." + $0 }),
++                  group.sourceNames.count == 3, Set(group.sourceNames).isSubset(of: selected) else {
++                throw ProbeError("Invalid admitted tied embedding replica group")
++            }
++            for name in group.sourceNames {
++                guard groupBySource.updateValue(group, forKey: name) == nil else {
++                    throw ProbeError("Overlapping tied embedding groups")
++                }
++            }
++        }
++        var destinationKeys = Set<String>(), rankBytes = [0, 0], rankCounts = [0, 0]
++        var replicaBytes = 0
++        for mapping in mappings {
++            let source = mapping.source, name = source.layout.canonicalName
++            guard byName[name] == source, (1...2).contains(mapping.destinations.count) else {
++                throw ProbeError("Mapping changed its source descriptor or destination count")
++            }
++            if let group = groupBySource[name] {
++                let expected = [
++                    LayerStageTensorDestination(rank: group.ingressRank, localName: name,
++                        role: .ingressEmbedding, globalLayerIndex: nil),
++                    LayerStageTensorDestination(rank: group.outputRank, localName: name,
++                        role: .tiedOutputEmbedding, globalLayerIndex: nil),
++                ]
++                guard mapping.replicationGroupID == group.id, mapping.destinations == expected else {
++                    throw ProbeError("Tied embedding is not the exact admitted two-rank replication")
++                }
++                replicaBytes = try QwenLongPrefillCheckedBytes.sum([replicaBytes, source.layout.byteCount])
++            } else {
++                guard mapping.replicationGroupID == nil, mapping.destinations.count == 1,
++                      mapping.destinations[0].role != .tiedOutputEmbedding else {
++                    throw ProbeError("Unadmitted source replication")
++                }
++            }
++            for destination in mapping.destinations {
++                guard (0...1).contains(destination.rank),
++                      (destination.role == .layer
++                        ? destination.globalLayerIndex.map { (0..<128).contains($0) } == true
++                        : destination.globalLayerIndex == nil) else { throw ProbeError("Invalid destination role/index") }
++                _ = try LayerStageTensorLayout(canonicalName: destination.localName,
++                    shape: source.layout.shape, sourceDType: source.layout.sourceDType,
++                    byteCount: source.layout.byteCount)
++                guard destinationKeys.insert("\(destination.rank):\(destination.localName)").inserted else {
++                    throw ProbeError("Stage destination collision")
++                }
++                rankCounts[destination.rank] += 1
++                rankBytes[destination.rank] = try QwenLongPrefillCheckedBytes.sum([
++                    rankBytes[destination.rank], source.layout.byteCount])
++            }
++        }
++        let sum = QwenLongPrefillCheckedBytes.sum
++        let sourceBytes = try sum(sources.map { $0.layout.byteCount })
++        let excludedBytes = try sum(excluded.map { byName[$0]!.layout.byteCount })
++        let selectedBytes = try sum(mappings.map { $0.source.layout.byteCount })
++        let destinationBytes = try sum(rankBytes)
++        guard rankCounts.allSatisfy({ $0 > 0 }), sourceBytes == (try sum([selectedBytes, excludedBytes])),
++              destinationBytes == (try sum([selectedBytes, replicaBytes])) else {
++            throw ProbeError("Stage source/replica byte conservation failed")
++        }
++        let identity = ["layer-stage-storage-conservation-v1",
++            sha256(try canonicalJSONData(sources.sorted { $0.layout.canonicalName < $1.layout.canonicalName })),
++            sha256(try canonicalJSONData(mappings.sorted { $0.source.layout.canonicalName < $1.source.layout.canonicalName })),
++            sha256(try canonicalJSONData(excludedSourceNames.sorted())),
++            sha256(try canonicalJSONData(allowedReplication)), "payloadVerified=false", "allocationVerified=false"]
++        return .init(sourceTensorCount: sources.count, sourcePayloadBytes: sourceBytes,
++            excludedTensorCount: excluded.count, excludedPayloadBytes: excludedBytes,
++            selectedSourceTensorCount: mappings.count, selectedSourcePayloadBytes: selectedBytes,
++            destinationTensorCount: destinationKeys.count, destinationPayloadBytes: destinationBytes,
++            additionalReplicaBytes: replicaBytes,
++            ranks: (0...1).map { Rank(rank: $0, tensorCount: rankCounts[$0], logicalPayloadBytes: rankBytes[$0]) },
++            fingerprint: sha256(Data(identity.joined(separator: "\n").utf8)))
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageTensorMetadata.swift
+@@ -0,0 +1,68 @@
++import Foundation
++
++/// Metadata only. This value owns neither a verified file nor a native array.
++struct LayerStageTensorLayout: Encodable, Equatable {
++    let canonicalName: String
++    let shape: [Int]
++    let sourceDType: String
++    let byteCount: Int
++
++    init(canonicalName: String, shape: [Int], sourceDType: String, byteCount: Int) throws {
++        // Reuse the existing bounded shape/dtype validator without admitting a Qwen profile.
++        try QwenDenseCanonicalTensor(name: canonicalName, shape: shape,
++            sourceDType: sourceDType, byteCount: byteCount).validate()
++        self.canonicalName = canonicalName; self.shape = shape
++        self.sourceDType = sourceDType; self.byteCount = byteCount
++    }
++
++    var identity: String {
++        [canonicalName, sourceDType, shape.map(String.init).joined(separator: ","), String(byteCount)]
++            .joined(separator: "|")
++    }
++}
++
++struct LayerStageSourceTensor: Encodable, Equatable {
++    let layout: LayerStageTensorLayout
++    let sourceFile: String
++    /// Absolute offset, including the eight-byte safetensors prefix and header.
++    let sourceOffset: Int
++    let identity: String
++
++    init(layout: LayerStageTensorLayout, sourceFile: String, sourceOffset: Int) throws {
++        guard (1...256).contains(sourceFile.utf8.count), sourceFile.hasSuffix(".safetensors"),
++              !sourceFile.contains("/"), !sourceFile.contains("\\"),
++              sourceFile.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0)
++                  || (97...122).contains($0) || [45, 46, 95].contains($0) }),
++              sourceOffset >= 8 else { throw ProbeError("Invalid stage source location") }
++        _ = try QwenLongPrefillCheckedBytes.sum([sourceOffset, layout.byteCount])
++        self.layout = layout; self.sourceFile = sourceFile; self.sourceOffset = sourceOffset
++        self.identity = sha256(Data(["layer-stage-source-tensor-v1", sourceFile,
++            String(sourceOffset), layout.identity].joined(separator: "\n").utf8))
++    }
++}
++
++enum LayerStageTensorRole: String, Codable {
++    case layer, ingressEmbedding, tiedOutputEmbedding, finalNorm, outputProjection
++}
++
++struct LayerStageTensorDestination: Codable, Equatable {
++    let rank: Int
++    let localName: String
++    let role: LayerStageTensorRole
++    let globalLayerIndex: Int?
++}
++
++struct LayerStageTensorMapping: Encodable, Equatable {
++    let source: LayerStageSourceTensor
++    let destinations: [LayerStageTensorDestination]
++    let replicationGroupID: String?
++}
++
++/// Model admission supplies these exact members; generic accounting cannot create a group.
++struct LayerStageTiedEmbeddingReplication: Encodable, Equatable {
++    let id: String
++    let canonicalModule: String
++    let sourceNames: [String]
++    let ingressRank: Int
++    let outputRank: Int
++}

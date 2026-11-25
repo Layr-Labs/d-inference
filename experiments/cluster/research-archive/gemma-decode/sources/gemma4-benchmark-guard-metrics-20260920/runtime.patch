@@ -1,0 +1,441 @@
+--- originals/Gemma4BenchmarkDriver.swift
++++ Runtime/Gemma4BenchmarkDriver.swift
+@@ -21,6 +21,7 @@
+     let finalRow: Gemma4ShortFile?, finalState: Gemma4ShortState?
+     let committedTokens: Int
+     let prefillSummary: QwenGenerationPrefillSummary?
++    let guardMetrics: Gemma4BenchmarkGuardMetrics.Sample
+     let requestStateRetired = true, evidenceOutsideTimedPath = true
+     let timingsAreSameProcess = true, clockAcrossHostsCompared = false
+     let durationIncludesResourceChecksAndSerialTransport: Bool
+@@ -29,7 +30,8 @@
+ 
+ enum Gemma4BenchmarkDriver {
+     static func execute(_ input: Gemma4BenchmarkRequestInput, session: Gemma4OwnedForwardSession,
+-        sidecars: Gemma4BenchmarkSidecars, wire: Gemma4BenchmarkWire?, check: () throws -> Void
++        sidecars: Gemma4BenchmarkSidecars, wire: Gemma4BenchmarkWire?,
++        guardMetrics: Gemma4BenchmarkGuardMetrics, check: () throws -> Void
+     ) throws -> Gemma4BenchmarkSample {
+         try check()
+         guard (input.job.rank != nil) == (wire != nil) else { throw ProbeError("Gemma benchmark peer responsibility differs") }
+@@ -42,6 +44,8 @@
+         var firstLogits: UInt64?, retainedFinalRow: MLXArray?
+         let frameCount = (input.request.promptCount + input.request.chunkSize - 1) / input.request.chunkSize
+             + input.request.outputCount - 1
++        let guardStart = guardMetrics.snapshot()
++        var guardFirst: Gemma4BenchmarkGuardMetrics.Snapshot?, guardLast: Gemma4BenchmarkGuardMetrics.Snapshot?
+         let start = DispatchTime.now().uptimeNanoseconds
+         for sequence in 0..<frameCount {
+             try autoreleasepool {
+@@ -101,6 +105,8 @@
+                     if let wire { token = try wire.acceptToken(localToken, ordinal: selected.count, check: check) }
+                     else { guard let localToken else { throw ProbeError("Gemma full forward lost logits") }; token = localToken }
+                     selected.append(token); agreements.append(DispatchTime.now().uptimeNanoseconds)
++                    if selected.count == 1 { guardFirst = guardMetrics.snapshot() }
++                    if selected.count == input.request.outputCount { guardLast = guardMetrics.snapshot() }
+                 }
+                 let end = DispatchTime.now().uptimeNanoseconds
+                 frames.append(.init(sequence: sequence, phase: frame.phase.rawValue, offset: frame.tokenOffset,
+@@ -111,7 +117,8 @@
+         let end = DispatchTime.now().uptimeNanoseconds
+         guard selected.count == input.request.outputCount, agreements.count == selected.count,
+               let first = agreements.first, let last = agreements.last, first > start, last > first,
+-              session.committedTokens == input.request.promptCount + input.request.outputCount-1 else {
++              session.committedTokens == input.request.promptCount + input.request.outputCount-1,
++              let guardFirst, let guardLast else {
+             throw ProbeError("Gemma benchmark timing/token/frontier completion differs")
+         }
+         guard producer == nil || producer!.isComplete else { throw ProbeError("Gemma lookahead did not drain before retirement") }
+@@ -147,6 +154,8 @@
+             decodeTokensPerSecond: Double(selected.count-1) * 1e9 / Double(last-first), frames: frames,
+             finalRow: finalRow, finalState: finalState, committedTokens: session.committedTokens,
+             prefillSummary: prefillSummary,
++            guardMetrics: .init(prefill: Gemma4BenchmarkGuardMetrics.difference(guardFirst, guardStart),
++                                decode: Gemma4BenchmarkGuardMetrics.difference(guardLast, guardFirst)),
+             durationIncludesResourceChecksAndSerialTransport: input.job.prefill == .serial)
+     }
+ 
+--- originals/Gemma4BenchmarkEntry.swift
++++ Runtime/Gemma4BenchmarkEntry.swift
+@@ -15,15 +15,18 @@
+         guard !overflow else { throw ProbeError("Gemma benchmark deadline overflow") }
+         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(UInt32(input.job.timeoutSeconds))
+         defer { alarm(0) }
++        let guardMetrics = Gemma4BenchmarkGuardMetrics()
+         weak var releasedGroup: Collective?
+         return try MLX.withError { native in
+             func check() throws {
+-                try native.check()
+-                guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Gemma benchmark lifetime expired") }
+-                try QwenResidentResourceEnvironment.require()
+-                let os = try QwenDenseStageLoadResources.requireInitial()
+-                guard os.pressureLevel == 1 else { throw ProbeError("Gemma benchmark requires pressure level1") }
+-                try native.check()
++                try guardMetrics.measure(.entryGuard) {
++                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                    guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Gemma benchmark lifetime expired") }
++                    try guardMetrics.measure(.environmentGuard) { try QwenResidentResourceEnvironment.require(observationTiming: guardMetrics.observeOS) }
++                    let os = try QwenDenseStageLoadResources.requireInitial(observationTiming: guardMetrics.observeOS)
++                    guard os.pressureLevel == 1 else { throw ProbeError("Gemma benchmark requires pressure level1") }
++                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                }
+             }
+             do {
+                 try check()
+@@ -31,7 +34,7 @@
+                     let group: Collective? = input.job.rank == nil ? nil : try Collective(transport: .jaccl)
+                     releasedGroup = group
+                     let sidecars = try Gemma4BenchmarkSidecars(directory: input.job.outputDirectory)
+-                    return try Gemma4BenchmarkRuntime.execute(input, deadline: deadline, group: group, sidecars: sidecars, check: check)
++                    return try Gemma4BenchmarkRuntime.execute(input, deadline: deadline, group: group, sidecars: sidecars, guardMetrics: guardMetrics, check: check)
+                 }
+                 Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
+                 guard releasedGroup == nil else { throw ProbeError("Gemma benchmark collective remains retained") }
+@@ -43,6 +46,7 @@
+                 report["collectiveCreated"] = input.job.rank != nil
+                 report["collectiveReleased"] = input.job.rank != nil
+                 report["nativeCacheBytesAfterRelease"] = Memory.cacheMemory
++                report["guardMetrics"] = try JSONSerialization.jsonObject(with: canonicalJSONData(guardMetrics.snapshot()))
+                 let result = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .withoutEscapingSlashes])
+                 guard result.count <= 8_388_608 else { throw ProbeError("Gemma benchmark report exceeds8MiB") }
+                 return result
+--- /dev/null
++++ Runtime/Gemma4BenchmarkGuardMetrics.swift
+@@ -0,0 +1,89 @@
++import Foundation
++
++/// Serialized, fixed-size CPU counters. No model, OS reader, file or timer task.
++/// Durations are inclusive; different categories MUST NOT be added together.
++final class Gemma4BenchmarkGuardMetrics {
++    static let hostAllowanceBytes = 32_768
++    enum Kind: Int, CaseIterable {
++        case logicalGuard, entryGuard, ownerGuard, environmentGuard
++        case osSnapshot, nativeSnapshot, outerNativeFault
++        case wireSendCompleted, wireReceiveCompleted
++        var label: String {
++            switch self {
++            case .logicalGuard: return "logicalGuard"
++            case .entryGuard: return "entryGuard"
++            case .ownerGuard: return "ownerGuard"
++            case .environmentGuard: return "environmentGuard"
++            case .osSnapshot: return "osSnapshot"
++            case .nativeSnapshot: return "nativeSnapshot"
++            case .outerNativeFault: return "outerNativeFault"
++            case .wireSendCompleted: return "wireSendCompleted"
++            case .wireReceiveCompleted: return "wireReceiveCompleted"
++            }
++        }
++    }
++    struct Record: Encodable, Equatable {
++        let category: String
++        var count: UInt64 = 0, nanoseconds: UInt64 = 0
++        var nestedLogicalGuardNanoseconds: UInt64 = 0
++    }
++    struct Snapshot: Encodable {
++        let schema = "gemma4_guard_wall_counters_v1"
++        let records: [Record]
++        let overflow: Bool
++        let sameProcessClock = true, categoriesAreInclusive = true
++        let extraOSReads = 0, extraNativeEvaluations = 0
++        let observerOverheadIncludedInRequestTiming = true
++    }
++    struct Sample: Encodable {
++        let prefill: Snapshot, decode: Snapshot
++        let boundary = "request-start_to_first-token-agreement_and_first-to-last-agreement"
++    }
++    private let clock: () -> UInt64
++    private var rows = Kind.allCases.map { Record(category: $0.label) }
++    private var overflow = false
++
++    init(clock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
++        self.clock = clock
++    }
++    private func index(_ kind: Kind) -> Int { kind.rawValue }
++    private func sum(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
++        let result = lhs.addingReportingOverflow(rhs)
++        if result.overflow { overflow = true; return .max }
++        return result.partialValue
++    }
++    func record(_ kind: Kind, elapsed: UInt64, nestedGuard: UInt64 = 0) {
++        let i = index(kind)
++        rows[i].count = sum(rows[i].count, 1)
++        rows[i].nanoseconds = sum(rows[i].nanoseconds, elapsed)
++        rows[i].nestedLogicalGuardNanoseconds = sum(rows[i].nestedLogicalGuardNanoseconds, nestedGuard)
++    }
++    func measure<T>(_ kind: Kind, _ body: () throws -> T) rethrows -> T {
++        let start = clock(), guardBefore = rows[index(.logicalGuard)].nanoseconds
++        defer {
++            let end = clock(), guardAfter = rows[index(.logicalGuard)].nanoseconds
++            if end < start || guardAfter < guardBefore { overflow = true }
++            record(kind, elapsed: end >= start ? end-start : 0,
++                   nestedGuard: kind == .logicalGuard ? 0 : (guardAfter >= guardBefore ? guardAfter-guardBefore : 0))
++        }
++        return try body()
++    }
++    func observeOS(_ elapsed: UInt64) { record(.osSnapshot, elapsed: elapsed) }
++    func snapshot() -> Snapshot { .init(records: rows, overflow: overflow) }
++
++    static func difference(_ end: Snapshot, _ start: Snapshot) -> Snapshot {
++        var invalid = end.overflow || start.overflow
++        let rows = zip(end.records, start.records).map { end, start in
++            if end.category != start.category || end.count < start.count
++                || end.nanoseconds < start.nanoseconds || end.nestedLogicalGuardNanoseconds < start.nestedLogicalGuardNanoseconds {
++                invalid = true
++                return Record(category: end.category)
++            }
++            return Record(category: end.category, count: end.count-start.count,
++                          nanoseconds: end.nanoseconds-start.nanoseconds,
++                          nestedLogicalGuardNanoseconds: end.nestedLogicalGuardNanoseconds-start.nestedLogicalGuardNanoseconds)
++        }
++        if rows.count != Kind.allCases.count { invalid = true }
++        return .init(records: rows, overflow: invalid)
++    }
++}
+--- originals/Gemma4BenchmarkResourceBudget.swift
++++ Runtime/Gemma4BenchmarkResourceBudget.swift
+@@ -151,7 +151,7 @@
+         let native = try sum(namedBounds)
+         let hostEvidence = try sum([captureEvidence ? logicalSnapshot : 0,
+             captureEvidence ? 8 * 262_144 * 4 : 0, 2 * m * text.hiddenSize * 4, 8_388_608,
+-            allowance?.extraHostBytes ?? 0])
++            allowance?.extraHostBytes ?? 0, Gemma4BenchmarkGuardMetrics.hostAllowanceBytes])
+         return .init(selected: selected, selectedBounds: allocations, namedArrays: arrays, namedAllocationBounds: namedBounds,
+             namedNativeBytes: native, hostEvidenceBytes: hostEvidence,
+             largestHostTensorBytes: host, largestNativeCopyBytes: try rounded(host),
+--- originals/Gemma4BenchmarkResourceOwner.swift
++++ Runtime/Gemma4BenchmarkResourceOwner.swift
+@@ -9,6 +9,7 @@
+     let constructorParameterCount: Int, constructorUnmaterializedQuantizedParameterCount: Int
+     let constructorObservedActiveBytes: Int, constructorObservedNativePeakBytes: Int
+     let namedNativeReserveBytes: Int, hostEvidenceReserveBytes: Int
++    let guardMetricsHostReserveBytes = Gemma4BenchmarkGuardMetrics.hostAllowanceBytes
+     let persistentCastLogicalBytes: Int, stateLogicalBytes: Int
+     let selectedAllocationBounds: [Int]
+     let namedArrays: [Gemma4BenchmarkResourceBudget.ArrayTerm]
+@@ -32,6 +33,7 @@
+     private enum Phase: Equatable { case source, constructing, loading, probing, ready, allocating, request, complete, failed }
+     private var phase = Phase.source
+     private var progress: Gemma4OrderedLoadProgress
++    private let guardMetrics: Gemma4BenchmarkGuardMetrics
+     private let deadline: UInt64
+     private let requests: [QwenLayerStageGenerationRequest]
+     private var completedRequests = 0
+@@ -42,7 +44,8 @@
+ 
+     init(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
+          requests: [QwenLayerStageGenerationRequest], residualDType: DType, captureEvidence: Bool,
+-         prefillPolicy: QwenResidentPrefillPolicy = .serial, deadline: UInt64) throws {
++         prefillPolicy: QwenResidentPrefillPolicy = .serial, deadline: UInt64,
++         guardMetrics: Gemma4BenchmarkGuardMetrics) throws {
+         guard requests.count == 4, Set(requests.map(\.requestID)).count == 4, let request = requests.first,
+               requests.allSatisfy({ $0.promptTokenIDs == request.promptTokenIDs && $0.chunkSize == request.chunkSize
+                 && $0.outputCount == request.outputCount && $0.profile == request.profile && $0.stopTokenIDs.isEmpty }) else {
+@@ -54,24 +57,29 @@
+         }
+         try Gemma4BenchmarkResourceBudget.requireCandidateCut(plan)
+         try Gemma4ForwardRequest.validate(request, dtype: residualDType)
+-        try QwenResidentResourceEnvironment.require()
++        try guardMetrics.measure(.environmentGuard) { try QwenResidentResourceEnvironment.require(observationTiming: guardMetrics.observeOS) }
+         let budget = try Gemma4BenchmarkResourceBudget.derive(plan: plan, target: target, request: request,
+             captureEvidence: captureEvidence, prefillPolicy: prefillPolicy, bound: QwenResidentResourceEnvironment.allocationBound)
+         self.budget = budget; self.deadline = deadline; self.requests = requests
++        self.guardMetrics = guardMetrics
+         progress = .init(expected: budget.selected)
+         try check()
+     }
+ 
+     func check() throws {
++        try guardMetrics.measure(.ownerGuard) { try checkObservedResources() }
++    }
++
++    private func checkObservedResources() throws {
+         do {
+             guard phase != .failed, !progress.failed,
+                   DispatchTime.now().uptimeNanoseconds < deadline else {
+                 throw ProbeError("Gemma resource owner failed or expired")
+             }
+-            try QwenResidentResourceEnvironment.require()
+-            let os = try QwenDenseStageLoadResources.requireInitial()
++            try guardMetrics.measure(.environmentGuard) { try QwenResidentResourceEnvironment.require(observationTiming: guardMetrics.observeOS) }
++            let os = try QwenDenseStageLoadResources.requireInitial(observationTiming: guardMetrics.observeOS)
+             guard os.pressureLevel == 1 else { throw ProbeError("Gemma benchmark requires exact pressure level1") }
+-            let native = QwenDenseStageLoadResources.observeNative()
++            let native = guardMetrics.measure(.nativeSnapshot) { QwenDenseStageLoadResources.observeNative() }
+             guard native.activeBytes >= 0, native.cacheBytes == 0,
+                   native.peakBytes >= native.activeBytes, native.allocatorLimitBytes > 0 else {
+                 throw ProbeError("Gemma dedicated owner requires valid native observations and zero freed-buffer cache")
+--- originals/Gemma4BenchmarkRuntime.swift
++++ Runtime/Gemma4BenchmarkRuntime.swift
+@@ -19,11 +19,16 @@
+ 
+ enum Gemma4BenchmarkRuntime {
+     static func execute(_ input: Gemma4BenchmarkInput, deadline: UInt64, group: Collective?,
+-                        sidecars: Gemma4BenchmarkSidecars, check: () throws -> Void) throws -> Data {
++                        sidecars: Gemma4BenchmarkSidecars, guardMetrics: Gemma4BenchmarkGuardMetrics,
++                        check: () throws -> Void) throws -> Data {
+         weak var releasedModel: Module?
+         return try withoutActuallyEscaping(check) { borrowedCheck in
+             try MLX.withError { native in
+-                func outerCheck() throws { try native.check(); try borrowedCheck(); try native.check() }
++                func outerCheck() throws {
++                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                    try borrowedCheck()
++                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                }
+                 do {
+                     let environment = ProcessInfo.processInfo.environment
+                     _ = try QwenLongPrefillArithmeticEnvironment.admit(environment)
+@@ -38,14 +43,16 @@
+                     Memory.clearCache(); try outerCheck()
+                     let owner = try Gemma4BenchmarkResourceOwner(plan: input.plan, target: input.job.target,
+                         requests: input.requests, residualDType: input.job.dtype,
+-                        captureEvidence: input.job.captureEvidence, prefillPolicy: input.job.prefill, deadline: deadline)
+-                    func checked() throws { try outerCheck(); try owner.check(); try outerCheck() }
++                        captureEvidence: input.job.captureEvidence, prefillPolicy: input.job.prefill, deadline: deadline, guardMetrics: guardMetrics)
++                    func checked() throws {
++                        try guardMetrics.measure(.logicalGuard) { try outerCheck(); try owner.check(); try outerCheck() }
++                    }
+                     var releaseWire: Gemma4BenchmarkWire?
+                     let loadStarted = DispatchTime.now().uptimeNanoseconds
+                     var loadCompleted: UInt64 = 0, probeCompleted: UInt64 = 0
+                     let execution: (Gemma4ForwardLoadReceipt, [Gemma4BenchmarkSample]) = try autoreleasepool {
+                         let first = try input.iteration(0)
+-                        let firstWire = try group.map { try Gemma4BenchmarkWire(input: first, group: $0) }
++                        let firstWire = try group.map { try Gemma4BenchmarkWire(input: first, group: $0, guardMetrics: guardMetrics) }
+                         releaseWire = firstWire
+                         try firstWire?.checkpoint("begin", check: checked)
+                         let source = try Gemma4RegisteredSource.prepare(
+@@ -74,7 +81,7 @@
+                         var samples: [Gemma4BenchmarkSample] = []
+                         for ordinal in input.requests.indices {
+                             let requestInput = try input.iteration(ordinal)
+-                            let wire: Gemma4BenchmarkWire? = ordinal == 0 ? firstWire : try group.map { try Gemma4BenchmarkWire(input: requestInput, group: $0) }
++                            let wire: Gemma4BenchmarkWire? = ordinal == 0 ? firstWire : try group.map { try Gemma4BenchmarkWire(input: requestInput, group: $0, guardMetrics: guardMetrics) }
+                             releaseWire = wire
+                             if ordinal > 0 { try wire?.checkpoint("begin", check: checked) }
+                             try owner.beginRequest(requestInput.request)
+@@ -85,7 +92,7 @@
+                                 releasedSession = session
+                                 do {
+                                     let sample = try Gemma4BenchmarkDriver.execute(requestInput, session: session,
+-                                        sidecars: sidecars, wire: wire, check: checked)
++                                        sidecars: sidecars, wire: wire, guardMetrics: guardMetrics, check: checked)
+                                     try owner.retiredRequest(session)
+                                     return sample
+                                 } catch {
+--- originals/Gemma4BenchmarkWire.swift
++++ Runtime/Gemma4BenchmarkWire.swift
+@@ -7,16 +7,17 @@
+ final class Gemma4BenchmarkWire {
+     let input: Gemma4BenchmarkRequestInput
+     let group: Collective
++    let guardMetrics: Gemma4BenchmarkGuardMetrics
+     private var sent = 0, received = 0, busy = false, failed = false
+     private var pending: Gemma4BenchmarkWireValue?
+     struct SentFrameTicket { let value: Gemma4BenchmarkWireValue }
+     var rank: Int { group.rank }
+ 
+-    init(input: Gemma4BenchmarkRequestInput, group: Collective) throws {
++    init(input: Gemma4BenchmarkRequestInput, group: Collective, guardMetrics: Gemma4BenchmarkGuardMetrics) throws {
+         guard group.transport == .jaccl, group.size == 2, input.job.rank == group.rank else {
+             throw ProbeError("Gemma wire requires its exact selected two-rank JACCL endpoint")
+         }
+-        self.input = input; self.group = group
++        self.input = input; self.group = group; self.guardMetrics = guardMetrics
+     }
+     func poison() { failed = true }
+ 
+@@ -32,17 +33,17 @@
+         let data = try canonicalJSONData(Gemma4BenchmarkWirePacket(schema: "gemma4_benchmark_p2p_v1",
+             scopeSHA256: input.scopeSHA256, senderRank: rank, ordinal: sent, value: value))
+         guard (1...16_384).contains(data.count) else { throw ProbeError("Gemma control exceeds its byte bound") }
+-        _ = try group.sendCompleted(MLXArray([UInt32(data.count)]), to: 1-rank, maximumBytes: 4, check: check)
+-        _ = try group.sendCompleted(MLXArray(data, [data.count], dtype: .uint8), to: 1-rank, maximumBytes: 16_384, check: check)
++        _ = try guardMetrics.measure(.wireSendCompleted) { try group.sendCompleted(MLXArray([UInt32(data.count)]), to: 1-rank, maximumBytes: 4, check: check) }
++        _ = try guardMetrics.measure(.wireSendCompleted) { try group.sendCompleted(MLXArray(data, [data.count], dtype: .uint8), to: 1-rank, maximumBytes: 16_384, check: check) }
+         sent += 1; try check()
+     }
+ 
+     func receive(check: () throws -> Void) throws -> Gemma4BenchmarkWireValue {
+         guard received < 512 else { throw ProbeError("Gemma control count exceeds its bounded resident request") }
+-        let prefix = try group.receiveCompleted(shape: [1], dtype: .uint32, from: 1-rank, maximumBytes: 4, check: check)
++        let prefix = try guardMetrics.measure(.wireReceiveCompleted) { try group.receiveCompleted(shape: [1], dtype: .uint32, from: 1-rank, maximumBytes: 4, check: check) }
+         let length = Int(prefix.item(UInt32.self)); try check()
+         guard (1...16_384).contains(length) else { throw ProbeError("Gemma control prefix exceeds fixed cap") }
+-        let array = try group.receiveCompleted(shape: [length], dtype: .uint8, from: 1-rank, maximumBytes: 16_384, check: check)
++        let array = try guardMetrics.measure(.wireReceiveCompleted) { try group.receiveCompleted(shape: [length], dtype: .uint8, from: 1-rank, maximumBytes: 16_384, check: check) }
+         let data = array.asData(access: .copy).data; try check()
+         let value = try Gemma4BenchmarkWireCodec.decode(data, scope: input.scopeSHA256, sender: 1-rank, ordinal: received)
+         received += 1; return value
+--- originals/Gemma4BenchmarkWirePayload.swift
++++ Runtime/Gemma4BenchmarkWirePayload.swift
+@@ -90,7 +90,7 @@
+             try send(header, check: check)
+             let ready = changedEvent(header, "payload-ready")
+             try require(ready, check: check)
+-            _ = try group.sendCompleted(array, to: 1, maximumBytes: bytes, check: check)
++            _ = try guardMetrics.measure(.wireSendCompleted) { try group.sendCompleted(array, to: 1, maximumBytes: bytes, check: check) }
+             if let receipt { try require(changedEvent(header, receipt), check: check) }
+             else { try retainPending(header) }
+             return header
+@@ -109,8 +109,10 @@
+             }
+             let bytes = value.count * 2816 * input.job.dtype.size
+             try send(changedEvent(actual, "payload-ready"), check: check)
+-            let array = try group.receiveCompleted(shape: [1, value.count, 2816], dtype: input.job.dtype,
+-                from: 0, maximumBytes: bytes, check: check)
++            let array = try guardMetrics.measure(.wireReceiveCompleted) {
++                try group.receiveCompleted(shape: [1, value.count, 2816], dtype: input.job.dtype,
++                    from: 0, maximumBytes: bytes, check: check)
++            }
+             guard sha256(array.asData(access: .copy).data) == payload else { throw ProbeError("Gemma received residual checksum differs") }
+             try check()
+             if let receipt { try send(changedEvent(actual, receipt), check: check) }
+--- originals/QwenDenseStageLoadResources.swift
++++ Runtime/QwenDenseStageLoadResources.swift
+@@ -5,8 +5,13 @@
+ /// Direct local observations only: no subprocess, supplied receipt or permissive
+ /// parse fallback. A Mach host right is released before returning a snapshot.
+ enum QwenDenseStageLoadResources {
+-    static func observeOS() throws -> QwenDenseStageLoadOSObservation {
++    static func observeOS(observationTiming: ((UInt64) -> Void)? = nil) throws -> QwenDenseStageLoadOSObservation {
+         let start = DispatchTime.now().uptimeNanoseconds
++        defer {
++            if let observationTiming {
++                observationTiming(DispatchTime.now().uptimeNanoseconds - start)
++            }
++        }
+         let host = mach_host_self()
+         var pageSize: vm_size_t = 0
+         var statistics = vm_statistics64_data_t()
+@@ -58,8 +63,8 @@
+             peakBytes: Memory.peakMemory, allocatorLimitBytes: Memory.memoryLimit)
+     }
+ 
+-    static func requireInitial() throws -> QwenDenseStageLoadOSObservation {
+-        let value = try observeOS()
++    static func requireInitial(observationTiming: ((UInt64) -> Void)? = nil) throws -> QwenDenseStageLoadOSObservation {
++        let value = try observeOS(observationTiming: observationTiming)
+         try QwenDenseStageLoadPolicy.requireInitial(value, now: DispatchTime.now().uptimeNanoseconds)
+         return value
+     }
+--- originals/QwenResidentRequestResources.swift
++++ Runtime/QwenResidentRequestResources.swift
+@@ -83,7 +83,7 @@
+ }
+ 
+ enum QwenResidentResourceEnvironment {
+-    static func require() throws {
++    static func require(observationTiming: ((UInt64) -> Void)? = nil) throws {
+         guard let unmanaged = IOPSCopyPowerSourcesInfo() else { throw ProbeError("Cannot observe resident power source") }
+         let info = unmanaged.takeRetainedValue()
+         let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String?
+@@ -92,7 +92,7 @@
+               thermal == .nominal || thermal == .fair else {
+             throw ProbeError("Resident execution requires AC, normal power mode and nominal/fair thermal state")
+         }
+-        _ = try QwenDenseStageLoadResources.requireInitial()
++        _ = try QwenDenseStageLoadResources.requireInitial(observationTiming: observationTiming)
+     }
+ 
+     static func allocationBound(_ bytes: Int) throws -> Int {

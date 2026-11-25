@@ -1,0 +1,25 @@
+{
+  "schema": "gemma4_single_refill_rebase_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 537,
+      "sha256": "a4e758ec8c385f1d491203ac35f0640e5597068de74aa61cdb47f9432466b4de"
+    },
+    {
+      "path": "check_sources.py",
+      "bytes": 1785,
+      "sha256": "c01658d0e6c9f9b86b35711ef1b6fe738dfcb112c05c8e2f704d7c21d5d39836"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 26980,
+      "sha256": "fcffd299fab0ffe9d27fb35fb6c70aee99ba8fb4f82922abb5d058952a7f081b"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 3883,
+      "sha256": "ecb6333d7af228df87f0b676be4feeceff4a7d98ab822e081c5c837c57af0946"
+    }
+  ]
+}

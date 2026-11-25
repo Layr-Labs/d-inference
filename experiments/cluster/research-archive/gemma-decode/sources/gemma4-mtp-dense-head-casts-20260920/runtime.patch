@@ -1,0 +1,29 @@
+--- a/Runtime/Gemma4MTPDenseProjection.swift
++++ b/Runtime/Gemma4MTPDenseProjection.swift
+@@ -71,16 +71,24 @@
+             case .embeddingHead:
+                 guard request.module == self.tiedHead, k == 2816, request.bits == 4,
+                       request.weight.shape == [262_144,352],
+-                      request.scales.shape == [262_144,44], biases.shape == request.scales.shape else {
++                      request.scales.shape == [262_144,44], biases.shape == request.scales.shape,
++                      request.scales.dtype == .bfloat16, biases.dtype == .bfloat16 else {
+                     throw ProbeError("Dense verification tied head differs from registered geometry")
+                 }
+                 // Head N262144 was not a primitive qualifier geometry. Preserve
+                 // ordinary M1 quantizedMM including its original dtype promotion.
+                 // Four separately rounded F32 rows cover these live partials;
+                 // concatenation uses the existing width-four output workset.
++                // Native affine QMM promotes input with scale/bias dtype.
++                // This closed BF16-metadata + BF16/F32-input domain promotes
++                // exactly to input.dtype. Hoist ONE identical cast pair so
++                // row calls share the original budget's headCast roots rather
++                // than creating width copies of each 262144x44 F32 array.
++                let headScales = request.scales.asType(input.dtype)
++                let headBiases = biases.asType(input.dtype)
+                 let rows = (0..<width).map { index in
+                     quantizedMM(input[index..<(index+1),0...], request.weight,
+-                        scales: request.scales, biases: biases, transpose: true,
++                        scales: headScales, biases: headBiases, transpose: true,
+                         groupSize: request.groupSize, bits: request.bits, mode: request.mode)
+                 }
+                 return concatenated(rows, axis: 0).reshaped([1,width,262_144])

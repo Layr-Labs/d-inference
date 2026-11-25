@@ -1,0 +1,92 @@
+{
+  "schema": "gemma4_local_mtp_p128_comparison_source_v1",
+  "authorSourceOnly": true,
+  "authorCompilerNativeRemoteOrControlExecution": false,
+  "pythonASTChecked": true,
+  "cpuMethodsStaged": 8,
+  "review": {
+    "finding": "No additional concrete runtime blocker after explicit auxiliary rectangular head allowance",
+    "scope": "Local driver plus local cohort runtime/input/evidence/entry and execution-only contract; no universal target-shape numerical qualification inferred",
+    "sources": [
+      {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp/Gemma4LocalMTPDriver.swift",
+        "bytes": 9394,
+        "sha256": "07576a587189e40a87f7df4a1e0a9a1c7501909851a8ca6495d4570a5c066e31"
+      },
+      {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp-cohort-draft/Runtime/Gemma4BenchmarkEntry.swift",
+        "bytes": 5786,
+        "sha256": "8e7a52d699fda6134703f13ed0938c58f4827eea18a160f745fe9f798794c290"
+      },
+      {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp-cohort-draft/Runtime/Gemma4LocalMTPCohortReport.swift",
+        "bytes": 1751,
+        "sha256": "98e3698f1414bc656cde15967c24244d34f973a33be9532c77330fd7d7c72e3c"
+      },
+      {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp-cohort-draft/Runtime/Gemma4LocalMTPConditioningCheck.swift",
+        "bytes": 7772,
+        "sha256": "df59fe0403ae33ac5fb7ceaf746fc80384d87cc4a569f66b293bb8b947e78039"
+      },
+      {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp-cohort-draft/Runtime/Gemma4LocalMTPEvidence.swift",
+        "bytes": 5607,
+        "sha256": "b5914226938abdcf723b1cdcc76c8ac7077afd8930263ac91d80f69b157b5a9a"
+      },
+      {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp-cohort-draft/Runtime/Gemma4LocalMTPInput.swift",
+        "bytes": 5838,
+        "sha256": "657042dec8fe587922f19290c0f7b247e4ecdcb7aae2a37b1e842a17d10f64ba"
+      },
+      {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp-cohort-draft/Runtime/Gemma4LocalMTPRuntime.swift",
+        "bytes": 11642,
+        "sha256": "ec31d8eb88e4d55dbb34d5498739f75e19c10986b03b28ff0a55c14ef92d8584"
+      },
+      {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-local-mtp/package/local_mtp_contract.py",
+        "bytes": 6949,
+        "sha256": "b5956e12a568e6e42bc4dcd53084a24dfaa8f3aef96ca3cc5139d19e0b85285d"
+      }
+    ]
+  },
+  "exactHelpers": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-short-correctness-comparator-draft-20260916/recorded_math.py",
+      "bytes": 3097,
+      "sha256": "f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-short-correctness-comparator-draft-20260916/snapshot.py",
+      "bytes": 1300,
+      "sha256": "46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b"
+    }
+  ],
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 4437,
+      "sha256": "602b265de46b29b958a1bd5cf4f19639a9e45603265869d36242389a21b7293e"
+    },
+    {
+      "path": "compare.py",
+      "bytes": 26914,
+      "sha256": "f2dcc1caa9cc6fca58808b54eb58f45e39c305562c6ad1cfec99d75fe91dbfcc"
+    },
+    {
+      "path": "recorded_math.py",
+      "bytes": 3097,
+      "sha256": "f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914"
+    },
+    {
+      "path": "snapshot.py",
+      "bytes": 1300,
+      "sha256": "46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b"
+    },
+    {
+      "path": "test_contract.py",
+      "bytes": 3628,
+      "sha256": "ba15c61f023cef1299832ed55069977d07fcba66d494101cf2eecb2ff5fdbfec"
+    }
+  ]
+}

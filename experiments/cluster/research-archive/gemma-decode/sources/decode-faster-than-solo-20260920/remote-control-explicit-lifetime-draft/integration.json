@@ -1,0 +1,25 @@
+{
+  "schema": "gemma4_control_explicit_lifetime_source_v1",
+  "baseSources": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/snapshot-batch-composition-1/sources.json",
+    "bytes": 102470,
+    "sha256": "7bc10191af1514b6820246f2bfd199416fbc490395b434f897e5e4d6401c0ec6"
+  },
+  "changes": [
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPControlOperation.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPControlOperation.swift",
+        "bytes": 2488,
+        "sha256": "fd746ee857df0a29fb4867cbbd69885f94dd09c132e193bab7297b89bab94eaa"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-control-explicit-lifetime-draft/Runtime/Gemma4MTPControlOperation.swift",
+        "bytes": 2740,
+        "sha256": "177a28b017b14bc46714a5cee29b138ba43b33a8862c0647f3d64ff1853dd4be"
+      }
+    }
+  ],
+  "defaultBehaviorChanged": false,
+  "resourceCadenceChanged": false
+}

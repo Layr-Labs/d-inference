@@ -1,0 +1,1502 @@
+--- /dev/null
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerPrefillPolicy.swift
+@@ -0,0 +1,44 @@
++import MLXLMCommon
++
++/// One policy for ordinary and ranged trunks. Global layer identity is
++/// independent of a stage's local module/cache index.
++struct Gemma4LayerPrefillPolicy {
++    let outputTailRows: Int?
++    let useLastQuery: Bool
++    let expertPrefill: Bool
++    let submitIntermediate: Bool
++}
++
++func gemma4LayerPrefillPolicy(
++    _ config: Gemma4TextConfiguration,
++    globalLayerIndex: Int,
++    finalOutputLayerIndex: Int,
++    ownsFinalOutput: Bool,
++    schedulePrefill: Bool,
++    isCBv2: Bool,
++    batchSize: Int,
++    sequenceLength: Int,
++    inputSequenceLength: Int,
++    hasLastQueryCache: Bool,
++    tailRows: Int = gemma4PrefillTailRows,
++    minimumTailChunk: Int = gemma4PrefillTailMinChunk,
++    submissionInterval: Int = gemma4PrefillChunkEvalLayers,
++    lastQueryEnabled: Bool = gemma4PrefillLastQueryEnabled
++) -> Gemma4LayerPrefillPolicy {
++    let isFinalPromptLayer = schedulePrefill && isCBv2 && ownsFinalOutput
++        && globalLayerIndex == finalOutputLayerIndex
++        && batchSize > 0 && sequenceLength >= minimumTailChunk
++    let outputTailRows: Int? = isFinalPromptLayer && tailRows > 0
++        ? min(tailRows, sequenceLength) : nil
++    return Gemma4LayerPrefillPolicy(
++        outputTailRows: outputTailRows,
++        useLastQuery: gemma4UseLastQueryPrefill(
++            config, layerIdx: globalLayerIndex, batchSize: batchSize,
++            sequenceLength: sequenceLength, outputTailRows: outputTailRows,
++            hasCapableCache: hasLastQueryCache, enabled: lastQueryEnabled),
++        expertPrefill: gemma4AllowsWeightedExpertUnsort(schedulePrefill: schedulePrefill),
++        submitIntermediate: gemma4ShouldSubmitPrefillChunkEval(
++            schedulePrefill: schedulePrefill, isCBv2: isCBv2,
++            inputLength: inputSequenceLength, layerNumber: globalLayerIndex + 1,
++            interval: submissionInterval))
++}
+--- /dev/null
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStage.swift
+@@ -0,0 +1,80 @@
++import MLX
++import MLXLMCommon
++import MLXNN
++
++/// Selected-layer module for a separately verified Gemma text Plan. Construct
++/// under the caller's native error/resource/deadline guard: SwitchGLU performs
++/// an activation probe. This initializer is not metadata-only work.
++public final class Gemma4LayerStage: Module {
++    public let layout: Gemma4LayerStageLayout
++    public let configuration: Gemma4TextConfiguration
++    public let weightedExpertUnsortEffective: Bool
++
++    @ModuleInfo(key: "language_model") var languageModel: Gemma4StageLanguageModel
++
++    public init(
++        originalConfiguration: Gemma4Configuration,
++        rank: Int, sourceLayerRange: Range<Int>
++    ) throws {
++        let layout = try Gemma4LayerStageLayout(
++            originalConfiguration: originalConfiguration,
++            rank: rank, sourceLayerRange: sourceLayerRange)
++        let config = originalConfiguration.textConfig
++        let fuseWeightedUnsort = gemma4ShouldFuseWeightedUnsort(config)
++        self.layout = layout
++        self.configuration = config
++        self.weightedExpertUnsortEffective = fuseWeightedUnsort
++        self._languageModel.wrappedValue = Gemma4StageLanguageModel(
++            configuration: config, layout: layout,
++            fuseWeightedUnsort: fuseWeightedUnsort)
++        super.init()
++    }
++
++    /// The actual loaded embedding's output type, never its packed U32 weight
++    /// type. This does not attest native K/V types after normalization/RoPE.
++    public var loadedEmbeddingOutputDType: DType? {
++        let embedding = languageModel.model.embedTokens
++        guard let quantized = embedding as? QuantizedEmbedding,
++            quantized.mode == .affine, quantized.bits == 4, quantized.groupSize == 64,
++            let biases = quantized.biases, quantized.scales.dtype == biases.dtype,
++            quantized.weight.dtype == .uint32,
++            [.float16, .bfloat16, .float32].contains(quantized.scales.dtype)
++        else { return nil }
++        return quantized.scales.dtype
++    }
++}
++
++/// Wrapper keys match the selected descriptor destinations exactly. Both ranks
++/// own one embedding; only rank1 owns the final norm. No separate head exists.
++final class Gemma4StageLanguageModel: Module {
++    @ModuleInfo(key: "model") var model: Gemma4StageTrunk
++
++    init(configuration: Gemma4TextConfiguration, layout: Gemma4LayerStageLayout,
++         fuseWeightedUnsort: Bool) {
++        self._model.wrappedValue = Gemma4StageTrunk(
++            configuration: configuration, layout: layout,
++            fuseWeightedUnsort: fuseWeightedUnsort)
++        super.init()
++    }
++}
++
++final class Gemma4StageTrunk: Module {
++    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
++    @ModuleInfo(key: "layers") var layers: [Gemma4DecoderLayer]
++    @ModuleInfo(key: "norm") var norm: RMSNorm?
++
++    init(configuration: Gemma4TextConfiguration, layout: Gemma4LayerStageLayout,
++         fuseWeightedUnsort: Bool) {
++        self._embedTokens.wrappedValue = Embedding(
++            embeddingCount: configuration.vocabSize, dimensions: configuration.hiddenSize)
++        self._layers.wrappedValue = layout.sourceLayerRange.map { global in
++            Gemma4DecoderLayer(configuration, layerIdx: global,
++                fuseWeightedUnsort: fuseWeightedUnsort)
++        }
++        if layout.ownsFinalOutput {
++            self._norm.wrappedValue = RMSNorm(
++                dimensions: configuration.hiddenSize, eps: configuration.rmsNormEps)
++        }
++        super.init()
++    }
++}
+--- /dev/null
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageForward.swift
+@@ -0,0 +1,119 @@
++import MLX
++import MLXLMCommon
++
++public enum Gemma4LayerStagePhase: Sendable, Equatable { case prefill, decode }
++
++/// Actual graph metadata returned by the existing decoder after projection,
++/// normalization and rotary application. Contains no K/V array aliases.
++public struct Gemma4LayerStageKVObservation: Sendable {
++    public let localLayerIndex: Int
++    public let globalLayerIndex: Int
++    public let keysDType: DType
++    public let valuesDType: DType
++    public let keysShape: [Int]
++    public let valuesShape: [Int]
++}
++
++public struct Gemma4LayerStageOutput {
++    public let residual: MLXArray
++    public let kvObservations: [Gemma4LayerStageKVObservation]
++
++    /// Call before committing the existing request state. The expected types
++    /// must come from separately admitted native observation, not packed weights.
++    public func requireKVDTypes(_ expected: [DType]) throws {
++        guard expected.count == kvObservations.count,
++            zip(expected, kvObservations).allSatisfy({
++                $0.0 == $0.1.keysDType && $0.0 == $0.1.valuesDType
++            }) else { throw Gemma4LayerStageError.invalidNativeKV }
++    }
++}
++
++extension Gemma4LayerStage {
++    /// Rank0 alone performs lookup/scaling. Rank1's embedding replica serves
++    /// the tied head; accepting a residual never applies this scale again.
++    public func inputResidual(tokens: [Int32]) throws -> MLXArray {
++        guard layout.rank == 0 else { throw Gemma4LayerStageError.wrongResponsibility }
++        guard (1...512).contains(tokens.count),
++            tokens.allSatisfy({ $0 >= 0 && Int($0) < configuration.vocabSize }),
++            loadedEmbeddingOutputDType != nil
++        else { throw Gemma4LayerStageError.invalidInput }
++        let input = MLXArray(tokens).reshaped([1, tokens.count])
++        return languageModel.model.embedTokens(input) * Float(configuration.hiddenSize).squareRoot()
++    }
++
++    /// Reuses caller-owned CBv2 caches. The caller must poison/retire the whole
++    /// request on any throw; earlier layers may already have advanced. This
++    /// method supplies no independent request owner, rollback or admission.
++    public func forwardResidual(
++        _ residual: MLXArray, caches: [any CBv2AttendingLayerCache],
++        phase: Gemma4LayerStagePhase
++    ) throws -> Gemma4LayerStageOutput {
++        guard residual.ndim == 3, residual.dim(0) == 1,
++            residual.dim(2) == configuration.hiddenSize,
++            (1...512).contains(residual.dim(1)),
++            phase == .prefill || residual.dim(1) == 1,
++            loadedEmbeddingOutputDType != nil,
++            [.float16, .bfloat16, .float32].contains(residual.dtype)
++        else { throw Gemma4LayerStageError.invalidInput }
++        let legacyCaches = caches.compactMap { $0 as? KVCache }
++        guard caches.count == layout.layerKinds.count,
++            legacyCaches.count == caches.count,
++            zip(caches, layout.layerKinds).allSatisfy({
++                $0.0.kind == $0.1 && $0.0.rows.count == 1
++            }),
++            Set(caches.map { ObjectIdentifier($0.rows[0]) }).count == caches.count,
++            Set(caches.map { $0.rows[0].absoluteOffset }).count == 1
++        else { throw Gemma4LayerStageError.invalidCache }
++
++        let inputLength = residual.dim(1)
++        var hidden = residual
++        var observations: [Gemma4LayerStageKVObservation] = []
++        for (local, layer) in languageModel.model.layers.enumerated() {
++            let global = layout.sourceLayerRange.lowerBound + local
++            let policy = gemma4LayerPrefillPolicy(
++                configuration, globalLayerIndex: global,
++                finalOutputLayerIndex: configuration.numHiddenLayers - 1,
++                ownsFinalOutput: layout.ownsFinalOutput,
++                schedulePrefill: phase == .prefill, isCBv2: true,
++                batchSize: hidden.dim(0), sequenceLength: hidden.dim(1),
++                inputSequenceLength: inputLength,
++                hasLastQueryCache: caches[local] is any CBv2LastQueryPrefillLayerCache)
++            let (output, kv, _) = layer(
++                hidden, cache: legacyCaches[local], outputTailRows: policy.outputTailRows,
++                useLastQueryPrefill: policy.useLastQuery,
++                isExpertPrefill: policy.expertPrefill)
++            let kind = layout.layerKinds[local]
++            let shape = [1, kind.kvHeads, inputLength, kind.headDim]
++            guard kv.0.shape == shape, kv.1.shape == shape,
++                kv.0.dtype == kv.1.dtype,
++                [.float16, .bfloat16, .float32].contains(kv.0.dtype)
++            else { throw Gemma4LayerStageError.invalidNativeKV }
++            observations.append(Gemma4LayerStageKVObservation(
++                localLayerIndex: local, globalLayerIndex: global,
++                keysDType: kv.0.dtype, valuesDType: kv.1.dtype,
++                keysShape: kv.0.shape, valuesShape: kv.1.shape))
++            hidden = output
++            if policy.submitIntermediate {
++                asyncEval(hidden)
++                CBv2StepProfiler.recordEvent("v2.gemma4.prefill.chunk_eval")
++            }
++        }
++        return Gemma4LayerStageOutput(residual: hidden, kvObservations: observations)
++    }
++
++    /// Preserve ordinary CBv2 norm-before-final-row selection and softcap.
++    /// Exactly one rank1 embedding object supplies the tied output projection.
++    public func finalLogits(_ residual: MLXArray) throws -> MLXArray {
++        guard layout.ownsFinalOutput, let norm = languageModel.model.norm else {
++            throw Gemma4LayerStageError.wrongResponsibility
++        }
++        guard residual.ndim == 3, residual.dim(0) == 1,
++            (1...512).contains(residual.dim(1)), residual.dim(2) == configuration.hiddenSize,
++            loadedEmbeddingOutputDType != nil,
++            [.float16, .bfloat16, .float32].contains(residual.dtype)
++        else { throw Gemma4LayerStageError.invalidInput }
++        let normalized = norm(residual)
++        let logits = languageModel.model.embedTokens.asLinear(normalized[0..., -1, 0...])
++        return gemma4CompiledLogitSoftcap(logits, MLXArray(configuration.finalLogitSoftcapping))
++    }
++}
+--- /dev/null
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageLayout.swift
+@@ -0,0 +1,72 @@
++import MLXLMCommon
++
++public enum Gemma4LayerStageError: Error {
++    case unsupportedConfiguration
++    case invalidPartition
++    case invalidInput
++    case invalidCache
++    case invalidNativeKV
++    case wrongResponsibility
++}
++
++/// Native construction geometry, not an artifact/Plan identity or readiness
++/// receipt. The authenticated Runtime Plan remains the source of those pins.
++public struct Gemma4LayerStageLayout: Sendable {
++    public let rank: Int
++    public let sourceLayerRange: Range<Int>
++    public let layerKinds: [CBv2LayerKind]
++    public var globalLayerIndices: [Int] { Array(sourceLayerRange) }
++    public var ownsFinalOutput: Bool { rank == 1 }
++
++    public init(
++        originalConfiguration: Gemma4Configuration,
++        rank: Int, sourceLayerRange: Range<Int>
++    ) throws {
++        let config = originalConfiguration.textConfig
++        guard originalConfiguration.modelType == "gemma4",
++            gemma4SupportsProductionExpertTopology(config),
++            gemma4SupportsSafeExpertQMMQuantization(config),
++            config.vocabSize == 262_144, config.intermediateSize == 2_112,
++            config.numAttentionHeads == 16, config.numKeyValueHeads == 8,
++            config.numGlobalKeyValueHeads == 2, config.headDim == 256,
++            config.globalHeadDim == 512, config.slidingWindow == 1_024,
++            config.hiddenSizePerLayerInput == 0, config.numKvSharedLayers == 0,
++            !config.useDoubleWideMlp, gemma4StageHasOriginalQuantization(config),
++            config.tieWordEmbeddings, config.attentionKeqV,
++            config.finalLogitSoftcapping == 30, config.rmsNormEps == 1e-6,
++            config.slidingRopeTheta == 10_000, config.fullRopeTheta == 1_000_000,
++            config.fullPartialRotaryFactor == 0.25,
++            config.layerTypes == (0..<30).map({
++                ($0 + 1).isMultiple(of: 6) ? "full_attention" : "sliding_attention"
++            })
++        else { throw Gemma4LayerStageError.unsupportedConfiguration }
++        guard !sourceLayerRange.isEmpty,
++            sourceLayerRange.lowerBound >= 0, sourceLayerRange.upperBound <= 30,
++            (rank == 0 && sourceLayerRange.lowerBound == 0 && sourceLayerRange.upperBound < 30)
++                || (rank == 1 && sourceLayerRange.lowerBound > 0 && sourceLayerRange.upperBound == 30)
++        else { throw Gemma4LayerStageError.invalidPartition }
++        self.rank = rank
++        self.sourceLayerRange = sourceLayerRange
++        let kinds = config.cbv2LayerKinds
++        self.layerKinds = sourceLayerRange.enumerated().map { local, global in
++            var kind = kinds[global]
++            kind.modelLayerIndex = local
++            return kind
++        }
++    }
++}
++
++/// Validate the original policy without relocating it or modifying the
++/// topology classifier. The Runtime descriptor owns local-path relocation.
++private func gemma4StageHasOriginalQuantization(_ config: Gemma4TextConfiguration) -> Bool {
++    guard let policy = config.perLayerQuantization else { return false }
++    let suffixes = ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"]
++    let expected = Set((0..<30).flatMap { index in
++        suffixes.map { "language_model.model.layers.\(index).\($0)" }
++    })
++    guard Set(policy.perLayerQuantization.keys) == expected else { return false }
++    return expected.allSatisfy { path in
++        guard case .quantize(let value)? = policy.perLayerQuantization[path] else { return false }
++        return value.bits == 8 && value.groupSize == 64 && value.mode == .affine
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift
+@@ -47,7 +47,7 @@
+     return max(0, value)
+ }
+ 
+-private let gemma4PrefillChunkEvalLayers = resolveGemma4PrefillChunkEvalLayers(
++internal let gemma4PrefillChunkEvalLayers = resolveGemma4PrefillChunkEvalLayers(
+     ProcessInfo.processInfo.environment["DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL"])
+ 
+ @inline(__always)
+@@ -70,7 +70,7 @@
+ ///
+ /// `DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS=0` restores the full final layer
+ /// (the kill switch); a larger value is for comparing kernel geometries.
+-private let gemma4PrefillTailRows: Int = {
++internal let gemma4PrefillTailRows: Int = {
+     guard let raw = ProcessInfo.processInfo.environment[
+         "DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS"],
+         let value = Int(raw)
+@@ -150,7 +150,7 @@
+ /// scales with the discarded row count, and tiny chunks are dominated by
+ /// fixed overhead. Overridable so tests can exercise the narrow path on
+ /// small fixtures.
+-private let gemma4PrefillTailMinChunk: Int = {
++internal let gemma4PrefillTailMinChunk: Int = {
+     guard let raw = ProcessInfo.processInfo.environment[
+         "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK"],
+         let value = Int(raw)
+@@ -163,7 +163,7 @@
+ /// narrowing above (exactly one retained row) and a cache that can commit
+ /// full K/V for a single query. Default ON with
+ /// `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY=0` as the kill switch.
+-private let gemma4PrefillLastQueryEnabled: Bool = {
++internal let gemma4PrefillLastQueryEnabled: Bool = {
+     guard let raw = ProcessInfo.processInfo.environment[
+         "DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY"]
+     else { return true }
+@@ -215,7 +215,7 @@
+ /// Final-logit softcap (`tanh(x / cap) * cap`) fused into one Metal dispatch
+ /// (vMLX `compiledLogitSoftcap`). The untyped (float32) cap keeps the softcap
+ /// math — and the logits handed to the sampler — full precision.
+-private let gemma4CompiledLogitSoftcap: @Sendable (MLXArray, MLXArray) -> MLXArray = {
++internal let gemma4CompiledLogitSoftcap: @Sendable (MLXArray, MLXArray) -> MLXArray = {
+     let body: @Sendable (MLXArray, MLXArray) -> MLXArray = {
+         (x: MLXArray, cap: MLXArray) -> MLXArray in
+         tanh(x / cap) * cap
+@@ -1742,19 +1742,13 @@
+             // Prompt-path specializations, final layer only. Every earlier
+             // layer runs the full chunk unchanged because later positions'
+             // K/V depend on it.
+-            let isFinalPromptLayer =
+-                schedulePrefill && isCBv2 && idx == layers.count - 1
+-                && h.dim(0) > 0 && h.dim(1) >= gemma4PrefillTailMinChunk
+-            let outputTailRows: Int? =
+-                isFinalPromptLayer && gemma4PrefillTailRows > 0
+-                ? min(gemma4PrefillTailRows, h.dim(1)) : nil
+-            let useLastQueryPrefill = gemma4UseLastQueryPrefill(
+-                config,
+-                layerIdx: idx,
+-                batchSize: h.dim(0),
+-                sequenceLength: h.dim(1),
+-                outputTailRows: outputTailRows,
+-                hasCapableCache: fullCache[idx] is any CBv2LastQueryPrefillLayerCache)
++            let policy = gemma4LayerPrefillPolicy(
++                config, globalLayerIndex: idx, finalOutputLayerIndex: layers.count - 1,
++                ownsFinalOutput: true,
++                schedulePrefill: schedulePrefill, isCBv2: isCBv2,
++                batchSize: h.dim(0), sequenceLength: h.dim(1),
++                inputSequenceLength: inputs.dim(1),
++                hasLastQueryCache: fullCache[idx] is any CBv2LastQueryPrefillLayerCache)
+             let (out, kvPair, positionOffset) = layer(
+                 h,
+                 mask: mask,
+@@ -1763,27 +1757,19 @@
+                 sharedKV: sharedKV,
+                 positionOffset: sharedPositionOffset,
+                 v2SharedSource: v2SharedSource,
+-                outputTailRows: outputTailRows,
+-                useLastQueryPrefill: useLastQueryPrefill,
++                outputTailRows: policy.outputTailRows,
++                useLastQueryPrefill: policy.useLastQuery,
+                 // The retained pair is a CBv2 production-prefill optimization.
+                 // Ordinary direct forwards keep the established reduction;
+                 // enabling it there regressed the raw-prefill control without
+                 // affecting the serving path selected by the benchmark.
+-                isExpertPrefill: gemma4AllowsWeightedExpertUnsort(
+-                    schedulePrefill: schedulePrefill)
++                isExpertPrefill: policy.expertPrefill
+             )
+             h = out
+             intermediates[idx] = (kvPair, positionOffset)
+             captureHook?(idx, kvPair)
+ 
+-            let layerNumber = idx + 1
+-            if gemma4ShouldSubmitPrefillChunkEval(
+-                schedulePrefill: schedulePrefill,
+-                isCBv2: isCBv2,
+-                inputLength: inputs.dim(1),
+-                layerNumber: layerNumber,
+-                interval: gemma4PrefillChunkEvalLayers)
+-            {
++            if policy.submitIntermediate {
+                 asyncEval(h)
+                 CBv2StepProfiler.recordEvent("v2.gemma4.prefill.chunk_eval")
+             }
+--- /dev/null
++++ b/libs/mlx-swift-lm/Tests/MLXLMTests/Gemma4LayerStagePolicyTests.swift
+@@ -0,0 +1,166 @@
++import Foundation
++import MLXLMCommon
++import Testing
++@testable import MLXLLM
++
++/// Value-only tests: none constructs a Module or MLXArray. Native constructor,
++/// loaded dtype and whole/split numerical checks remain separately required.
++@Suite("Gemma4 global stage geometry and prefill policy")
++struct Gemma4LayerStagePolicyTests {
++    private func fields() -> [String: Any] {
++        var quantization: [String: Any] = ["bits": 4, "group_size": 64, "mode": "affine"]
++        for index in 0..<30 {
++            for suffix in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] {
++                quantization["language_model.model.layers.\(index).\(suffix)"] =
++                    ["bits": 8, "group_size": 64]
++            }
++        }
++        return ["model_type": "gemma4", "vocab_size": 262_144,
++            "quantization": quantization,
++            "text_config": [
++                "model_type": "gemma4_text", "hidden_size": 2_816,
++                "num_hidden_layers": 30, "intermediate_size": 2_112,
++                "num_attention_heads": 16, "num_key_value_heads": 8,
++                "num_global_key_value_heads": 2, "head_dim": 256,
++                "global_head_dim": 512, "sliding_window": 1_024,
++                "layer_types": (0..<30).map { ($0 + 1).isMultiple(of: 6)
++                    ? "full_attention" : "sliding_attention" },
++                "num_kv_shared_layers": 0, "hidden_size_per_layer_input": 0,
++                "use_double_wide_mlp": false, "tie_word_embeddings": true,
++                "attention_k_eq_v": true, "final_logit_softcapping": 30,
++                "rms_norm_eps": 1e-6, "enable_moe_block": true,
++                "num_experts": 128, "top_k_experts": 8, "moe_intermediate_size": 704,
++                "use_bidirectional_attention": "vision",
++                "rope_parameters": [
++                    "sliding_attention": ["rope_theta": 10_000],
++                    "full_attention": ["rope_theta": 1_000_000, "partial_rotary_factor": 0.25]
++                ]
++            ] as [String: Any]]
++    }
++
++    private func config(_ fields: [String: Any]? = nil) throws -> Gemma4Configuration {
++        try JSONDecoder().decode(Gemma4Configuration.self,
++            from: JSONSerialization.data(withJSONObject: fields ?? self.fields()))
++    }
++
++    @Test func allCutsKeepGlobalAttentionAndLocalCacheIndices() throws {
++        let original = try config()
++        for cut in 1..<30 {
++            let left = try Gemma4LayerStageLayout(originalConfiguration: original,
++                rank: 0, sourceLayerRange: 0..<cut)
++            let right = try Gemma4LayerStageLayout(originalConfiguration: original,
++                rank: 1, sourceLayerRange: cut..<30)
++            #expect(left.globalLayerIndices + right.globalLayerIndices == Array(0..<30))
++            #expect(!left.ownsFinalOutput && right.ownsFinalOutput)
++            for layout in [left, right] {
++                for (local, global) in layout.globalLayerIndices.enumerated() {
++                    let kind = layout.layerKinds[local]
++                    #expect(kind.modelLayerIndex == local && kind.sharesKVWithLayer == nil)
++                    #expect(kind.queryHeads == 16)
++                    #expect(kind.attention == ((global + 1).isMultiple(of: 6) ? .full : .slidingWindow(1_024)))
++                    #expect(kind.kvHeads == ((global + 1).isMultiple(of: 6) ? 2 : 8))
++                    #expect(kind.headDim == ((global + 1).isMultiple(of: 6) ? 512 : 256))
++                }
++            }
++        }
++    }
++
++    @Test func refusesInvalidRangesAndResponsibilities() throws {
++        let original = try config()
++        for (rank, range) in [(0, 0..<0), (0, 0..<30), (0, 1..<15),
++            (1, 0..<30), (1, 15..<29), (2, 15..<30), (1, -1..<30)] {
++            #expect(throws: Gemma4LayerStageError.self) {
++                try Gemma4LayerStageLayout(originalConfiguration: original,
++                    rank: rank, sourceLayerRange: range)
++            }
++        }
++    }
++
++    @Test func rejectsCompactedOrUnsupportedOriginalGeometry() throws {
++        for (key, value) in [("num_hidden_layers", 15), ("num_kv_shared_layers", 1),
++            ("hidden_size_per_layer_input", 8), ("sliding_window", 512)] {
++            var data = fields();var text = data["text_config"] as! [String: Any]
++            text[key] = value;data["text_config"] = text
++            let original = try config(data)
++            #expect(throws: Gemma4LayerStageError.self) {
++                try Gemma4LayerStageLayout(originalConfiguration: original,
++                    rank: 0, sourceLayerRange: 0..<15)
++            }
++        }
++    }
++
++    @Test func retainsMixedPrecisionAndSplitExpertEligibility() throws {
++        let original = try config()
++        #expect(gemma4SupportsCoupledExpertOptimizations(original.textConfig))
++        for mutation in 0..<3 {
++            var data = fields();var policy = data["quantization"] as! [String: Any]
++            let shared = "language_model.model.layers.0.mlp.gate_proj"
++            if mutation == 0 { policy.removeValue(forKey: shared) }
++            if mutation == 1 { policy[shared] = ["bits": 4, "group_size": 64] }
++            if mutation == 2 {
++                policy["language_model.model.layers.0.experts.switch_glu.gate_proj"] =
++                    ["bits": 4, "group_size": 64]
++            }
++            data["quantization"] = policy
++            let changed = try config(data)
++            #expect(throws: Gemma4LayerStageError.self) {
++                try Gemma4LayerStageLayout(originalConfiguration: changed,
++                    rank: 0, sourceLayerRange: 0..<15)
++            }
++        }
++    }
++
++    @Test func rankZeroAlwaysPreservesEveryResidualRow() throws {
++        let original = try config().textConfig
++        for global in 0..<30 {
++            let policy = gemma4LayerPrefillPolicy(original,
++                globalLayerIndex: global, finalOutputLayerIndex: 29, ownsFinalOutput: false,
++                schedulePrefill: true, isCBv2: true, batchSize: 1,
++                sequenceLength: 512, inputSequenceLength: 512, hasLastQueryCache: true,
++                tailRows: 1, minimumTailChunk: 128, submissionInterval: 18, lastQueryEnabled: true)
++            #expect(policy.outputTailRows == nil && !policy.useLastQuery)
++        }
++    }
++
++    @Test func onlyGlobalFinalLayerCanUseLastQuery() throws {
++        let original = try config().textConfig
++        for global in 0..<30 {
++            let policy = gemma4LayerPrefillPolicy(original,
++                globalLayerIndex: global, finalOutputLayerIndex: 29, ownsFinalOutput: true,
++                schedulePrefill: true, isCBv2: true, batchSize: 1,
++                sequenceLength: 512, inputSequenceLength: 512, hasLastQueryCache: true,
++                tailRows: 1, minimumTailChunk: 128, submissionInterval: 18, lastQueryEnabled: true)
++            #expect(policy.useLastQuery == (global == 29))
++            #expect(policy.outputTailRows == (global == 29 ? 1 : nil))
++            #expect(policy.submitIntermediate == (global == 17))
++        }
++    }
++
++    @Test func fullTrunkPolicyMatchesPreExtractionConditions() throws {
++        let original = try config().textConfig
++        for count in [15, 30] {
++            for global in 0..<count {
++                for length in [1, 16, 128, 512] {
++                    for tail in [0, 1, 8] {
++                        for schedule in [false, true] {
++                            let final = schedule && global == count - 1 && length >= 128
++                            let oldTail: Int? = final && tail > 0 ? min(tail, length) : nil
++                            let policy = gemma4LayerPrefillPolicy(original,
++                                globalLayerIndex: global, finalOutputLayerIndex: count - 1,
++                                ownsFinalOutput: true, schedulePrefill: schedule, isCBv2: true,
++                                batchSize: 1, sequenceLength: length, inputSequenceLength: length,
++                                hasLastQueryCache: true, tailRows: tail, minimumTailChunk: 128,
++                                submissionInterval: 18, lastQueryEnabled: true)
++                            #expect(policy.outputTailRows == oldTail)
++                            #expect(policy.useLastQuery == gemma4UseLastQueryPrefill(original,
++                                layerIdx: global, batchSize: 1, sequenceLength: length,
++                                outputTailRows: oldTail, hasCapableCache: true, enabled: true))
++                            #expect(policy.expertPrefill == schedule)
++                            #expect(policy.submitIntermediate == (schedule && length > 1 && (global + 1).isMultiple(of: 18)))
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ArtifactMetadata.swift
+@@ -0,0 +1,72 @@
++import Foundation
++
++/// An exact retained-header profile. It is never a payload or native execution permit.
++struct Gemma4ArtifactMetadata {
++    static let configurationSHA256 = "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa"
++    static let manifestSHA256 = "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd"
++    static let indexSHA256 = "5455e83705bbdd4e3702c7d4f9d49d4900e84533036628f74500538075dd5c80"
++    static let artifactAggregateSHA256 = "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
++    static let headerSHA256 = [
++        "model-00001-of-00003.safetensors": "5b3e8f2c593f5b291ffa3322540141bf909f454c917888957816273c53c9c735",
++        "model-00002-of-00003.safetensors": "f1624d695581287157a8472d87224197d0a67d50ce5fd439af3ff45444ddd6dc",
++        "model-00003-of-00003.safetensors": "52b3a65b791a2f0a1dd345291979ed5429388992ad12d824032b923bf9300a7a",
++    ]
++    let originalConfiguration: Data
++    let text: Gemma4TextMetadata
++    let sources: [LayerStageSourceTensor]
++    let excludedSourceNames: [String]
++    let sourceInventorySHA256: String
++    let fingerprint: String
++    let actualPayloadVerificationEstablished = false
++    let runtimeExecutionAuthorized = false
++
++    private init(configuration: Data, text: Gemma4TextMetadata, sources: [LayerStageSourceTensor], excluded: [String]) throws {
++        originalConfiguration = configuration; self.text = text
++        self.sources = sources; excludedSourceNames = excluded
++        sourceInventorySHA256 = sha256(try canonicalJSONData(sources))
++        fingerprint = sha256(Data(["gemma4-26b-retained-header-profile-v1", Self.configurationSHA256,
++            Self.manifestSHA256, Self.indexSHA256, Self.artifactAggregateSHA256, sourceInventorySHA256,
++            "payloadVerified=false", "executionAuthorized=false"].joined(separator: "\n").utf8))
++    }
++
++    static func admit(configuration: Data, manifest: Data, index: Data,
++                      headers: [LayerStageCapturedTensorHeader]) throws -> Self {
++        guard (1...1_048_576).contains(configuration.count), (1...1_048_576).contains(manifest.count),
++              (1...2_097_152).contains(index.count), sha256(configuration) == configurationSHA256,
++              sha256(manifest) == manifestSHA256, sha256(index) == indexSHA256,
++              headers.count == 3, Set(headers.map(\.sourceFile)) == Set(headerSHA256.keys),
++              headers.allSatisfy({ (1...2_097_152).contains($0.data.count) && sha256($0.data) == headerSHA256[$0.sourceFile] }) else {
++            throw ProbeError("Gemma retained config/manifest/index/header identity differs")
++        }
++        try validateWorkerJSON(manifest)
++        let declared = try JSONDecoder().decode(CheckpointManifest.self, from: manifest)
++        guard declared.aggregate_sha256 == artifactAggregateSHA256, declared.file_count == 10,
++              declared.total_size_bytes == 15_641_239_295,
++              declared.files.count == 10,
++              try QwenLongPrefillCheckedBytes.sum(declared.files.map(\.size_bytes)) == declared.total_size_bytes,
++              declared.files.first(where: { $0.path == "config.json" })?.sha256 == configurationSHA256 else {
++            throw ProbeError("Gemma declared manifest semantics differ")
++        }
++        let text = try Gemma4TextMetadata.decode(configuration)
++        let sources = try LayerStageCapturedTensorHeaders.parse(manifest: declared, index: index, headers: headers)
++        let excluded = try validateSourceInventory(sources, text: text)
++        return try .init(configuration: configuration, text: text, sources: sources, excluded: excluded)
++    }
++
++    static func validateSourceInventory(_ sources: [LayerStageSourceTensor], text: Gemma4TextMetadata) throws -> [String] {
++        let expected = try Gemma4TensorInventory.expectedText(text)
++        let actual = sources.filter { $0.layout.canonicalName.hasPrefix("language_model.") }
++        let excluded = sources.filter { !$0.layout.canonicalName.hasPrefix("language_model.") }
++        guard sources.count == 1697, Set(sources.map { $0.layout.canonicalName }).count == sources.count,
++              actual.count == 1339, expected.count == actual.count,
++              Set(actual.map { $0.layout.canonicalName }) == Set(expected.keys),
++              actual.allSatisfy({ expected[$0.layout.canonicalName] == $0.layout }),
++              excluded.count == 358,
++              excluded.filter({ $0.layout.canonicalName.hasPrefix("vision_tower.") }).count == 355,
++              excluded.filter({ $0.layout.canonicalName.hasPrefix("embed_vision.") }).count == 3,
++              try QwenLongPrefillCheckedBytes.sum(actual.map { $0.layout.byteCount }) == 14_467_688_508 else {
++            throw ProbeError("Gemma source tensor ownership, packed geometry or exclusions differ")
++        }
++        return excluded.map { $0.layout.canonicalName }.sorted()
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LayerStagePlan.swift
+@@ -0,0 +1,68 @@
++import Foundation
++
++/// Two-rank text partition over an exact header profile, with no native capability.
++struct Gemma4LayerStagePlan {
++    let artifact: Gemma4ArtifactMetadata
++    let stages: [Gemma4StageConstructionDescriptor]
++    let mappings: [LayerStageTensorMapping]
++    let replication: [LayerStageTiedEmbeddingReplication]
++    let conservation: LayerStageStorageConservation
++    let fingerprint: String
++
++    init(artifact: Gemma4ArtifactMetadata, cut: Int) throws {
++        guard (1..<artifact.text.globalLayerCount).contains(cut) else { throw ProbeError("Gemma cut must be in 1..<30") }
++        let stages = try [
++            Gemma4StageConstructionDescriptor(artifact: artifact, rank: 0, sourceLayerRange: 0..<cut),
++            Gemma4StageConstructionDescriptor(artifact: artifact, rank: 1, sourceLayerRange: cut..<30),
++        ]
++        let embedding = Gemma4TensorInventory.prefix + "embed_tokens"
++        let group = LayerStageTiedEmbeddingReplication(id: "gemma4-source-tied-embedding-v1",
++            canonicalModule: embedding, sourceNames: ["biases", "scales", "weight"].map { embedding + "." + $0 },
++            ingressRank: 0, outputRank: 1)
++        let excluded = Set(artifact.excludedSourceNames)
++        let mappings = try artifact.sources.filter { !excluded.contains($0.layout.canonicalName) }.map { source in
++            let name = source.layout.canonicalName
++            if group.sourceNames.contains(name) {
++                return LayerStageTensorMapping(source: source, destinations: [
++                    .init(rank: 0, localName: name, role: .ingressEmbedding, globalLayerIndex: nil),
++                    .init(rank: 1, localName: name, role: .tiedOutputEmbedding, globalLayerIndex: nil),
++                ], replicationGroupID: group.id)
++            }
++            if name == Gemma4TensorInventory.prefix + "norm.weight" {
++                return LayerStageTensorMapping(source: source,
++                    destinations: [.init(rank: 1, localName: name, role: .finalNorm, globalLayerIndex: nil)], replicationGroupID: nil)
++            }
++            guard let location = Gemma4StageConstructionDescriptor.layerPath(name) else {
++                throw ProbeError("Unowned Gemma canonical tensor")
++            }
++            let rank = location.index < cut ? 0 : 1
++            let stage = stages[rank]
++            let local = Gemma4TensorInventory.prefix + "layers.\(location.index - stage.sourceLayerStart)." + location.suffix
++            return LayerStageTensorMapping(source: source,
++                destinations: [.init(rank: rank, localName: local, role: .layer, globalLayerIndex: location.index)], replicationGroupID: nil)
++        }
++        let conservation = try LayerStageStorageConservation.validate(sources: artifact.sources,
++            mappings: mappings, excludedSourceNames: artifact.excludedSourceNames, allowedReplication: [group])
++        guard conservation.selectedSourceTensorCount == 1339, conservation.destinationTensorCount == 1342,
++              conservation.additionalReplicaBytes == 415_236_096,
++              conservation.selectedSourcePayloadBytes == 14_467_688_508,
++              conservation.excludedPayloadBytes == 1_140_925_536 else { throw ProbeError("Gemma partition accounting differs") }
++        self.artifact = artifact; self.stages = stages; self.mappings = mappings; replication = [group]
++        self.conservation = conservation
++        fingerprint = sha256(Data(["gemma4-text-two-stage-plan-v1", artifact.fingerprint,
++            stages[0].fingerprint, stages[1].fingerprint, conservation.fingerprint,
++            "payloadVerified=false", "executionAuthorized=false"].joined(separator: "\n").utf8))
++    }
++
++    /// Actual later inventories must match the admitted model mapping, not just totals.
++    func validateStorage(mappings candidate: [LayerStageTensorMapping], excludedSourceNames: [String]) throws -> LayerStageStorageConservation {
++        let sorted = candidate.sorted { $0.source.layout.canonicalName < $1.source.layout.canonicalName }
++        guard sorted == mappings, excludedSourceNames.sorted() == artifact.excludedSourceNames else {
++            throw ProbeError("Gemma actual mapping/global indices/exclusions differ from admitted Plan")
++        }
++        let result = try LayerStageStorageConservation.validate(sources: artifact.sources,
++            mappings: sorted, excludedSourceNames: excludedSourceNames, allowedReplication: replication)
++        guard result == conservation else { throw ProbeError("Gemma storage accounting is not repeatable") }
++        return result
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4StageConstructionDescriptor.swift
+@@ -0,0 +1,83 @@
++import Foundation
++
++enum LayerStageResponsibility: String, Codable {
++    case ingressResidual, finalLogits
++}
++
++struct Gemma4StageConstructionDescriptor: Encodable, Equatable {
++    struct Layer: Encodable, Equatable {
++        let globalIndex: Int
++        let localIndex: Int
++        let kind: Gemma4StageAttentionKind
++    }
++    struct QuantizationMapping: Encodable, Equatable {
++        let sourcePath: String
++        let localPath: String
++        let policy: Gemma4AffineQuantization
++    }
++    let originalConfiguration: Data
++    let sourceConfigurationSHA256: String
++    let rank: Int
++    let sourceLayerStart: Int
++    let sourceLayerEnd: Int
++    let globalLayerCount: Int
++    let layers: [Layer]
++    let responsibility: LayerStageResponsibility
++    /// Quantizer-only table. Never use it to rewrite the full decoder's geometry.
++    let localQuantization: Data
++    let quantizationMappings: [QuantizationMapping]
++    let fingerprint: String
++    let nativeExecutionAuthorized = false
++
++    var sourceLayerRange: Range<Int> { sourceLayerStart..<sourceLayerEnd }
++    var finalPromptLayerGlobalIndex: Int? { responsibility == .finalLogits ? globalLayerCount - 1 : nil }
++
++    init(artifact: Gemma4ArtifactMetadata, rank: Int, sourceLayerRange: Range<Int>) throws {
++        let count = artifact.text.globalLayerCount
++        guard (0...1).contains(rank), !sourceLayerRange.isEmpty,
++              sourceLayerRange.lowerBound >= 0, sourceLayerRange.upperBound <= count,
++              (rank == 0 ? sourceLayerRange.lowerBound == 0 && sourceLayerRange.upperBound < count
++                         : sourceLayerRange.lowerBound > 0 && sourceLayerRange.upperBound == count) else {
++            throw ProbeError("Gemma stage role/range is invalid")
++        }
++        let layers = sourceLayerRange.map {
++            Layer(globalIndex: $0, localIndex: $0 - sourceLayerRange.lowerBound, kind: artifact.text.layerKinds[$0])
++        }
++        var table = artifact.text.quantizationDefaults.jsonObject
++        var mappings: [QuantizationMapping] = []
++        for path in artifact.text.quantizationOverrides.keys.sorted() {
++            guard let location = Self.layerPath(path) else { throw ProbeError("Gemma quantization path is not canonical") }
++            if sourceLayerRange.contains(location.index) {
++                let local = Gemma4TensorInventory.prefix + "layers.\(location.index - sourceLayerRange.lowerBound)." + location.suffix
++                guard table[local] == nil, let policy = artifact.text.quantizationOverrides[path] else {
++                    throw ProbeError("Gemma local quantization path collides")
++                }
++                // Preserve the source spelling: mode inherits affine from the default.
++                table[local] = ["bits": policy.bits, "group_size": policy.groupSize]
++                mappings.append(.init(sourcePath: path, localPath: local, policy: policy))
++            }
++        }
++        let local = try JSONSerialization.data(withJSONObject: table, options: [.sortedKeys])
++        let responsibility: LayerStageResponsibility = rank == 0 ? .ingressResidual : .finalLogits
++        let identity = ["gemma4-stage-construction-descriptor-v1", artifact.fingerprint,
++            Gemma4ArtifactMetadata.configurationSHA256, "rank=\(rank)",
++            "globalLayers=\(count)", "range=\(sourceLayerRange.lowerBound):\(sourceLayerRange.upperBound)",
++            responsibility.rawValue, sha256(try canonicalJSONData(layers)), sha256(local),
++            sha256(try canonicalJSONData(mappings)), "executionAuthorized=false"]
++        originalConfiguration = artifact.originalConfiguration
++        sourceConfigurationSHA256 = Gemma4ArtifactMetadata.configurationSHA256
++        self.rank = rank; sourceLayerStart = sourceLayerRange.lowerBound; sourceLayerEnd = sourceLayerRange.upperBound
++        globalLayerCount = count; self.layers = layers; self.responsibility = responsibility
++        localQuantization = local; quantizationMappings = mappings
++        fingerprint = sha256(Data(identity.joined(separator: "\n").utf8))
++    }
++
++    static func layerPath(_ name: String) -> (index: Int, suffix: String)? {
++        let prefix = Gemma4TensorInventory.prefix + "layers."
++        guard name.hasPrefix(prefix) else { return nil }
++        let fields = name.dropFirst(prefix.count).split(separator: ".", omittingEmptySubsequences: false)
++        guard fields.count > 1, let first = fields.first, let index = Int(first),
++              String(index) == String(first), (0..<30).contains(index), fields.allSatisfy({ !$0.isEmpty }) else { return nil }
++        return (index, fields.dropFirst().joined(separator: "."))
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TensorInventory.swift
+@@ -0,0 +1,55 @@
++import Foundation
++
++enum Gemma4TensorInventory {
++    static let prefix = "language_model.model."
++
++    static func expectedText(_ metadata: Gemma4TextMetadata) throws -> [String: LayerStageTensorLayout] {
++        var result: [String: LayerStageTensorLayout] = [:]
++        func tensor(_ name: String, _ dtype: String, _ shape: [Int]) throws {
++            let width = dtype == "U32" ? 4 : 2
++            guard result[name] == nil else { throw ProbeError("Duplicate expected Gemma tensor") }
++            result[name] = try LayerStageTensorLayout(canonicalName: name, shape: shape,
++                sourceDType: dtype, byteCount: QwenLongPrefillCheckedBytes.product(shape + [width]))
++        }
++        func quantized(_ module: String, _ shape: [Int], bits: Int = 4) throws {
++            guard let width = shape.last, width % 64 == 0, [4, 8].contains(bits) else {
++                throw ProbeError("Gemma packed projection width/policy differs")
++            }
++            try tensor(module + ".weight", "U32", Array(shape.dropLast()) + [width / (32 / bits)])
++            for suffix in ["scales", "biases"] {
++                try tensor(module + "." + suffix, "BF16", Array(shape.dropLast()) + [width / 64])
++            }
++        }
++        let h = metadata.hiddenSize, experts = metadata.expertCount
++        let shared = metadata.sharedIntermediateSize, expertWidth = metadata.expertIntermediateSize
++        try quantized(prefix + "embed_tokens", [metadata.vocabularySize, h])
++        try tensor(prefix + "norm.weight", "BF16", [h])
++        for (index, kind) in metadata.layerKinds.enumerated() {
++            let base = prefix + "layers.\(index)."
++            for name in ["input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm",
++                "post_feedforward_layernorm", "post_feedforward_layernorm_1",
++                "pre_feedforward_layernorm_2", "post_feedforward_layernorm_2"] {
++                try tensor(base + name + ".weight", "BF16", [h])
++            }
++            try tensor(base + "layer_scalar", "BF16", [1])
++            try tensor(base + "router.scale", "BF16", [h])
++            try tensor(base + "router.per_expert_scale", "BF16", [experts])
++            try quantized(base + "router.proj", [experts, h], bits: 8)
++            for (name, output, input) in [("gate_proj", shared, h), ("up_proj", shared, h), ("down_proj", h, shared)] {
++                try quantized(base + "mlp." + name, [output, input], bits: 8)
++            }
++            for (name, output, input) in [("gate_proj", expertWidth, h), ("up_proj", expertWidth, h), ("down_proj", h, expertWidth)] {
++                try quantized(base + "experts.switch_glu." + name, [experts, output, input])
++            }
++            let head = kind == .sliding ? metadata.slidingHeadDimension : metadata.fullHeadDimension
++            let kv = kind == .sliding ? metadata.slidingKVHeads : metadata.fullKVHeads
++            for (name, output, input) in [("q_proj", metadata.queryHeads * head, h),
++                ("k_proj", kv * head, h), ("o_proj", h, metadata.queryHeads * head)] {
++                try quantized(base + "self_attn." + name, [output, input])
++            }
++            if kind == .sliding { try quantized(base + "self_attn.v_proj", [kv * head, h]) }
++            for name in ["q_norm", "k_norm"] { try tensor(base + "self_attn." + name + ".weight", "BF16", [head]) }
++        }
++        return result
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TextMetadata.swift
+@@ -0,0 +1,102 @@
++import Foundation
++
++enum Gemma4StageAttentionKind: String, Codable {
++    case sliding = "sliding_attention"
++    case full = "full_attention"
++}
++
++struct Gemma4AffineQuantization: Encodable, Equatable {
++    let bits: Int
++    let groupSize: Int
++    let mode: String
++    var jsonObject: [String: Any] { ["bits": bits, "group_size": groupSize, "mode": mode] }
++}
++
++/// Closed metadata for this artifact. It selects no native kernel or execution profile.
++struct Gemma4TextMetadata: Encodable, Equatable {
++    let layerKinds: [Gemma4StageAttentionKind]
++    let hiddenSize = 2816
++    let vocabularySize = 262144
++    let sharedIntermediateSize = 2112
++    let expertIntermediateSize = 704
++    let expertCount = 128
++    let expertsPerToken = 8
++    let slidingWindow = 1024
++    let queryHeads = 16
++    let slidingKVHeads = 8
++    let fullKVHeads = 2
++    let slidingHeadDimension = 256
++    let fullHeadDimension = 512
++    let quantizationDefaults = Gemma4AffineQuantization(bits: 4, groupSize: 64, mode: "affine")
++    let quantizationOverrides: [String: Gemma4AffineQuantization]
++    var globalLayerCount: Int { layerKinds.count }
++
++    private init(kinds: [Gemma4StageAttentionKind], overrides: [String: Gemma4AffineQuantization]) {
++        layerKinds = kinds; quantizationOverrides = overrides
++    }
++
++    static func decode(_ configuration: Data) throws -> Self {
++        guard (1...1_048_576).contains(configuration.count),
++              let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
++              root["model_type"] as? String == "gemma4",
++              let text = root["text_config"] as? [String: Any],
++              text["model_type"] as? String == "gemma4_text" else { throw ProbeError("Gemma stage metadata requires the original text wrapper") }
++        let integers = ["num_hidden_layers": 30, "hidden_size": 2816, "vocab_size": 262144,
++            "intermediate_size": 2112, "moe_intermediate_size": 704, "num_experts": 128,
++            "top_k_experts": 8, "sliding_window": 1024, "num_attention_heads": 16,
++            "num_key_value_heads": 8, "num_global_key_value_heads": 2, "head_dim": 256,
++            "global_head_dim": 512, "num_kv_shared_layers": 0, "hidden_size_per_layer_input": 0,
++            "max_position_embeddings": 262144]
++        for (key, expected) in integers {
++            guard BoundedProbeInput.integer(text[key]) == expected else {
++                throw ProbeError("Unsupported Gemma stage geometry: \(key)")
++            }
++        }
++        func boolean(_ value: Any?, _ expected: Bool) -> Bool {
++            guard let number = value as? NSNumber, String(cString: number.objCType) == "c" else { return false }
++            return number.boolValue == expected
++        }
++        guard boolean(root["tie_word_embeddings"], true), boolean(text["tie_word_embeddings"], true),
++              boolean(text["attention_k_eq_v"], true), boolean(text["enable_moe_block"], true),
++              boolean(text["use_double_wide_mlp"], false), boolean(text["attention_bias"], false),
++              text["use_bidirectional_attention"] as? String == "vision",
++              text["dtype"] as? String == "bfloat16",
++              text["hidden_activation"] as? String == "gelu_pytorch_tanh",
++              (text["final_logit_softcapping"] as? NSNumber)?.doubleValue == 30 else {
++            throw ProbeError("Unsupported Gemma embedding, attention, dtype or activation policy")
++        }
++        let kinds = (0..<30).map { ($0 + 1) % 6 == 0 ? Gemma4StageAttentionKind.full : .sliding }
++        guard text["layer_types"] as? [String] == kinds.map(\.rawValue),
++              let rope = text["rope_parameters"] as? [String: Any],
++              let sliding = rope["sliding_attention"] as? [String: Any],
++              let full = rope["full_attention"] as? [String: Any],
++              sliding["rope_type"] as? String == "default", (sliding["rope_theta"] as? NSNumber)?.doubleValue == 10000,
++              full["rope_type"] as? String == "proportional", (full["rope_theta"] as? NSNumber)?.doubleValue == 1000000,
++              (full["partial_rotary_factor"] as? NSNumber)?.doubleValue == 0.25 else {
++            throw ProbeError("Gemma global layer or rotary policy differs")
++        }
++        var overrides: [String: Gemma4AffineQuantization] = [:]
++        for index in 0..<30 {
++            for module in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] {
++                overrides["language_model.model.layers.\(index).\(module)"] = .init(bits: 8, groupSize: 64, mode: "affine")
++            }
++        }
++        for key in ["quantization", "quantization_config"] {
++            guard let table = root[key] as? [String: Any], table.count == 123,
++                  BoundedProbeInput.integer(table["bits"]) == 4,
++                  BoundedProbeInput.integer(table["group_size"]) == 64,
++                  table["mode"] as? String == "affine",
++                  Set(table.keys) == Set(overrides.keys).union(["bits", "group_size", "mode"]) else {
++                throw ProbeError("Gemma quantization defaults/override paths differ")
++            }
++            for path in overrides.keys {
++                guard let entry = table[path] as? [String: Any], Set(entry.keys) == ["bits", "group_size"],
++                      BoundedProbeInput.integer(entry["bits"]) == 8,
++                      BoundedProbeInput.integer(entry["group_size"]) == 64 else {
++                    throw ProbeError("Gemma explicit shared/router quantization differs")
++                }
++            }
++        }
++        return .init(kinds: kinds, overrides: overrides)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageCapturedTensorHeaders.swift
+@@ -0,0 +1,69 @@
++import Foundation
++
++struct LayerStageCapturedTensorHeader {
++    let sourceFile: String
++    let data: Data
++}
++
++/// Pure projection of already captured header/index bytes. No file is opened or authenticated.
++enum LayerStageCapturedTensorHeaders {
++    static func parse(manifest: CheckpointManifest, index: Data,
++                      headers: [LayerStageCapturedTensorHeader]) throws -> [LayerStageSourceTensor] {
++        guard (1...32).contains(headers.count), (1...2_097_152).contains(index.count),
++              Set(headers.map(\.sourceFile)).count == headers.count,
++              manifest.files.count == manifest.file_count, (1...64).contains(manifest.files.count),
++              Set(manifest.files.map(\.path)).count == manifest.files.count else {
++            throw ProbeError("Captured header inputs exceed bounds or duplicate files")
++        }
++        try validateWorkerJSON(index)
++        struct Index: Decodable {
++            struct Metadata: Decodable { let total_size: Int }
++            let metadata: Metadata
++            let weight_map: [String: String]
++        }
++        let decoded = try JSONDecoder().decode(Index.self, from: index)
++        let files = Dictionary(uniqueKeysWithValues: manifest.files.map { ($0.path, $0) })
++        guard Set(headers.map(\.sourceFile)) == Set(files.keys.filter { $0.hasSuffix(".safetensors") }),
++              (1...4096).contains(decoded.weight_map.count) else { throw ProbeError("Captured index/file coverage differs") }
++        var result: [String: LayerStageSourceTensor] = [:]
++        for capture in headers {
++            guard (1...2_097_152).contains(capture.data.count), let file = files[capture.sourceFile],
++                  file.size_bytes >= 8 + capture.data.count else { throw ProbeError("Invalid captured header size") }
++            try validateWorkerJSON(capture.data)
++            guard let object = try JSONSerialization.jsonObject(with: capture.data) as? [String: Any],
++                  object["__metadata__"] as? [String: String] == ["format": "mlx"] else {
++                throw ProbeError("Captured header format differs")
++            }
++            var spans: [Range<Int>] = []
++            for (name, raw) in object where name != "__metadata__" {
++                guard result[name] == nil, result.count < 4096,
++                      let entry = raw as? [String: Any], Set(entry.keys) == ["dtype", "shape", "data_offsets"],
++                      let shapeValues = entry["shape"] as? [Any],
++                      let offsetValues = entry["data_offsets"] as? [Any], offsetValues.count == 2,
++                      let dtype = entry["dtype"] as? String else { throw ProbeError("Malformed or duplicate captured tensor") }
++                let shape = shapeValues.compactMap { BoundedProbeInput.integer($0) }
++                let offsets = offsetValues.compactMap { BoundedProbeInput.integer($0) }
++                guard shape.count == shapeValues.count, offsets.count == 2,
++                      offsets[0] >= 0, offsets[1] > offsets[0],
++                      offsets[1] <= file.size_bytes - 8 - capture.data.count,
++                      decoded.weight_map[name] == capture.sourceFile else { throw ProbeError("Captured tensor extent/index mismatch") }
++                let layout = try LayerStageTensorLayout(canonicalName: name, shape: shape,
++                    sourceDType: dtype, byteCount: offsets[1] - offsets[0])
++                result[name] = try LayerStageSourceTensor(layout: layout, sourceFile: capture.sourceFile,
++                    sourceOffset: QwenLongPrefillCheckedBytes.sum([8, capture.data.count, offsets[0]]))
++                spans.append(offsets[0]..<offsets[1])
++            }
++            var end = 0
++            for span in spans.sorted(by: { $0.lowerBound < $1.lowerBound }) {
++                guard span.lowerBound == end else { throw ProbeError("Captured tensor extents overlap or contain gaps") }
++                end = span.upperBound
++            }
++            guard end == file.size_bytes - 8 - capture.data.count else { throw ProbeError("Captured extents do not cover declared payload") }
++        }
++        guard Set(result.keys) == Set(decoded.weight_map.keys),
++              try QwenLongPrefillCheckedBytes.sum(result.values.map { $0.layout.byteCount }) == decoded.metadata.total_size else {
++            throw ProbeError("Captured tensor coverage or byte total differs from index")
++        }
++        return result.values.sorted { $0.layout.canonicalName < $1.layout.canonicalName }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageStorageConservation.swift
+@@ -0,0 +1,114 @@
++import Foundation
++
++struct LayerStageStorageConservation: Encodable, Equatable {
++    struct Rank: Encodable, Equatable {
++        let rank: Int
++        let tensorCount: Int
++        let logicalPayloadBytes: Int
++    }
++    let sourceTensorCount: Int
++    let sourcePayloadBytes: Int
++    let excludedTensorCount: Int
++    let excludedPayloadBytes: Int
++    let selectedSourceTensorCount: Int
++    let selectedSourcePayloadBytes: Int
++    let destinationTensorCount: Int
++    let destinationPayloadBytes: Int
++    let additionalReplicaBytes: Int
++    let ranks: [Rank]
++    let fingerprint: String
++    let payloadVerificationEstablished = false
++    let actualAllocationEstablished = false
++
++    static func validate(sources: [LayerStageSourceTensor], mappings: [LayerStageTensorMapping],
++                         excludedSourceNames: [String],
++                         allowedReplication: [LayerStageTiedEmbeddingReplication]) throws -> Self {
++        guard (1...4096).contains(sources.count), mappings.count <= sources.count,
++              Set(sources.map { $0.layout.canonicalName }).count == sources.count,
++              Set(excludedSourceNames).count == excludedSourceNames.count,
++              Set(mappings.map { $0.source.layout.canonicalName }).count == mappings.count,
++              allowedReplication.count <= 1 else { throw ProbeError("Stage source/mapping coverage is duplicated or unbounded") }
++        let byName = Dictionary(uniqueKeysWithValues: sources.map { ($0.layout.canonicalName, $0) })
++        let excluded = Set(excludedSourceNames), selected = Set(mappings.map { $0.source.layout.canonicalName })
++        guard excluded.isSubset(of: Set(byName.keys)), selected.isDisjoint(with: excluded),
++              selected.union(excluded) == Set(byName.keys) else {
++            throw ProbeError("Stage mapping does not exactly partition selected and excluded sources")
++        }
++        var groupBySource: [String: LayerStageTiedEmbeddingReplication] = [:]
++        for group in allowedReplication {
++            let suffixes: Set<String> = ["weight", "scales", "biases"]
++            guard !group.id.isEmpty, group.id.utf8.count <= 128,
++                  group.ingressRank == 0, group.outputRank == 1,
++                  Set(group.sourceNames) == Set(suffixes.map { group.canonicalModule + "." + $0 }),
++                  group.sourceNames.count == 3, Set(group.sourceNames).isSubset(of: selected) else {
++                throw ProbeError("Invalid admitted tied embedding replica group")
++            }
++            for name in group.sourceNames {
++                guard groupBySource.updateValue(group, forKey: name) == nil else {
++                    throw ProbeError("Overlapping tied embedding groups")
++                }
++            }
++        }
++        var destinationKeys = Set<String>(), rankBytes = [0, 0], rankCounts = [0, 0]
++        var replicaBytes = 0
++        for mapping in mappings {
++            let source = mapping.source, name = source.layout.canonicalName
++            guard byName[name] == source, (1...2).contains(mapping.destinations.count) else {
++                throw ProbeError("Mapping changed its source descriptor or destination count")
++            }
++            if let group = groupBySource[name] {
++                let expected = [
++                    LayerStageTensorDestination(rank: group.ingressRank, localName: name,
++                        role: .ingressEmbedding, globalLayerIndex: nil),
++                    LayerStageTensorDestination(rank: group.outputRank, localName: name,
++                        role: .tiedOutputEmbedding, globalLayerIndex: nil),
++                ]
++                guard mapping.replicationGroupID == group.id, mapping.destinations == expected else {
++                    throw ProbeError("Tied embedding is not the exact admitted two-rank replication")
++                }
++                replicaBytes = try QwenLongPrefillCheckedBytes.sum([replicaBytes, source.layout.byteCount])
++            } else {
++                guard mapping.replicationGroupID == nil, mapping.destinations.count == 1,
++                      mapping.destinations[0].role != .tiedOutputEmbedding else {
++                    throw ProbeError("Unadmitted source replication")
++                }
++            }
++            for destination in mapping.destinations {
++                guard (0...1).contains(destination.rank),
++                      (destination.role == .layer
++                        ? destination.globalLayerIndex.map { (0..<128).contains($0) } == true
++                        : destination.globalLayerIndex == nil) else { throw ProbeError("Invalid destination role/index") }
++                _ = try LayerStageTensorLayout(canonicalName: destination.localName,
++                    shape: source.layout.shape, sourceDType: source.layout.sourceDType,
++                    byteCount: source.layout.byteCount)
++                guard destinationKeys.insert("\(destination.rank):\(destination.localName)").inserted else {
++                    throw ProbeError("Stage destination collision")
++                }
++                rankCounts[destination.rank] += 1
++                rankBytes[destination.rank] = try QwenLongPrefillCheckedBytes.sum([
++                    rankBytes[destination.rank], source.layout.byteCount])
++            }
++        }
++        let sum = QwenLongPrefillCheckedBytes.sum
++        let sourceBytes = try sum(sources.map { $0.layout.byteCount })
++        let excludedBytes = try sum(excluded.map { byName[$0]!.layout.byteCount })
++        let selectedBytes = try sum(mappings.map { $0.source.layout.byteCount })
++        let destinationBytes = try sum(rankBytes)
++        guard rankCounts.allSatisfy({ $0 > 0 }), sourceBytes == (try sum([selectedBytes, excludedBytes])),
++              destinationBytes == (try sum([selectedBytes, replicaBytes])) else {
++            throw ProbeError("Stage source/replica byte conservation failed")
++        }
++        let identity = ["layer-stage-storage-conservation-v1",
++            sha256(try canonicalJSONData(sources.sorted { $0.layout.canonicalName < $1.layout.canonicalName })),
++            sha256(try canonicalJSONData(mappings.sorted { $0.source.layout.canonicalName < $1.source.layout.canonicalName })),
++            sha256(try canonicalJSONData(excludedSourceNames.sorted())),
++            sha256(try canonicalJSONData(allowedReplication)), "payloadVerified=false", "allocationVerified=false"]
++        return .init(sourceTensorCount: sources.count, sourcePayloadBytes: sourceBytes,
++            excludedTensorCount: excluded.count, excludedPayloadBytes: excludedBytes,
++            selectedSourceTensorCount: mappings.count, selectedSourcePayloadBytes: selectedBytes,
++            destinationTensorCount: destinationKeys.count, destinationPayloadBytes: destinationBytes,
++            additionalReplicaBytes: replicaBytes,
++            ranks: (0...1).map { Rank(rank: $0, tensorCount: rankCounts[$0], logicalPayloadBytes: rankBytes[$0]) },
++            fingerprint: sha256(Data(identity.joined(separator: "\n").utf8)))
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageTensorMetadata.swift
+@@ -0,0 +1,68 @@
++import Foundation
++
++/// Metadata only. This value owns neither a verified file nor a native array.
++struct LayerStageTensorLayout: Encodable, Equatable {
++    let canonicalName: String
++    let shape: [Int]
++    let sourceDType: String
++    let byteCount: Int
++
++    init(canonicalName: String, shape: [Int], sourceDType: String, byteCount: Int) throws {
++        // Reuse the existing bounded shape/dtype validator without admitting a Qwen profile.
++        try QwenDenseCanonicalTensor(name: canonicalName, shape: shape,
++            sourceDType: sourceDType, byteCount: byteCount).validate()
++        self.canonicalName = canonicalName; self.shape = shape
++        self.sourceDType = sourceDType; self.byteCount = byteCount
++    }
++
++    var identity: String {
++        [canonicalName, sourceDType, shape.map(String.init).joined(separator: ","), String(byteCount)]
++            .joined(separator: "|")
++    }
++}
++
++struct LayerStageSourceTensor: Encodable, Equatable {
++    let layout: LayerStageTensorLayout
++    let sourceFile: String
++    /// Absolute offset, including the eight-byte safetensors prefix and header.
++    let sourceOffset: Int
++    let identity: String
++
++    init(layout: LayerStageTensorLayout, sourceFile: String, sourceOffset: Int) throws {
++        guard (1...256).contains(sourceFile.utf8.count), sourceFile.hasSuffix(".safetensors"),
++              !sourceFile.contains("/"), !sourceFile.contains("\\"),
++              sourceFile.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0)
++                  || (97...122).contains($0) || [45, 46, 95].contains($0) }),
++              sourceOffset >= 8 else { throw ProbeError("Invalid stage source location") }
++        _ = try QwenLongPrefillCheckedBytes.sum([sourceOffset, layout.byteCount])
++        self.layout = layout; self.sourceFile = sourceFile; self.sourceOffset = sourceOffset
++        self.identity = sha256(Data(["layer-stage-source-tensor-v1", sourceFile,
++            String(sourceOffset), layout.identity].joined(separator: "\n").utf8))
++    }
++}
++
++enum LayerStageTensorRole: String, Codable {
++    case layer, ingressEmbedding, tiedOutputEmbedding, finalNorm, outputProjection
++}
++
++struct LayerStageTensorDestination: Codable, Equatable {
++    let rank: Int
++    let localName: String
++    let role: LayerStageTensorRole
++    let globalLayerIndex: Int?
++}
++
++struct LayerStageTensorMapping: Encodable, Equatable {
++    let source: LayerStageSourceTensor
++    let destinations: [LayerStageTensorDestination]
++    let replicationGroupID: String?
++}
++
++/// Model admission supplies these exact members; generic accounting cannot create a group.
++struct LayerStageTiedEmbeddingReplication: Encodable, Equatable {
++    let id: String
++    let canonicalModule: String
++    let sourceNames: [String]
++    let ingressRank: Int
++    let outputRank: Int
++}
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "Gemma4StageConstructorCheck", targets: ["Gemma4StageConstructorCheck"]),
+         .executable(name: "TargetVerificationSessionCheck", targets: ["TargetVerificationSessionCheck"]),
+         .executable(name: "TargetVerificationCheck", targets: ["TargetVerificationCheck"]),
+         .executable(name: "MTPTinyForwardCheck", targets: ["MTPTinyForwardCheck"]),
+@@ -20,6 +21,10 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "Gemma4StageConstructorCheck", dependencies: [
++            .product(name: "MLXLLM", package: "mlx-swift-lm"),
++            .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
++        ], path: "Tests/Gemma4StageConstructorCheck"),
+         .executableTarget(name: "TargetVerificationSessionCheck", dependencies: [
+             .product(name: "MLX", package: "mlx-swift"),
+             .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/Gemma4StageConstructorCheck/Check.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import Darwin
++@testable import MLXLLM
++
++private enum StageCheckFailure: Error { case assertion(Int), expectedStageError }
++
++func require(_ value: @autoclosure () -> Bool, line: Int = #line) throws {
++    guard value() else { throw StageCheckFailure.assertion(line) }
++}
++
++func requireStageError<T>(_ body: () throws -> T) throws {
++    do { _ = try body() }
++    catch is Gemma4LayerStageError { return }
++    throw StageCheckFailure.expectedStageError
++}
++
++/// No Module/MLXArray is constructed. Linking/typechecking the actual native
++/// implementation is separate from invoking its constructor or forward path.
++@main enum Gemma4StageConstructorCheck {
++    static func main() throws {
++        guard CommandLine.arguments.count == 3,
++            CommandLine.arguments[1] == "check-metadata" else { Darwin.exit(64) }
++        signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(15)
++        let checks = Gemma4LayerStagePolicyTests()
++        try checks.allCutsKeepGlobalAttentionAndLocalCacheIndices()
++        try checks.refusesInvalidRangesAndResponsibilities()
++        try checks.rejectsCompactedOrUnsupportedOriginalGeometry()
++        try checks.retainsMixedPrecisionAndSplitExpertEligibility()
++        try checks.rankZeroAlwaysPreservesEveryResidualRow()
++        try checks.onlyGlobalFinalLayerCanUseLastQuery()
++        try checks.fullTrunkPolicyMatchesPreExtractionConditions()
++
++        let url = URL(fileURLWithPath: CommandLine.arguments[2])
++        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
++        guard let size = attributes[.size] as? NSNumber,
++            (1...1_048_576).contains(size.intValue) else { throw StageCheckFailure.assertion(#line) }
++        let bytes = try Data(contentsOf: url)
++        try require(bytes.count == size.intValue)
++        let original = try JSONDecoder().decode(Gemma4Configuration.self, from: bytes)
++        for cut in 1..<30 {
++            let first = try Gemma4LayerStageLayout(originalConfiguration: original,
++                rank: 0, sourceLayerRange: 0..<cut)
++            let second = try Gemma4LayerStageLayout(originalConfiguration: original,
++                rank: 1, sourceLayerRange: cut..<30)
++            try require(first.globalLayerIndices + second.globalLayerIndices == Array(0..<30))
++            try require(!first.ownsFinalOutput && second.ownsFinalOutput)
++        }
++        let result: [String: Any] = ["passed": true, "valueOnlyGroups": 7,
++            "actualArtifactCuts": 29, "nativeModelConstructed": false, "payloadRead": false]
++        let output = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
++        try FileHandle.standardOutput.write(contentsOf: output + Data([10]))
++        alarm(0)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/Gemma4StageConstructorCheck/StagePolicyChecks.swift
+@@ -0,0 +1,164 @@
++import Foundation
++import MLXLMCommon
++@testable import MLXLLM
++
++/// Value-only tests: none constructs a Module or MLXArray. Native constructor,
++/// loaded dtype and whole/split numerical checks remain separately required.
++struct Gemma4LayerStagePolicyTests {
++    private func fields() -> [String: Any] {
++        var quantization: [String: Any] = ["bits": 4, "group_size": 64, "mode": "affine"]
++        for index in 0..<30 {
++            for suffix in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] {
++                quantization["language_model.model.layers.\(index).\(suffix)"] =
++                    ["bits": 8, "group_size": 64]
++            }
++        }
++        return ["model_type": "gemma4", "vocab_size": 262_144,
++            "quantization": quantization,
++            "text_config": [
++                "model_type": "gemma4_text", "hidden_size": 2_816,
++                "num_hidden_layers": 30, "intermediate_size": 2_112,
++                "num_attention_heads": 16, "num_key_value_heads": 8,
++                "num_global_key_value_heads": 2, "head_dim": 256,
++                "global_head_dim": 512, "sliding_window": 1_024,
++                "layer_types": (0..<30).map { ($0 + 1).isMultiple(of: 6)
++                    ? "full_attention" : "sliding_attention" },
++                "num_kv_shared_layers": 0, "hidden_size_per_layer_input": 0,
++                "use_double_wide_mlp": false, "tie_word_embeddings": true,
++                "attention_k_eq_v": true, "final_logit_softcapping": 30,
++                "rms_norm_eps": 1e-6, "enable_moe_block": true,
++                "num_experts": 128, "top_k_experts": 8, "moe_intermediate_size": 704,
++                "use_bidirectional_attention": "vision",
++                "rope_parameters": [
++                    "sliding_attention": ["rope_theta": 10_000],
++                    "full_attention": ["rope_theta": 1_000_000, "partial_rotary_factor": 0.25]
++                ]
++            ] as [String: Any]]
++    }
++
++    private func config(_ fields: [String: Any]? = nil) throws -> Gemma4Configuration {
++        try JSONDecoder().decode(Gemma4Configuration.self,
++            from: JSONSerialization.data(withJSONObject: fields ?? self.fields()))
++    }
++
++    func allCutsKeepGlobalAttentionAndLocalCacheIndices() throws {
++        let original = try config()
++        for cut in 1..<30 {
++            let left = try Gemma4LayerStageLayout(originalConfiguration: original,
++                rank: 0, sourceLayerRange: 0..<cut)
++            let right = try Gemma4LayerStageLayout(originalConfiguration: original,
++                rank: 1, sourceLayerRange: cut..<30)
++            try require(left.globalLayerIndices + right.globalLayerIndices == Array(0..<30))
++            try require(!left.ownsFinalOutput && right.ownsFinalOutput)
++            for layout in [left, right] {
++                for (local, global) in layout.globalLayerIndices.enumerated() {
++                    let kind = layout.layerKinds[local]
++                    try require(kind.modelLayerIndex == local && kind.sharesKVWithLayer == nil)
++                    try require(kind.queryHeads == 16)
++                    try require(kind.attention == ((global + 1).isMultiple(of: 6) ? .full : .slidingWindow(1_024)))
++                    try require(kind.kvHeads == ((global + 1).isMultiple(of: 6) ? 2 : 8))
++                    try require(kind.headDim == ((global + 1).isMultiple(of: 6) ? 512 : 256))
++                }
++            }
++        }
++    }
++
++    func refusesInvalidRangesAndResponsibilities() throws {
++        let original = try config()
++        for (rank, range) in [(0, 0..<0), (0, 0..<30), (0, 1..<15),
++            (1, 0..<30), (1, 15..<29), (2, 15..<30), (1, -1..<30)] {
++            try requireStageError {
++                try Gemma4LayerStageLayout(originalConfiguration: original,
++                    rank: rank, sourceLayerRange: range)
++            }
++        }
++    }
++
++    func rejectsCompactedOrUnsupportedOriginalGeometry() throws {
++        for (key, value) in [("num_hidden_layers", 15), ("num_kv_shared_layers", 1),
++            ("hidden_size_per_layer_input", 8), ("sliding_window", 512)] {
++            var data = fields();var text = data["text_config"] as! [String: Any]
++            text[key] = value;data["text_config"] = text
++            let original = try config(data)
++            try requireStageError {
++                try Gemma4LayerStageLayout(originalConfiguration: original,
++                    rank: 0, sourceLayerRange: 0..<15)
++            }
++        }
++    }
++
++    func retainsMixedPrecisionAndSplitExpertEligibility() throws {
++        let original = try config()
++        try require(gemma4SupportsCoupledExpertOptimizations(original.textConfig))
++        for mutation in 0..<3 {
++            var data = fields();var policy = data["quantization"] as! [String: Any]
++            let shared = "language_model.model.layers.0.mlp.gate_proj"
++            if mutation == 0 { policy.removeValue(forKey: shared) }
++            if mutation == 1 { policy[shared] = ["bits": 4, "group_size": 64] }
++            if mutation == 2 {
++                policy["language_model.model.layers.0.experts.switch_glu.gate_proj"] =
++                    ["bits": 4, "group_size": 64]
++            }
++            data["quantization"] = policy
++            let changed = try config(data)
++            try requireStageError {
++                try Gemma4LayerStageLayout(originalConfiguration: changed,
++                    rank: 0, sourceLayerRange: 0..<15)
++            }
++        }
++    }
++
++    func rankZeroAlwaysPreservesEveryResidualRow() throws {
++        let original = try config().textConfig
++        for global in 0..<30 {
++            let policy = gemma4LayerPrefillPolicy(original,
++                globalLayerIndex: global, finalOutputLayerIndex: 29, ownsFinalOutput: false,
++                schedulePrefill: true, isCBv2: true, batchSize: 1,
++                sequenceLength: 512, inputSequenceLength: 512, hasLastQueryCache: true,
++                tailRows: 1, minimumTailChunk: 128, submissionInterval: 18, lastQueryEnabled: true)
++            try require(policy.outputTailRows == nil && !policy.useLastQuery)
++        }
++    }
++
++    func onlyGlobalFinalLayerCanUseLastQuery() throws {
++        let original = try config().textConfig
++        for global in 0..<30 {
++            let policy = gemma4LayerPrefillPolicy(original,
++                globalLayerIndex: global, finalOutputLayerIndex: 29, ownsFinalOutput: true,
++                schedulePrefill: true, isCBv2: true, batchSize: 1,
++                sequenceLength: 512, inputSequenceLength: 512, hasLastQueryCache: true,
++                tailRows: 1, minimumTailChunk: 128, submissionInterval: 18, lastQueryEnabled: true)
++            try require(policy.useLastQuery == (global == 29))
++            try require(policy.outputTailRows == (global == 29 ? 1 : nil))
++            try require(policy.submitIntermediate == (global == 17))
++        }
++    }
++
++    func fullTrunkPolicyMatchesPreExtractionConditions() throws {
++        let original = try config().textConfig
++        for count in [15, 30] {
++            for global in 0..<count {
++                for length in [1, 16, 128, 512] {
++                    for tail in [0, 1, 8] {
++                        for schedule in [false, true] {
++                            let final = schedule && global == count - 1 && length >= 128
++                            let oldTail: Int? = final && tail > 0 ? min(tail, length) : nil
++                            let policy = gemma4LayerPrefillPolicy(original,
++                                globalLayerIndex: global, finalOutputLayerIndex: count - 1,
++                                ownsFinalOutput: true, schedulePrefill: schedule, isCBv2: true,
++                                batchSize: 1, sequenceLength: length, inputSequenceLength: length,
++                                hasLastQueryCache: true, tailRows: tail, minimumTailChunk: 128,
++                                submissionInterval: 18, lastQueryEnabled: true)
++                            try require(policy.outputTailRows == oldTail)
++                            try require(policy.useLastQuery == gemma4UseLastQueryPrefill(original,
++                                layerIdx: global, batchSize: 1, sequenceLength: length,
++                                outputTailRows: oldTail, hasCapableCache: true, enabled: true))
++                            try require(policy.expertPrefill == schedule)
++                            try require(policy.submitIntermediate == (schedule && length > 1 && (global + 1).isMultiple(of: 18)))
++                        }
++                    }
++                }
++            }
++        }
++    }
++}

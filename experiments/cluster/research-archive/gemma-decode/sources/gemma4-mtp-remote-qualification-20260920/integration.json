@@ -1,0 +1,60 @@
+{
+  "schema": "gemma4_remote_mtp_native_qualification_integration_v1",
+  "baseSources": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/diagnostics-composition-1/sources.json",
+    "sha256": "05ed94d80782e4177ff90b35dd94caa0f8a766f0cce1fd971f6d2d0d75ee263e",
+    "bytes": 49402
+  },
+  "workspace": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace",
+  "changes": [
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift",
+        "sha256": "8c470ec15df205fd8cb34b72ccca2dbd7f3bd14830f668f74280c11a05722fd6",
+        "bytes": 7650
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-qualification-20260920/Entry/Gemma4BenchmarkEntry.swift",
+        "sha256": "69335e23a7c30c182102bfdc9d565ecdd05041a8e4655df6f00e728c79c2bbba",
+        "bytes": 7905
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualification.swift",
+      "before": null,
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-qualification-20260920/Runtime/Gemma4MTPPullQualification.swift",
+        "sha256": "06b65c66b6bb9717e4280491e1e7d8b3ee2f6bb3a21b00e4d33068d98cbb0794",
+        "bytes": 5975
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualificationFaults.swift",
+      "before": null,
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-qualification-20260920/Runtime/Gemma4MTPPullQualificationFaults.swift",
+        "sha256": "ccab7745b1adbb635c3fb631888ec5fe33174d490a50208531857e2f49e43d1f",
+        "bytes": 4404
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualificationPipeline.swift",
+      "before": null,
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-qualification-20260920/Runtime/Gemma4MTPPullQualificationPipeline.swift",
+        "sha256": "6b7f337793f023689f7c0bb8b65c05a0bf7a3ab501590cc3c213fac8284e90a8",
+        "bytes": 7089
+      }
+    },
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualificationSupport.swift",
+      "before": null,
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-qualification-20260920/Runtime/Gemma4MTPPullQualificationSupport.swift",
+        "sha256": "10a23a53c1590a4422b1c667e6bcd0b8f461db929f9792b64c002015e5167577",
+        "bytes": 4043
+      }
+    }
+  ]
+}

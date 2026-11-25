@@ -1,0 +1,11 @@
+--- a/evidence.py
++++ b/evidence.py
+@@ -93,7 +93,7 @@
+ def action(inputs, name, expected, source_sha, activation_sha):
+     directory=ROOT/'root-actions'/name
+     record=inputs.read(directory/'receipt.json')
+-    require(record['schema']=='gemma4_local_mtp_root_action_v1' and record['action']==expected
++    require(record['schema']=='gemma4_remote_mtp_root_action_v1' and record['action']==expected
+         and record['status']=='passed' and record['exitCode']==0 and record['reaped'] is True
+         and record['groupAbsent'] is True and record['killedOwnedGroup'] is False
+         and record['sourceManifestSHA256']==source_sha and record['activationSHA256']==activation_sha,'Root action did not complete')

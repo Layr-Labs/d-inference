@@ -1,0 +1,21 @@
+--- a/Tests/GuardInvocationChecks.swift
++++ b/Tests/GuardInvocationChecks.swift
+@@ -13,6 +13,9 @@
+             guard failure == expected else { throw failure }; return
+         }
+         throw NSError(domain: "missing expected guard refusal", code: 1)
++    }
++    static func requireGroupCount(_ count: Int) throws {
++        guard count == 13 else { throw NSError(domain:"group count",code:2) }
+     }
+     static func main() throws {
+         var groups = 0
+@@ -32,7 +35,7 @@
+         g=fresh();try refuses(.expired) { try accept(&g,.entry,now:9) };groups += 1
+         g=fresh();try accept(&g,.entry);try accept(&g,.owner);try g.finish(expectedDeadline:200,now:20)
+         try refuses(.closed) { try g.finish(expectedDeadline:200,now:20) };groups += 1
+-        guard groups == 13 else { throw NSError(domain:"group count",code:2) }
++        try requireGroupCount(groups)
+         print("PASS \(groups) fresh-observation chronology groups; no OS, native, MLX or GPU")
+     }
+ }

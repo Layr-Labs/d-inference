@@ -1,0 +1,42 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPDriver.swift
+@@ -116,7 +116,7 @@
+                         } else { seedSteps += 1 }
+                         let targetStart = DispatchTime.now().uptimeNanoseconds
+                         let window = try session.evaluateMTPInputs([seed] + proposals,
+-                            offset: session.committedTokens, admit: admitVerification, denseProjection: denseProjection, check: checked)
++                            offset: session.committedTokens, denseProjection: denseProjection, admit: admitVerification, check: checked)
+                         let selectionStart = DispatchTime.now().uptimeNanoseconds
+                         let target = try greedy(window.logits, width: 1 + k)
+                         var accepted = 0
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
+@@ -47,7 +47,7 @@
+                 // Actual width-one prime creates target hidden/KV at P+1. Its
+                 // second output is the first remote seed, never a guessed token.
+                 var lastWindow: Gemma4OwnedMTPWindow? = try session.evaluateMTPInputs([selected[0]],
+-                    offset:session.committedTokens,admit:admit,denseProjection:denseProjection,check:checked)
++                    offset:session.committedTokens,denseProjection:denseProjection,admit:admit,check:checked)
+                 selected += try greedy(lastWindow!.logits,width:1)
+                 _ = try session.reconcileMTP(lastWindow!,keeping:1,check:checked)
+                 widths.append(1); accepts.append(0)
+@@ -69,7 +69,7 @@
+                         if remaining == 1 {
+                             try target.finish(check:checked); stopped = true
+                             lastWindow = nil
+-                            let window = try session.evaluateMTPInputs([selected.last!],offset:session.committedTokens,admit:admit,denseProjection:denseProjection,check:checked)
++                            let window = try session.evaluateMTPInputs([selected.last!],offset:session.committedTokens,denseProjection:denseProjection,admit:admit,check:checked)
+                             let token = try greedy(window.logits,width:1)
+                             _ = try session.reconcileMTP(window,keeping:1,check:checked)
+                             selected += token; widths.append(1); accepts.append(0); lastWindow = window; lastKeep = 1
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
+@@ -94,7 +94,7 @@
+                 activeWindow = selected
+                 if ledger.proposalCredit > 0 { try grant(min(2,ledger.proposalCredit),check:checked) }
+                 let actual = try session.evaluateMTPInputs([selected.seedToken]+selected.draftTokens,
+-                    offset:selected.seedPosition,admit:admitVerification,denseProjection:denseProjection,check:checked)
++                    offset:selected.seedPosition,denseProjection:denseProjection,admit:admitVerification,check:checked)
+                 guard actual.logits.shape == [1,draftCount+1,262_144] else { throw ProbeError("Remote MTP actual target column geometry differs") }
+                 let argmax = argMax(actual.logits,axis:-1), finite = all(isFinite(actual.logits))
+                 eval(argmax,finite); try Gemma4MTPPullNativeFence.join(check:checked)

@@ -1,0 +1,54 @@
+import Foundation
+
+func checkGemmaForwardDTypes(_ input: FixtureInputs, _ checks: FixtureChecks) throws {
+    // Literal vectors are independent of the projection implementation. F16/F32
+    // exercise the parser contract; the pinned artifact below is BF16/U32 only.
+    let vectors: [(String, String, String, Int, Bool)] = [
+        ("U32", "uint32", "uint32", 4, false),
+        ("F32", "float32", "float32", 4, false),
+        ("F16", "float16", "bfloat16", 2, true),
+        ("BF16", "bfloat16", "bfloat16", 2, true),
+    ]
+    for (raw, native, loaded, width, casts) in vectors {
+        let layout = try LayerStageTensorLayout(canonicalName: "fixture.weight",
+            shape: [2, 3], sourceDType: raw, byteCount: 6 * width)
+        let source = try LayerStageSourceTensor(layout: layout, sourceFile: "fixture.safetensors", sourceOffset: 16)
+        let identity = source.identity
+        let selected = try Gemma4SelectedTensor(source: source, localName: "fixture.weight")
+        try checks.require(raw + " raw source and native loaded projections",
+            selected.sourceDType == native && selected.loadedDType == loaded
+            && selected.dtype.requiresFloat32ParameterCast == casts
+            && selected.source == source && selected.source.identity == identity
+            && selected.source.layout.sourceDType == raw)
+        for value in ["uint32", "float16", "bfloat16", "float32", "int32", "float64", "bool", "U32", "BF16"] {
+            let expected = raw == "U32" ? value == "uint32" : ["float16", "bfloat16", "float32"].contains(value)
+            try checks.require(raw + " constructor class " + value,
+                selected.dtype.acceptsConstructor(nativeName: value) == expected)
+        }
+    }
+    for raw in ["", "uint32", "float16", "bfloat16", "float32", "bf16", "F64", "I32", "BOOL", "BF16 "] {
+        try checks.refuses("reject native spelling or unsupported raw dtype " + raw) {
+            _ = try Gemma4ForwardDType(safetensorsName: raw)
+        }
+    }
+    let counts = Dictionary(grouping: input.artifact.sources, by: { $0.layout.sourceDType }).mapValues(\.count)
+    try checks.require("all captured source labels include excluded vision", counts == ["BF16": 1370, "U32": 327])
+    let expectedNative = ["BF16": "bfloat16", "U32": "uint32"]
+    for source in input.artifact.sources {
+        let projected = try Gemma4ForwardDType(safetensorsName: source.layout.sourceDType)
+        guard projected.nativeSourceName == expectedNative[source.layout.sourceDType],
+              projected.nativeLoadedName == expectedNative[source.layout.sourceDType] else {
+            throw ProbeError("Captured descriptor raw/native dtype join differs")
+        }
+    }
+    let selected = try Gemma4ForwardSelection.make(
+        plan: Gemma4LayerStagePlan(artifact: input.artifact, cut: 10), target: .fullReference)
+    try checks.require("actual selected text uses native parameter names",
+        Dictionary(grouping: selected, by: \.loadedDType).mapValues(\.count) == ["bfloat16": 1013, "uint32": 326])
+    let castParameters = selected.filter {
+        ($0.localName.hasSuffix(".scales") || $0.localName.hasSuffix(".biases")) && $0.dtype.requiresFloat32ParameterCast
+    }
+    try checks.require("all 652 captured cast parameters retained",
+        castParameters.count == 652
+        && castParameters.reduce(0) { $0 + $1.source.layout.byteCount * 2 } == 3_154_055_168)
+}

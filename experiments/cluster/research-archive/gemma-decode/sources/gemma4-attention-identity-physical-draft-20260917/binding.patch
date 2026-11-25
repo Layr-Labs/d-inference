@@ -1,0 +1,76 @@
+--- a/bind_build.py
++++ b/bind_build.py
+@@ -43,8 +43,12 @@
+     same(build['sourceSnapshotSHA256'],loaded['sourceSnapshot']['sha256'],'Build sources')
+     same(build['dependencySnapshotSHA256'],loaded['dependencySnapshot']['sha256'],'Build dependencies')
+     require(build['nativeModelExecuted'] is False and build['remoteExecuted'] is False,'Build-only ancestry')
+-    require(len(build['steps'])==4 and all(x['exitCode']==0 and x['reaped'] and x['groupAbsent'] for x in build['steps']),'Four actual completed build/check steps')
++    require(len(build['steps'])==5 and all(x['exitCode']==0 and x['reaped'] and x['groupAbsent'] for x in build['steps']),'Five actual completed build/check steps')
+     native=build['binary'];same(Path(native['path']).name,PRODUCT,'Product')
++    same([Path(x['argv'][0]).name for x in build['steps']],['swift','xcrun',PRODUCT,PRODUCT,PRODUCT],'Exact five build/check roles')
++    same(build['steps'][2]['argv'],[native['path'],'--check-attention-identity','cpu'],'Actual identity control argv')
++    same(build['steps'][3]['argv'][1],'--check-local-fixtures','Existing local controls')
++    same(build['steps'][4]['argv'][1],'--check-arguments','Existing argument controls')
+     same(expected['buildIdentitySHA256'],native['sha256'],'Expected actual binary')
+     describe=parse(loaded['describeReceipt']['raw'])
+     same(describe['argv'],[native['path'],'--describe',packet['jobTemplate']['path']],'Actual prospective describe argv')
+--- a/install_new_tree.py
++++ b/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma4-short-correctness-20260916')}
++ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma4-short-identity-corrected-20260917')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -5,11 +5,11 @@
+ from binding_common import canonical, fields, integer, parse, pin, require, same
+ from binding_inputs import snapshot
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-short-correctness-20260916')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-short-identity-corrected-20260917')
+ MODES = ('full', 'stage0', 'stage1')
+ PRODUCT = 'GemmaShortCorrectnessCheck'
+ MODEL = '/Users/developer/DarkbloomDev/models/Gemma4-26B'
+-SOURCE_DRIVER = '3803a23ef63b93ae7fbfdcf6a52b7818e4c8e5a14c36c90b9adb82f4a7afcdf2'
++SOURCE_DRIVER = 'd88473104ae45164e81f4e55a1722015ae1fed81b82677af31eaef7e48c86821'
+ SOURCE_COMPARATOR = '7edf02ebc9325d616e96e8c708396ba1e307edc549346df5ddf6a53fe38ce1da'
+ METALLIB = '2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2'
+ PAGED = '4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149'
+--- a/package/native-build-reference.json
++++ b/package/native-build-reference.json
+@@ -1,13 +1,8 @@
+ {
+-  "actualBuildReportedByRoot": true,
+-  "binaryRehashedByHarnessAuthor": false,
+-  "buildReceiptSHA256": "5d2864b022c95d2b6541c0f111ac85fca5ac736dba202f05e3b20d3ec0da1330",
+-  "dependencyFiles": 8755,
+-  "dependencySnapshotSHA256": "d63cf7457244c7b67b48f3aa7ff3ea1b421dc0239717e2a7eb8f05411cb12707",
+-  "nativeBytes": 46011640,
+-  "nativeSHA256": "4c163b22a63a201a2b3a312cc7e59e7c22014bc08298d33cba3663b84bde3411",
+-  "rootBuildReviewSHA256": "91e5aacac96158122c29be98f6fecd06bb07217af9eb0d3d8c0caec13db1ae66",
+-  "schema": "gemma_short_actual_native_build_reference_v1",
+-  "sourceFiles": 3126,
+-  "sourceSnapshotSHA256": "168be758849d5fea2b8c69471ff91c3c250d21e6130dfc2ee23e0c4cbccc43e2"
++  "schema": "gemma_short_pending_actual_corrected_build_v1",
++  "driverManifestSHA256": "d88473104ae45164e81f4e55a1722015ae1fed81b82677af31eaef7e48c86821",
++  "runtimeExecutionAuthorized": false,
++  "nativeSHA256": null,
++  "buildReceiptSHA256": null,
++  "sourceSnapshotSHA256": null
+ }
+--- a/remote_evidence.py
++++ b/remote_evidence.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ import time
+-REMOTE=Path('/Users/developer/DarkbloomDev/gemma4-short-correctness-20260916')
++REMOTE=Path('/Users/developer/DarkbloomDev/gemma4-short-identity-corrected-20260917')
+ sys.path.insert(0,str(REMOTE))
+ from binding_common import canonical, require
+ from binding_inputs import snapshot

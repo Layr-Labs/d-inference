@@ -1,0 +1,5 @@
+# Explicit synchronous control-owner lifetime
+
+The compiler warned that the temporary owner at the send/receive call site could leave Checkpoint.owner nil. The existing perform implementation uses self.phase after the body and closes its borrowed checkpoint before exit admission; prior actual inner counter evidence passed. This draft nevertheless names the owner and explicitly extends its lifetime across the complete synchronous call. It leaves Checkpoint.owner weak, both borrowed closures nonescaping, the MLX error scope, entry/exit resource reads, inner fault/deadline checks, failure poisoning and all wall-counter boundaries unchanged.
+
+One source overlay, exact inverse. No new owner framework, persistent retention, resource cache, floor or arithmetic change. Compose after actual batch124 for the next policy union; do not edit current batch freeze. Existing17 boundary and6 counter controls cover operation semantics; compilation of this explicit lifetime form remains root-owned and pending. Source-only authoring, no tests or native execution.

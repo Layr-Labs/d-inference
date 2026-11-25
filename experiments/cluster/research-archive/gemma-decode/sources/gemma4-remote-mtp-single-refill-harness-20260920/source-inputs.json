@@ -1,0 +1,76 @@
+{
+  "schema": "gemma4_single_refill_harness_sources_v1",
+  "sourceOnly": true,
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 5275,
+      "sha256": "241da1156d1930c7401a612685c5b28635ed972ca498ac23ea9877e3ffe33fe3"
+    },
+    {
+      "path": "Tests/test_refill_contract.py",
+      "bytes": 3513,
+      "sha256": "b6446429aadd3630e2d2e4892045043013fcc336e583e653df976ee87e9bdbe6"
+    },
+    {
+      "path": "bindings.json",
+      "bytes": 6447,
+      "sha256": "9105473828cbaa0fe62ea910eb2dbe07de7f709bbf65ba59ffb21b5ebf407a00"
+    },
+    {
+      "path": "compose_refill.py",
+      "bytes": 1868,
+      "sha256": "d2db7a12a0125fb984f4317e0bec7cf1cecf36d1ea0a97f5ce8ea93a6536ee72"
+    },
+    {
+      "path": "prepare.py",
+      "bytes": 8140,
+      "sha256": "dcd6d3dc7e6a6a91428acda344d00312ca9dec29da0994df536b8b02b44184c3"
+    },
+    {
+      "path": "proposed/numerical/compare.py",
+      "bytes": 14615,
+      "sha256": "fca254b5e3e76561539b1b2e327dcc24462676ed6d118457d5153fba69634410"
+    },
+    {
+      "path": "proposed/numerical/refill_contract.py",
+      "bytes": 1662,
+      "sha256": "c15ff4dc2e0c72f93ea2d9b53a855603362add7eb5943e97708a49ea3187f68b"
+    },
+    {
+      "path": "proposed/remote/compare.py",
+      "bytes": 15076,
+      "sha256": "24e0b6b40d102826865afaf00da4566b22da5266182522c36ef87a4dbb128368"
+    },
+    {
+      "path": "proposed/remote/jobs.py",
+      "bytes": 2948,
+      "sha256": "35555b29eb4917a6793a4c9ab3afd393a60c62487a1579227b9d3a5c6f9b7f47"
+    },
+    {
+      "path": "proposed/remote/package/refill_contract.py",
+      "bytes": 1662,
+      "sha256": "c15ff4dc2e0c72f93ea2d9b53a855603362add7eb5943e97708a49ea3187f68b"
+    },
+    {
+      "path": "proposed/remote/package/remote_mtp_contract.py",
+      "bytes": 10622,
+      "sha256": "4b12f54d8eca79ce9c895446fcf4630883a468fc5c8e897a82d163b8eb1fb9c0"
+    },
+    {
+      "path": "proposed/remote/prepare_case.py",
+      "bytes": 676,
+      "sha256": "2930ab10c0d4c5925dcea44bda9925697bc7598215154bf04a769e68de9718f4"
+    },
+    {
+      "path": "proposed/remote/remote_metadata.py",
+      "bytes": 4548,
+      "sha256": "2766bed65c178d05b06e29c63f3e8f9a225ca0d916e6ae09e723ae8b1ce8328f"
+    },
+    {
+      "path": "proposed/remote/root_run.py",
+      "bytes": 4655,
+      "sha256": "bb65221ec534665d1129bf0be2e58c36114f298aec260cc6e49096b9bf5cee78"
+    }
+  ]
+}

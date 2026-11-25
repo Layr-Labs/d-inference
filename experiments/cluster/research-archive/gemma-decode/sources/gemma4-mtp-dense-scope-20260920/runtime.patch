@@ -1,0 +1,253 @@
+--- a/libs/mlx-swift/Source/MLXNN/Quantized.swift
++++ b/libs/mlx-swift/Source/MLXNN/Quantized.swift
+@@ -211,7 +211,14 @@
+     }
+ 
+     open override func asLinear(_ x: MLXArray) -> MLXArray {
+-        quantizedMM(
++        if x.ndim > 1, x.dim(-1) > 0, x.size / x.dim(-1) > 1,
++            QuantizedProjectionScope.isActive,
++            let projected = QuantizedProjectionScope.project(module: self, kind: .embeddingHead,
++                input: x, weight: weight, scales: scales, biases: biases,
++                groupSize: groupSize, bits: bits, mode: mode) {
++            return projected
++        }
++        return quantizedMM(
+             x, weight, scales: scales, biases: biases, transpose: true, groupSize: groupSize,
+             bits: bits, mode: mode)
+     }
+@@ -363,9 +370,18 @@
+                 ? (offsetCastCache.cachedCast(offsets, to: x.dtype) ?? offsets)
+                 : offsets
+         }
+-        var output = quantizedMM(
+-            x, weight, scales: scales, biases: biases, transpose: true,
+-            groupSize: groupSize, bits: bits, mode: mode)
++        var output: MLXArray
++        if x.ndim > 1, x.dim(-1) > 0, x.size / x.dim(-1) > 1,
++            QuantizedProjectionScope.isActive,
++            let projected = QuantizedProjectionScope.project(module: self, kind: .linear,
++                input: x, weight: weight, scales: scales, biases: biases,
++                groupSize: groupSize, bits: bits, mode: mode) {
++            output = projected
++        } else {
++            output = quantizedMM(
++                x, weight, scales: scales, biases: biases, transpose: true, groupSize: groupSize,
++                bits: bits, mode: mode)
++        }
+         if let bias {
+             let bias = linearBiasCastCache.cachedCast(bias, to: output.dtype) ?? bias
+             output = output + bias
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedMTPVerification.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedMTPVerification.swift
+@@ -40,6 +40,7 @@
+     /// Wider windows verify [confirmed seed, candidate proposals] in one forward.
+     /// Target argmax/acceptance and output publication belong to the caller.
+     func evaluateMTPInputs(_ tokens: [Int], offset: Int,
++        denseProjection: Gemma4MTPDenseProjection? = nil,
+         admit: (CBv2AttentionVerificationPlan) throws -> Void,
+         check: () throws -> Void
+     ) throws -> Gemma4OwnedMTPWindow {
+@@ -72,8 +73,13 @@
+                     let logits = try state.stageAttentionVerification(check: checked,
+                         additionalTargets: { hidden.map { [$0] } ?? [] }, forward: { caches in
+                             let input = MLXArray(tokens.map(Int32.init)).reshaped([1, tokens.count])
+-                            let output = full.textModel.cbv2ForwardWithHidden(input,
+-                                caches: caches.map { $0 as! any KVCache })
++                            func construct() -> (logits: MLXArray, lastHidden: MLXArray) {
++                                full.textModel.cbv2ForwardWithHidden(input,
++                                    caches: caches.map { $0 as! any KVCache })
++                            }
++                            let output = try denseProjection.map {
++                                try $0.graph(width: tokens.count, body: construct)
++                            } ?? construct()
+                             hidden = output.lastHidden
+                             return output.logits
+                         }, validateOutput: { output in
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetBudget.swift
+@@ -5,17 +5,20 @@
+ struct Gemma4MTPRemoteTargetBudget {
+     struct Term: Encodable, Equatable { let name: String, logicalBytes: Int, allocationBound: Int }
+     let requestSHA256: String, maximumFrontier: Int
++    let serialTargetHead: Bool
+     let terms: [Term]
+     let nativeBytes: Int
+     let hostBytes = 16*1_048_576 + 32_768
+     let fingerprint: String
+-    init(requestSHA256: String, maximumFrontier: Int, bound: (Int) throws -> Int) throws {
++    init(requestSHA256: String, maximumFrontier: Int, serialTargetHead: Bool = false,
++         bound: (Int) throws -> Int) throws {
+         guard requestSHA256.utf8.count == 64,
+               requestSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+               (1...8319).contains(maximumFrontier) else {
+             throw ProbeError("Remote target additive budget identity/frontier differs")
+         }
+         self.requestSHA256 = requestSHA256; self.maximumFrontier = maximumFrontier
++        self.serialTargetHead = serialTargetHead
+         var terms: [Term] = []
+         func add(_ name: String, _ bytes: Int) throws {
+             let allocation = try bound(bytes)
+@@ -33,6 +36,11 @@
+             try add("targetVerification\(slot):finiteScalar",1)
+             for name in ["preNormHidden","capturedHidden"] { try add("targetVerification\(slot):"+name,4*2816*4) }
+         }
++        if serialTargetHead {
++            // M1 partial head outputs coexist with the concatenated width-four
++            // result already charged above. Round EACH of four F32 rows.
++            for row in 0..<4 { try add("serialTargetHead:row\(row)",262_144*4) }
++        }
+         // One immutable authoritative capture in addition to state-plan capture
+         // roots. Its transfer loan may persist on failure until original retirement.
+         for component in ["keys","values"] {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift
+@@ -57,6 +57,12 @@
+         try requireLive()
+         guard observedRevision == revision else { throw ProbeError("Remote target operation lacks its summed original-owner observation") }
+     }
++    func requireSerialTargetHead() throws {
++        try requireObserved()
++        guard budget.serialTargetHead else {
++            throw ProbeError("Serial target head lacks its original-owner additive allowance")
++        }
++    }
+     func admitVerification(_ plan: CBv2AttentionVerificationPlan) throws {
+         try requireObserved()
+         guard plan.layout.layers.count == 30, plan.layout.layers.map(\.globalIndex) == Array(0..<30),
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TargetWidthIsolation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TargetWidthIsolation.swift
+@@ -20,6 +20,7 @@
+     let ordinal: Int
+     let requestID: String, ordinaryRequestScopeSHA256: String
+     let mode: Gemma4TargetWidthIsolationMode
++    let projectionPolicy: String?
+     let requestSHA256: String
+     let forcedInputSequence: [Int]
+     let actualTargetArgmax: [Int]
+@@ -52,6 +53,7 @@
+     static func execute(input: Gemma4BenchmarkRequestInput,
+         session: Gemma4OwnedForwardSession, mode: Gemma4TargetWidthIsolationMode,
+         expectedGreedyIDs: [Int]?, sidecars: Gemma4BenchmarkSidecars,
++        denseProjection: Gemma4MTPDenseProjection? = nil,
+         admitVerification: (CBv2AttentionVerificationPlan) throws -> Void,
+         check: () throws -> Void
+     ) throws -> Gemma4TargetWidthIsolationEvidence {
+@@ -133,7 +135,7 @@
+                     }
+                     let tokens = Array(expectedGreedyIDs[index..<(index + width)])
+                     let window = try session.evaluateMTPInputs(tokens, offset: 128 + index,
+-                        admit: admitVerification, check: checked)
++                        denseProjection: denseProjection, admit: admitVerification, check: checked)
+                     _ = try session.reconcileMTP(window, keeping: keep, check: checked)
+                     // Only retained positions are compared. Rejected suffixes
+                     // remain actually evaluated and reconciled by the same API.
+@@ -215,6 +217,8 @@
+                 let reference = expectedGreedyIDs ?? actual
+                 let evidence = Gemma4TargetWidthIsolationEvidence(ordinal: input.ordinal,
+                     requestID: input.request.requestID.uuidString.lowercased(), ordinaryRequestScopeSHA256: input.scopeSHA256, mode: mode,
++                    projectionPolicy: denseProjection == nil ? nil :
++                        (mode == .ordinary || mode == .verificationOne ? "ordinary_m1_bypass" : Gemma4MTPDenseProjection.policy),
+                     requestSHA256: input.request.fingerprint, forcedInputSequence: Array(reference.prefix(15)),
+                     actualTargetArgmax: actual, expectedGreedyIDs: reference,
+                     allArgmaxMatchReference: actual == reference, checkpointFrontier: 132,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TargetWidthRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TargetWidthRuntime.swift
+@@ -10,6 +10,7 @@
+     let referenceRequestID: String, referenceRequestSHA256: String
+     let referenceSelectedTokenIDs: [Int], referenceSelectedTokenIDsSHA256: String
+     let modes: [Gemma4TargetWidthIsolationMode]
++    let denseProjection: Gemma4MTPDenseProjection.Summary?
+     let samples: [Gemma4TargetWidthIsolationEvidence]
+     let resources: Gemma4BenchmarkResourceReceipt
+     let targetResources: Gemma4MTPRemoteTargetReceipt
+@@ -46,7 +47,7 @@
+         }
+     }
+ 
+-    static func execute(_ input: Gemma4BenchmarkInput, deadline: UInt64,
++    static func execute(_ input: Gemma4BenchmarkInput, denseProjectionEnabled: Bool = false, deadline: UInt64,
+         sidecars: Gemma4BenchmarkSidecars, guardMetrics: Gemma4BenchmarkGuardMetrics,
+         check: (Gemma4BenchmarkGuardObservation?) throws -> Void
+     ) throws -> Data {
+@@ -81,7 +82,7 @@
+                         deadline: deadline, guardMetrics: guardMetrics)
+                     let budget = try Gemma4MTPRemoteTargetBudget(requestSHA256: owner.budget.requestSHA256,
+                         maximumFrontier: input.requests[0].finalCommittedTokens,
+-                        bound: QwenResidentResourceEnvironment.allocationBound)
++                        serialTargetHead: denseProjectionEnabled, bound: QwenResidentResourceEnvironment.allocationBound)
+                     let extra = try Gemma4MTPRemoteTargetResources(budget: budget, deadline: deadline)
+                     attached = extra
+                     // Attaches and checks the SUMMED original target + extra
+@@ -96,6 +97,7 @@
+                         }
+                     }
+                     try checked()
++                    var projectionSummary: Gemma4MTPDenseProjection.Summary?
+                     let execution: (Gemma4ForwardLoadReceipt, [Gemma4TargetWidthIsolationEvidence]) = try autoreleasepool {
+                         let source = try Gemma4RegisteredSource.prepare(
+                             directory: URL(fileURLWithPath: input.job.modelDirectory, isDirectory: true),
+@@ -109,6 +111,12 @@
+                         try owner.loaded(loaded.receipt); try checked()
+                         let probe = try loaded.probe(incomingDType: nil, incoming: nil, observeIngress: nil, check: checked)
+                         try owner.probeCompleted(); try checked()
++                        let denseProjection: Gemma4MTPDenseProjection?
++                        if denseProjectionEnabled {
++                            guard case .full(let full) = loaded.model else { throw ProbeError("Dense scope requires full target") }
++                            denseProjection = try Gemma4MTPDenseProjection(model: full, resources: extra)
++                        } else { denseProjection = nil }
++                        projectionSummary = denseProjection?.summary
+                         var samples: [Gemma4TargetWidthIsolationEvidence] = []
+                         var reference: [Int]?
+                         for ordinal in input.requests.indices {
+@@ -122,6 +130,7 @@
+                                 do {
+                                     let result = try Gemma4TargetWidthIsolation.execute(input: request, session: session,
+                                         mode: modes[ordinal], expectedGreedyIDs: reference, sidecars: sidecars,
++                                        denseProjection: denseProjection,
+                                         admitVerification: { plan in
+                                             try extra.admitVerification(plan)
+                                             // The new revision is admitted on a
+@@ -178,13 +187,14 @@
+                     let scope = sha256(Data((["gemma4_target_width_qualification_v1", input.scopeSHA256,
+                         "reference=" + reference.requestSHA256, "tokens=" + tokenHash,
+                         "checkpoint=132", "assistant=false", "performance=false"]
+-                        + modes.map(\.rawValue)).joined(separator: "\n").utf8))
++                        + modes.map(\.rawValue)
++                        + (denseProjectionEnabled ? [Gemma4MTPDenseProjection.policy] : [])).joined(separator: "\n").utf8))
+                     return try canonicalJSONData(Gemma4TargetWidthCohortReport(benchmarkJob: input.job,
+                         ordinaryInputScopeSHA256: input.scopeSHA256, scopeSHA256: scope,
+                         planSHA256: input.plan.fingerprint, sourceLoad: execution.0,
+                         referenceRequestID: reference.requestID, referenceRequestSHA256: reference.requestSHA256,
+                         referenceSelectedTokenIDs: reference.actualTargetArgmax, referenceSelectedTokenIDsSHA256: tokenHash,
+-                        modes: modes, samples: execution.1, resources: receipt, targetResources: targetReceipt,
++                        modes: modes, denseProjection: projectionSummary, samples: execution.1, resources: receipt, targetResources: targetReceipt,
+                         files: sidecars.files,
+                         allActualTargetArgmaxMatchReference: execution.1.allSatisfy(\.allArgmaxMatchReference)))
+                 } catch {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
+@@ -5,7 +5,7 @@
+ /// Private bounded benchmark only. No Provider registration or serving catalog.
+ @_spi(ClusterTesting) public enum GemmaResidentBenchmark {
+     public static func run(arguments: [String]) throws -> Data {
+-        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state", "--qualify-mtp-target-width",
++        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state", "--qualify-mtp-target-width", "--qualify-mtp-target-width-dense",
+             "--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning", "--qualify-small-qmv",
+             "--describe-remote-mtp", "--execute-remote-mtp"].contains(arguments[0]) else {
+             throw ProbeError("Use --describe|--check-arguments|--execute with one Gemma resident benchmark job")
+@@ -74,10 +74,12 @@
+                         return try Gemma4LocalMTPRuntime.execute(local, deadline: deadline, sidecars: sidecars,
+                             guardMetrics: guardMetrics, check: check)
+                     }
+-                    if arguments[0] == "--qualify-mtp-target-width" {
++                    if ["--qualify-mtp-target-width", "--qualify-mtp-target-width-dense"].contains(arguments[0]) {
+                         try Gemma4TargetWidthRuntime.validate(input)
+                         let sidecars = try Gemma4BenchmarkSidecars(directory: input.job.outputDirectory)
+-                        return try Gemma4TargetWidthRuntime.execute(input, deadline: deadline, sidecars: sidecars,
++                        return try Gemma4TargetWidthRuntime.execute(input,
++                            denseProjectionEnabled: arguments[0] == "--qualify-mtp-target-width-dense",
++                            deadline: deadline, sidecars: sidecars,
+                             guardMetrics: guardMetrics, check: check)
+                     }
+                     if arguments[0] == "--qualify-mtp-state" {

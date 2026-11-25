@@ -1,0 +1,73 @@
+--- a/prepare.py
++++ b/prepare.py
+@@ -5,7 +5,8 @@
+ import json
+ from pathlib import Path
+ 
+-ROOT=Path(__file__).resolve().parent
++HERE=Path(__file__).resolve().parent
++ROOT=HERE.parent/'local-mtp-dense-harness-draft'
+ BASE=ROOT.parent/'harness-local-mtp-bound-memo'
+ BASE_SHA='8d0e6cc91591ed959f9774762cf973ec4a28d182072115300d2e372a26cea3fb'
+ OMIT={'required-native-sources.json','required-native-sources.template.json','freeze.py'}
+@@ -17,6 +18,9 @@
+ def pin(path):return dict(path=str(path),sha256=sha(raw(path)))
+ 
+ def verify():
++    assert sha(raw(ROOT/'source-inputs.json'))=='1015bd3810462d99ab30b0549b36f5b1b14eb212308816da14a78d8167938412'
++    for own in json.loads(raw(HERE/'source-inputs.json'))['members']:
++        data=raw(HERE/own['path']);assert (len(data),sha(data))==(own['bytes'],own['sha256'])
+     manifest=json.loads(raw(ROOT/'source-inputs.json'))
+     for row in manifest['members']:
+         data=raw(ROOT/row['path']);assert (len(data),sha(data))==(row['bytes'],row['sha256']),row['path']
+@@ -46,6 +50,30 @@
+     assert sha(raw(Path(template['metadataSources']['path'])))==template['metadataSources']['sha256']
+     return projected,template,spec
+ 
++def bind_resources(actual,expected):
++    # Exact closed relative names form a bijection; input list order is irrelevant.
++    names={'mlx.metallib','mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal'}
++    assert type(actual) is list and type(expected) is list and len(actual)==len(expected)==2
++    expected_by_name={}
++    for row in expected:
++        assert set(row)=={'path','bytes','sha256'} and row['path'].startswith('bundle/')
++        name=row['path'].removeprefix('bundle/')
++        assert name in names and name not in expected_by_name
++        expected_by_name[name]=row
++    assert set(expected_by_name)==names
++    actual_by_name={}
++    for row in actual:
++        assert set(row)=={'path','bytes','sha256'} and type(row['path']) is str
++        path=Path(row['path']);assert path.is_absolute() and '..' not in path.parts
++        matched=[name for name in names if row['path'].endswith('/'+name)]
++        assert len(matched)==1 and matched[0] not in actual_by_name
++        actual_by_name[matched[0]]=row
++    assert set(actual_by_name)==names
++    for name,row in expected_by_name.items():
++        value=actual_by_name[name]
++        assert type(value['bytes']) is int and value['bytes']==row['bytes']
++        assert type(value['sha256']) is str and value['sha256']==row['sha256']
++
+ def bind(build_path,sources_path,template,spec):
+     assert all(p.is_absolute() and p.parent.resolve()==p.parent for p in (build_path,sources_path))
+     assert pin(sources_path)==spec['actualAppliedSource'],'Exact applied union source required'
+@@ -57,10 +85,7 @@
+     assert '--product' in build['argv'] and build['argv'][build['argv'].index('--product')+1]=='GemmaResidentBenchmark'
+     actual={x['path']:x for x in source['files']};expected={x['path']:x for x in template['requiredFiles']}
+     assert len(actual)==len(source['files'])==116 and actual==expected and source['workspaceMutated'] is True
+-    assert len(build['resources'])==2
+-    for value,row in zip(build['resources'],template['resources']):
+-        assert (value['bytes'],value['sha256'])==(row['bytes'],row['sha256'])
+-        assert value['path'].endswith('/'+row['path'].removeprefix('bundle/'))
++    bind_resources(build['resources'],template['resources'])
+     return dict(template,actualBuildReceipt=pin(build_path),actualSources=pin(sources_path),
+         nativeSHA256=build['nativeSHA256'],nativeBytes=build['nativeBytes'])
+ 
+@@ -80,6 +105,7 @@
+     projected['required-native-sources.json']=(json.dumps(required,indent=2)+'\n').encode()
+     projected['dense-activation-provenance.json']=(json.dumps(dict(schema='gemma4_local_mtp_dense_preparation_v1',
+         predecessorSourceManifestSHA256=BASE_SHA,draftSourceManifestSHA256=sha(raw(ROOT/'source-inputs.json')),
++        resourceBindingCorrectionSHA256=sha(raw(HERE/'source-inputs.json')),
+         sourcePackages=spec['sourcePackages'],actualBuildReceipt=required['actualBuildReceipt'],actualSources=required['actualSources'],
+         nativeIdentityLateVerifiedByOriginalActivation=True,physicalExecuted=False,compilerExecuted=False),indent=2)+'\n').encode()
+     target.mkdir(mode=0o700);members=[]

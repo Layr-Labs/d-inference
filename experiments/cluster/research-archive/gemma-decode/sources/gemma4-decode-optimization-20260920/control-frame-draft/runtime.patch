@@ -1,0 +1,109 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/PaddedControlFrame.swift
+@@ -0,0 +1,50 @@
++import Foundation
++
++/// One fixed transfer: big-endian length, unchanged payload, complete zero tail.
++/// This provides framing only. The caller still validates the strict payload
++/// schema, scope, rank, ordinal and operation before consuming any control.
++enum PaddedControlFrame {
++    static let byteCount = 16_384
++    static let prefixByteCount = 4
++    static let maximumPayloadBytes = byteCount - prefixByteCount
++    // Serialized send/receive: encoded frame plus original/extracted JSON.
++    static let hostAllowanceBytes = 2 * byteCount
++
++    enum Failure: Error, Equatable {
++        case invalidPayloadLength, invalidFrameLength, nonzeroPadding
++    }
++
++    static func encode(_ payload: Data) throws -> Data {
++        guard (1...maximumPayloadBytes).contains(payload.count) else {
++            throw Failure.invalidPayloadLength
++        }
++        var frame = Data(repeating: 0, count: byteCount)
++        frame.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
++            let count = UInt32(payload.count)
++            for index in 0..<prefixByteCount {
++                bytes[index] = UInt8(truncatingIfNeeded: count >> (8 * (3-index)))
++            }
++            payload.withUnsafeBytes { (source: UnsafeRawBufferPointer) in
++                bytes.baseAddress!.advanced(by: prefixByteCount)
++                    .copyMemory(from: source.baseAddress!, byteCount: payload.count)
++            }
++        }
++        return frame
++    }
++
++    static func decode(_ frame: Data) throws -> Data {
++        guard frame.count == byteCount else { throw Failure.invalidFrameLength }
++        return try frame.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
++            var count: UInt32 = 0
++            for index in 0..<prefixByteCount { count = (count << 8) | UInt32(bytes[index]) }
++            guard count > 0, count <= UInt32(maximumPayloadBytes) else {
++                throw Failure.invalidPayloadLength
++            }
++            let end = prefixByteCount + Int(count)
++            guard bytes[end..<byteCount].allSatisfy({ $0 == 0 }) else { throw Failure.nonzeroPadding }
++            // Copy only after both length and the entire padding are checked.
++            // Raw-buffer indices also handle Data slices with nonzero startIndex.
++            return Data(bytes: bytes.baseAddress!.advanced(by: prefixByteCount), count: Int(count))
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift
+@@ -32,19 +32,22 @@
+         try check()
+         let data = try canonicalJSONData(Gemma4BenchmarkWirePacket(schema: "gemma4_benchmark_p2p_v1",
+             scopeSHA256: input.scopeSHA256, senderRank: rank, ordinal: sent, value: value))
+-        guard (1...16_384).contains(data.count) else { throw ProbeError("Gemma control exceeds its byte bound") }
+-        _ = try guardMetrics.measure(.wireSendCompleted) { try group.sendCompleted(MLXArray([UInt32(data.count)]), to: 1-rank, maximumBytes: 4, check: check) }
+-        _ = try guardMetrics.measure(.wireSendCompleted) { try group.sendCompleted(MLXArray(data, [data.count], dtype: .uint8), to: 1-rank, maximumBytes: 16_384, check: check) }
++        let frame = try PaddedControlFrame.encode(data)
++        _ = try guardMetrics.measure(.wireSendCompleted) {
++            try group.sendCompleted(MLXArray(frame, [PaddedControlFrame.byteCount], dtype: .uint8),
++                to: 1-rank, maximumBytes: PaddedControlFrame.byteCount, check: check)
++        }
+         sent += 1; try check()
+     }
+ 
+     func receive(check: () throws -> Void) throws -> Gemma4BenchmarkWireValue {
+         guard received < 512 else { throw ProbeError("Gemma control count exceeds its bounded resident request") }
+-        let prefix = try guardMetrics.measure(.wireReceiveCompleted) { try group.receiveCompleted(shape: [1], dtype: .uint32, from: 1-rank, maximumBytes: 4, check: check) }
+-        let length = Int(prefix.item(UInt32.self)); try check()
+-        guard (1...16_384).contains(length) else { throw ProbeError("Gemma control prefix exceeds fixed cap") }
+-        let array = try guardMetrics.measure(.wireReceiveCompleted) { try group.receiveCompleted(shape: [length], dtype: .uint8, from: 1-rank, maximumBytes: 16_384, check: check) }
+-        let data = array.asData(access: .copy).data; try check()
++        let array = try guardMetrics.measure(.wireReceiveCompleted) {
++            try group.receiveCompleted(shape: [PaddedControlFrame.byteCount], dtype: .uint8,
++                from: 1-rank, maximumBytes: PaddedControlFrame.byteCount, check: check)
++        }
++        let frame = array.asData(access: .copy).data; try check()
++        let data = try PaddedControlFrame.decode(frame)
+         let value = try Gemma4BenchmarkWireCodec.decode(data, scope: input.scopeSHA256, sender: 1-rank, ordinal: received)
+         received += 1; return value
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
+@@ -130,6 +130,8 @@
+         if ownsHead {
+             for name in ["logits", "float32Logits", "softcapTemporary", "samplingRow"] { try add(name, [262_144]) }
+         }
++        // One live native control frame, within the prior 16-KiB cap.
++        if case .stage = target { try add("paddedControlFrame", [PaddedControlFrame.byteCount], bytes: 1) }
+         let allowance: QwenGenerationPrefillAllowance?
+         if prefillPolicy == .oneChunkLookahead {
+             guard case .stage(let rank) = target else { throw ProbeError("Gemma lookahead requires a selected stage") }
+@@ -149,9 +151,10 @@
+             }
+         }
+         let native = try sum(namedBounds)
++        let controlHostBytes = target == .fullReference ? 0 : PaddedControlFrame.hostAllowanceBytes
+         let hostEvidence = try sum([captureEvidence ? logicalSnapshot : 0,
+             captureEvidence ? 8 * 262_144 * 4 : 0, 2 * m * text.hiddenSize * 4, 8_388_608,
+-            allowance?.extraHostBytes ?? 0, Gemma4BenchmarkGuardMetrics.hostAllowanceBytes])
++            allowance?.extraHostBytes ?? 0, Gemma4BenchmarkGuardMetrics.hostAllowanceBytes, controlHostBytes])
+         return .init(selected: selected, selectedBounds: allocations, namedArrays: arrays, namedAllocationBounds: namedBounds,
+             namedNativeBytes: native, hostEvidenceBytes: hostEvidence,
+             largestHostTensorBytes: host, largestNativeCopyBytes: try rounded(host),

@@ -1,0 +1,181 @@
+--- a/package/run_target.py
++++ b/package/run_target.py
+@@ -9,7 +9,8 @@
+ import time
+ 
+ sys.dont_write_bytecode = True
+-ROOT = Path(__file__).resolve().parent
++ENTRYPOINT = Path(__file__).absolute()
++ROOT = ENTRYPOINT.parent.parent
+ sys.path.insert(0, str(ROOT))
+ from binding_common import canonical, require
+ from mtp_journal import device_directory, observe as journal_observation, require_empty
+@@ -25,9 +26,12 @@
+ def main(arguments=None):
+     parser = argparse.ArgumentParser(allow_abbrev=False)
+     parser.add_argument('--package-sha256', required=True)
++    parser.add_argument('--entrypoint-sha256', required=True)
+     parser.add_argument('--fixture', choices=sorted(JOBS), required=True)
++    parser.add_argument('--attempt', type=int, choices=range(1, 10), default=1)
+     args = parser.parse_args(arguments)
+     require(str(ROOT) == REMOTE and ROOT.resolve() == ROOT, 'Wrong fresh remote installation root')
++    require(ENTRYPOINT == ROOT/'operations-retry-20260916/run_target.py', 'Wrong retry entrypoint path')
+     require(platform.system() == 'Darwin' and platform.machine() == 'arm64', 'Apple Silicon macOS required')
+     os.umask(0o077)
+     started = time.monotonic()
+@@ -44,10 +48,13 @@
+         runs.mkdir(mode=0o700, exist_ok=True)
+         require(runs.resolve() == runs and runs.stat().st_uid == os.geteuid()
+                 and runs.stat().st_mode & 0o077 == 0, 'Unsafe run parent')
+-        run = runs/(args.fixture+'-1')
+-        run.mkdir(mode=0o700)  # A used run directory is never overwritten.
++        candidate = runs/(args.fixture+'-'+str(args.attempt))
++        candidate.mkdir(mode=0o700)  # A used run directory is never overwritten.
++        run = candidate
+         pins = Pins(check)
++        entry = pins.read(ENTRYPOINT, 65536, args.entrypoint_sha256, keep=False)
+         binding = verify_package(ROOT, args.package_sha256, pins, args.fixture)
++        binding.update(attempt=args.attempt, entrypointSHA256=entry['sha256'])
+         write_json(run/'input-binding.json', binding)
+         memory = read_command(['/usr/sbin/sysctl', '-n', 'hw.memsize'])
+         require(memory.strip() == str(24*1024**3), 'This root-run job is bound to the 24 GiB Mac')
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -13,7 +13,8 @@
+ 
+ ROOT=Path(__file__).resolve().parent
+ sys.dont_write_bytecode=True
+-sys.path.insert(0,str(ROOT/'package'))
++ORIGINAL=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-windowed-state-supervisor-20260916')
++sys.path.insert(0,str(ORIGINAL/'package'))
+ from binding_common import canonical,require
+ from binding_inputs import snapshot
+ from target_inputs import write_json,write_new
+@@ -24,6 +25,12 @@
+     for row in manifest['files']:
+         item=snapshot(ROOT/row['path'],max(row['bytes'],1),keep=False,empty=True)
+         require(item['size_bytes']==row['bytes'] and item['sha256']==row['sha256'],'Local frozen member differs')
++    lineage=json.loads((ROOT/'lineage.json').read_text())
++    prior=snapshot(ORIGINAL/'manifest.json',1024**2)['raw']
++    require(hashlib.sha256(prior).hexdigest()==lineage['baseManifestSHA256'],'Original source manifest differs')
++    for row in json.loads(prior)['files']:
++        item=snapshot(ORIGINAL/row['path'],max(row['bytes'],1),keep=False,empty=True)
++        require(item['size_bytes']==row['bytes'] and item['sha256']==row['sha256'],'Original frozen member differs')
+     commands=json.loads((ROOT/'ROOT-COMMANDS.json').read_text())
+     known=commands['knownHosts']
+     require(snapshot(known['path'],1024**2)['sha256']==known['sha256'],'Pinned known_hosts differs')
+@@ -62,12 +69,14 @@
+     parser=argparse.ArgumentParser(allow_abbrev=False)
+     parser.add_argument('action',choices=['copy','run','collect'])
+     parser.add_argument('--fixture',choices=['window','session','target'])
++    parser.add_argument('--attempt',type=int,choices=range(1,10),default=1)
+     args=parser.parse_args(); os.umask(0o077); commands=verify()
+     require((args.action=='copy') == (args.fixture is None), 'Copy has no fixture; run/collect require one')
++    require(args.action!='copy' or args.attempt==1,'Copy is a single fresh operation')
+     suffix='' if args.fixture is None else '-'+args.fixture
+-    directory=ROOT/('physical-'+args.action+suffix+'-1');directory.mkdir(mode=0o700)
++    directory=ROOT/('physical-'+args.action+suffix+'-'+str(args.attempt));directory.mkdir(mode=0o700)
+     if args.action=='copy':
+-        code=execute(commands['copyProducer'],directory,'stream',180,output_cap=400*1024**2)
++        code=execute(commands['copyProducer'],directory,'stream',180,output_cap=1024**2)
+         require(code==0,'Local stream preparation failed')
+         with (directory/'stream.stdout').open('rb') as stream:
+             code=execute(commands['copyRemote'],directory,'ssh',commands['copyTimeoutSeconds'],stdin=stream)
+@@ -79,8 +88,9 @@
+     if args.action=='run':
+         require((ROOT/'physical-copy-1/ssh.execution.json').exists(),'Copy proof missing')
+         require(json.loads((ROOT/'physical-copy-1/ssh.execution.json').read_text())['exitCode']==0,'Copy did not succeed')
+-        return execute(commands['runRemote'][args.fixture],directory,'ssh',commands['runTimeoutSeconds'])
+-    command=shlex.join(['/usr/bin/python3','-B','-c',(ROOT/'collect_remote.py').read_text(),args.fixture])
++        command=shlex.join(commands['runArguments'][args.fixture]+['--attempt',str(args.attempt)])
++        return execute(commands['sshPrefix']+[command],directory,'ssh',commands['runTimeoutSeconds'])
++    command=shlex.join(['/usr/bin/python3','-B','-c',(ROOT/'collect_remote.py').read_text(),args.fixture,str(args.attempt)])
+     code=execute(commands['sshPrefix']+[command],directory,'ssh',45)
+     require(code==0,'Read-only collection failed')
+     receipt=json.loads((directory/'ssh.stdout').read_text()); returned=directory/'returned';returned.mkdir(mode=0o700)
+--- a/prepare_copy.py
++++ b/prepare_copy.py
+@@ -9,7 +9,7 @@
+ 
+ ROOT = Path(__file__).resolve().parent
+ sys.dont_write_bytecode = True
+-sys.path.insert(0, str(ROOT/'package'))
++sys.path.insert(0, '/Users/developer/DarkbloomDev/cluster-research/gemma4-windowed-state-supervisor-20260916/package')
+ from binding_common import require
+ from binding_inputs import snapshot
+ 
+--- a/install_new_tree.py
++++ b/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma-window-state-check-20260916')}
++ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma-window-state-check-20260916/operations-retry-20260916')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+@@ -17,15 +17,36 @@
+     raw = sys.stdin.buffer.readline(1_048_577)
+     require(len(raw) <= 1_048_576 and raw.endswith(b'\n'), 'Deployment manifest exceeded bound')
+     manifest = json.loads(raw)
+-    require(manifest['schema'] == 'window_state_native_copy_only_tree_v1', 'Wrong deployment schema')
++    require(manifest['schema'] == 'window_state_attempt_entry_copy_v1', 'Wrong deployment schema')
+     files = manifest['files']
+-    require(type(files) is dict and 10 <= len(files) <= 100, 'Wrong deployment member count')
+-    require(sum(x['bytes'] for x in files.values()) < 400_000_000, 'Deployment exceeded bound')
++    require(type(files) is dict and set(files) == {'check/run_target.py'}, 'Wrong deployment member')
++    require(sum(x['bytes'] for x in files.values()) <= 65_536, 'Deployment exceeded bound')
+     for name, entry in files.items():
+         bits = name.split('/')
+         require(len(bits) >= 2 and bits[0] in ROOTS and all(x and x not in ('.', '..') for x in bits), 'Unsafe deployment member')
+-        require(type(entry['bytes']) is int and 0 <= entry['bytes'] <= 200_000_000, 'Invalid member size')
+-        require(entry['mode'] in (0o600, 0o700), 'Invalid private mode')
++        require(type(entry['bytes']) is int and 0 <= entry['bytes'] <= 65_536, 'Invalid member size')
++        require(entry['mode'] == 0o600, 'Invalid private mode')
++    existing = ROOTS['check'].parent
++    mode = existing.lstat()
++    require(existing.resolve() == existing and stat.S_ISDIR(mode.st_mode) and mode.st_uid == os.geteuid()
++            and mode.st_mode & 0o777 == 0o700, 'Original installation root is unsafe')
++    source_manifest = existing / 'package.json'
++    prior_fd = os.open(source_manifest, os.O_RDONLY | os.O_NOFOLLOW)
++    try:
++        prior = os.fstat(prior_fd)
++        require(stat.S_ISREG(prior.st_mode) and prior.st_uid == os.geteuid() and prior.st_nlink == 1
++                and prior.st_mode & 0o077 == 0 and 0 < prior.st_size <= 1_048_576, 'Original package metadata is unsafe')
++        original = bytearray()
++        while len(original) <= prior.st_size:
++            block = os.read(prior_fd, min(65536, prior.st_size + 1 - len(original)))
++            if not block: break
++            original.extend(block)
++        after = os.fstat(prior_fd); named = source_manifest.lstat()
++        identity = lambda x:(x.st_dev,x.st_ino,x.st_size,x.st_mtime_ns,x.st_ctime_ns)
++        require(identity(prior) == identity(after) == identity(named) and len(original) == prior.st_size
++                and hashlib.sha256(original).hexdigest() == '23d85130dec2bc15294f74a35e1f108c31641c1a895b93caff56df8819550822',
++                'Original package metadata differs')
++    finally: os.close(prior_fd)
+     # Observation only: do not create, truncate, lock, resolve or replace the live device gate.
+     lease = Path('/Users/developer/.darkbloom/cluster-device/native-device.lease')
+     fd = os.open(lease, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+@@ -76,7 +97,7 @@
+             verified[name] = dict(bytes=info.st_size, sha256=checksum.hexdigest())
+     require(set(verified) == set(files), 'Installed closure differs')
+     (ROOTS['check'] / 'evidence').mkdir(mode=0o700)
+-    print(json.dumps(dict(schema='window_state_native_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
++    print(json.dumps(dict(schema='window_state_attempt_entry_copy_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
+         verified=verified, canonicalJournalObserved=journal, modelOrOwnerLaunched=False, existingInputsModified=False)), flush=True)
+ 
+ if __name__ == '__main__': main()
+--- a/collect_remote.py
++++ b/collect_remote.py
+@@ -14,8 +14,8 @@
+ from mtp_journal import device_directory, observe as observe_journal
+ from target_processes import observe as observe_processes
+ 
+-assert len(sys.argv)==2 and sys.argv[1] in ('window','session','target')
+-run=ROOT/'runs'/(sys.argv[1]+'-1')
++assert len(sys.argv)==3 and sys.argv[1] in ('window','session','target') and sys.argv[2] in tuple(str(x) for x in range(1,10))
++run=ROOT/'runs'/(sys.argv[1]+'-'+sys.argv[2])
+ assert run.resolve()==run and run.is_dir()
+ files={}; total=0
+ names=sorted(run.rglob('*'))

@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-25
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -26,7 +26,12 @@ network alone. Both, me first never asks and keeps the saved answer
 (`Start.resolveAutopilotChoice`,
 `provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift`). Only me
 has no Autopilot (`start --autopilot` is refused for it) and leaves the saved
-answer as it is.
+answer as it is. An ordinary start with saved consent verifies the recorded
+inventory without changing it (`Start.verifiedAutopilotInventory`): a recorded
+build that is on disk and eligible but fails verification at that moment, for
+example while an Autopilot download holds it, is named and kept, and the start
+goes on while another recorded build verified; the running provider checks that
+build again. A missing or ineligible build, or none verified, fails the start.
 
 | Responsibility | Provider source |
 |---|---|

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-24
+> Last updated: 2026-11-25
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -769,7 +769,10 @@ inventory check (`Start.PickerReserveMode`, `Start.resolveFallbackSelection` in
 
 Autopilot inventory verification names each cached model before checking its bytes.
 If another process holds that model’s update/verification lock, the check reports
-the busy model immediately. An ordinary start with saved consent then fails before
+the busy model immediately. An ordinary start with saved consent keeps such a model:
+when at least one other enrolled model verified, it prints `Keeping <model> in the
+recorded Autopilot inventory`, saves the recorded inventory unchanged and starts, and
+the running provider checks that build again. When none verified, it fails before
 changing enrollment or draining the running provider; retry after the update finishes.
 `status` and `autopilot status` read the same daemon snapshot, including nested
 Autopilot residents and load history. Enrollment does not make a live daemon disappear
@@ -2101,9 +2104,11 @@ predicate before persistence or drain (`validatedAutopilotSelection`,
 bounds fail without stopping the existing daemon or installing a replacement.
 
 The recorded inventory is an exact-build allowlist. Ordinary starts with saved
-enrollment validate all recorded IDs or fail before persistence or drain: a
-missing, ineligible or unverified build, including a transient manifest error,
-cannot silently shrink consent. The saved selection never grows by itself, but
+enrollment validate all recorded IDs before persistence or drain, and nothing a
+start does shrinks consent. A recorded build that is on disk and eligible but
+fails verification now (a held download lock, a transient manifest error) is kept
+unchanged and named, and the start goes on while another recorded build verified.
+A missing or ineligible build, or no verified build at all, fails the start. The saved selection never grows by itself, but
 with saved consent the running provider adds every verified catalog build in
 the cache, including builds Autopilot downloads on the operator's behalf and
 verified coordinator-desired replacements, to the Autopilot set it reports

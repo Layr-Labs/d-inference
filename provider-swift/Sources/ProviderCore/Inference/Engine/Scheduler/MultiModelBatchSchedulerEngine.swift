@@ -2012,10 +2012,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.
-                var reasoningLogprobs = withholdReasoning && engineV2Logprobs != nil
-                    ? WithheldReasoningLogprobsFilter(
-                        startsInThought: nativeReasoningPrefix == ReasoningPromptProbe.thinkOpen)
-                    : nil
+                // Inkling 2 frames its thoughts as messages, not `<think>` spans.
+                var reasoningLogprobs = WithheldReasoningLogprobs.forRequest(
+                    withholdsReasoning: withholdReasoning, logprobs: engineV2Logprobs != nil,
+                    inklingChannels: nativeInklingChannels,
+                    startsInThought: nativeReasoningPrefix == ReasoningPromptProbe.thinkOpen)
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter

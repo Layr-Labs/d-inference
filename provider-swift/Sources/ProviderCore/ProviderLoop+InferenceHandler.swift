@@ -1242,8 +1242,11 @@ extension ProviderLoop {
             // upstream's usage block only carries the total completion count.
             let reasoningText = ResponseTextBuffer()
             var reasoningTokens = 0
-            // Reasoning the request asked not to receive is never framed, but
-            // it is still generated: count it with the visible reasoning.
+            // Reasoning the client declined to receive (`reasoning.exclude`) is
+            // never framed, but it is still generated: count it with the visible
+            // reasoning. A thought written with thinking turned off (Inkling 2)
+            // is not recorded as reasoning, so it counts only in completion
+            // tokens (`MultiModelBatchSchedulerEngine.recordWithheldReasoning`).
             func tokenCount(_ text: ResponseTextBuffer) -> Int {
                 text.withText { tokenizer.inner.encode(text: $0, addSpecialTokens: false).count }
             }

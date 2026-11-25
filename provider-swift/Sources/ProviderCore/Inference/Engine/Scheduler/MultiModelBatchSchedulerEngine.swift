@@ -2120,7 +2120,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             do {
                                 let events = try router.process(text)
                                 // Before any later frame: see recordWithheldReasoning.
-                                usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                                Self.recordWithheldReasoning(router.takeWithheldReasoning(), on: usageSignal,
+                                    nativeInklingChannels: nativeInklingChannels)
                                 for routed in events { emit(routed) }
                             } catch {
                                 await cancelUpstream()
@@ -2290,7 +2291,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         flushed += try router.process(answerTail)
                     }
                     flushed += try router.finishText(cutAtLimit: cutAtLimit)
-                    usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                    Self.recordWithheldReasoning(router.takeWithheldReasoning(), on: usageSignal,
+                        nativeInklingChannels: nativeInklingChannels)
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
@@ -2611,5 +2613,24 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             "reason": .string(reason),
         ])
         TelemetryClient.shared.emit(event)
+    }
+}
+
+extension MultiModelBatchSchedulerEngine {
+    /// Records reasoning the router withheld. Inkling 2 withholds its thought
+    /// only when the request turned thinking off
+    /// (`Inkling2PromptContract.withholdsReasoning`): that thought is not
+    /// reasoning the request asked for, so it ends the pre-content interval but
+    /// isn't counted in `reasoning_tokens`; its tokens stay in
+    /// `completion_tokens`. Reasoning another model withholds because the
+    /// client declined to receive it (`reasoning.exclude`) is still counted.
+    static func recordWithheldReasoning(_ text: String, on usageSignal: EngineV2RequestUsageSignal,
+                                        nativeInklingChannels: Bool) {
+        guard !text.isEmpty else { return }
+        if nativeInklingChannels {
+            usageSignal.recordWithheldOutput()
+        } else {
+            usageSignal.recordWithheldReasoning(text)
+        }
     }
 }

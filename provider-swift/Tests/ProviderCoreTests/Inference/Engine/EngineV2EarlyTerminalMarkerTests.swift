@@ -120,9 +120,9 @@ struct EngineV2EarlyTerminalMarkerTests {
     }
 
     /// An answered request that has not retired is counted with its age. On
-    /// the heartbeat's capacity read, one past `answeredUnretiredWarnAfter`
-    /// gives one WARN, repeated reads give no more, and its retirement gives
-    /// one INFO. A request whose terminal follows publication is never counted.
+    /// the heartbeat's capacity read, one past 60 s gives one WARN, repeated
+    /// reads give no more, and after its retirement the next read gives one
+    /// INFO. A request whose terminal follows publication is never counted.
     @Test(arguments: [true, false])
     func anAnsweredRequestThatHasNotRetiredIsCountedAndWarnedOnce(optIn: Bool) async throws {
         let engine = RetiringLaterEngine()
@@ -141,10 +141,10 @@ struct EngineV2EarlyTerminalMarkerTests {
             request: .init(model: "early-terminal", messages: [], max_tokens: 10),
             requestId: "held", firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 60_000))
         for await _ in stream {}
-        let pastBound = ContinuousClock.now + EngineV2Bridge.answeredUnretiredWarnAfter + .seconds(1)
-        let (count, oldest) = await bridge.answeredUnretiredSnapshot(now: pastBound)
-        #expect(count == (optIn ? 1 : 0))
-        #expect((oldest ?? .zero) > EngineV2Bridge.answeredUnretiredWarnAfter || !optIn)
+        // Read before the 60 s bound: nothing is overdue yet.
+        _ = await bridge.backendSlotCapacity(now: ContinuousClock.now + .seconds(30))
+        #expect(telemetry.events(operation: "ssd_answered_unretired").isEmpty)
+        let pastBound = ContinuousClock.now + .seconds(61)
         _ = await bridge.backendSlotCapacity(now: pastBound)
         _ = await bridge.backendSlotCapacity(now: pastBound + .seconds(5))
         let warnings = telemetry.events(operation: "ssd_answered_unretired")
@@ -161,10 +161,11 @@ struct EngineV2EarlyTerminalMarkerTests {
         while await bridge._testLivePumpCount() > 0, ContinuousClock.now < limit {
             try await Task.sleep(for: .milliseconds(1))
         }
-        #expect(await bridge.answeredUnretiredSnapshot().count == 0)
         _ = await bridge.backendSlotCapacity(now: pastBound + .seconds(10))
         let recovered = telemetry.events(operation: "ssd_answered_unretired_recovered")
         #expect(recovered.count == (optIn ? 1 : 0))
-        #expect(recovered.allSatisfy { $0.severity == .info })
+        #expect(recovered.allSatisfy {
+            $0.severity == .info && $0.fields?["answered_unretired"]?.value as? Int == 0
+        })
     }
 }

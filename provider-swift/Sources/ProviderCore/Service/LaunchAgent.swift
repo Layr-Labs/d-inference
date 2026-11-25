@@ -515,6 +515,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GRAMMAR_ONLY_TOOL_PARSING` (SDK-read, `GrammarOnlyToolParsing`):
     /// the GLM, Gemma and MiMo parsers return calls that break only their
     /// schema; `0`, `off`, `false` or `no` restores their refusals.
+    /// `DARKBLOOM_INKLING_FORCED_TOOLS`: Inkling 2 frames forced tool calls in
+    /// the sampler by default; an off word restores prompt-forced calls alone.
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
@@ -618,6 +620,7 @@ public enum LaunchAgent: Sendable {
         ToolStreamPreparation.streamForcedToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedQwenToolCallsEnvironmentKey,
         ToolStreamPreparation.streamForcedGPTOSSToolCallsEnvironmentKey,
+        InklingForcedToolCalls.environmentKey,
         GPTOSSToolCallRecovery.environmentKey,
         ToolStreamPreparation.streamNativeToolCallsEnvironmentKey,
         ToolStreamPreparation.streamGLMToolCallsEnvironmentKey,

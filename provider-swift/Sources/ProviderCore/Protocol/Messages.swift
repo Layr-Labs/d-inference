@@ -264,6 +264,10 @@ public enum ProviderMessage: Sendable, Equatable {
         /// is excluded from routing before its first heartbeat. Omitted
         /// otherwise; older coordinators ignore it.
         public var busy: ProviderBusy?
+        /// This provider seals a response's terminal fields inside its usage
+        /// for a coordinator that advertises reading them there
+        /// (`SealedTerminalFields`); omitted by older providers.
+        public var terminalFieldsSealed: Int?
 
         public init(
             hardware: HardwareInfo,
@@ -299,9 +303,11 @@ public enum ProviderMessage: Sendable, Equatable {
             clusterModels: [ModelInfo]? = nil,
             clusterMembership: ClusterMembership? = nil,
             busy: ProviderBusy? = nil,
-            gemmaPromptContract: Int? = nil
+            gemmaPromptContract: Int? = nil,
+            terminalFieldsSealed: Int? = nil
         ) {
             self.gemmaPromptContract = gemmaPromptContract
+            self.terminalFieldsSealed = terminalFieldsSealed
             self.executionRole = executionRole
             self.memberRegistrationNonce = memberRegistrationNonce
             self.clusterModels = clusterModels
@@ -1001,6 +1007,7 @@ extension ProviderMessage: Codable {
         case toolConstraintProtocol = "tool_constraint_protocol"
         case toolConstraintModels = "tool_constraint_models"
         case gemmaPromptContract = "gemma_prompt_contract"
+        case terminalFieldsSealed = "terminal_fields_sealed"
         case modelAutopilot = "model_autopilot"
         case autopilotInventory = "autopilot_inventory"
         // Heartbeat
@@ -1148,6 +1155,7 @@ extension ProviderMessage: Codable {
             if let version = r.gemmaPromptContract, version > 1 {
                 try container.encode(version, forKey: .gemmaPromptContract)
             }
+            try container.encodeIfPresent(r.terminalFieldsSealed, forKey: .terminalFieldsSealed)
             try Self.encodeBusy(r.busy, into: &container)
 
         case .heartbeat(let h):
@@ -1435,7 +1443,8 @@ extension ProviderMessage: Codable {
                 clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels),
                 clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership),
                 busy: try Self.decodeBusy(from: container),
-                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract)
+                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract),
+                terminalFieldsSealed: try container.decodeIfPresent(Int.self, forKey: .terminalFieldsSealed)
             ))
 
         case .heartbeat:

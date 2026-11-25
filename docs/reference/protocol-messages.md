@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-24
+> Last updated: 2026-11-25
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -348,6 +348,7 @@ connection, first.
 | `tool_constraint_protocol` | `int` | `Int?` | opt | forced-tool grammar protocol version; Swift omits nil/0 |
 | `tool_constraint_models` | `[]string` | `[String]?` | opt | concrete model IDs the provider enforces |
 | `gemma_prompt_contract` | `int` | `Int?` | opt | highest [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the provider renders when an `inference_request` asks for it: `2` (the template's text parts, vLLM's prompt for system and user content). Provider-wide: it says which contract the provider can render for the Gemma 4 model types it honours (`gemma4`, `gemma4_text`), not which models it serves. Swift omits nil and 1 (contract 1 only); `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` omits it. Older coordinators ignore it |
+| `terminal_fields_sealed` | `int` | `Int?` | opt | `1`: the provider seals a response's terminal fields inside `encrypted_usage`, without their clear copies on `inference_complete`, for a coordinator that advertises `trust_status.coordinator_features` `terminal_fields_sealed` on the connection ([`inference_complete`](#inference_complete); `SealedTerminalFields`, `provider-swift/Sources/ProviderCore/Crypto/ResponseFrameSealer.swift`). Older providers omit it; older coordinators ignore it |
 | `apns_device_token` | `string` | `String?` | opt | hex APNs token for the `E_K(nonce)` code-identity push |
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
 | `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
@@ -963,10 +964,19 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | |
 | `usage` | `UsageInfo` | `UsageInfo` | req | [`UsageInfo`](#usageinfo) |
-| `encrypted_usage` | `*EncryptedPayload` | `EncryptedPayload?` | opt | `{"chunk_count":N,"usage":{…}}` sealed like a response chunk under the nonce `prefix ‖ UInt64 big-endian N`: the request's response chunk *i* is sealed under `prefix ‖ i`, with `prefix` 16 random bytes fixed for the request, so this follows the last chunk (`ResponseFrameSealer`, `SealedResponseUsage`). `usage` stays for coordinators that read only the plaintext copy |
-| `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched |
-| `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash` |
-| `response_hash` | `string` | `String?` | opt | SHA-256 of the response data |
+| `encrypted_usage` | `*EncryptedPayload` | `EncryptedPayload?` | opt | `{"chunk_count":N,"usage":{…}}`, with the terminal fields below when sealed (`finish_reason`: `stop`, `length`, `tool_calls` or `cancelled`; `stop_sequence` and `se_signature` when present; `response_hash`), sealed like a response chunk under the nonce `prefix ‖ UInt64 big-endian N`: the request's response chunk *i* is sealed under `prefix ‖ i`, with `prefix` 16 random bytes fixed for the request, so this follows the last chunk (`ResponseFrameSealer`, `SealedResponseUsage`). `usage` stays for coordinators that read only the plaintext copy |
+| `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched; omitted when sealed in `encrypted_usage` |
+| `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash`; omitted when sealed in `encrypted_usage` |
+| `response_hash` | `string` | `String?` | opt | SHA-256 of the response data; omitted when sealed in `encrypted_usage` |
+
+A coordinator that advertises `trust_status.coordinator_features`
+`terminal_fields_sealed` on the connection gets `stop_sequence`,
+`response_hash` and `se_signature` only inside `encrypted_usage`, which it
+opens with the attempt's session key; every other coordinator gets the clear
+copies and a usage sealed without them, as before. If the usage cannot be
+sealed, the clear copies are sent
+(`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`,
+`handleInferenceRequest`).
 | `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker ([coordinator/internal/observation/profile/profiler_provider.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/observation/profile/profiler_provider.go)). Observability only. Field list and validation: [../architecture/system-profiler.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/system-profiler.md) |
 
 ### `inference_error`
@@ -1694,7 +1704,10 @@ unknown names leave the provider as it was. `decode_rate_age_decay`: the
 coordinator decays a stale `observed_decode_tps` by its
 `observed_decode_tps_age_ms`, so the provider stops omitting an idle slot's
 rate after `DARKBLOOM_DECODE_RATE_IDLE_MAX_AGE_SECONDS`
-(`DecodeRateIdleAge.coordinatorDecays`). Shared cases:
+(`DecodeRateIdleAge.coordinatorDecays`). `terminal_fields_sealed`: the
+coordinator reads a response's terminal fields from `encrypted_usage`, so the
+provider leaves their clear copies off `inference_complete`
+(`SealedTerminalFields`, `CoordinatorClient.sealedTerminalFields`). Shared cases:
 `provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/coordinator_features_wire.json`.
 
 ### `capacity_probe`

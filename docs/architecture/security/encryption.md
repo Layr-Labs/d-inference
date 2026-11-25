@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-25
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -79,6 +79,15 @@ the numbers whether it received every chunk once and in order, and settle
 from the sealed usage. The plaintext `usage` stays for coordinators that read
 only it, and every chunk is still an ordinary NaCl box
 (`provider-swift/Sources/ProviderCore/Crypto/ResponseFrameSealer.swift`).
+
+For a coordinator that advertises `terminal_fields_sealed` in
+`trust_status.coordinator_features` on the connection, the sealed usage also
+carries the response's terminal fields: the finish reason, the caller's stop
+string that ended it, the response hash and its Secure Enclave signature. The
+clear copies of the stop string, hash and signature are then left off
+`inference_complete`, so only the coordinator holding the attempt's session key
+reads them. Every other coordinator gets the clear copies, as before
+(`SealedTerminalFields`; [protocol messages](../../reference/protocol-messages.md#inference_complete)).
 
 Provider cryptography is implemented by
 `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` and the provider loop.

@@ -92,6 +92,7 @@ extension CoordinatorClient {
         // it decays a stale decode rate (`DecodeRateIdleAge.coordinatorDecays`).
         if case .trustStatus(let status) = parsed {
             DecodeRateIdleAge.coordinatorDecays.update(features: status.coordinatorFeatures)
+            sealedTerminalFields.update(features: status.coordinatorFeatures)
         }
         if case .runtimeStatus(let status) = parsed, !status.verified || !status.mismatches.isEmpty { detachNativePairMember() }
         // A coordinator that does not know the member role answers its

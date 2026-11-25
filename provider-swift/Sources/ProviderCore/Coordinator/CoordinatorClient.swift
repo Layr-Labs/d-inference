@@ -57,6 +57,10 @@ public actor CoordinatorClient {
     /// through `outboundRouter`.
     nonisolated internal let chunkBatcher: ChunkBatcher
     nonisolated internal let chunkSender: ChunkSender
+    /// Whether the connected coordinator reads a response's terminal fields
+    /// from its sealed usage (`SealedTerminalFields.coordinatorFeature`).
+    nonisolated internal let sealedTerminalFields = CoordinatorFeatureAdvertisement(
+        feature: SealedTerminalFields.coordinatorFeature)
 
     /// Active Network.framework WebSocket connection (replaces the prior
     /// `URLSessionWebSocketTask`). Outbound frames are written with the

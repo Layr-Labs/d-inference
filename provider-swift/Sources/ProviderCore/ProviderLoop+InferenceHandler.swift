@@ -1263,6 +1263,8 @@ extension ProviderLoop {
             // A cancelled request that already streamed output settles through
             // the completion path below with real usage, not a bare 499 ($0).
             var cancelledMidStream = false
+            // The last finish reason a streamed frame named (`SealedTerminalFields`).
+            var streamedFinishReason: String?
             // Relay entries drained from the channel but not yet attached to
             // a frame. Entries attach to the NEXT content-bearing chunk (role
             // preambles / usage chunks are skipped), or reasoning chunk, the
@@ -1338,6 +1340,7 @@ extension ProviderLoop {
                     //   framed, so the hash commits to exactly what is emitted.
                     var frameToEmit = frame
                     if let parsed = Self.parseStreamChunk(frame) {
+                        if let reason = parsed.finishReason { streamedFinishReason = reason }
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
                             hashedOutput.append(content)
@@ -1699,22 +1702,31 @@ extension ProviderLoop {
                     f.set(.toolCallsBreakingDeclaration, Int64(toolCalls.breakingDeclaration))
                 }
             }
+            // A coordinator that reads the terminal fields from the sealed usage
+            // gets them only there; every other one gets the clear copies.
+            let terminal = send.coordinatorReadsSealedTerminalFields ? SealedTerminalFields(
+                finishReason: SealedTerminalFields.finishReason(
+                    streamed: streamedFinishReason, cancelled: cancelledMidStream),
+                stopSequence: v2UsageSignal.matchedStopSequence,
+                responseHash: attestation.hash, seSignature: attestation.signature) : nil
             let encryptedUsage: EncryptedPayload?
             do {
-                encryptedUsage = try responseSealer.sealUsage(usageInfo)
+                encryptedUsage = try responseSealer.sealUsage(usageInfo, terminal: terminal)
             } catch {
                 log.error("[\(requestId)] usage encryption failed")
                 providerStats.incrementChunkEncryptionErrors()
                 encryptedUsage = nil
             }
+            // Without a sealed usage, the clear copies are the only ones.
+            let sendsClearTerminal = terminal == nil || encryptedUsage == nil
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(
                     requestId: requestId,
                     usage: usageInfo,
-                    stopSequence: v2UsageSignal.matchedStopSequence,
-                    seSignature: attestation.signature,
-                    responseHash: attestation.hash,
+                    stopSequence: sendsClearTerminal ? v2UsageSignal.matchedStopSequence : nil,
+                    seSignature: sendsClearTerminal ? attestation.signature : nil,
+                    responseHash: sendsClearTerminal ? attestation.hash : nil,
                     // Live builder: SendHandle.send stamps flush/terminal_sent,
                     // the codec materializes the wire object at encode time.
                     profile: profile,

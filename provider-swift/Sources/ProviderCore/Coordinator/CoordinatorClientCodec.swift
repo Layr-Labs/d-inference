@@ -99,7 +99,8 @@ public enum CoordinatorClientCodec {
             // A member away in its session's disconnect grace claims it here.
             clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil,
             busy: busy,
-            gemmaPromptContract: GemmaPromptContract.advertisedVersion
+            gemmaPromptContract: GemmaPromptContract.advertisedVersion,
+            terminalFieldsSealed: SealedTerminalFields.protocolVersion
         ))
     }
 

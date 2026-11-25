@@ -17,6 +17,8 @@ extension CoordinatorClient {
             logger.info(.connectingToCoordinator)
             logger.info("Coordinator URL: \(self.config.url)")
             let session = CoordinatorSessionRecorder()
+            // Only this connection's coordinator may advertise it.
+            sealedTerminalFields.reset()
 
             do {
                 try await connectAndRun(session)
@@ -41,6 +43,7 @@ extension CoordinatorClient {
                 let delay = nextMemberAwareReconnectDelay(
                     backoff: TimeInterval.random(in: policy.nextDelayRange(after: end)))
                 DecodeRateIdleAge.coordinatorDecays.reset()
+                sealedTerminalFields.reset()
                 eventContinuation?.yield(.disconnected)
                 let reachable = reachability.isReachable
                 let closeCode = end.closeCode.map { "\($0)" } ?? "none"

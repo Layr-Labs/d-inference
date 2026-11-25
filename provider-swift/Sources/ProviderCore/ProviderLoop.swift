@@ -30,19 +30,30 @@ public final class SendHandle: @unchecked Sendable {
     /// `nil` for SendHandles built without a wired coordinator (unit/integration
     /// tests), in which case chunks fall back to the control path.
     private let chunkSender: ChunkSender?
+    /// The connected coordinator's `SealedTerminalFields.coordinatorFeature`
+    /// advertisement; nil (never advertised) without a wired coordinator.
+    private let sealedTerminalFields: CoordinatorFeatureAdvertisement?
 
     public init(_ fn: @escaping (OutboundMessage) -> Void) {
         self.fn = fn
         self.chunkSender = nil
+        self.sealedTerminalFields = nil
     }
 
     /// Wire the direct chunk path alongside the control path. Internal: the
     /// production wiring lives in `ProviderLoop+Serve` (same module); the public
     /// init keeps the existing test/call surface unchanged.
-    init(_ fn: @escaping (OutboundMessage) -> Void, chunkSender: ChunkSender?) {
+    init(_ fn: @escaping (OutboundMessage) -> Void, chunkSender: ChunkSender?,
+         sealedTerminalFields: CoordinatorFeatureAdvertisement? = nil) {
         self.fn = fn
         self.chunkSender = chunkSender
+        self.sealedTerminalFields = sealedTerminalFields
     }
+
+    /// Whether the coordinator on this connection reads a response's terminal
+    /// fields from its sealed usage (`SealedTerminalFields`), so they leave
+    /// sealed and without their clear copies.
+    var coordinatorReadsSealedTerminalFields: Bool { sealedTerminalFields?.value ?? false }
 
     /// Control-path send (heartbeats, attestation, accepted, complete, errors,
     /// model/prefetch status) through the OutboundRouter → AsyncStream.

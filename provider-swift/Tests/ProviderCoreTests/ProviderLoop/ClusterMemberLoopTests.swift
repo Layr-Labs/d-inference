@@ -89,6 +89,27 @@ struct ClusterMemberLoopTests {
         else { Issue.record("reservation not released: \(direct[1])") }
     }
 
+    /// A member never serves a blind request, even one that reached its
+    /// handler: it refuses with `posture`, whatever the request holds.
+    @Test func memberRefusesABlindRequestWithPosture() async throws {
+        let loop = try makeMemberLoop()
+        let replies = MemberMessages()
+        let request = BlindRequestFixture()
+        let frame = try request.frame(recipient: await loop.keyPair.publicKeyBytes)
+        let body = try #require(frame.encryptedBody)
+        let ciphertext = try #require(Data(base64Encoded: body.ciphertext))
+        await loop.handleInferenceRequest(requestId: frame.requestId, ciphertext: ciphertext,
+            senderPublicKey: request.client.publicKeyBytes, cacheReceiptNonce: nil, authenticatedCacheScope: nil,
+            blind: frame.blind, send: SendHandle { replies.append($0) })
+        let errors = replies.snapshot.compactMap { message -> InferenceFailure? in
+            if case .inferenceError(frame.requestId, let failure, _) = message { return failure }
+            return nil
+        }
+        try #require(errors.count == 1)
+        #expect(errors[0].code == .blindRefused && errors[0].statusCode == 502)
+        #expect(await loop.memberWorkIsEmpty())
+    }
+
     /// Model autopilot postdates the research branch. Saved consent is valid
     /// for a solo provider and must never apply to a control-only member.
     @Test func autopilotLeaseAndCommandAreDroppedAndSavedConsentNeverApplies() async throws {

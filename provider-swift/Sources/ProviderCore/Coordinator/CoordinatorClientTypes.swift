@@ -121,7 +121,9 @@ public enum CoordinatorEvent: Sendable {
         /// See `InferenceRequest.gemmaPromptContract`; nil keeps version 1.
         gemmaPromptContract: Int? = nil,
         /// See `InferenceRequest.frameCachePolicy`; it can only narrow.
-        frameCachePolicy: RequestCachePolicy = .default
+        frameCachePolicy: RequestCachePolicy = .default,
+        /// See `InferenceRequest.blind`; nil for an ordinary request.
+        blind: BlindFrame? = nil
     )
     /// `reason` is nil from a coordinator that sends none.
     case cancel(requestId: String, reason: CoordinatorCancelReason? = nil)
@@ -202,6 +204,11 @@ public struct CoordinatorClientConfig: Sendable {
     /// Which coordinator request signatures this provider requires
     /// (`CoordinatorRequestVerifier.pinned()` unless set).
     public let requestVerifier: CoordinatorRequestVerifier
+    /// What a provider that serves blind requests registers: the protocol and
+    /// the request-signing keys it pins (`ProviderLoop.blindRequestRegistration`),
+    /// which also recognize a repeated blind frame on arrival. Nil for a
+    /// provider that serves none.
+    public let blindRequests: BlindRequestRegistration?
 
     public init(
         url: String,
@@ -227,7 +234,8 @@ public struct CoordinatorClientConfig: Sendable {
         pairServingGrantedModelIDs: Set<String> = [],
         handshakeTimeout: TimeInterval? = nil,
         memberNegotiationWindow: Duration? = nil,
-        requestVerifier: CoordinatorRequestVerifier? = nil
+        requestVerifier: CoordinatorRequestVerifier? = nil,
+        blindRequests: BlindRequestRegistration? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -253,6 +261,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.handshakeTimeout = handshakeTimeout ?? CoordinatorConnectionHandshake.defaultTimeout
         self.memberNegotiationWindow = memberNegotiationWindow ?? ClusterMemberNegotiation.window
         self.requestVerifier = requestVerifier ?? .pinned()
+        self.blindRequests = blindRequests
     }
 }
 
@@ -279,12 +288,12 @@ public enum OutboundMessage: Sendable {
     /// instant on it, and `CoordinatorClientCodec.providerMessage(for:)`
     /// materializes `wireObject()` at encode time so those stamps (and the
     /// outbound-queue latency in `total_us`) land in the object.
+    /// The response's stop sequence, hash and signature travel only inside
+    /// `encryptedUsage` (`SealedTerminalFields`): this case has no field
+    /// for their clear copies.
     case inferenceComplete(
         requestId: String,
         usage: UsageInfo,
-        stopSequence: String?,
-        seSignature: String?,
-        responseHash: String?,
         profile: RequestProfileBuilder? = nil,
         encryptedUsage: EncryptedPayload? = nil
     )

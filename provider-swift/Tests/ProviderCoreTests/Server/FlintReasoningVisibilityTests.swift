@@ -245,8 +245,8 @@ extension FlintReasoningVisibilityTests {
         }
         for message in output.terminals {
             switch message {
-            case .inferenceComplete(_, let usage, _, _, let hash, _, _):
-                run.complete = (usage, hash)
+            case .inferenceComplete(_, let usage, _, _):
+                run.complete = (usage, output.sealedResponseHash)
             case .inferenceError(_, let failure, _):
                 run.errors.append(failure)
             default:

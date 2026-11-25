@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-25
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1175,6 +1175,22 @@ swift test --skip-build --no-parallel --filter 'AppAttestResume|ProviderLogout|L
 Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
+
+## Blind Requests
+
+These synthetic tests use the published RFC 8032 test keys, never a pinned
+coordinator key:
+
+| Coverage | Suites / sources |
+|---|---|
+| The shared request-signing vectors (every frame served or refused for its stated reason, every changed payload byte, the key id and header, scalar canonicality) | `provider-swift/Tests/ProviderCoreTests/Coordinator/RequestSigning/CoordinatorRequestJWSVectorTests.swift`; `provider-swift/Tests/ProviderCoreTests/Fixtures/request-signing-vectors.json`, a copy of the platform's [request-signing vectors](https://github.com/Layr-Labs/darkbloom-platform/blob/12b0489562e5dd1d784e95bbcaf42ea4e4520aa4/coordinator/tests/protocol/testdata/request-signing-vectors.json) |
+| Statement bytes against the shared statement vectors, the JSON form and signed refusals | `provider-swift/Tests/ProviderCoreTests/Blind/BlindStatementTests.swift` |
+| Which failures follow from the opened body, and their single signed reason | `provider-swift/Tests/ProviderCoreTests/Blind/BlindContentRefusalTests.swift` |
+| Prompt and output bounds, every output budget the bridge sizes under them, and the salted cache scope | `provider-swift/Tests/ProviderCoreTests/Blind/BlindRequestBoundsTests.swift` |
+| The serve loop against the mock coordinator: registration, serving within the terms, every refusal signed with its reason (small-order client keys included), content refusals naming only `content_unsupported` in the clear frame, the signed salted scope reaching the engine, a replayed nonce, a repeated frame and posture | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/BlindRequestServeTests.swift`; `provider-swift/Tests/ProviderCoreTests/Helpers/BlindRequestFixture.swift` |
+| A blind frame the provider cannot verify, and a blind body on an ordinary frame: refused, never served | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/BlindFrameWireTests.swift` |
+| A cluster member refuses a blind request with `posture` | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/ClusterMemberLoopTests.swift` |
+| The managed Nemotron Super owner, serving the raw body, generates at most the signed output bound | `provider-swift/Tests/ProviderCoreTests/ProviderLoop/NemotronSuperManagedSlotTests+Blind.swift` |
 
 ## Add-On Hold
 

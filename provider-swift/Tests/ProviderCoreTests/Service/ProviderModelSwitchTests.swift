@@ -473,8 +473,7 @@ struct ProviderModelSwitchTests {
         let process = ProcessIdentity.current()
         await loop.beginServingDrain(owner: .modelSwitch)
         await loop.holdSwitchRequest("finished")
-        send(.inferenceComplete(requestId: "finished", usage: .init(promptTokens: 3, completionTokens: 2),
-            stopSequence: nil, seSignature: nil, responseHash: nil, profile: nil))
+        send(.inferenceComplete(requestId: "finished", usage: .init(promptTokens: 3, completionTokens: 2), profile: nil))
         await loop.finishSwitchRequest("finished")
         let barrier = try await loop.drainForModelSwitch(deadline: .now.advanced(by: .seconds(3)))
         if reject {

@@ -16,6 +16,18 @@ public enum InferenceFailureCode: String, Codable, Sendable, Equatable, CaseIter
     case encryptionFailure = "encryption_failure"
     case generationFailure = "generation_failure"
     case internalFailure = "internal_failure"
+    /// A blind request failed one of its checks; the frame carries the signed
+    /// refusal that names which.
+    case blindRefused = "blind_refused"
+
+    /// Whether a failure with this code follows from what the request asks
+    /// for, not from this Mac's capacity, load or transport.
+    var dependsOnRequestContent: Bool {
+        switch self {
+        case .invalidRequest, .invalidMedia, .mediaTooLarge, .unsupportedMedia, .templateRender: true
+        default: false
+        }
+    }
 
     /// Fixed legacy `error` text. This remains on the wire for older
     /// coordinators, but is derived solely from the closed code above.
@@ -43,6 +55,8 @@ public enum InferenceFailureCode: String, Codable, Sendable, Equatable, CaseIter
             return "Inference generation failed."
         case .internalFailure:
             return "Internal inference failure."
+        case .blindRefused:
+            return "Blind request refused."
         }
     }
 }
@@ -128,6 +142,21 @@ public struct InferenceFailure: Sendable, Equatable {
     public let toolCheck: ToolNoncomplianceCheck?
     /// Why a client refusal refused the request; nil for every other failure.
     public internal(set) var refusal: InferenceRefusalReason?
+    /// The signed refusal of a blind request; nil for every other failure.
+    public internal(set) var blindRefusal: SignedBlindStatement?
+
+    /// Whether the failure follows from what the request asks for (its
+    /// content, its size against the model or this Mac), not from load,
+    /// capacity or transport.
+    var followsFromRequestContent: Bool {
+        if code.dependsOnRequestContent || refusal != nil { return true }
+        switch errorReason {
+        case .requestExceedsContext?, .requestExceedsNode?, .requestExceedsNodeBudget?, .requestExceedsBatchTokenBudget?:
+            return true
+        default:
+            return false
+        }
+    }
 
     public init(
         code: InferenceFailureCode,
@@ -226,6 +255,7 @@ private extension ProviderOperationalMessage {
         case .encryptionFailure: .inferenceFailureEncryption
         case .generationFailure: .inferenceFailureGeneration
         case .internalFailure: .inferenceFailureInternal
+        case .blindRefused: .inferenceFailureBlindRefused
         }
     }
 
@@ -234,6 +264,7 @@ private extension ProviderOperationalMessage {
         case .missingSenderKey: .refusalMissingSenderKey
         case .undecryptableRequest: .refusalUndecryptableRequest
         case .reservedToolSchemaMetadata: .refusalReservedToolSchemaMetadata
+        case .sealedForBlindRequest: .refusalSealedForBlindRequest
         case .malformedBody: .refusalMalformedBody
         case .invalidMessages: .refusalInvalidMessages
         case .unsupportedMessageRole: .refusalUnsupportedMessageRole

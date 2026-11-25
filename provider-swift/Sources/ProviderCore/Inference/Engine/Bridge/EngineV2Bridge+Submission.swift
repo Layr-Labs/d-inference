@@ -256,6 +256,10 @@ extension EngineV2Bridge {
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        if let bounds = BlindRequestBounds.current, !bounds.admit(promptTokens: promptTokens.count) {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            throw BlindRequestBounds.PromptBoundExceeded()
+        }
         let reasoningBudget: CBv2ReasoningBudget?
         do {
             if let budget = request.nativeReasoningBudget {

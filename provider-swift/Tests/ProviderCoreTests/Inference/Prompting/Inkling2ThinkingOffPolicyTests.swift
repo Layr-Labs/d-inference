@@ -13,7 +13,6 @@ import Testing
 @Suite("Inkling 2 thinking off without a thought")
 struct Inkling2ThinkingOffPolicyTests {
     static let type = Inkling2ModelIdentity.modelType
-    static let switchOn = [Inkling2ThinkingOffPolicy.environmentKey: "1"]
     /// A slot vocabulary that resolves only the thought opener's spelling.
     static let ids = ["<|content_thinking|>": 200_010]
 
@@ -29,6 +28,17 @@ struct Inkling2ThinkingOffPolicyTests {
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
         #expect(LaunchAgent.passthroughEnvironment(from: [key: "1"])[key] == "1")
         #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
+    }
+
+    /// The scheduler reads the switch once per process (`switchedOn`); a
+    /// task can set it around one request.
+    @Test func theSwitchIsReadOnceAndCanBeSetPerTask() {
+        Inkling2ThinkingOffPolicy.$switchedOn.withValue(true) {
+            #expect(Inkling2ThinkingOffPolicy.switchedOn)
+        }
+        Inkling2ThinkingOffPolicy.$switchedOn.withValue(false) {
+            #expect(!Inkling2ThinkingOffPolicy.switchedOn)
+        }
     }
 
     @Test func theSwitchIsOffUnlessAnOnWordIsSet() {
@@ -51,11 +61,11 @@ struct Inkling2ThinkingOffPolicyTests {
         ] {
             let (decoded, controls) = try Self.request(json)
             #expect(Inkling2ThinkingOffPolicy.bansThought(decoded, controls: controls, modelType: Self.type,
-                environment: Self.switchOn) == off, "\(json)")
+                switchedOn: true) == off, "\(json)")
             #expect(!Inkling2ThinkingOffPolicy.bansThought(decoded, controls: controls, modelType: Self.type,
-                environment: [:]), "\(json)")
+                switchedOn: false), "\(json)")
             #expect(!Inkling2ThinkingOffPolicy.bansThought(decoded, controls: controls, modelType: "gemma4",
-                environment: Self.switchOn), "\(json)")
+                switchedOn: true), "\(json)")
         }
     }
 

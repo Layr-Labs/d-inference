@@ -942,7 +942,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         let base = visionRequest
                         let continuationId = visionRequestId + "-exit"
                         let defaultMaxTokens = defaultMaxTokens
-                        let sampling = engineV2Sampling
+                        let sampling = requestSampling
                         let measurementPurpose = measurementPurpose
                         let cacheScope = requestCacheScope
                         let cacheEnabled = cacheEnabled
@@ -1367,7 +1367,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let base = request
             let continuationId = requestId + "-exit"
             let defaultMaxTokens = defaultMaxTokens
-            let sampling = engineV2Sampling
+            let sampling = requestSampling
             let measurementPurpose = measurementPurpose
             let cacheScope = requestCacheScope
             let cacheEnabled = cacheEnabled

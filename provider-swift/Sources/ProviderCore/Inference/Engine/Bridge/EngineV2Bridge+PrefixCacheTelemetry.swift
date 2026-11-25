@@ -32,22 +32,18 @@ extension EngineV2Bridge {
     /// its publication has not settled and its capacity is still held.
     static let answeredUnretiredWarnAfter: Duration = .seconds(60)
 
-    /// How many requests were answered before their publication and have not
-    /// retired, and how long ago the oldest of them was answered.
-    func answeredUnretiredSnapshot(now: ContinuousClock.Instant = .now) -> (count: Int, oldest: Duration?) {
-        (answeredUnretired.count, answeredUnretired.values.min().map { $0.duration(to: now) })
-    }
-
-    /// Heartbeat cadence, on change only: one WARN when the oldest answered
-    /// request passes `answeredUnretiredWarnAfter` without retiring, one INFO
-    /// when none is past it again. A provider-log line and an `engine_health`
-    /// event (`ssd_answered_unretired`, `ssd_answered_unretired_recovered`).
+    /// Heartbeat cadence, on change only: one WARN when the oldest request
+    /// answered before its publication reaches `answeredUnretiredWarnAfter`
+    /// without retiring, one INFO when none is past it again. Each is a
+    /// provider-log line and an `engine_health` event (`ssd_answered_unretired`,
+    /// `ssd_answered_unretired_recovered`).
     func emitAnsweredUnretiredTransitionIfNeeded(now: ContinuousClock.Instant) {
-        let (count, oldest) = answeredUnretiredSnapshot(now: now)
-        let overdue = (oldest ?? .zero) >= Self.answeredUnretiredWarnAfter
-        guard overdue != answeredUnretiredOverdueEmitted else { return }
-        answeredUnretiredOverdueEmitted = overdue
-        let oldestMs = oldest.map { Int($0 / .milliseconds(1)) } ?? 0
+        let oldest = answeredUnretired.values.min().map { $0.duration(to: now) } ?? .zero
+        let overdue = oldest >= Self.answeredUnretiredWarnAfter
+        guard overdue != lastAnsweredUnretiredOverdueEmitted else { return }
+        lastAnsweredUnretiredOverdueEmitted = overdue
+        let count = answeredUnretired.count
+        let oldestMs = Int(oldest / .milliseconds(1))
         if overdue {
             Self.earlyTerminalLogger.warning(
                 "Early terminal: \(count) answered request(s) (\(modelId)) not retired; the oldest was answered \(oldestMs) ms ago and its checkpoint publication still holds its capacity")

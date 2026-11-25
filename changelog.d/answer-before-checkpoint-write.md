@@ -9,8 +9,8 @@
   and prefills the rest.
 - Seeded requests, Nemotron Super and engines on the native tracked profile (GLM-5.3-Flash, MiMo) keep the old
   order.
-- An answered request that hasn't retired 60 s after its answer, because its checkpoint write hasn't settled, is
-  logged once as a warning with the number of such requests and the oldest one's age (`Early terminal: … not
-  retired`), and again as information once none is past 60 s. The provider log is the only place it shows.
+- When an answered request hasn't retired 60 s after its answer, because its checkpoint write hasn't settled, one
+  warning is logged with the number of such requests and the oldest one's age (`Early terminal: … not retired`), and
+  one information line once none is past 60 s. The provider log is the only place it shows.
 - `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION=0` restores the old order for every request; set it in the
   shell for `darkbloom start`, which writes it into the provider's launchd job.

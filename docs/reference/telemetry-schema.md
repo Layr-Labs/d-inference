@@ -230,7 +230,7 @@ heartbeat capacity read (`EngineV2Bridge.backendSlotCapacity`) it checks the
 oldest one's age against `answeredUnretiredWarnAfter` (`.seconds(60)`), and it
 reports only changes:
 
-- when one passes the bound: a WARN `engine_health` event with
+- when the oldest reaches the bound: a WARN `engine_health` event with
   `operation = ssd_answered_unretired` and a provider-log warning
   (`darkbloom.EarlyTerminal`: `Early terminal: N answered request(s) (model) not
   retired; the oldest was answered M ms ago …`);

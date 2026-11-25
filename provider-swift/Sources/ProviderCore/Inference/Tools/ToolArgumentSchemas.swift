@@ -136,9 +136,6 @@ extension ToolChoicePromptPolicy.Prepared {
     func withDeclaredTools(_ declared: [OpenAITool]?, modelType: String?) -> Self {
         var copy = self
         copy.declaredTools = declared
-        if !GLM5NextPromptPolicy.applies(modelType: modelType) {
-            copy.argumentTools = ToolArgumentSchemas.reading(rendered: tools, declared: declared)
-        }
         return copy
     }
 }

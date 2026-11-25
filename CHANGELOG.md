@@ -8,9 +8,65 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.18 — candidate (unpublished)
+## v0.10.19 — candidate (unpublished)
 
-Prepared on 2026-11-24; tagging and publication are separate steps.
+Prepared on 2026-11-25; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Inkling 2 Mini: log probabilities cover only the answer when thinking is off, hidden thinking no longer counts as reasoning tokens, and a request can require a tool call. darkbloom start keeps serving when one Autopilot model is still downloading.
+- **Pairs:** both Macs of a pair must run the same version, and a pair on 0.10.18 updates itself. `darkbloom update --rollback` puts back 0.10.18. If you roll one Mac of a pair back to an earlier version and then forward again, `darkbloom cluster` may report that the saved pair approval differs. If it does, approve the pair again.
+- **Turning a change off:** `DARKBLOOM_INKLING_FORCED_TOOLS=0` (Inkling 2 Mini requests with `tool_choice` `required` or a named function are prompt-forced only, as in 0.10.18).
+
+### `darkbloom start` with Autopilot no longer fails on a model an Autopilot download holds
+
+An ordinary start with Autopilot enrolled verifies every enrolled model on disk.
+When another process held one of them at that moment, for example an Autopilot
+download in progress, the whole start failed with "Could not validate every
+enrolled model". Now the start names that model, keeps it in the recorded
+Autopilot inventory unchanged, and serves as usual while at least one other
+enrolled model verified; the provider hashes the held model again when it
+starts. A build that fails its check, a model missing from disk or the catalog,
+or no longer eligible, and a start where no enrolled model verifies, still fail
+as before.
+
+### Inkling 2 Mini serves `tool_choice` `required` and named functions
+
+- For `tool_choice` `required` or a named function, Inkling 2 now frames the
+  call while sampling: after an optional thought it can only open a call to a
+  declared function (the named one, for a named choice), with a JSON body
+  that follows that function's parameter schema, then make another call when
+  parallel calls are allowed, or finish. It can no longer answer in text, so
+  these requests return a tool call instead of an error. Reasoning on and
+  off, streamed and not. `auto` and `none` are unchanged. No rendered prompt
+  changes.
+- `DARKBLOOM_INKLING_FORCED_TOOLS`: `off`, `false`, `0`, `none`, `no` or
+  `disabled` restores 0.10.18 (prompt-forced calls only).
+
+### Inkling 2 with thinking off reports no reasoning tokens
+
+With thinking turned off (`reasoning.enabled` false, `enable_thinking` false,
+or an effort of `none`, `off` or `0`), Inkling 2 Mini still writes a short
+thought, which the provider never returns. That thought is no longer counted
+in `completion_tokens_details.reasoning_tokens`, which is now 0 for these
+requests; its tokens still count in `completion_tokens`, so the billed total is
+unchanged. Thinking on, and reasoning another model withholds because the
+client declined to receive it (`reasoning.exclude`, `include_reasoning: false`),
+count as before.
+
+### Inkling 2 Mini: no logprob entries for a declined thought
+
+- An Inkling 2 Mini request with thinking off (`reasoning.enabled: false`,
+  `enable_thinking: false` or an effort of `none`) and `logprobs: true` no
+  longer returns the thought the model still writes as `logprobs` entries,
+  together with Inkling's frame markers such as `<|message_model|>` and
+  `<|content_thinking|>`. Only tokens of the answer and of call messages keep
+  their entries, in streamed and non-streamed responses alike, on the local
+  API and through the coordinator. The answer text is unchanged.
+
+## v0.10.18
+
+Published 2026-11-25 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.18)).
 
 ### Upgrade and rollout notes
 

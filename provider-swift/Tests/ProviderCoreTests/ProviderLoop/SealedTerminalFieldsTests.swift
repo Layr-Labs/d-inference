@@ -73,6 +73,22 @@ struct SealedTerminalFieldsTests {
         var signerPublicKey: String
     }
 
+    /// A request whose stop sequence ends it: the fixture's tokenizer decodes
+    /// every token as "a".
+    static func stoppingRequest() throws -> Data {
+        try JSONSerialization.data(withJSONObject: [
+            "model": ServeLoopFixture.modelId,
+            "messages": [["role": "user", "content": "fixture"]],
+            "max_tokens": 4, "stream": true, "reasoning_parser": "none", "stop": ["a"],
+        ])
+    }
+
+    static func finishWithStop(_ continuation: AsyncStream<CBv2Event>.Continuation) {
+        continuation.yield(.delta(text: "a", tokens: [5], logprobs: nil))
+        continuation.yield(.finished(reason: .stop, usage: .init(promptTokens: 3, completionTokens: 1)))
+        continuation.finish()
+    }
+
     /// Serves one request whose stop sequence ends it, after a trust status
     /// with `coordinatorFeatures` (and then one with `thenFeatures`, if given).
     func serve(coordinatorFeatures: [String]?, thenFeatures: [String]? = nil) async throws -> Run {
@@ -86,21 +102,11 @@ struct SealedTerminalFieldsTests {
                 trustLevel: "hardware", status: "normal", coordinatorFeatures: thenFeatures))
         }
 
-        // The fixture's tokenizer decodes every token as "a", so the stop
-        // sequence "a" is the one that ends the response.
         let consumer = NodeKeyPair.generate()
         let requestId = "terminal-fields-\(UUID().uuidString)"
-        try await fixture.pushChatRequest(requestId: requestId, consumer: consumer,
-            body: JSONSerialization.data(withJSONObject: [
-                "model": ServeLoopFixture.modelId,
-                "messages": [["role": "user", "content": "fixture"]],
-                "max_tokens": 4, "stream": true, "reasoning_parser": "none", "stop": ["a"],
-            ]))
+        try await fixture.pushChatRequest(requestId: requestId, consumer: consumer, body: Self.stoppingRequest())
         try await fixture.awaitSubmissions(1)
-        let continuation = fixture.engine.continuations[0]
-        continuation.yield(.delta(text: "a", tokens: [5], logprobs: nil))
-        continuation.yield(.finished(reason: .stop, usage: .init(promptTokens: 3, completionTokens: 1)))
-        continuation.finish()
+        Self.finishWithStop(fixture.engine.continuations[0])
 
         let done = try await fixture.mock.waitForSnapshot(timeout: .seconds(10)) {
             $0.inferenceComplete.contains { $0.requestId == requestId }

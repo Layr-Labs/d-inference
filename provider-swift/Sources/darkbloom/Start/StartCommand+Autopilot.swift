@@ -99,7 +99,9 @@ extension Start {
         runtimeCapabilities: Set<ProviderRuntimeCapability>, approved: Set<String>? = nil,
         verifying: (String) -> Void = { _ in },
         verify: (CatalogModel) async throws -> Void,
-        excluded: (String, any Error) -> Void = { _, _ in }
+        excluded: (String, any Error) -> Void = { _, _ in },
+        // Red control: declared so the new tests compile; never called.
+        keptUnverified: (String) -> Void = { _ in }
     ) async throws -> [String] {
         let byID = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var verified: [String] = []

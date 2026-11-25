@@ -64,7 +64,45 @@ struct AutopilotInventoryTests {
         #expect(refreshed == ["newly-downloaded", "previous"])
     }
 
-    @Test(arguments: ["transient-verification", "missing-local", "removed-catalog", "ineligible"])
+    /// An enrolled model that is on disk and eligible but whose verification fails now (its download lease held by
+    /// an Autopilot download in progress) doesn't stop the start: the others are served, the recorded inventory is
+    /// saved unchanged, and the model is named.
+    @Test func anEnrolledModelThatCannotBeVerifiedNowKeepsTheStartAndTheRecordedInventory() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        var config = ProviderConfig(provider: ProviderSettings(name: "held-lease"))
+        config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
+            paused: true, selectedModels: ["a", "b"], revision: "recorded")
+        try ConfigManager.save(config, to: path)
+        var kept: [String] = []
+        let inventory = try await Start.verifiedAutopilotInventory(local: [local("a"), local("b")],
+            catalog: [catalog("a"), catalog("b")], memoryGb: 64, runtimeCapabilities: [], approved: ["a", "b"],
+            verify: { entry in
+                if entry.id == "b" { throw CocoaError(.fileLocking) }
+            }, keptUnverified: { kept.append($0) })
+        #expect(inventory == ["a", "b"])
+        #expect(kept == ["b"])
+        var stops = 0, installs = 0
+        try await Start.completeDaemonReplacement(autopilot: true, models: inventory, configPath: path.path,
+            stop: { stops += 1 }, install: { installs += 1 })
+        #expect(stops == 1 && installs == 1)
+        #expect(try ConfigManager.load(from: path).backend.modelAutopilot.selectedModels == ["a", "b"])
+    }
+
+    /// When no enrolled model verifies, the start still refuses, naming the retry.
+    @Test func everyEnrolledModelUnverifiableStillRefuses() async {
+        var kept: [String] = []
+        await #expect(throws: (any Error).self) {
+            try await Start.verifiedAutopilotInventory(local: [local("a"), local("b")],
+                catalog: [catalog("a"), catalog("b")], memoryGb: 64, runtimeCapabilities: [], approved: ["a", "b"],
+                verify: { _ in throw CocoaError(.fileLocking) }, keptUnverified: { kept.append($0) })
+        }
+        #expect(kept.isEmpty)
+    }
+
+    @Test(arguments: ["missing-local", "removed-catalog", "ineligible"])
     func ordinaryStartCannotPersistPartialRecordedInventory(failure: String) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -80,11 +118,7 @@ struct AutopilotInventoryTests {
             : [catalog("a"), catalog("b", capabilities: failure == "ineligible" ? [.mlxNAX] : nil)]
         await #expect(throws: (any Error).self) {
             let inventory = try await Start.verifiedAutopilotInventory(local: models, catalog: entries,
-                memoryGb: 64, runtimeCapabilities: [], approved: ["a", "b"], verify: { entry in
-                    if failure == "transient-verification" && entry.id == "b" {
-                        throw URLError(.timedOut)
-                    }
-                })
+                memoryGb: 64, runtimeCapabilities: [], approved: ["a", "b"], verify: { _ in })
             try await Start.completeDaemonReplacement(autopilot: true, models: inventory,
                 configPath: path.path, stop: { Issue.record("Partial validation must not stop the daemon") },
                 install: { Issue.record("Partial validation must not install a replacement") })

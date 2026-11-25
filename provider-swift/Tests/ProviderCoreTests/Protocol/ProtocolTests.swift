@@ -465,7 +465,8 @@ private func fullyPopulatedRegister(attestation: RawJSON) throws -> ProviderMess
         clusterModels: [sampleModel()],
         clusterMembership: membership,
         busy: ProviderBusy(reason: .addon, sinceMs: 1_700_000_000_000, addon: "io.darkbloom.sandbox"),
-        gemmaPromptContract: 2)
+        gemmaPromptContract: 2,
+        terminalFieldsSealed: 1)
 }
 
 /// The fields of `register` left empty (nil, empty, `false`, zero or the solo
@@ -1686,11 +1687,17 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(profileObject["mlx_peak_bytes"] as? Int64 == 1 << 48)
     #expect(profileObject["deadline_mode"] as? String == "projected")
     #expect(profileObject["cancel_stage"] as? String == "post_terminal")
-    #expect((profileObject["engine"] as? [String: Any])?["finish_reason"] as? String == "stop_sequence")
+    // The clear profile names a stop string's finish as `stop`.
+    #expect((profileObject["engine"] as? [String: Any])?["finish_reason"] as? String == "stop")
+    var clearProfile = profile
+    clearProfile.engine?.finishReason = .stop
     let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: withData)
-    #expect(decoded == with)
+    #expect(decoded == ProviderMessage.inferenceComplete(ProviderMessage.InferenceComplete(
+        requestId: "req-profile",
+        usage: UsageInfo(promptTokens: 12, completionTokens: 34),
+        profile: clearProfile)))
     guard case .inferenceComplete(let c) = decoded else { throw TestFailure.unexpectedMessage }
-    #expect(c.profile == profile)
+    #expect(c.profile == clearProfile)
 
     // Absent → key omitted (mirrors Go `omitempty`), round-trips to nil, and
     // the legacy wire shape is untouched.
@@ -1802,6 +1809,10 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(
         EngineFinishReason.allCases.map(\.rawValue)
             == ["stop", "length", "stop_sequence", "cancelled", "error", "other"])
+    // The clear profile carries only `stop`, `length`, `cancelled` and `error`.
+    #expect(
+        EngineFinishReason.allCases.map(\.clearWireValue.rawValue)
+            == ["stop", "length", "stop", "cancelled", "error", "stop"])
     #expect(
         MemoryPressureLevelWire.allCases.map(\.rawValue)
             == ["normal", "warning", "critical", "other"])
@@ -2189,9 +2200,13 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     else { throw TestFailure.unexpectedMessage }
     #expect(e.profile == over.saturatedToWireRanges())
 
-    // Idempotent: an in-range profile is byte-identical with or without it.
+    // An in-range profile is unchanged but for the clear finish reason, and
+    // saturating twice changes nothing more.
     let inRange = fullInferenceProfile()
-    #expect(inRange.saturatedToWireRanges() == inRange)
+    var clearInRange = inRange
+    clearInRange.engine?.finishReason = .stop
+    #expect(inRange.saturatedToWireRanges() == clearInRange)
+    #expect(clearInRange.saturatedToWireRanges() == clearInRange)
 }
 
 private func sampleHardware() -> HardwareInfo {

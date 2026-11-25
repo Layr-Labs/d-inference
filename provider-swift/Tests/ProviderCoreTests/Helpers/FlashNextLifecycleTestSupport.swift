@@ -61,7 +61,7 @@ final class FlashNextLifecycleRecorder: @unchecked Sendable {
                 try #require(plaintext.isEmpty && encrypted != nil, "Response must remain encrypted")
                 let data = try receiver.decryptPayload(#require(encrypted))
                 try output.consume(data)
-            case .inferenceComplete(let id, let usage, _, _, _, _, _) where id == requestID:
+            case .inferenceComplete(let id, let usage, _, _) where id == requestID:
                 output.completions += 1
                 output.usage = usage
             case .inferenceError(let id, let failure, _) where id == requestID:

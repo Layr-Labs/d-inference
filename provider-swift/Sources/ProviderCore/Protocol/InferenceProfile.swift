@@ -92,6 +92,17 @@ public enum EngineFinishReason: String, ProfilerFoldingEnum {
     case cancelled
     case error
     case other
+
+    /// The value the clear profile carries: `stop`, `length`, `cancelled` or
+    /// `error`. A stop string, and anything outside that set, reads as `stop`;
+    /// which stop string ended the response travels only in the sealed usage
+    /// (`SealedTerminalFields`).
+    public var clearWireValue: EngineFinishReason {
+        switch self {
+        case .stopSequence, .other: .stop
+        case .stop, .length, .cancelled, .error: self
+        }
+    }
 }
 
 /// Last kernel memory-pressure level observed by `MemoryPressureMonitor`.
@@ -433,6 +444,7 @@ extension EngineProfile {
         e.detokDelayFirstNs = ns(e.detokDelayFirstNs)
         e.prefixLookupNs = ns(e.prefixLookupNs)
         e.prefixAdoptionNs = ns(e.prefixAdoptionNs)
+        e.finishReason = e.finishReason?.clearWireValue
         return e
     }
 }

@@ -473,10 +473,12 @@ public final class MockCoordinator: @unchecked Sendable {
     }
 
     /// Force-close the active provider WebSocket so the provider's reconnect
-    /// loop kicks in. The close frame carries `closeCode` and `reason`, so a
-    /// test can inject the close that the edge sends on a Conductor change (1012).
+    /// loop kicks in. The close frame carries `closeCode` and `reason`: an
+    /// ordinary close (1000) by default, so a test can inject a close that the
+    /// server side sends to every provider at once (1001, or 1012 from the edge
+    /// on a Conductor change).
     public func dropActiveWebSocket(
-        closeCode: UInt16 = 1001, reason: String? = "mock dropping"
+        closeCode: UInt16 = 1000, reason: String? = "mock dropping"
     ) async {
         let outbound: WebSocketOutboundWriter? = lock.withLock {
             let o = self.activeOutbound

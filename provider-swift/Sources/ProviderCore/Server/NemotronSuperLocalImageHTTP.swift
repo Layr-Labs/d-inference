@@ -14,6 +14,11 @@ import MLXVLM
 /// coordinator and local-endpoint requests through
 /// `engine(body:hasMedia:cacheScope:)`. The type name predates text support.
 struct NemotronSuperLocalImageHTTP: Sendable {
+    /// Makes one request's call grammar from its plan, raw body, submitted
+    /// prompt and the output the bridge resolves for that prompt
+    /// (`NemotronSuperToolGrammar`); nil: none.
+    typealias ToolGrammar = @Sendable (NemotronSuperRequestPlan, Data, [Int], Int) -> (any CBv2TokenConstraint)?
+
     private let images: NemotronSuperLocalImageBinding
     private let text: NemotronSuperLocalBinding
     private let tokenizer: TokenizerHandle
@@ -22,6 +27,8 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// The longest a media request waits for a busy slot
     /// (`NemotronSuperServingPolicy.stackedMediaWait`); only a test shortens it.
     private let stackedMediaWait: Duration
+    /// Replaces `NemotronSuperToolGrammar`; only a test sets it.
+    private var toolGrammar: ToolGrammar?
 
     init(owner: NemotronSuperLocalBridgeBuilder.Owner, templateBytes: Data,
          stackedMediaWait: Duration = NemotronSuperServingPolicy.stackedMediaWait) throws {
@@ -35,6 +42,14 @@ struct NemotronSuperLocalImageHTTP: Sendable {
         self.owner = owner
         self.stackedMediaWait = stackedMediaWait
     }
+
+    #if DEBUG
+    /// TEST SEAM (debug builds only): `toolGrammar` replaces the call grammar's construction.
+    init(owner: NemotronSuperLocalBridgeBuilder.Owner, templateBytes: Data, toolGrammar: @escaping ToolGrammar) throws {
+        try self.init(owner: owner, templateBytes: templateBytes)
+        self.toolGrammar = toolGrammar
+    }
+    #endif
 
     /// The model id every request must name.
     var modelID: String { owner.modelID }
@@ -58,10 +73,11 @@ struct NemotronSuperLocalImageHTTP: Sendable {
 
     func service(body: Data, request: OpenAIChatCompletionRequest,
                  responseStore: InMemoryResponseStore, metrics: ServerMetrics,
-                 logprobs: EngineV2LogprobsChannel? = nil) -> MLXOpenAIService? {
+                 logprobs: EngineV2LogprobsChannel? = nil,
+                 cachePolicy: RequestCachePolicy = .default) -> MLXOpenAIService? {
         guard request.model == owner.modelID else { return nil }
         return MLXOpenAIService(engine: engine(body: body, hasMedia: MediaIngest.hasMedia(request),
-                                               logprobs: logprobs),
+                                               logprobs: logprobs, cachePolicy: cachePolicy),
             responseStore: responseStore, metrics: metrics)
     }
 
@@ -84,14 +100,16 @@ struct NemotronSuperLocalImageHTTP: Sendable {
                 logprobs: EngineV2LogprobsChannel? = nil,
                 usageSignal: EngineV2RequestUsageSignal? = nil,
                 donationDemand: SSDCheckpointDonationDemand? = nil,
+                cachePolicy: RequestCachePolicy = .default,
                 firstContentDeadline: FirstContentDeadline? = nil,
                 cancelCause: (@Sendable () -> InferenceEarlyEndCause?)? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
                                cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
                                logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand,
+                               cachePolicy: cachePolicy,
                                firstContentDeadline: firstContentDeadline, cancelCause: cancelCause,
-                               stackedMediaWait: stackedMediaWait)
+                               stackedMediaWait: stackedMediaWait, toolGrammar: toolGrammar)
     }
 }
 
@@ -115,12 +133,16 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let usageSignal: EngineV2RequestUsageSignal?
     /// The coordinator's repeat hint for a text request's durable checkpoint write.
     let donationDemand: SSDCheckpointDonationDemand?
+    /// The sealed cache policy for a text request's prefix reuse.
+    let cachePolicy: RequestCachePolicy
     /// The coordinator's first-content deadline; nil for a local request.
     let firstContentDeadline: FirstContentDeadline?
     /// Why the request was cancelled, if it was; nil without a cancellation token.
     let cancelCause: (@Sendable () -> InferenceEarlyEndCause?)?
     /// The hook's bound on a media request's wait for a busy slot.
     let stackedMediaWait: Duration
+    /// A test's call grammar; nil builds `NemotronSuperToolGrammar`'s.
+    let toolGrammar: NemotronSuperLocalImageHTTP.ToolGrammar?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -163,7 +185,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
         var admissionTransferred = false
         defer { if !admissionTransferred { owner.finishLocalRequest(progress) } }
         let output: NemotronSuperLocalOutput
-        let completeLogprobs: NemotronSuperCompleteLogprobs?
+        let carriedLogprobs: NemotronSuperCarriedLogprobs?
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
         // The engine records reused prompt tokens here before terminal usage.
         var textUsage: EngineV2RequestUsageSignal?
@@ -172,21 +194,38 @@ private struct SuperHTTPEngine: MLXServerEngine {
                                                     trustsSchemaMetadata: trustsSchemaMetadata)
             let streaming = request.stream == true
             output = try NemotronSuperLocalOutput(plan: plan, streaming: streaming)
-            let requested = plan.topLogprobs > 0 ? self.logprobs : nil
-            // A stream's frames select its entries; a complete response carries the same ones.
-            completeLogprobs = try streaming ? nil
-                : requested.map { try NemotronSuperCompleteLogprobs(plan: plan, carried: $0) }
-            let logprobs = completeLogprobs?.produced ?? requested
+            // The relay hands the caller's channel the entries the output
+            // shows, before the output's events; a complete response carries
+            // the same ones as its stream.
+            carriedLogprobs = try (plan.topLogprobs > 0 ? self.logprobs : nil).map {
+                try NemotronSuperCarriedLogprobs(plan: plan, streaming: streaming, carried: $0)
+            }
+            let logprobs = carriedLogprobs?.produced
+            // `auto` calls sample under the call grammar, on text and media
+            // alike (`NemotronSuperToolGrammar`); a declined request is served as before.
+            let bridge = owner.bridge, body = self.body, toolGrammar = self.toolGrammar
+            let servesPair = await bridge.servesDistributedPair, nativeTracked = await bridge.tracksNativeShutdown
+            let runsTokenConstraints = !servesPair && !nativeTracked
+            let toolConstraint: @Sendable ([Int]) -> (any CBv2TokenConstraint)? = { tokens in
+                // The engine refuses a constraint whose budget differs from its request's.
+                let maxTokens = bridge.outputTokens(requested: plan.request.maxTokens, promptTokens: tokens.count)
+                if let toolGrammar { return toolGrammar(plan, body, tokens, maxTokens) }
+                return NemotronSuperToolGrammar.constraint(plan: plan, body: body, tokenizer: bridge.tokenizer,
+                    promptTokens: tokens, stopTokenIDs: bridge.stopTokenIds, maxTokens: maxTokens,
+                    runsTokenConstraints: runsTokenConstraints)
+            }
             switch route {
             case .image(let images):
                 // The same plan as text: its tools, tool choice and response
                 // format reach the media prompt, and `output` validates the answer.
-                let body = self.body, template = self.template, cacheScope = self.cacheScope
+                let template = self.template, cacheScope = self.cacheScope, cachePolicy = self.cachePolicy
                 execute = { onEvent in
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,
-                                                cacheScope: cacheScope, logprobs: logprobs,
+                                                cacheScope: cacheScope, cachePolicy: cachePolicy, logprobs: logprobs,
                                                 stackedUntil: stackedUntil,
                                                 admitPrompt: { try owner.admitFirstContent(progress, kind: $0, promptTokens: $1) },
+                                                laneWaited: { owner.noteMediaLaneWait(progress) },
+                                                toolConstraint: toolConstraint,
                                                 onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):
@@ -196,19 +235,22 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 try owner.admitFirstContent(progress, kind: .text, promptTokens: tokens.count)
                 let translated = plan.bridgeRequest
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
-                let donationDemand = self.donationDemand
+                let donationDemand = self.donationDemand, cachePolicy = self.cachePolicy
+                let tokenConstraint = toolConstraint(tokens)
                 let loopGuard = plan.loopGuard(
-                    exitThinking: plan.exitThinking(promptTokens: tokens, tokenizer: tokenizer.inner))
+                    exitThinking: plan.exitThinking(promptTokens: tokens, tokenizer: tokenizer.inner),
+                    tokenConstraint: tokenConstraint)
                 textUsage = usageSignal
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
                                           cacheScope: cacheScope, logprobs: logprobs, usageSignal: usageSignal,
-                                          donationDemand: donationDemand, loopGuard: loopGuard, onEvent: onEvent)
+                                          donationDemand: donationDemand, cachePolicy: cachePolicy,
+                                          loopGuard: loopGuard, tokenConstraint: tokenConstraint, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
-        let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output, logprobs: completeLogprobs,
+        let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output, logprobs: carriedLogprobs,
                                         usageSignal: textUsage,
                                         onFirstChunk: { owner.noteLocalFirstChunk(progress) },
                                         onAnswerEnded: { owner.noteLocalAnswerEnded(progress) })
@@ -389,8 +431,8 @@ enum SuperHTTPErrors {
 actor SuperImageHTTPRelay {
     private let continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation
     private var output: NemotronSuperLocalOutput
-    /// A complete response's logprob entries; nil when streamed or not requested.
-    private var logprobs: NemotronSuperCompleteLogprobs?
+    /// The response's logprob entries; nil when not requested.
+    private var logprobs: NemotronSuperCarriedLogprobs?
     private var startup: Result<Void, Error>?
     private var waiter: CheckedContinuation<Void, Error>?
     private var terminal: ServerGenerationInfo?
@@ -408,7 +450,7 @@ actor SuperImageHTTPRelay {
     private nonisolated let cancellation = SuperImageHTTPCancellation()
 
     init(continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
-         output: NemotronSuperLocalOutput, logprobs: NemotronSuperCompleteLogprobs? = nil,
+         output: NemotronSuperLocalOutput, logprobs: NemotronSuperCarriedLogprobs? = nil,
          usageSignal: EngineV2RequestUsageSignal? = nil, onFirstChunk: (@Sendable () -> Void)? = nil,
          onAnswerEnded: (@Sendable () -> Void)? = nil) {
         self.continuation = continuation
@@ -444,8 +486,10 @@ actor SuperImageHTTPRelay {
                 onFirstChunk?()
             }
             do {
-                yield(try output.append(text))
-                logprobs?.accept(text)
+                let events = try output.append(text)
+                // Before the events: a frame that shows them finds their entries.
+                logprobs?.accept(text, events: events)
+                yield(events)
                 // Held output (structured content, tool calls) yields nothing
                 // until finish; generation has started all the same.
                 if failure == nil { started(.success(())) }
@@ -480,10 +524,13 @@ actor SuperImageHTTPRelay {
         }
         let cutAtLimit = output.plan.toolPolicy.cutAtLimit(finishReason: terminal.stopReason)
         let truncated = terminal.stopReason == "length"
-        do { yield(try output.finish(cutAtLimit: cutAtLimit, truncated: truncated).events) }
+        let events: [MLXServerGenerationEvent]
+        do { events = try output.finish(cutAtLimit: cutAtLimit, truncated: truncated).events }
         catch { fail(SuperHTTPErrors.map(error, media: false)); return }
-        // Before the stream ends: the response reads its entries once it has.
-        logprobs?.finish(cutAtLimit: cutAtLimit)
+        // Before the events, and so before the stream ends: a complete
+        // response reads its entries once it has.
+        logprobs?.finish(cutAtLimit: cutAtLimit, events: events)
+        yield(events)
         if let failure { fail(failure); return }
         yield([.info(terminal)])
         if let failure { fail(failure); return }

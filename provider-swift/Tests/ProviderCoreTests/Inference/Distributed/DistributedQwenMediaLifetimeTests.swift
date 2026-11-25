@@ -107,13 +107,27 @@ struct DistributedQwenMediaLifetimeTests {
         #expect(record.values == ["released"])
     }
 
-    @Test func cancelledSubmitStillWaitsForProducerAndNative() async throws {
+    /// Suspends until the calling task is cancelled (at once when it already is).
+    private static func untilCancelled() async {
+        let cancelled = AsyncStream<Void>.makeStream()
+        await withTaskCancellationHandler {
+            for await _ in cancelled.stream {}
+        } onCancel: { cancelled.continuation.finish() }
+    }
+
+    /// The submission's producer runs in its own task, and the submission
+    /// forwards its cancel once it waits for that task, which can be after the
+    /// producer reached the gate. So the producer waits for the forwarded
+    /// cancel itself instead of checking for it as soon as the gate opens.
+    @Test(.timeLimit(.minutes(1)))
+    func cancelledSubmitStillWaitsForProducerAndNative() async throws {
         let record = Record(), gate = Gate()
         let resource = owner(record)
         let task = Task {
             try await resource.withSubmission(requestID: "one") { _, key in
                 record.save(key); try resource.requireNativeRetirement(key)
                 await gate.wait()
+                await Self.untilCancelled()
                 try Task.checkCancellation()
             }
         }

@@ -178,6 +178,18 @@ class CacheIdentityTests(unittest.TestCase):
         for lane in cache.LANE_PURPOSES:
             self.assertFalse(any(name.startswith("rust-") for name in self.keys(lane)))
 
+    def test_lane_purposes_name_the_debug_info_format(self):
+        # Without DWARF, SwiftPM recompiles every object of a build with it and
+        # keeps that build's stale dSYMs, so the two never share any tier.
+        action = (SCRIPT.parent.parent / ".github/actions/provider-ci-build/action.yml").read_text()
+        _, provider_and_cluster = action.split("id: provider-build\n", 1)
+        provider, cluster = provider_and_cluster.split("id: cluster-build\n", 1)
+        builds = {"provider": provider, "cluster": cluster.split("- name:", 1)[0]}
+        self.assertEqual(set(builds), set(cache.LANE_PURPOSES))
+        for lane, build in builds.items():
+            with self.subTest(lane=lane):
+                self.assertEqual("no-dwarf" in cache.LANE_PURPOSES[lane], "-debug-info-format none" in build)
+
     def test_toolchain_sdk_arch_os_and_flags_split_compatibility(self):
         before = {lane: self.keys(lane) for lane in cache.LANE_PURPOSES}
         sources = cache.tracked.inventory(self.root)

@@ -63,18 +63,20 @@ struct NemotronSuperRequestPlan: Sendable {
 
     var hasMedia: Bool { MediaIngest.hasMedia(request) }
 
-    /// The text request's loop guard: the scheduler's text path policy
-    /// (`GenerationLoopGuardPolicy`), so the same model list, exclusions and
-    /// `DARKBLOOM_LOOP_GUARD` switch. Media requests get none, as there.
-    /// `exitThinking`: this request's way out of a repeating thought
-    /// (`exitThinking(promptTokens:tokenizer:)`).
+    /// The request's loop guard, text, image or video alike: the scheduler's
+    /// policy (`GenerationLoopGuardPolicy`), so the same model list, exclusions
+    /// and `DARKBLOOM_LOOP_GUARD` switch, as one Mac's image and video requests
+    /// take it there. `exitThinking`: this request's way out of a repeating
+    /// thought (`exitThinking(promptTokens:tokenizer:)`, text only).
+    /// `tokenConstraint`: the request's call grammar (`NemotronSuperToolGrammar`),
+    /// which keeps the guard but not the exit, as on the scheduler's text path.
     func loopGuard(
         setting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
-        exitThinking: GenerationLoopExitThinking? = nil
+        exitThinking: GenerationLoopExitThinking? = nil,
+        tokenConstraint: (any CBv2TokenConstraint)? = nil
     ) -> GenerationLoopGuard? {
-        guard !hasMedia else { return nil }
-        return GenerationLoopGuardPolicy.resolve(modelType: Self.modelType, request: request,
-            prepared: toolPolicy, tokenConstraint: nil, setting: setting, exitThinking: exitThinking)
+        GenerationLoopGuardPolicy.resolve(modelType: Self.modelType, request: request,
+            prepared: toolPolicy, tokenConstraint: tokenConstraint, setting: setting, exitThinking: exitThinking)
     }
 
     /// The exit for a text request's rendered prompt, as the scheduler's text

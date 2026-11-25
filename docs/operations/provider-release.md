@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-25
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -22,45 +22,57 @@ publishes a dev release. DevNet runs the d-inference `dev` branch from end to
 end: its dev releases come from `.github/workflows/release-dev-branch.yml`.
 
 `.github/workflows/release-swift.yml` is the thin caller that routes each trigger
-to at most one environment lane. The reusable `.github/workflows/release-provider.yml`
-runs the resolve, build, qualification, signing, R2 staging and publication
-chain for one environment. To find the newest dev release, read
+to at most one environment lane. The reusable `.github/workflows/release-qualify.yml`
+runs the SDK qualification with no secrets first; then the reusable
+`.github/workflows/release-provider.yml` runs the resolve, build, signing, R2
+staging and publication chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.16`, a patch release over `v0.10.15`
-with the changes listed in the [`v0.10.16` changelog entry](../../CHANGELOG.md): bug fixes, performance and security posture improvements.
+`ProviderCore.version` is prepared as `0.10.19`, a patch release over `v0.10.18`
+with the changes listed in the [`v0.10.19` changelog entry](../../CHANGELOG.md): Inkling 2 Mini fixes and a startup fix.
 
-Before tagging `v0.10.16`:
+Before tagging `v0.10.19`:
 
+- Full CI green on the release PR's final head (every required job, SDK 27
+  qualification, Release Integrity); no run is waived. The fixes were composed on
+  `v0.10.18`'s tree, so the release PR's head descends from `master`.
 - Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as in v0.10.15;
-  `libs/mlx-swift-lm` moves from `d3097afc60` to `4144be23e5` (its `main`); the tag
-  build's `metallib_hash` should equal v0.10.15's `5b97893c…70ac`.
+- Pins, unchanged from `v0.10.18`: `libs/mlx` `72dffa2dbbdce95601fd84f5e8b6d7b4ec97a11b`, `libs/mlx-swift` `b1c94d29c5ddff16838fdc25b83fbe8fde48b3e8`, `libs/mlx-swift-lm` `10c5a332ee86c6704a4e79502b48be0aaa4750b4`. Compare the packaged Metal library and
+  application inventory with the manifests for this exact build.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree; expect 12 models, 11 grants, 18 qualifications, as v0.10.15.
-- Catalog room: v0.10.15 holds 24 approvals and v0.10.16 adds two per model;
-  v0.10.14's are left out. Pairs still on 0.10.14 stop serving through Darkbloom
+  tree; compare the model, grant and qualification counts with the verified facts (12 models, 11 grants, 18 qualifications).
+- Catalog room: v0.10.18 holds 24 approvals and v0.10.19 adds two per model;
+  v0.10.17's are left out. Pairs still on 0.10.17 stop serving through Darkbloom
   until they update.
 - The release is signed by a listed certificate (`DarkbloomSigningIdentity.certificateSHA1s`;
   the workflow fails closed otherwise). The listed certificate can't sign after 2027-02-01: a
   release listing its replacement is due by mid-January 2027 ("Signing Certificates" below).
+- The tag's run builds, signs, stages and publishes by itself; the `prod`
+  environment it deploys to restricts which refs may deploy and has no reviewers.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.16`, keeps the plain-build default `prod`, holds the GitHub release
-  notes ([`docs/releases/provider-v0.10.16.md`](../releases/provider-v0.10.16.md)),
+  `0.10.19`, keeps the plain-build default `prod`, holds the GitHub release
+  notes ([`docs/releases/provider-v0.10.19.md`](../releases/provider-v0.10.19.md)),
   and its `changelog.d/` holds only `README.md`.
 
 After publish: the coordinator snapshot PR (pin + `LatestProviderVersion`
-0.10.16) rides the next coordinator update. Set the GitHub release body from
+0.10.19) rides the next coordinator update. Set the GitHub release body from
 those notes only if the release run did not.
 
+`v0.10.18` was [published on 2026-11-25](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.18)
+from `0174ccf83e26fb0d62245ec3bb17afb8b86474f1` (notes:
+[`docs/releases/provider-v0.10.18.md`](../releases/provider-v0.10.18.md)),
+`v0.10.17` was [published on 2026-11-21](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.17)
+from `568ed5b75cd557c0cf2e2bba0aa5028b23246a0c` (notes:
+[`docs/releases/provider-v0.10.17.md`](../releases/provider-v0.10.17.md)),
+`v0.10.16` was [published on 2026-11-19](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.16)
+from `e13592e9034479d0f62802e0e917a5a41c73e077` (notes:
+[`docs/releases/provider-v0.10.16.md`](../releases/provider-v0.10.16.md)),
 `v0.10.15` was [published on 2026-11-18](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.15)
 from `a19fe108158259a7077ca20bbfa62400028a2952` (notes:
-[`docs/releases/provider-v0.10.15.md`](../releases/provider-v0.10.15.md)),
-`v0.10.14` was [published on 2026-11-17](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.14)
-from `d8af266202171767c00aedf9ee327c309174ecf8`. Publication does not
+[`docs/releases/provider-v0.10.15.md`](../releases/provider-v0.10.15.md)). Publication does not
 establish that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -175,6 +187,16 @@ refreshed platform snapshot carries that wording.
 The served installer still names `darkbloom enroll`, so that hidden command keeps
 running (`provider-swift/Sources/darkbloom/EnrollCommand.swift`).
 
+The release sets these modes before signing. `scripts/provider-signing-validation.py`
+`stage` (`copy_executable`) gives the CLI, the enclave and fan helpers and both
+cluster helpers mode `0755`, whatever mode the build left: a build under
+`umask 077` leaves its products `0700`. `unpack` (`check_executable_modes`)
+refuses an unsigned app in which any of them, or any other Mach-O file in the
+app, is not a regular file with mode `0755` exactly. The signing job copies the
+unpacked app with `cp -pR`, so its own umask cannot change a mode, and runs
+`provider-signing-validation.py executable-modes` on the copy before the
+unsigned smoke and signing.
+
 ## Steps
 
 ### 1. Check Source And Artifact Version
@@ -242,15 +264,18 @@ not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 dispatched runs always use these Blacksmith runners. A pull-request run on a
 Darkbloom Sandbox that the plane gave no Darkbloom cache skips every cache step
 of `.github/actions/provider-release-build`, so it builds cold
-([CI caching](../developer/build.md#ci-caching)). The release workflows never
-skip them.
+([CI caching](../developer/build.md#ci-caching)). The release workflows skip
+every cache step and always build cold: a routed job of the branch can write
+any cache key that a release would restore
+([release qualification on Darkbloom](../developer/build.md#release-qualification-on-darkbloom)).
+So the warmed caches speed up pull-request and CI builds only.
 
 The qualification lane prepares the bounded MiMo HTTP image fixtures before
 the full provider suite, including on cache hits. Keep that preparation as a
 separate step so its environment reaches the tests. See the
 [fixture recipe](../developer/test.md#mimo-regression-fixtures) for local runs.
 
-Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
+In release preparation, inspect each **SDK 27 build cache** summary and actual restore key. Compatible
 prefix hits are useful even when the exact-hit output is false. Compiler, SDK,
 dependency, checkout-path, environment or recipe changes require new compatible
 products. The Metal compiler must execute successfully; a downloaded but
@@ -351,7 +376,7 @@ The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 `DARKBLOOM_ENV_DEV`; defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
 `https://models.darkbloom.ai`
 (`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`).
-`qualify-sdk-shard` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
+`qualify-sdk-shard` (`release-qualify.yml`) sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
 production defaults on every branch: on `dev`, an unset value compiles the dev
 identity (`provider-swift/Package.swift`). Config and CLI flags still override
 defaults; `DARKBLOOM_R2_CDN_URL` does only in a debug build. Dev/prod products have different
@@ -580,14 +605,17 @@ from the default branch (`master`), the scheduled `gate` job runs on free
 HEAD moved past the last successful run with release-relevant changes, and
 dispatches `release-dev-branch.yml` on `refs/heads/dev`.
 
-Its `dev` job checks `github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'`
-and calls the reusable `release-provider.yml` with `environment: dev` and
-`secrets: inherit`. The reusable workflow runs the same chain as every release
-lane: the source gate, the build, the SDK qualification, Developer ID signing
-(`timeout-minutes: 90`), notarization and stapling, R2 staging and registration
-on the dev coordinator. All macOS release jobs stay on Blacksmith, while the
-four Linux orchestration jobs (`resolve-env`, `qualify-sdk`, `stage-release`,
-`publish-release`) run on free `ubuntu-24.04`. A dev-branch build therefore has
+Its jobs `qualify` and `dev` check `github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'`.
+Job `qualify` calls `release-qualify.yml` with read-only permissions and no
+secrets. After it passes, job `dev` calls the reusable `release-provider.yml`
+with `environment: dev` and `secrets: inherit`. Together they run the same chain
+as every release lane: the SDK qualification, the source gate, the build,
+Developer ID signing (`timeout-minutes: 90`), notarization and stapling, R2
+staging and registration on the dev coordinator. All macOS release jobs stay on
+Blacksmith, except the SDK qualification shards, which can run on a Darkbloom
+Sandbox. The Linux orchestration jobs (`resolve-env`, `stage-release`,
+`publish-release`, and `qualify-sdk` in `release-qualify.yml`) run on free
+`ubuntu-24.04`. A dev-branch build therefore has
 the same signature as a master build and passes the same checks: the fan-helper
 requirement of `scripts/install.sh` and the self-updater's
 `DarkbloomCodeSignature` production requirement. The scheduled `gate` checks
@@ -654,10 +682,21 @@ so the registered version must be exactly the version the app was signed as.
 
 ### 6. Sign, Stage And Register Exact Bytes
 
-After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes
-the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`, in the lane's
-[GitHub environment](#github-environments). `qualify-sdk` passes only when all five
-`qualify-sdk-shard` jobs pass and together executed the full provider suite.
+SDK qualification runs first, in `release-qualify.yml`, called by each
+caller's job `qualify` with no secrets. Its gate, `qualify-sdk`, passes only
+when all five `qualify-sdk-shard` jobs pass and together executed the full
+provider suite. Each shard records its executed counts, and shard 2 those of
+Prompt Parity, from Swift Testing's xUnit report and SwiftPM's stdout alone,
+never from the merged console
+([provider shard audit](../developer/test.md#provider-and-sdk)). The shards can run on a Darkbloom Sandbox (lane
+`release-qualify`, not in tag runs). The release call starts only after the
+gate passed, or on a resume. After `build-provider` succeeds,
+`build-and-release` consumes the source-bound unsigned artifact on
+`blacksmith-12vcpu-macos-27`, in the lane's
+[GitHub environment](#github-environments). It downloads exactly
+`build-provider`'s upload by artifact ID and checks the zip's SHA-256 against
+its digest, never by name
+([release qualification on Darkbloom](../developer/build.md#release-qualification-on-darkbloom)).
 Release SDK selection is SDK 27.2 / Apple Swift 6.4.2 (Xcode 27.2), with `SDKROOT` covering
 compilation and linking; the final recorded SDK must match. Before the
 handoff, the release lane runs `scripts/check-provider-weak-imports.py` on every

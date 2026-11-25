@@ -196,80 +196,87 @@ jobs:
         with:
           path: .git
           key: ${{ steps.git-cache.outputs.cache-primary-key }}
-      # A plain build of master must be prod and a plain build of dev must be
-      # dev. The target is the pull request's base branch, or the pushed branch.
-      - name: Check the provider's plain-build default for the target branch
+      # The checks below are independent: they run at the same time, at most
+      # one per CPU and in this order, longest first, and each one's output is
+      # printed whole, in this order, with its duration
+      # (scripts/run-concurrent-checks.py). Each gets its own TMPDIR; a test
+      # server binds an ephemeral port. Any failure fails the step once every
+      # check has run; no check is retried or given a time limit.
+      - name: Run the release integrity checks
         env:
+          # A plain build of master must be prod and a plain build of dev must be
+          # dev. The target is the pull request's base branch, or the pushed branch.
           TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
         run: |
-          python3 scripts/test-provider-build-default.py
-          python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"
-      - name: Validate changelog fragments
-        run: |
-          python3 scripts/test-changelog.py
-          make changelog-check
-      - name: Check provider release and installer integrity
-        run: |
-          ./scripts/check-release-version.sh
-          python3 scripts/test-provider-release-resolution.py
-          python3 scripts/test-provider-release-resume.py
-          python3 scripts/test-provider-release-toolchain.py
-          python3 scripts/test-provider-release-cache.py
-          python3 scripts/test-prepare-metal-toolchain.py
-          python3 scripts/test-provider-release-pipeline.py
-          python3 scripts/test-provider-release-publication.py
-          python3 scripts/test-provider-release-notes.py
-          python3 scripts/test-provider-cluster-runtime-models.py
-          python3 scripts/test-release-dev-branch.py
-          python3 scripts/test-signing-keychain.py
-          python3 scripts/test-desktop-release.py
-          python3 scripts/test-sign-desktop-app.py
-          python3 scripts/test-provider-release-artifact.py
-          python3 scripts/test-provider-signing-validation.py
-          python3 scripts/test-provider-identity.py
-          python3 scripts/test-signing-certificate-pins.py
+          python3 scripts/run-concurrent-checks.py <<'CHECKS'
+          # Advisory threat review with local HTTP fixtures; its budget suite
+          # is the longest check (72 s on 2026-11-20), so it starts first.
+          python3 .github/scripts/test-threat-budget.py
+          # Provider release and installer integrity; the route suite takes
+          # 40 s.
+          python3 scripts/test-darkbloom-route.py
+          # Serving qualification evidence and catalogs without a GPU.
+          python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
+          # Actual-call and bounded timing receipts without a GPU.
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
+          # SDK 27.2 back-deploys Date's >= and <=; pre-release macOS 27.2
+          # builds lack the symbols. The release build also checks the built
+          # binaries.
+          python3 scripts/test-check-date-comparisons.py
+          python3 scripts/check-date-comparisons.py
+          python3 scripts/test-check-provider-weak-imports.py
+          # The model registry workflow with loopback HTTP.
+          python3 scripts/test_model_registry_workflow.py
+          python3 scripts/test-ci-component-paths.py
           python3 scripts/test-provider-test-watchdog.py
-          python3 scripts/test-stage-test-metallib.py
+          python3 scripts/test-provider-signing-validation.py
+          python3 scripts/test-cluster-test-plan.py
+          python3 scripts/test-provider-cluster-runtime-models.py
+          # Native GPU CI routing without a GPU.
+          python3 scripts/test-native-gpu-ci.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
+          python3 scripts/test-provider-test-shards.py
+          python3 scripts/test-provider-identity.py
+          python3 scripts/test-provider-release-notes.py
+          python3 .github/scripts/test-threat-model-review.py
           python3 scripts/test-provider-ci-cache.py
           python3 scripts/test-provider-ci-workflow.py
-          python3 scripts/test-provider-test-shards.py
-          python3 scripts/test-cluster-test-plan.py
-          python3 scripts/test-ci-component-paths.py
-          python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-run-concurrent-checks.py
+          python3 scripts/test-provider-release-toolchain.py
+          python3 scripts/test-provider-release-pipeline.py
+          python3 scripts/test-provider-release-cache.py
+          python3 scripts/test-provider-release-resolution.py
+          python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-desktop-release.py
+          python3 scripts/test-stage-test-metallib.py
+          python3 scripts/test-provider-release-resume.py
+          python3 scripts/test-prepare-metal-toolchain.py
+          python3 scripts/test-release-dev-branch.py
+          python3 scripts/test-signing-keychain.py
+          python3 scripts/test-sign-desktop-app.py
+          python3 scripts/test-provider-release-artifact.py
+          python3 scripts/test-signing-certificate-pins.py
           python3 scripts/test-ci-tested-tree.py
           python3 scripts/test-prepare-prompt-fixtures.py
           python3 provider-swift/Tests/test_protocol_fixture_resources.py
           python3 scripts/test-app-attest-entitlements.py
+          ./scripts/check-release-version.sh
           ./scripts/test-setup-macos-homebrew.sh
-      # SDK 27.2 back-deploys Date's >= and <=; pre-release macOS 27.2 builds
-      # lack the symbols. The release build also checks the built binaries.
-      - name: Refuse back-deployed Date comparisons in provider source
-        run: |
-          python3 scripts/test-check-date-comparisons.py
-          python3 scripts/test-check-provider-weak-imports.py
-          python3 scripts/check-date-comparisons.py
-      - name: Test advisory threat review with local HTTP fixtures
-        run: |
-          python3 .github/scripts/test-threat-model-review.py
+          python3 .github/scripts/test-threat-bedrock.py
           python3 .github/scripts/test-threat-full-scan.py
           python3 .github/scripts/test-threat-ensemble.py
-          python3 .github/scripts/test-threat-budget.py
-          python3 .github/scripts/test-threat-bedrock.py
           python3 .github/scripts/test-threat-diagnostics.py
           python3 .github/scripts/test-threat-integration-scope.py
-      - name: Test native GPU CI routing without a GPU
-        run: python3 scripts/test-native-gpu-ci.py
-      - name: Test model registry workflow with loopback HTTP
-        run: python3 scripts/test_model_registry_workflow.py
-      - name: Test bounded MiMo provider fixture provisioning offline
-        run: python3 scripts/test-prepare-mimo-provider-fixtures.py
-      - name: Test serving qualification evidence and catalogs without a GPU
-        run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
-      - name: Test actual-call and bounded timing receipts without a GPU
-        run: |
+          # Bounded MiMo provider fixture provisioning, offline.
+          python3 scripts/test-prepare-mimo-provider-fixtures.py
           python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
-          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
-          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
+          # The provider's plain-build default for the target branch.
+          python3 scripts/test-provider-build-default.py
+          python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"
+          # Changelog fragments.
+          python3 scripts/test-changelog.py
+          make changelog-check
+          CHECKS
 
   docs:
     name: Docs Lint

@@ -40,6 +40,9 @@ struct OwnerMemoryWait: Sendable {
 
     static let environmentName = "DARKBLOOM_LOCAL_MEMORY_WAIT_SECONDS"
     static let firstTokenWaitEnvironmentName = "DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT"
+    /// `0`, `false`, `no` or `off` (`waitsForSharedGrant`): a GLM request that fits GLM alone but not its share beside
+    /// other loaded models is refused at once as larger than memory, with 0.10.17's busy words, as 0.10.17 did.
+    static let sharedGrantWaitEnvironmentName = "DARKBLOOM_GLM_SHARED_GRANT_WAIT"
     /// A request's own bound on its wait, in whole seconds; `0` refuses it at once when it can't start.
     static let requestLimitHeaderName = "X-Darkbloom-Max-Wait"
     /// The longest bound a setting or a request may name: far past any wait, and far from `Duration`'s range.
@@ -59,6 +62,7 @@ struct OwnerMemoryWait: Sendable {
     let limit: Duration?
     /// The longest the first waiter goes without trying again while no request on its slot ends.
     let retryInterval: Duration
+    let sharedGrantLimit: Duration
     /// Whether a request for `model` waits here; false where the local router would pass it on.
     let waitsHere: @Sendable (_ model: String) async -> Bool
     /// Whether the request, on a pair, waits for its first token as long as its request deadline allows, however long
@@ -67,11 +71,12 @@ struct OwnerMemoryWait: Sendable {
     /// allowance.
     let waitsForFirstToken: Bool
 
-    init(limit: Duration? = nil, retryInterval: Duration = .seconds(1),
+    init(limit: Duration? = nil, retryInterval: Duration = .seconds(1), sharedGrantLimit: Duration = .seconds(120),
          waitsForFirstToken: Bool = true,
          waitsHere: @escaping @Sendable (_ model: String) async -> Bool = { _ in true }) {
         self.limit = limit.map { max(.zero, $0) }
         self.retryInterval = max(.milliseconds(1), retryInterval)
+        self.sharedGrantLimit = sharedGrantLimit
         self.waitsForFirstToken = waitsForFirstToken
         self.waitsHere = waitsHere
     }
@@ -104,7 +109,17 @@ struct OwnerMemoryWait: Sendable {
     /// The owner's setting for `waitsForFirstToken`: exact `0`, `false`, `no` or `off` (trimmed, case-insensitive)
     /// restores the pair's first-token allowance; anything else, or nothing, waits.
     static func waitsForFirstToken(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        guard let raw = environment[firstTokenWaitEnvironmentName] else { return true }
+        switchIsOn(environment[firstTokenWaitEnvironmentName])
+    }
+
+    /// The owner's setting for the GLM shared-grant wait (`sharedGrantWaitEnvironmentName`), read as
+    /// `waitsForFirstToken` is: on unless it says off.
+    static func waitsForSharedGrant(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        switchIsOn(environment[sharedGrantWaitEnvironmentName])
+    }
+
+    private static func switchIsOn(_ value: String?) -> Bool {
+        guard let raw = value else { return true }
         return !["0", "false", "no", "off"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 }
@@ -128,6 +143,8 @@ final class OwnerMemoryAttempt: @unchecked Sendable {
 enum OwnerMemoryRefusal: Equatable, Sendable {
     /// The slot would hold the request with nothing else running: requests already running hold the memory.
     case busy
+    /// A co-resident model holds part of the grant. It may stay loaded indefinitely.
+    case sharedGrant
     /// The request is larger than the slot holds with nothing else running.
     case exceedsIdle
 
@@ -215,7 +232,8 @@ extension EngineV2Bridge {
         attempt: (_ origin: ContinuousClock.Instant?, _ waitEnd: ContinuousClock.Instant?) async throws
             -> AsyncStream<GenerationEvent>
     ) async throws -> AsyncStream<GenerationEvent> {
-        let deadline = wait.effectiveLimit.map { ContinuousClock.now.advanced(by: $0) }
+        let start = ContinuousClock.now
+        var deadline = wait.effectiveLimit.map { start.advanced(by: $0) }
         let makeRoom = MeFirstOwnerRequest.makeRoom
         var origin = origin
         var ticket: UUID?
@@ -229,6 +247,18 @@ extension EngineV2Bridge {
             if waits {
                 let queued = try queueOwnerRequest()
                 ticket = queued
+                if deadline == nil, glmSoloGrant != nil, let bytes = requestReservationBytes(tokenCount: worstCaseTokens) {
+                    while !ownerMemoryWaiters.isFirst(queued) {
+                        try Task.checkCancellation()
+                        if bytes > admissionCapacityBytes(), await fitsGLMSoloGrant(bytes) == true {
+                            deadline = start.advanced(by: wait.sharedGrantLimit)
+                            break
+                        }
+                        // Resizing and a change of queue head both wake this ticket. A wake
+                        // during the quote is remembered, so neither transition can be missed.
+                        await parkOwnerRequest(queued, for: nil)
+                    }
+                }
                 try await waitForOwnerMemory(queued, until: deadline, retry: wait.retryInterval, retrying: false)
                 origin = .now
             }
@@ -240,8 +270,11 @@ extension EngineV2Bridge {
             } catch {
                 guard let refusal = await ownerMemoryRefusal(error, worstCaseTokens: worstCaseTokens, attempt: note)
                 else { throw error }
-                guard refusal == .busy else {
+                guard refusal != .exceedsIdle else {
                     throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(OwnerMemoryWait.exceedsIdleRefusal)
+                }
+                if refusal == .sharedGrant, deadline == nil {
+                    deadline = start.advanced(by: wait.sharedGrantLimit)
                 }
                 if waitsHere == nil { waitsHere = await wait.waits(model: model) }
                 guard waitsHere == true else {
@@ -270,7 +303,18 @@ extension EngineV2Bridge {
         guard case .tokenBudgetExhausted(let message)? = error as? MultiModelBatchSchedulerEngineError else {
             return nil
         }
-        if message == Self.serviceAllowanceExhausted, effectiveServingConcurrency == 0 { return .exceedsIdle }
+        let noRows = message == Self.serviceAllowanceExhausted && effectiveServingConcurrency == 0
+        if noRows || message.contains(Self.glm5NextExceedsSlotCapacity) {
+            if glmSoloGrant != nil, let bytes = requestReservationBytes(tokenCount: worstCaseTokens), bytes > 0 {
+                if let fits = await fitsGLMSoloGrant(bytes) {
+                    if fits { return .sharedGrant }
+                } else if bytes <= admissionCapacityBytes(), effectiveServingConcurrency > 0 {
+                    // The peer left and the real grant grew during the hop to the slot owner.
+                    return .busy
+                }
+            }
+            return .exceedsIdle
+        }
         if message.hasSuffix(Self.sharedKVNoHeadroom) {
             guard let kvBudget,
                   let bytes = attempt?.sharedKVRefusedBytes ?? requestReservationBytes(tokenCount: worstCaseTokens),
@@ -282,6 +326,21 @@ extension EngineV2Bridge {
             return figures.needed > native.capacity().kvBytesCapacity ? .exceedsIdle : .busy
         }
         return OwnerMemoryRefusal(refusal: message)
+    }
+
+    /// With the shared-grant wait off (`OwnerMemoryWait.waitsForSharedGrant`) no quote is installed, and every
+    /// refusal reads as it did before the quote existed.
+    func installGLMSoloGrant(environment: [String: String] = ProcessInfo.processInfo.environment,
+                             _ quote: @escaping @Sendable () async -> UInt64?) {
+        guard OwnerMemoryWait.waitsForSharedGrant(environment: environment) else { return }
+        glmSoloGrant = quote
+    }
+
+    private func fitsGLMSoloGrant(_ bytes: Int) async -> Bool? {
+        guard let grant = await glmSoloGrant?() else { return nil }
+        let raw = Int(clamping: grant)
+        let usable = raw - Int(Double(raw) * EngineV2Factory.glm5NextAdmissionWatermarkFraction)
+        return bytes <= usable - glm5NextStepSetupBytes
     }
 
     /// The owner's request's place in the slot's queue, or the busy refusal when the queue is full.

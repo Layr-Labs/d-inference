@@ -29,6 +29,18 @@ import ProviderCoreFoundation
 /// its prompt cache (`ChatTemplateControls.servingCoordinatorRequest`). It
 /// renders this way only on a path that read its body (`Evidence.capturing`);
 /// any other request renders as before.
+///
+/// A family in `callerArgumentModelTypes` was trained on Transformers'
+/// rendering of the caller's JSON, so every one of its requests, asked or
+/// not, planned by the coordinator or not, text or media, renders:
+/// - earlier calls' arguments from each call's own `function.arguments`
+///   string: members in the order sent, `null` members and items kept;
+/// - tool declarations as the body sent them (`Evidence.declarations`):
+///   `null` members kept, numbers as written, no member the provider's
+///   repairs add (an inferred `type`), matched by name to the declarations
+///   the request offers after the provider's preparation.
+/// Both are functions of the request's own JSON, so the same client JSON
+/// always gives the same prompt (and prefix-cache key).
 enum TemplateJSONOrder {
     static let environmentKey = "DARKBLOOM_TEMPLATE_JSON"
     static let transformers = "transformers"
@@ -44,6 +56,12 @@ enum TemplateJSONOrder {
         var captured = false
         /// The body's `tools`; nil when it has none.
         var tools: [Value]?
+        /// The body's `tools` as sent, read from every body whose decoded
+        /// request declares tools, asked or not, for a
+        /// `callerArgumentModelTypes` family; kept for a request the
+        /// coordinator planned, whose plan renders them the same way. Nil
+        /// when the path did not read the body or the parser refused it.
+        var declarations: [Value]?
 
         /// On the local API the process environment can ask for every request.
         func askingLocally(environment: [String: String] = ProcessInfo.processInfo.environment) -> Evidence {
@@ -56,17 +74,29 @@ enum TemplateJSONOrder {
             return copy
         }
 
+        /// `declaresTools`: the decoded request declares tools, so their
+        /// declarations are read as sent whether or not the request asked.
         func capturing(
-            body: Data, environment: [String: String] = ProcessInfo.processInfo.environment
+            body: Data, declaresTools: Bool = false,
+            environment: [String: String] = ProcessInfo.processInfo.environment
         ) -> Evidence {
-            guard requested, !HFTemplateFilters.legacyRequested(environment: environment) else { return self }
+            let asking = requested && !HFTemplateFilters.legacyRequested(environment: environment)
+            guard asking || declaresTools else { return self }
             let member: Value?
             do { member = try NemotronSuperOrderedJSON.member("tools", of: body) } catch { return self }
+            var copy = self
+            if declaresTools, case .array(let tools)? = member { copy.declarations = tools }
+            guard asking else { return copy }
             switch member {
-            case .some(.array(let tools)): return Evidence(requested: true, captured: true, tools: tools)
-            case .none, .some(.null): return Evidence(requested: true, captured: true)
-            default: return self
+            case .some(.array(let tools)):
+                copy.captured = true
+                copy.tools = tools
+            case .none, .some(.null):
+                copy.captured = true
+                copy.tools = nil
+            default: break
             }
+            return copy
         }
     }
 
@@ -76,13 +106,28 @@ enum TemplateJSONOrder {
         evidence.requested && evidence.captured && !HFTemplateFilters.legacyRequested(environment: environment)
     }
 
+    /// Families whose every request renders earlier calls' arguments
+    /// (`orderingToolCalls`) and tool declarations (`declaredTools`) as the
+    /// caller sent them. Inkling 2's template prints both with Transformers'
+    /// `tojson`, which keeps the caller's member order and `null`s; its
+    /// reference renders exactly that. Other families keep the provider's
+    /// normalization unless the request asks.
+    static let callerArgumentModelTypes: Set<String> = [Inkling2ModelIdentity.modelType]
+
+    static func rendersCallerArguments(modelType: String?) -> Bool {
+        modelType.map(callerArgumentModelTypes.contains) ?? false
+    }
+
     /// The template input with Transformers' filters, ordered tools (passed
     /// as the `tools` context variable, since the tokenizer's `tools`
     /// parameter takes dictionaries it would sort) and ordered tool-call
     /// arguments. Unchanged unless the request asks and its family is listed
     /// in `HFTemplateFilters`, or is Nemotron-H, whose own filters already
     /// match Transformers' and which takes only the order. A media request is
-    /// prepared outside this path and renders as before, so its recounts do too.
+    /// prepared outside this path and renders as before, so its recounts do too
+    /// (a `callerArgumentModelTypes` family orders its media request's calls
+    /// in `MediaIngest.buildUserInput`). A `callerArgumentModelTypes` family
+    /// that did not ask still takes its calls' arguments as sent.
     static func apply(
         messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?, request: OpenAIChatCompletionRequest,
@@ -90,10 +135,19 @@ enum TemplateJSONOrder {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> (messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
           additionalContext: [String: any Sendable]?) {
+        guard !MediaIngest.hasMedia(request) else { return (messages, tools, additionalContext) }
+        if rendersCallerArguments(modelType: modelType) {
+            let messages = orderingToolCalls(in: messages, request: request)
+            guard let tools, let declared = declaredTools(tools, evidence: evidence) else {
+                return (messages, tools, additionalContext)
+            }
+            var context = additionalContext ?? [:]
+            context["tools"] = Value.array(declared)
+            return (messages, nil, context)
+        }
         let transformersFilters = HFTemplateFilters.applies(modelType: modelType, environment: environment)
         guard asks(evidence, environment: environment),
-            transformersFilters || NemotronTemplateFilters.applies(modelType: modelType),
-            !MediaIngest.hasMedia(request)
+            transformersFilters || NemotronTemplateFilters.applies(modelType: modelType)
         else { return (messages, tools, additionalContext) }
         var context = additionalContext ?? [:]
         if transformersFilters {
@@ -119,6 +173,26 @@ enum TemplateJSONOrder {
             // typed decode keeps only OpenAI's fields and the generic path
             // drops `strict`, which Transformers renders.
             return overlay(tool, order: order.map(wrappedDeclaration), restoringLevels: 2)
+        }
+    }
+
+    /// `tools`, the declarations the request offers after the provider's
+    /// preparation, each as the body sent it (`Evidence.declarations`),
+    /// found by its name. A declaration whose name the body does not hold
+    /// exactly once renders as prepared. Nil when the body's declarations
+    /// were not read.
+    static func declaredTools(_ tools: [[String: any Sendable]], evidence: Evidence) -> [Value]? {
+        guard let declarations = evidence.declarations else { return nil }
+        var byName: [String: Value] = [:]
+        var repeated: Set<String> = []
+        for declaration in declarations {
+            guard let name = declaredName(declaration) else { continue }
+            if byName.updateValue(declaration, forKey: name) != nil { repeated.insert(name) }
+        }
+        return tools.map { tool in
+            let name = stringValue(tool["function"].flatMap(objectMembers)?["name"]) ?? stringValue(tool["name"])
+            if let name, !repeated.contains(name), let sent = byName[name] { return sent }
+            return overlay(sanitizeForJinja(tool) ?? tool, order: nil)
         }
     }
 

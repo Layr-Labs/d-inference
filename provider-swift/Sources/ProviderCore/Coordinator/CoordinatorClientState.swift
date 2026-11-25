@@ -39,6 +39,16 @@ public final class AtomicProviderStats: Sendable {
     // Local to `darkbloom status`: the requests that ended early, by cause
     // (`cancellationsPartialComplete` is their total).
     private let _endedEarly = LockedEndedEarlyCounts()
+    // Local to `darkbloom status`: planned requests served without the prompt
+    // cache because their tool-call history carries a null argument
+    // (`ToolCallHistoryNullCache`).
+    private let _promptCacheSkippedToolCallNull = ManagedAtomic<UInt64>(0)
+    // The same for a Gemma tool union rendered as its typed member
+    // (`GemmaToolUnionTypeCache`).
+    private let _promptCacheSkippedToolUnionType = ManagedAtomic<UInt64>(0)
+    // The same for a GPT-OSS tool declaration rendered as written
+    // (`GPTOSSToolSchemaCache`).
+    private let _promptCacheSkippedToolRawSchema = ManagedAtomic<UInt64>(0)
 
     public init() {}
 
@@ -164,6 +174,24 @@ public final class AtomicProviderStats: Sendable {
     }
 
     public var endedEarly: EndedEarlyCounts { _endedEarly.counts }
+
+    public var promptCacheSkippedToolCallNull: UInt64 { _promptCacheSkippedToolCallNull.load() }
+
+    public func incrementPromptCacheSkippedToolCallNull() {
+        _promptCacheSkippedToolCallNull.add(1)
+    }
+
+    public var promptCacheSkippedToolUnionType: UInt64 { _promptCacheSkippedToolUnionType.load() }
+
+    public func incrementPromptCacheSkippedToolUnionType() {
+        _promptCacheSkippedToolUnionType.add(1)
+    }
+
+    public var promptCacheSkippedToolRawSchema: UInt64 { _promptCacheSkippedToolRawSchema.load() }
+
+    public func incrementPromptCacheSkippedToolRawSchema() {
+        _promptCacheSkippedToolRawSchema.add(1)
+    }
 
     public func incrementGenerationErrorsAfterOutput() {
         _generationErrorsAfterOutput.add(1)
@@ -585,9 +613,16 @@ internal final class LockedEndedEarlyCounts: @unchecked Sendable {
 /// Records when the last frame came in from the coordinator: a pong, a ping or
 /// a message. The pong handler and the receive callback update it on the
 /// connection's queue; the ping task reads it on the cooperative thread pool.
+/// Until the first frame it holds the session's start, the instant that the
+/// session's `CoordinatorLinkWatch` starts from, so every recorded frame is
+/// later than that start.
 internal final class LinkActivityTracker: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
-    private var last = ContinuousClock.now
+    private var last: ContinuousClock.Instant
+
+    init(start: ContinuousClock.Instant) {
+        last = start
+    }
 
     func recordInbound() {
         let now = ContinuousClock.now

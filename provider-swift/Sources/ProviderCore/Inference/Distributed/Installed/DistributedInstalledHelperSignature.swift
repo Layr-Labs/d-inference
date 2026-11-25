@@ -65,7 +65,27 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
         private var leaf: String { leafSHA1.map { String(format: "%02x", $0) }.joined() }
     }
 
-    static let current: Self = own()
+    /// This process's signature (`own()`). A readable answer is kept for the life of the process; an unreadable
+    /// one is not: right after an update installs the app, the bundle can still change for some seconds after the
+    /// new service starts, and a read in that window would otherwise refuse every cluster helper until a restart.
+    /// Each later read checks the running image against its file again, so nothing weaker is ever accepted.
+    static var current: Self { Kept.process.value(own) }
+
+    /// Keeps the first readable signature; reads again while the answer is `.unavailable`.
+    final class Kept: @unchecked Sendable {
+        static let process = Kept()
+        private let lock = NSLock()
+        private var kept: DistributedInstalledHelperSignature?
+
+        func value(_ read: () -> DistributedInstalledHelperSignature) -> DistributedInstalledHelperSignature {
+            lock.lock()
+            defer { lock.unlock() }
+            if let kept { return kept }
+            let answer = read()
+            if answer != .unavailable { kept = answer }
+            return answer
+        }
+    }
 
     /// `SignedReleaseIdentity.teamID`: release and DevNet builds.
     static let releaseTeam = "SLDQ2GJ6TL"
@@ -187,6 +207,14 @@ enum DistributedInstalledHelperSignature: Sendable, Equatable {
                 ? "The owner is this Darkbloom's own executable and the worker is signed with its Developer ID."
                 : "The owner is this Darkbloom's own executable and the worker and placement tool are signed with its Developer ID.")
         }
+    }
+
+    /// `darkbloom cluster doctor`: whether `file` is a cluster worker signed like this provider (its Developer ID and
+    /// the worker's identifier, every architecture strictly). False unless this build is signed with this project's
+    /// certificate.
+    func signsWorker(_ file: URL) -> Bool {
+        guard case .signed(let signer) = self else { return false }
+        return (try? Self.requireFile(signer, .worker, file: file, pinned: nil)) != nil
     }
 
     /// Before the spawn: strict validation of every architecture of the file against the requirement, and for the

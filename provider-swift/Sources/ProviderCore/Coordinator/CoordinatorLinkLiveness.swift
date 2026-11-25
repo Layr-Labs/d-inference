@@ -23,22 +23,31 @@ import Foundation
 ///   once at wake, because the coordinator has probably dropped the session.
 ///   A shorter late tick only restarts the silence window: the time when the
 ///   ping task could not ping is not counted as unanswered pings.
+/// - `firstFrameGrace`: the bound before the coordinator's first frame on a new
+///   connection, instead of `deadAfter`. The coordinator answers a connection
+///   (and its pings) once it has registered the provider, which takes longer
+///   when many providers reconnect at once; a fresh connection that waits in
+///   that queue is not a dead link.
 public struct CoordinatorLinkLiveness: Sendable, Equatable {
     public let pingInterval: Duration
     public let deadAfter: Duration
     public let suspensionGap: Duration
+    public let firstFrameGrace: Duration
 
     /// Production uses the defaults; tests shorten them.
     public init(
         pingInterval: Duration = .seconds(2),
         deadAfter: Duration = .seconds(6),
-        suspensionGap: Duration = .seconds(30)
+        suspensionGap: Duration = .seconds(30),
+        firstFrameGrace: Duration = .seconds(30)
     ) {
         precondition(pingInterval > .zero && pingInterval < deadAfter && deadAfter < suspensionGap,
                      "link liveness needs 0 < pingInterval < deadAfter < suspensionGap")
+        precondition(firstFrameGrace >= deadAfter, "link liveness needs firstFrameGrace >= deadAfter")
         self.pingInterval = pingInterval
         self.deadAfter = deadAfter
         self.suspensionGap = suspensionGap
+        self.firstFrameGrace = firstFrameGrace
     }
 }
 
@@ -46,7 +55,8 @@ public struct CoordinatorLinkLiveness: Sendable, Equatable {
 enum CoordinatorLinkVerdict: Equatable, Sendable {
     /// Send the next ping.
     case alive
-    /// No inbound frame for longer than `deadAfter`: reconnect now.
+    /// No inbound frame for longer than `deadAfter` (`firstFrameGrace` before
+    /// the coordinator's first frame): reconnect now.
     case dead
     /// The tick came `suspensionGap` or more late: the process was suspended.
     case suspended
@@ -57,12 +67,16 @@ enum CoordinatorLinkVerdict: Equatable, Sendable {
 /// shows as a late tick and a wall-clock change does not.
 struct CoordinatorLinkWatch {
     let liveness: CoordinatorLinkLiveness
+    /// When the session's watch started; an inbound frame after it is the
+    /// coordinator's first answer on this connection.
+    private let start: ContinuousClock.Instant
     private var lastTick: ContinuousClock.Instant
     /// Silence is counted from the later of this and the last inbound frame.
     private var silenceStart: ContinuousClock.Instant
 
     init(liveness: CoordinatorLinkLiveness, start: ContinuousClock.Instant) {
         self.liveness = liveness
+        self.start = start
         lastTick = start
         silenceStart = start
     }
@@ -78,6 +92,12 @@ struct CoordinatorLinkWatch {
             silenceStart = now
             return .alive
         }
-        return now - max(lastInbound, silenceStart) > liveness.deadAfter ? .dead : .alive
+        return now - max(lastInbound, silenceStart) > silenceBound(lastInbound: lastInbound) ? .dead : .alive
+    }
+
+    /// The silence that declares the link dead: `firstFrameGrace` until the
+    /// coordinator's first frame on this connection, `deadAfter` after it.
+    func silenceBound(lastInbound: ContinuousClock.Instant) -> Duration {
+        lastInbound > start ? liveness.deadAfter : liveness.firstFrameGrace
     }
 }

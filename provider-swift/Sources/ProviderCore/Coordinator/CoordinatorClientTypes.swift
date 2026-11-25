@@ -120,6 +120,8 @@ public enum CoordinatorEvent: Sendable {
         promptWork: PromptWork? = nil,
         /// See `InferenceRequest.gemmaPromptContract`; nil keeps version 1.
         gemmaPromptContract: Int? = nil,
+        /// See `InferenceRequest.frameCachePolicy`; it can only narrow.
+        frameCachePolicy: RequestCachePolicy = .default,
         /// The receive path's verdict on the coordinator signature; request
         /// resume reads it (`RequestResume.Refusal.unsigned`).
         coordinatorSignature: CoordinatorSignatureCheck = .notChecked

@@ -651,7 +651,7 @@ extension ClusterPairSummary {
                 return "Leave both Macs running: Darkbloom retries by itself. Or serve locally only: `\(Self.cli) cluster local` "
                     + "on \(leadingMac)."
             }
-            if reason.contains("lacks free memory") {
+            if ClusterOnboardingNotServing.isMemoryShort(reason) {
                 return "Quit apps on that Mac; the cluster starts again by itself. Or choose a smaller model: "
                     + "`\(Self.cli) cluster` on \(leadingMac)."
             }

@@ -578,6 +578,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var activeTokens: Int64
     public var maxTokensPotential: Int64
     public var observedDecodeTps: Double
+    /// Milliseconds since the newest sample that moved `observedDecodeTps`
+    /// (a reply of at least 32 tokens, or a calibration cell). Sent only with
+    /// a published rate; nil ⇒ omitted. Informational: the provider's rate
+    /// itself is unchanged, and a coordinator that doesn't read it ignores it.
+    public var observedDecodeTpsAgeMs: Int64?
     public var observedPrefillTps: Double
     public var activeTokenBudgetUsed: Int64
     public var activeTokenBudgetMax: Int64
@@ -695,6 +700,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case activeTokens = "active_tokens"
         case maxTokensPotential = "max_tokens_potential"
         case observedDecodeTps = "observed_decode_tps"
+        case observedDecodeTpsAgeMs = "observed_decode_tps_age_ms"
         case observedPrefillTps = "observed_prefill_tps"
         case activeTokenBudgetUsed = "active_token_budget_used"
         case activeTokenBudgetMax = "active_token_budget_max"
@@ -732,6 +738,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         maxTokensPotential: Int64,
         maxConcurrency: UInt32 = 0,
         observedDecodeTps: Double = 0,
+        observedDecodeTpsAgeMs: Int64? = nil,
         observedPrefillTps: Double = 0,
         activeTokenBudgetUsed: Int64 = 0,
         activeTokenBudgetMax: Int64 = 0,
@@ -766,6 +773,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.maxTokensPotential = maxTokensPotential
         self.maxConcurrency = maxConcurrency
         self.observedDecodeTps = observedDecodeTps
+        self.observedDecodeTpsAgeMs = observedDecodeTpsAgeMs
         self.observedPrefillTps = observedPrefillTps
         self.activeTokenBudgetUsed = activeTokenBudgetUsed
         self.activeTokenBudgetMax = activeTokenBudgetMax
@@ -803,6 +811,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         maxTokensPotential = try container.decodeIfPresent(Int64.self, forKey: .maxTokensPotential) ?? 0
         maxConcurrency = try container.decodeIfPresent(UInt32.self, forKey: .maxConcurrency) ?? 0
         observedDecodeTps = try container.decodeIfPresent(Double.self, forKey: .observedDecodeTps) ?? 0
+        observedDecodeTpsAgeMs = try container.decodeIfPresent(Int64.self, forKey: .observedDecodeTpsAgeMs)
         observedPrefillTps = try container.decodeIfPresent(Double.self, forKey: .observedPrefillTps) ?? 0
         activeTokenBudgetUsed = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetUsed) ?? 0
         activeTokenBudgetMax = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetMax) ?? 0
@@ -854,6 +863,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try container.encode(maxTokensPotential, forKey: .maxTokensPotential)
         try encodeIfNonZero(maxConcurrency, forKey: .maxConcurrency, into: &container)
         try encodeIfNonZero(observedDecodeTps, forKey: .observedDecodeTps, into: &container)
+        try container.encodeIfPresent(observedDecodeTpsAgeMs, forKey: .observedDecodeTpsAgeMs)
         try encodeIfNonZero(observedPrefillTps, forKey: .observedPrefillTps, into: &container)
         try encodeIfNonZero(activeTokenBudgetUsed, forKey: .activeTokenBudgetUsed, into: &container)
         try encodeIfNonZero(activeTokenBudgetMax, forKey: .activeTokenBudgetMax, into: &container)

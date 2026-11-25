@@ -110,7 +110,7 @@ struct CoordinatorRequestSignatureInboundTests {
         }
         var served: [String] = []
         for await event in events {
-            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
+            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
         }
         #expect(served == frames.map { $0.0 }.filter { !refused.contains($0) })
         #expect(released == refused.map { reservations[$0] ?? "missing" })
@@ -155,7 +155,7 @@ struct CoordinatorRequestSignatureInboundTests {
         continuation.finish()
         var verdicts: [String: CoordinatorSignatureCheck] = [:]
         for await event in events {
-            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, let signature) = event {
+            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, let signature) = event {
                 verdicts[id] = signature
             }
         }
@@ -224,7 +224,7 @@ struct CoordinatorRequestSignatureInboundTests {
         }
         var served: [String] = []
         for await event in events {
-            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
+            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
         }
         return (served, released)
     }

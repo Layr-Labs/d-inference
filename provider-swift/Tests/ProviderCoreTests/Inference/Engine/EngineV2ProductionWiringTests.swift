@@ -333,9 +333,14 @@ struct EngineV2SlotBuildTests {
             #expect(stateful.maximum == CBv2MTPConfig.testedMaxDraftTokens)
         }
         let qat = MTPAutomaticVerificationPolicy.draftDepthPolicy(
-            usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit")
+            usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit", gemmaTwoDrafts: false)
         #expect(qat.fixed == nil)
         #expect(qat.maximum == 1)
+        let twoDrafts = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+            usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit",
+            chipName: "Apple M5 Ultra", gemmaTwoDrafts: true)
+        #expect(twoDrafts.fixed == 2)
+        #expect(twoDrafts.maximum == 2)
         for modelID in [nil, "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit-copy",
             "GEMMA-4-26B-QAT-4BIT", " gemma-4-26b-qat-4bit "] as [String?]
         {

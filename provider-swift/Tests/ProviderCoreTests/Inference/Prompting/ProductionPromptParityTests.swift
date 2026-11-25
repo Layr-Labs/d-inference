@@ -25,6 +25,10 @@ struct ProductionPromptParityTests {
         #expect(!corpus.models.isEmpty)
 
         let artifactRoot = URL(fileURLWithPath: artifactRootPath, isDirectory: true)
+        var historyNullCases: Set<String> = []
+        var toolUnionTypeCases: Set<String> = []
+        var toolRawSchemaCases: Set<String> = []
+        var forwardingDifferences: Set<String> = []
         for model in corpus.models {
             let modelDirectory = artifactRoot.appendingPathComponent(
                 model.promptContractID, isDirectory: true)
@@ -53,19 +57,91 @@ struct ProductionPromptParityTests {
                     withJSONObject: fixture.providerBody.foundationObject())
                 // Exercise the actual service entry point before tokenization: it can
                 // inject response-format instructions into the engine request.
+                func tokens(_ body: Data) async throws -> [Int] {
+                    let request = try ProviderLoop.decodeOpenAIRequest(body)
+                    let engine = PromptPreparationCaptureEngine()
+                    let frames = try await MLXOpenAIService(engine: engine)
+                        .streamChatCompletionFrames(request: request)
+                    for try await _ in frames {}
+                    let generationRequest = try #require(await engine.request)
+                    return try ProviderPromptContractPipeline.tokenize(
+                        prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
+                        request: generationRequest,
+                        tokenizer: tokenizer,
+                        modelType: modelType,
+                        templateControls: ProviderLoop.extractChatTemplateControls(from: body)
+                            .resolvingPromptDate())
+                }
+                // Provider-rendered and uncacheable: an earlier tool call's null
+                // arguments render here as `null`, while this contract
+                // (normalization v9) drops them. Such a body is served without the
+                // prompt cache, so no receipt names its prompt; the vectors stay
+                // the contract for the same body with those nulls dropped by the
+                // production sanitizer.
+                // The classification is the serving decision itself.
                 let request = try ProviderLoop.decodeOpenAIRequest(providerBody)
-                let engine = PromptPreparationCaptureEngine()
-                let frames = try await MLXOpenAIService(engine: engine)
-                    .streamChatCompletionFrames(request: request)
-                for try await _ in frames {}
-                let generationRequest = try #require(await engine.request)
-                let actual = try ProviderPromptContractPipeline.tokenize(
-                    prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
-                    request: generationRequest,
-                    tokenizer: tokenizer,
-                    modelType: modelType,
-                    templateControls: ProviderLoop.extractChatTemplateControls(from: providerBody)
-                        .resolvingPromptDate())
+                let served = ToolCallHistoryNullCache.servingContext(
+                    RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
+                    for: request, modelType: modelType, managedSuper: false)
+                // A Gemma tool render type that changed is served cold by the
+                // next rule; the vectors stay the contract for the same body
+                // with each property declared without a type typed `string`,
+                // as the shared repair renders it.
+                let declared = ProviderLoop.extractChatTemplateControls(from: providerBody).declaredTools
+                let renderTypeChanged = GemmaToolUnionTypeCache.changesRender(
+                    request, modelType: modelType, declared: declared)
+                if renderTypeChanged {
+                    toolUnionTypeCases.insert(model.modelID + "/" + fixture.id)
+                    let renderServed = GemmaToolUnionTypeCache.servingContext(
+                        served.context, for: request, modelType: modelType, declared: declared)
+                    #expect((served.servedCold || renderServed.servedCold) && renderServed.context.receiptNonce == nil
+                            && !renderServed.context.cacheEnabled,
+                            "\(model.modelID)/\(fixture.id): a changed tool render must be served without the prompt cache")
+                    if !served.servedCold {
+                        let rendered = try await tokens(providerBody)
+                        #expect(rendered != fixture.tokenIDs,
+                                "\(model.modelID)/\(fixture.id): the tool render change no longer changes the prompt")
+                    }
+                }
+                // GPT-OSS renders a declaration this contract repairs as
+                // written (GPTOSSToolSchemaRender); such a body is served cold,
+                // and the vectors stay the contract for its repaired tools.
+                let rawSchema = GPTOSSToolSchemaCache.servingContext(
+                    RemotePrefixCacheContext(cacheScope: fixture.scopeID, cacheReceiptNonce: "parity-" + fixture.id),
+                    for: request,
+                    declared: declared, modelType: modelType)
+                if rawSchema.servedCold {
+                    toolRawSchemaCases.insert(model.modelID + "/" + fixture.id)
+                    #expect(rawSchema.context.receiptNonce == nil && rawSchema.context.scope == nil,
+                            "\(model.modelID)/\(fixture.id): a changed GPT-OSS tool render must be served cold")
+                }
+                // The coordinator forwards these tools repaired today and may
+                // forward the caller's own: every prompt but an intended,
+                // served-cold change is the same for both.
+                if request.tools?.isEmpty == false {
+                    let original = try await tokens(providerBody)
+                    let routed = try await tokens(ToolSchemaNormalization.ensureParameterTypes(in: providerBody))
+                    if original != routed {
+                        forwardingDifferences.insert(model.modelID + "/" + fixture.id)
+                    }
+                    #expect(original == routed || rawSchema.servedCold || renderTypeChanged,
+                            "\(model.modelID)/\(fixture.id): the original tools render a different prompt")
+                }
+                var contractBody = served.servedCold ? try Self.v9HistoryArguments(providerBody) : providerBody
+                if renderTypeChanged { contractBody = try Self.v9TypedDeclarations(contractBody) }
+                if rawSchema.servedCold {
+                    contractBody = ToolSchemaNormalization.ensureParameterTypes(in: contractBody)
+                }
+                if served.servedCold {
+                    historyNullCases.insert(model.modelID + "/" + fixture.id)
+                    #expect(served.context.receiptNonce == nil && served.context.scope == nil
+                            && !served.context.cacheEnabled,
+                            "\(model.modelID)/\(fixture.id): a history null must be served without the prompt cache")
+                    let rendered = try await tokens(providerBody)
+                    #expect(rendered != fixture.tokenIDs,
+                            "\(model.modelID)/\(fixture.id): the history null no longer changes the prompt")
+                }
+                let actual = try await tokens(contractBody)
                 let difference = firstDifference(actual, fixture.tokenIDs).map { index in
                     let actualToken = actual.indices.contains(index)
                         ? "\(actual[index]) \(tokenizer.convertIdToToken(actual[index]) ?? "<unknown>")"
@@ -88,6 +164,22 @@ struct ProductionPromptParityTests {
                 }
             }
         }
+        // Exactly the vector bodies whose earlier tool call carries a null.
+        #expect(historyNullCases == Self.historyNullCases,
+                "provider-rendered cases changed: \(historyNullCases.symmetricDifference(Self.historyNullCases).sorted())")
+        // Exactly the Gemma vector bodies whose tool render type changed
+        // (GemmaToolUnionTypeCache): a property declared without a type.
+        #expect(toolUnionTypeCases == Self.toolUnionTypeCases,
+                "Gemma tool-union cases changed: \(toolUnionTypeCases.sorted())")
+        // Exactly the GPT-OSS vector bodies with a declaration rendered as
+        // written (GPTOSSToolSchemaCache).
+        #expect(toolRawSchemaCases == Self.toolRawSchemaCases,
+                "GPT-OSS tool-schema cases changed: \(toolRawSchemaCases.symmetricDifference(Self.toolRawSchemaCases).sorted())")
+        // Original and repaired tools render apart only in those and the
+        // Gemma cases, each served cold.
+        let intended = Self.toolRawSchemaCases.union(Self.toolUnionTypeCases)
+        #expect(forwardingDifferences.isSubset(of: intended),
+                "original tools render apart: \(forwardingDifferences.subtracting(intended).sorted())")
     }
 
     /// Gemma 4 prompt contracts on the served artifacts: a request that asks
@@ -125,7 +217,9 @@ struct ProductionPromptParityTests {
             "gpqa_string_system", "gpqa_developer_system", "gpqa_list_system_user", "list_parts_whitespace",
             "no_system", "no_system_thinking_off", "system_thinking_off", "tools_string_system",
             "tools_no_system", "tau2_policy", "assistant_list_parts", "later_system_list", "empty_system",
-            "null_system",
+            "null_system", "list_system_tool_required", "list_user_tool_named", "empty_user_tool_required",
+            "empty_system_tool_required", "list_system_response_format", "developer_list", "list_empty_parts",
+            "null_system_tool_required",
         ])
         let gpqa = try #require(vectors.cases.first)
         #expect(gpqa.contract1TokenIDs.count == 87 && gpqa.contract2TokenIDs.count == 88)
@@ -169,12 +263,15 @@ struct ProductionPromptParityTests {
             }
             // Contract 2 against the provider's own contract 1: no change, or
             // the one token the parts add where the vectors' two renders first differ.
+            // Where contract 2 changes the vectors' render in more than one
+            // place, the provider is checked against the vectors alone.
             switch firstDifference(fixture.contract1TokenIDs, fixture.contract2TokenIDs) {
             case nil:
                 #expect(contract2 == contract1, "\(fixture.id): contract 2 differs from contract 1")
-            case let index? where fixture.contract2TokenIDs.count == fixture.contract1TokenIDs.count + 1:
-                var expected = contract1
-                expected.insert(fixture.contract2TokenIDs[index], at: min(index, expected.count))
+            case let index? where fixture.contract2TokenIDs.count == fixture.contract1TokenIDs.count + 1
+                && Self.inserting(fixture.contract2TokenIDs[index], into: fixture.contract1TokenIDs, at: index)
+                    == fixture.contract2TokenIDs:
+                let expected = Self.inserting(fixture.contract2TokenIDs[index], into: contract1, at: index)
                 #expect(Array(contract1.prefix(index)) == Array(fixture.contract1TokenIDs.prefix(index)),
                         "\(fixture.id): contract 1 differs from the vectors before contract 2's token")
                 #expect(contract2 == expected,
@@ -183,6 +280,97 @@ struct ProductionPromptParityTests {
                 #expect(fixture.providerMatchesTransformers, "\(fixture.id): checked only against the vectors")
             }
         }
+    }
+}
+
+extension ProductionPromptParityTests {
+    /// The vector bodies (model × case) whose earlier tool call carries a JSON
+    /// null: provider-rendered and served without the prompt cache.
+    static let historyNullCases: Set<String> = Set(
+        ["EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b", "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit",
+         "gpt-oss-20b", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"].flatMap { model in
+            ["endpoint_messages_tool_turn", "gemma_tool_turn"].map { model + "/" + $0 }
+        })
+
+    /// The vector bodies whose Gemma tool render type changed: the Gemma
+    /// models' bodies that declare a property without a type (`city: {}`).
+    static let toolUnionTypeCases: Set<String> = Set(
+        ["gemma-4-26b", "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit"].flatMap { model in
+            ["endpoint_messages_tool_turn", "tools"].map { model + "/" + $0 }
+        })
+
+    /// `body` with every tool property declared without a type
+    /// (`Gemma4ToolSchemaEnforcement.declaresAnyValue`) typed `string`, as the
+    /// shared repair renders it under the v9 contract.
+    private static func v9TypedDeclarations(_ body: Data) throws -> Data {
+        func typed(_ node: [String: Any]) -> [String: Any] {
+            var node = node
+            if var properties = node["properties"] as? [String: Any] {
+                for (key, value) in properties {
+                    guard var property = value as? [String: Any] else { continue }
+                    if Gemma4ToolSchemaEnforcement.declaresAnyValue(property) {
+                        property["type"] = "string"
+                    } else {
+                        property = typed(property)
+                    }
+                    properties[key] = property
+                }
+                node["properties"] = properties
+            }
+            if let items = node["items"] as? [String: Any] { node["items"] = typed(items) }
+            return node
+        }
+        guard var object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let tools = object["tools"] as? [Any]
+        else { return body }
+        object["tools"] = tools.map { tool -> Any in
+            guard var tool = tool as? [String: Any], var function = tool["function"] as? [String: Any],
+                  let parameters = function["parameters"] as? [String: Any]
+            else { return tool }
+            function["parameters"] = typed(parameters)
+            tool["function"] = function
+            return tool
+        }
+        return try JSONSerialization.data(withJSONObject: object)
+    }
+
+    /// The vector bodies whose GPT-OSS tool render changed: those declaring
+    /// a parameter without a type (`{}`, a description alone).
+    static let toolRawSchemaCases: Set<String> = Set(
+        ["endpoint_messages_tool_turn", "gemma_tool_turn", "tools"].map { "gpt-oss-20b/" + $0 })
+
+    /// `body` with each earlier tool call's arguments object passed through the
+    /// production drop policy (`sanitizeForJinja`, which the v9 contract applies
+    /// to them): the prompt the vectors were made for.
+    private static func v9HistoryArguments(_ body: Data) throws -> Data {
+        guard var object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let messages = object["messages"] as? [Any]
+        else { return body }
+        object["messages"] = try messages.map { message -> Any in
+            guard var message = message as? [String: Any], let calls = message["tool_calls"] as? [Any] else {
+                return message
+            }
+            message["tool_calls"] = try calls.map { call -> Any in
+                guard var call = call as? [String: Any], var function = call["function"] as? [String: Any],
+                      let raw = function["arguments"] as? String,
+                      let arguments = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+                      let dropped = sanitizeForJinja(arguments) as? [String: Any]
+                else { return call }
+                function["arguments"] = String(
+                    decoding: try JSONSerialization.data(withJSONObject: dropped), as: UTF8.self)
+                call["function"] = function
+                return call
+            }
+            return message
+        }
+        return try JSONSerialization.data(withJSONObject: object)
+    }
+
+    /// `tokens` with `token` inserted at `index` (at the end when past it).
+    private static func inserting(_ token: Int, into tokens: [Int], at index: Int) -> [Int] {
+        var result = tokens
+        result.insert(token, at: min(index, result.count))
+        return result
     }
 }
 

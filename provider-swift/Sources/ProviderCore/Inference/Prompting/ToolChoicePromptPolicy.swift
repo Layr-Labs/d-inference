@@ -27,6 +27,10 @@ enum ToolChoicePromptPolicy {
         /// (`ToolSchemaNormalization`) filled in render types. Validation of
         /// `auto` calls reads these; nil falls back to `tools`.
         var declaredTools: [OpenAITool]? = nil
+        /// The declarations the call parser reads arguments with
+        /// (`ToolArgumentSchemas.reading`): `tools`, each with the caller's
+        /// parameters instead of their render types. Nil reads `tools`.
+        var argumentTools: [OpenAITool]? = nil
         /// An answer the engine cut at the token limit ends as a normal
         /// `length` finish, as generated (`TokenLimitCutPolicy`).
         var cutAnswersEndAtLength = TokenLimitCutPolicy.endsAtLength

@@ -23,6 +23,13 @@ private actor SuperBindingAccounting {
     func retire() { retirement?.resume(); retirement = nil }
 }
 
+private final class SuperSeenConstraints: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [(any CBv2TokenConstraint)?] = []
+    func record(_ constraint: (any CBv2TokenConstraint)?) { lock.withLock { seen.append(constraint) } }
+    var values: [(any CBv2TokenConstraint)?] { lock.withLock { seen } }
+}
+
 struct NemotronSuperLocalBindingTests {
     private func acquisition(_ accounting: SuperBindingAccounting, bridge: EngineV2Bridge?,
                              nativeLease: NativeLocalConsumerLease? = nil)
@@ -68,6 +75,27 @@ struct NemotronSuperLocalBindingTests {
         #expect(unchanged.mixedStepPrefillTokenCap == 100000)
     }
 
+    @Test func theCallGrammarReachesTheBridgeSubmission() async throws {
+        let accounting = SuperBindingAccounting()
+        let bridge = EngineV2Bridge(engine: InertStubEngine(), modelId: NemotronSuperLocalBinding.modelID,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
+        let body = NemotronSuperToolFixture.body(image: false)
+        let constraint = try #require(try NemotronSuperToolFixture.constraint(body))
+        let seen = SuperSeenConstraints()
+        let binding = NemotronSuperLocalBinding(
+            acquire: acquisition(accounting, bridge: bridge),
+            fixtureExecution: { _, _, _, _, _, _, _, _, _, _, tokenConstraint, _ in seen.record(tokenConstraint) })
+        for submitted in [constraint, nil] as [QwenStrictToolConstraint?] {
+            try await binding.run(request: .init(model: NemotronSuperLocalBinding.modelID, messages: []),
+                                  promptTokens: [1], tokenConstraint: submitted, onEvent: { _ in })
+        }
+        let recorded = seen.values
+        #expect(recorded.count == 2)
+        #expect(recorded.first.flatMap { $0 } === constraint)
+        #expect(recorded.last.flatMap { $0 } == nil)
+        #expect(await accounting.released == 2)
+    }
+
     @Test func missingBridgeReleasesActualAcquiredLease() async throws {
         let accounting = SuperBindingAccounting()
         let binding = NemotronSuperLocalBinding(acquire: acquisition(accounting, bridge: nil))
@@ -104,7 +132,7 @@ struct NemotronSuperLocalBindingTests {
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
         let binding = NemotronSuperLocalBinding(
             acquire: acquisition(accounting, bridge: bridge),
-            fixtureExecution: { _, _, _, _, _, _, _, _, _, _ in
+            fixtureExecution: { _, _, _, _, _, _, _, _, _, _, _, _ in
                 await accounting.holdUntilRetired()
                 try Task.checkCancellation()
             })
@@ -138,7 +166,7 @@ struct NemotronSuperLocalBindingTests {
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
         let binding = NemotronSuperLocalBinding(
             acquire: acquisition(accounting, bridge: bridge, nativeLease: lease),
-            fixtureExecution: { _, _, _, _, _, _, _, _, _, _ in
+            fixtureExecution: { _, _, _, _, _, _, _, _, _, _, _, _ in
                 #expect(!lease.snapshot().hasOutstandingHandoff)
                 await accounting.holdUntilRetired()
                 try Task.checkCancellation()

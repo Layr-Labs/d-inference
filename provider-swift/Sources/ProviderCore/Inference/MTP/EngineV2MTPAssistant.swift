@@ -77,6 +77,20 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
             }
         }
 
+        // Inkling 2 Mini: the DSpark drafter beside the checkpoint
+        // (`mtp.safetensors`, inspected by `SpecDecStore`), always bound to
+        // the TEXT model, also when the VLM wrapper is served: a drafter built
+        // against the wrapper would carry its identity and turn MTP off. No
+        // `targetIdentity` argument.
+        if let inkling = (target as? Inkling2Model) ?? (target as? MLXVLM.Inkling2VLM)?.languageModel {
+            do {
+                let drafter = try Inkling2DSparkDrafter.load(directory: artifact.directory, target: inkling)
+                return ProviderMTPAssistantHandle(owner: drafter, drafter: drafter)
+            } catch {
+                throw ProviderMTPAssistantLoadError.loadFailed(String(describing: error))
+            }
+        }
+
         if let nemotron = target as? NemotronH35Model {
             do {
                 let assistant = try NemotronH35MTPAssistant.load(from: artifact.directory, target: nemotron)

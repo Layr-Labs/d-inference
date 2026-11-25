@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCoreFoundation
 
 protocol SpecDecCatalogLooking: Sendable {
     func cachedModel(id: String) async -> CatalogModel?
@@ -388,6 +389,7 @@ actor SpecDecArtifactFunnel {
     static func isInlineTarget(modelType: String?) -> Bool {
         isInlineQwenTarget(modelType: modelType)
             || modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+            || Inkling2ModelIdentity.isNativeType(modelType)
     }
     static func killSwitchEnabled(environment: [String: String]) -> Bool {
         guard let raw = environment["DARKBLOOM_CBV2_MTP"]?

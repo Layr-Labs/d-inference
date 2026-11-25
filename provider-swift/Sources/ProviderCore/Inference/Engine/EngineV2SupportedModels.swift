@@ -17,6 +17,8 @@
 //   * `qwen3_5_moe`   — Qwen 3.5/3.6 MoE VLM target with recurrent state
 //   * `qwen3_vl_moe`  — Qwen3-VL MoE wrapper, served directly through its
 //                       CBv2 language-model adapter and vision prefill
+//   * `inkling2_loop` — Inkling 2 Mini, `Inkling2Model` / `Inkling2VLM`; the
+//                       exact type spelling, paged KV only.
 //   * `qwen4_exp`, `qwen4_exp_text` — native Flash-Next target architecture;
 //                       automatic paging/cache policy is separately scoped
 //
@@ -40,6 +42,7 @@
 // reflected here.
 
 import Foundation
+import ProviderCoreFoundation
 
 public enum EngineV2SupportedModels {
     public static let bonsai2ModelID = "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
@@ -111,6 +114,8 @@ public enum EngineV2SupportedModels {
         // fallback. Its dispatch requires the exact canonical declaration.
         if raw == "mimo_v2" { return modelType == "mimo_v2" }
         if raw == "flint" { return modelType == "flint" }
+        // Inkling 2 Mini: the exact native type, served by `Inkling2Model`.
+        if raw == Inkling2ModelIdentity.modelType { return Inkling2ModelIdentity.isNativeType(modelType) }
         if raw == "gpt_oss" { return true }
         if raw == "diffusion_gemma" { return true }
         if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }

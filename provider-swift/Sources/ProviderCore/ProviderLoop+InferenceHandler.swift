@@ -200,6 +200,7 @@ extension ProviderLoop {
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
         gemmaPromptContract: Int? = nil,
+        frameCachePolicy: RequestCachePolicy = .default,
         coordinatorSignature: CoordinatorSignatureCheck = .notChecked,
         send: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
@@ -404,7 +405,14 @@ extension ProviderLoop {
             return
         }
         let chatRequest = inbound.request
-        let remoteCache = frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
+        // The coordinator's plan. It selects the template controls below; the
+        // cache context the request is served with is settled once the slot's
+        // model type is known (`ToolCallHistoryNullCache`).
+        let plannedCache = frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
+        // Unlike the scope, the policy needs no matching nonce (it can only
+        // narrow), and a plaintext frame hint narrows it further.
+        let cachePolicy = inbound.extensions.cachePolicy.narrowed(by: frameCachePolicy)
+        RequestCachePolicyCounters.shared.recordRequest(cachePolicy)
         profile.mark(.parsed)
 
         // A member serves only its pair's model, and only while that slot is
@@ -476,13 +484,8 @@ extension ProviderLoop {
         // the coordinator's prompt cache renders the prompt of its plan, in
         // the Gemma 4 prompt contract the coordinator planned and counted it with.
         let templateControls = inbound.extensions.templateControls.servingCoordinatorRequest(
-            planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil,
+            planned: plannedCache.scope != nil || plannedCache.receiptNonce != nil,
             gemmaPromptContract: gemmaPromptContract)
-        // Cache identity is coordinator-authored: the sealed copy bound to this
-        // attempt's receipt nonce, else the frame's scope. Never trust
-        // caller-controlled prompt_cache_key/user for remote cache partitioning.
-        // Without a scope, requests still serve, but with caching disabled.
-        let cacheScope = remoteCache.scope ?? ""
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
         // honored by the EngineV2 path (see EngineV2Logprobs.swift).
@@ -750,6 +753,31 @@ extension ProviderLoop {
             rejectInvalidRequest(refusal)
             return
         }
+        let (historyNullContext, historyNullServedCold) = ToolCallHistoryNullCache.servingContext(
+            plannedCache, for: chatRequest, modelType: modelType,
+            managedSuper: slot.modelContainer.nemotronSuper != nil)
+        if historyNullServedCold {
+            stats.incrementPromptCacheSkippedToolCallNull()
+            logger.info(.promptCacheSkippedToolCallNull)
+        }
+        let (unionTypeContext, unionTypeServedCold) = GemmaToolUnionTypeCache.servingContext(
+            historyNullContext, for: chatRequest, modelType: modelType,
+            declared: templateControls.declaredTools)
+        if unionTypeServedCold {
+            stats.incrementPromptCacheSkippedToolUnionType()
+            logger.info(.promptCacheSkippedToolUnionType)
+        }
+        let (remoteCache, rawToolSchemaServedCold) = GPTOSSToolSchemaCache.servingContext(
+            unionTypeContext, for: chatRequest, declared: templateControls.declaredTools, modelType: modelType)
+        if rawToolSchemaServedCold {
+            stats.incrementPromptCacheSkippedToolRawSchema()
+            logger.info(.promptCacheSkippedToolRawSchema)
+        }
+        // Cache identity is coordinator-authored: the sealed copy bound to this
+        // attempt's receipt nonce, else the frame's scope. Never trust
+        // caller-controlled prompt_cache_key/user for remote cache partitioning.
+        // Without a scope, requests still serve, but with caching disabled.
+        let cacheScope = remoteCache.scope ?? ""
         let slotContainer = slot.container
         let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
@@ -768,7 +796,8 @@ extension ProviderLoop {
                 requestID: requestId,
                 nonce: nonce,
                 send: send,
-                readyBoundaryMode: cacheReceiptBoundaryMode)
+                readyBoundaryMode: cacheReceiptBoundaryMode,
+                durable: cachePolicy.permitsSSDTier)
         {
             receiptCallbacks = (callbacks.lookup, callbacks.ready)
             lookupReceiptFinalizer.configureV2(
@@ -1026,8 +1055,8 @@ extension ProviderLoop {
                 providerEngine = superOwner.chatEngine(body: decryptedData,
                     hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
                     trustsSchemaMetadata: true, logprobs: logprobsChannel, usageSignal: v2UsageSignal,
-                    donationDemand: remoteCache.donationDemand, firstContentDeadline: firstContentDeadline,
-                    cancelCause: { token.endCause })
+                    donationDemand: remoteCache.donationDemand, cachePolicy: cachePolicy,
+                    firstContentDeadline: firstContentDeadline, cancelCause: { token.endCause })
             } else {
                 providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
@@ -1045,6 +1074,7 @@ extension ProviderLoop {
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 donationDemand: remoteCache.donationDemand,
+                cachePolicy: cachePolicy,
                 engineV2Logprobs: logprobsSpec.map {
                     EngineV2LogprobsPlumbing(topLogprobs: $0.topLogprobs, relay: logprobsChannel)
                 },
@@ -1108,7 +1138,9 @@ extension ProviderLoop {
                 // owner's request can tell whether the engine has admitted this
                 // one (`giveWayToOwner`).
                 frames = try await MeFirstDarkbloomRequest.$id.withValue(requestId) {
-                    try await service.streamChatCompletionFrames(request: streamingRequest)
+                    try await InklingWithheldReasoningHeartbeat.$enabled.withValue(true) {
+                        try await service.streamChatCompletionFrames(request: streamingRequest)
+                    }
                 }
                 if rejectExpiredDeadline() { return }
             } catch {
@@ -1266,8 +1298,11 @@ extension ProviderLoop {
             // upstream's usage block only carries the total completion count.
             let reasoningText = ResponseTextBuffer()
             var reasoningTokens = 0
-            // Reasoning the request asked not to receive is never framed, but
-            // it is still generated: count it with the visible reasoning.
+            // Reasoning the client declined to receive (`reasoning.exclude`) is
+            // never framed, but it is still generated: count it with the visible
+            // reasoning. A thought written with thinking turned off (Inkling 2)
+            // is not recorded as reasoning, so it counts only in completion
+            // tokens (`MultiModelBatchSchedulerEngine.recordWithheldReasoning`).
             func tokenCount(_ text: ResponseTextBuffer) -> Int {
                 text.withText { tokenizer.inner.encode(text: $0, addSpecialTokens: false).count }
             }
@@ -1300,7 +1335,23 @@ extension ProviderLoop {
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
             do {
-                for try await frame in frames {
+                var sentWithheldReasoningHeartbeat = false
+                for try await streamed in frames {
+                    // Inkling 2's one empty answer delta while it withholds its
+                    // reasoning (`InklingWithheldReasoningHeartbeat`).
+                    // It is output the coordinator commits to, so it claims
+                    // output first (me first), as a first content frame does.
+                    var frame = streamed
+                    if !sentWithheldReasoningHeartbeat,
+                        let heartbeat = InklingWithheldReasoningHeartbeat.frame(rewriting: streamed)
+                    {
+                        guard token.claimOutput() else {
+                            endAfterGivingWay(framesEmitted, bytesEmitted)
+                            return
+                        }
+                        frame = heartbeat
+                        sentWithheldReasoningHeartbeat = true
+                    }
                     // The iterator suspension is the final pre-content await.
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,

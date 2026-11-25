@@ -3365,6 +3365,53 @@ struct EngineV2LoopGuardBridgeTests {
         GenerationLoopGuard(modelType: "gemma4", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers)
     }
 
+    /// A retained native fault in the installation's media preparation fences
+    /// its bridge: the running row is cancelled in the engine, and a later
+    /// submission is refused before the engine sees it.
+    @Test("a retained-fault fence cancels every row and refuses every later submission")
+    func retainedFaultFenceStopsRowsAndRefusesSubmissions() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let first = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(), requestId: "req-running")
+        let engineId = try #require(await bridge._testEngineRequestId(for: "req-running"))
+        await bridge.fenceAfterRetainedFault()
+        #expect(engine.cancelled == [engineId])
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 3, completionTokens: 0)))
+        engine.manualContinuation?.finish()
+        _ = await drain(first)
+        let later = await drain(await bridge.submitTokenized(
+            promptTokens: [4, 5, 6], request: makeRequest(), requestId: "req-later"))
+        #expect(engine.submitted.count == 1)
+        #expect(later.chunks == 0)
+        #expect(later.errors == ["request queue full: engine is shutting down"])
+    }
+
+    /// The installation's owner closes the fence as it publishes a retained
+    /// fault, before the bridge's cancellation sweep: a submission already
+    /// inside the bridge, paused before its commit, is refused at the commit.
+    @Test("a closed retained-fault fence refuses a submission paused before its commit")
+    func closedRetainedFaultFenceRefusesAPausedSubmission() async throws {
+        // A finite script: an admission past the fence ends instead of hanging.
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 3, completionTokens: 0)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let gate = SuperHTTPTerminalGate()
+        await bridge._testInstallPreSubmitGate { await gate.hold() }
+        let submission = Task {
+            await bridge.submitTokenized(promptTokens: [1, 2, 3], request: makeRequest(), requestId: "req-paused")
+        }
+        try await superHTTPEventually("the submission is paused before its commit") { await gate.entered }
+        bridge.retainedFaultFence.close()
+        await gate.release()
+        let refused = await drain(await submission.value)
+        #expect(engine.submitted.isEmpty)
+        #expect(refused.chunks == 0)
+        #expect(refused.errors == ["request queue full: engine is shutting down"])
+    }
+
     /// Window 7's Gemma q63: one 19-token clause, verbatim, until the cap.
     private func yieldLoop(_ engine: ScriptedCBv2Engine, count: Int, firstText: String = "w") {
         let block = Array(900..<919)

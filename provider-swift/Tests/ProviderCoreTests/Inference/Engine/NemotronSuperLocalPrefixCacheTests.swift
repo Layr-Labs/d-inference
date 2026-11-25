@@ -69,9 +69,14 @@ struct NemotronSuperLocalPrefixCacheTests {
         #expect(Prefix.isBankReservationID(id) && !NemotronSuperLocalPrefill.isLaneReservationID(id))
     }
 
+    /// The machine these budgets describe, also given to the loads that size
+    /// from the machine: the host's own memory clamps a 40 GiB grant to 16 GiB
+    /// on a 16 GiB CI Mac, where a 16 GiB bank no longer fits below the grant.
+    private static let machineBytes: UInt64 = 64 << 30
+
     private static func budget() -> GlobalKVCacheBudget {
         GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
-            memorySnapshot: { .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: .max) })
+            memorySnapshot: { .init(total: Self.machineBytes, active: 0, cache: 0, systemAvailable: .max) })
     }
 
     /// `speculates` installs depth-3 exact rectangular speculation with the
@@ -306,7 +311,7 @@ struct NemotronSuperLocalPrefixCacheTests {
                 [Self.memoryKey: "1", "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bank)]) { $1 }
             let context = 1024
             let shares = try Builder.pinnedOwnerShares(environment: environment, kvBytesCapacity: grant,
-                speculates: speculates, contextTokens: context)
+                speculates: speculates, contextTokens: context, physicalBytes: Self.machineBytes)
             let round = speculates
                 ? NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 1, environment: environment,
                     contextTokens: context)
@@ -356,7 +361,8 @@ struct NemotronSuperLocalPrefixCacheTests {
                         tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63], sizing: sizing,
                         kvBytesCapacity: grant, admissionKVBytes: kvFloor + bank + round,
                         backendAllowanceBytes: 1 << 20,
-                        modelID: NemotronSuperLocalBinding.modelID, environment: environment)
+                        modelID: NemotronSuperLocalBinding.modelID, environment: environment,
+                        physicalBytes: Self.machineBytes)
                 } catch {
                     failure = error
                 }
@@ -572,7 +578,7 @@ struct NemotronSuperLocalPrefixCacheTests {
         let sequential = NemotronSuperLoadClaim.mayReturnStagingBuffers()
         let fits: [NemotronSuperLoadFit.Claim] = try candidates.map { candidate in
             let shares = try Builder.pinnedOwnerShares(environment: candidate.environment, kvBytesCapacity: grant,
-                speculates: speculates, contextTokens: context)
+                speculates: speculates, contextTokens: context, physicalBytes: Self.machineBytes)
             return try #require(try NemotronSuperLoadFit.claim(candidate, kvBytesCapacity: grant, shares: shares) {
                 try NemotronSuperLoadClaim.bytes(installation: quote, head: headQuote, sequential: sequential,
                                                  servingBytes: $0)
@@ -588,7 +594,7 @@ struct NemotronSuperLocalPrefixCacheTests {
         // `clockNow`: after installation the first stamp is the first owner's
         // lane when the builder's recheck passed.
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
-            memorySnapshot: { .init(total: 64 << 30, active: usage.bytes, cache: 0, systemAvailable: .max) },
+            memorySnapshot: { .init(total: Self.machineBytes, active: usage.bytes, cache: 0, systemAvailable: .max) },
             clockNow: {
                 if let usageWhileBuilding, installs.count == 1, fallsWhileBuilding.count == 0 {
                     fallsWhileBuilding.increment()
@@ -619,7 +625,7 @@ struct NemotronSuperLocalPrefixCacheTests {
             bridge = try await transaction.load(staging: { staging },
                 tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63], sizing: sizing,
                 kvBytesCapacity: grant, admissionKVBytes: admissionKVBytes, backendAllowanceBytes: 1 << 20,
-                modelID: NemotronSuperLocalBinding.modelID, environment: environment)
+                modelID: NemotronSuperLocalBinding.modelID, environment: environment, physicalBytes: Self.machineBytes)
         } catch {
             failure = error
         }

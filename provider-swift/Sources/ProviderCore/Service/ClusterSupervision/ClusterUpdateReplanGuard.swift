@@ -34,4 +34,11 @@ public enum ClusterUpdateReplanGuard {
               now - progress.writtenAt <= ClusterPairUpdate.progressStaleSeconds else { return false }
         return progress.target != running
     }
+
+    /// The cluster service's line while its update check waits for this Mac's update (`holdsReplan`), said once per
+    /// wait, so the service log shows the wait.
+    public static func holdLine(_ progress: ClusterPairUpdateProgress) -> String {
+        "this Mac's update" + (progress.target.map { " to \($0)" } ?? "")
+            + " restarts the cluster service next: setting the cluster up again waits for that restart"
+    }
 }

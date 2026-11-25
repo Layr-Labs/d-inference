@@ -36,6 +36,18 @@ public enum HFTemplateFilters {
         "glm5_next", "glm5_next_text", "glm5_next_mtp", "gpt_oss",
     ]
 
+    /// Families whose own template passes `tojson` the arguments only
+    /// Transformers' filter takes (`sort_keys`, `separators`), which
+    /// swift-jinja's refuses: Inkling 2. Every render of theirs, the scan-time
+    /// check included, uses Transformers' filters; the kill switch does not
+    /// apply, since swift-jinja's filter cannot render them at all.
+    static let transformersOnlyModelTypes: Set<String> = [Inkling2ModelIdentity.modelType]
+
+    /// Every render of the family uses Transformers' filters (`transformersOnlyModelTypes`).
+    public static func rendersOnlyWithTransformersFilters(modelType: String?) -> Bool {
+        modelType.map(transformersOnlyModelTypes.contains) == true
+    }
+
     /// The family can render Transformers' filters and the kill switch is off.
     public static func applies(
         modelType: String?, environment: [String: String] = ProcessInfo.processInfo.environment
@@ -60,6 +72,7 @@ public enum HFTemplateFilters {
     public static func bindingContext(
         modelType: String?, environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: any Sendable]? {
+        if rendersOnlyWithTransformersFilters(modelType: modelType) { return requestContext() }
         guard applies(modelType: modelType, environment: environment) else { return nil }
         return [stringFilterName: swiftJinjaString]
     }
@@ -76,6 +89,11 @@ public enum HFTemplateFilters {
         in environment: Environment, modelType: String?,
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment
     ) {
+        if rendersOnlyWithTransformersFilters(modelType: modelType) {
+            environment[stringFilterName] = stringFilter
+            environment["tojson"] = toJSONFilter
+            return
+        }
         guard applies(modelType: modelType, environment: processEnvironment) else { return }
         environment[stringFilterName] = swiftJinjaString
     }

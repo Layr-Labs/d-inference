@@ -22,17 +22,17 @@ private func switchTransportClient(_ url: String) -> CoordinatorClient {
 
 @Suite("Coordinator model replacement transport")
 struct CoordinatorModelSwitchTests {
-    @Test func readinessSequenceIsFromTheEncodedCapacityFrame() async {
+    @Test func readinessSequenceIsFromTheEncodedCapacityFrame() async throws {
         let client = switchTransportClient("ws://unused.invalid/ws/provider")
         let state = await client.state
         state.backendCapacity = BackendCapacity(
             slots: [], gpuMemoryActiveGb: 0, gpuMemoryPeakGb: 0,
             gpuMemoryCacheGb: 0, totalMemoryGb: 128, freeForLoadGb: 24)
-        let present = await client.buildHeartbeatFrame()
+        let present = try #require(await client.buildHeartbeatFrame())
         #expect(present.capacitySeq == 1)
         #expect(present.json.contains("backend_capacity"))
         state.backendCapacity = nil
-        let absent = await client.buildHeartbeatFrame()
+        let absent = try #require(await client.buildHeartbeatFrame())
         #expect(absent.capacitySeq == nil)
         #expect(!absent.json.contains("backend_capacity"))
     }

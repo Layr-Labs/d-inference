@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-21
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -185,8 +185,11 @@ serving provider or changes its credentials.
 
 ## SDK 27 Release Builds And Caches
 
-Release compilation and SDK qualification use separate
-`blacksmith-12vcpu-macos-27` runners. Signed validation's older-OS smoke uses
+Release compilation uses `blacksmith-12vcpu-macos-27`. SDK qualification runs
+first, on five other Macs: a Darkbloom Sandbox for each shard when the plane
+grants lane `release-qualify`, else `blacksmith-12vcpu-macos-27`
+([Release qualification on Darkbloom](#release-qualification-on-darkbloom)).
+Both use the `release` toolchain. Signed validation's older-OS smoke uses
 `blacksmith-12vcpu-macos-26`: it runs the signed app and compiles nothing.
 `scripts/prepare-provider-release-toolchain.sh` selects the toolchain after
 checkout. It tries the image's Xcode first, then each installed
@@ -239,7 +242,12 @@ never silently switches to an older Xcode.
 Both release lanes call `.github/actions/provider-release-build/action.yml`.
 Only optimized compilation transfers an unsigned app, its inventory, SwiftPM
 resource bundles and matching metallib to signing. Qualification runs the
-provider tests and isolated native gates; restoring a cache never skips them.
+provider tests and isolated native gates. In a release, both lanes compile
+cold: `release-provider.yml` and `release-qualify.yml` set
+`CI_ACTIONS_CACHE: 'off'`, which skips every cache step of the action
+([Release qualification on Darkbloom](#release-qualification-on-darkbloom)).
+Only SDK 27 release preparation (`provider-release-cache.yml`) and CI use its
+caches.
 Signing verifies the source, version, SDK, inventory and entitlements before
 importing its certificate. See [release qualification](test.md#sdk-27-release-qualification).
 
@@ -364,7 +372,15 @@ replay tools' CPU tests (`scripts/test_gptoss_checkpoint.py`,
 `scripts/test_gptoss_replay.py`; Python 3.11+) and the Date comparison checks.
 It needs no Mac and no test result, so it runs from the start of the run, and
 the gate fails unless it succeeded. `dev` has no Release Integrity, so these
-run there too.
+run there too. It reads its own lane, `ci-plan-checks`, which the plan asks
+for on every run that runs the test jobs: a Darkbloom Linux sandbox (4x16)
+when the plane grants one, otherwise GitHub-hosted `ubuntu-24.04`, where it ran
+before it was routed. The test jobs usually outlast it by minutes, so the
+sandbox's start mainly delays a run that tests no component (9 of 101 runs
+from 09:00 to 23:00 UTC on 2026-11-20). In that window the test jobs of every
+completed run outlasted it by at least 66 s, while a Darkbloom Linux job
+waited 21 s for its runner at the median, 53 s at the 90th percentile and 84 s
+at most.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
@@ -463,14 +479,42 @@ With two provider shards, a full run took about 13 minutes and 110 macOS
 job-minutes: about 31 for the build jobs, Cluster Release Build Checks and
 Cluster GPU Tests, and about 79 for the 9 blocking test shards. Since
 2026-11-20 the provider suite runs in four shards, so a full run has 11
-blocking test shards; its times are not measured yet. Every macOS job is
-routed, and falls back to Blacksmith when the plane grants no Mac.
+blocking test shards. In ten runs of that day, provider shard 2 ended 6.5 to 11
+minutes after the provider build, the other shards mostly 4.5 to 7.5 minutes
+after it: the shard weights predated the 4-vCPU lanes, on which one suite ran
+seven times longer ([provider shards](test.md#provider-and-sdk)). Refreshed,
+they planned every shard at about 232 s of tests and fixed work. On Darkbloom
+the last shard still ended about 100 s after the others: after its Swift
+tests it ran the gates that run once, and everything after its Swift tests
+took 238 s on 4 vCPUs (run 44771184962) against 107 s on a 12-vCPU Blacksmith
+runner (run 44843788822). Those gates now run in Provider Gates, a job of
+their own that starts beside the build as the shards do, so a full run has 12
+blocking test jobs, and the planner plans every shard at about 196 s. Since
+2026-11-21 the provider suite runs in five shards and the cluster runtime
+tests in seven, so a full run has 15 blocking test jobs. On four provider
+shards each planned 177 s; on five the shard that holds
+`BootSecurityServeLoopTests` (170 s, a suite the planner never splits) plans
+170 s and the others 139 s, so a sixth shard would plan the same longest
+shard. Cluster Runtime Tests shards 2 and 3, the last jobs of two of the
+three rounds measured (runs 44909381968 and 44914459288), ran 439 to 571 s;
+their GPU and batch-session work now runs on four shards. Provider Gates
+fetches the MiMo audio codec while the build runs. In the next two rounds
+(runs 44924815069 and 44927907327) the cluster jobs ended last: Cluster
+Release Build Checks (its release build, then the worker's request lifecycle
+tests, 132 to 164 s, one after the other) and Cluster Runtime Tests shards 1,
+4 and 5 (267 to 395 s against 169 to 243 s for the others). The lifecycle
+tests now run on runtime shard 6 while it waits for the cluster build, and
+four selections of shards 1, 4 and 5 run on shards 2, 6 and 7, so every
+runtime shard plans under about 300 s. Every
+macOS job is routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once
 
 Each lane builds its debug test products once, on a large runner, and its
 test jobs run them with `swift test --skip-build`. No test job compiles the
-provider or the cluster packages. Every job below reads its runner from the
+provider or the cluster packages; runtime shard 6 also builds and runs the
+worker package's request lifecycle tests, which need no products, while it
+waits for them. Every job below reads its runner from the
 route ([CI Runner Routing](#ci-runner-routing)). Every job asks for its own
 size ([Job sizes](#job-sizes)).
 
@@ -478,9 +522,10 @@ size ([Job sizes](#job-sizes)).
 |---|---|---|---|
 | `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
-| `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
-| `test-provider`, shards 1 to 4 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity, the native gates, the audit and coverage |
-| `test-cluster`, shards 1 to 5 | routed | `build-cluster` (in the job) | The blocking cluster selections |
+| `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
+| `test-provider`, shards 1 to 5 | routed | `build-provider` (in the job) | The provider selections, Prompt Parity (shard 1), the isolated processes (the last shard), the audit and coverage |
+| `test-provider-gates` (Provider Gates) | routed | `build-provider` (in the job) | The checks that run once beside the suite: the relocated-resource, MDM-reader and installer checks, the Gemma conformance switches, the desktop control API and the native MiMo gates (the audio gate when its inputs changed), and its own coverage |
+| `test-cluster`, shards 1 to 7 | routed | `build-cluster` (in the job) | The blocking cluster selections; shard 6 first starts the worker package's request lifecycle tests (a debug build of their own) and waits for them before its selections |
 | `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` (in the job) | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
 
@@ -506,6 +551,21 @@ at the median and 14.4 minutes at the 90th percentile (54 pull request runs of
 overlaps the build, and a lane's reservation is used in the run's first wave.
 A waiting job holds its Mac during the build: up to the build's duration per
 test job, about 3 minutes on a reused build.
+
+The provider build job builds the matched `mlx.metallib` beside its Swift
+build. The library needs only the MLX sources and the toolchain, and the Swift
+build spends much of its time on SwiftPM's fetches and its last links, with
+vCPUs to spare. "Start the matched Metal library build" runs
+`scripts/fetch-metallib.sh` in the background (`scripts/ci-background-step.py`)
+right before the Swift build. "Validate and stage matched Metal" waits for it,
+prints its output, fails when it failed or had not ended after 30 minutes, and
+then stages the library from the Metal cache directory as before. Before, the
+library built after the Swift build: 67 to 78 s on the critical path of every
+cold run (runs 44832255099, 44876712879). The provider lane runs on 12x32. Its
+peak was 19.0 GiB used with the two builds in sequence (run 44876712879) and
+19.5 GiB, without swap, with them overlapped (run 44883046441). The cluster
+lane (8x16, 13.6 GiB cold peak, 6.5 GiB of it the Metal link) still builds the
+library after its Swift build.
 
 The cluster lane builds in a job of its own, so the cluster tests can start as
 soon as its products are up, whatever the provider build takes. The
@@ -534,7 +594,10 @@ reads:
 - Every `.dSYM` bundle, including the test bundle's own. The coverage report
   reads the coverage maps in the binaries, not DWARF. Without the dSYMs, a
   stalled-test sample (`scripts/run-provider-test-watchdog.py`) names each
-  frame's function and offset, but not its file and line.
+  frame's function and offset, but not its file and line. Because neither the
+  object files nor the dSYMs reach a test job, the provider lane builds its
+  test products with `-debug-info-format none`: the compiler emits no DWARF
+  and the linker runs no `dsymutil`, and the test jobs see the same symbols.
 - `repositories`, SwiftPM's bare clones. SwiftPM reads them only to check out
   a dependency whose checkout is missing or at another revision.
 
@@ -585,6 +648,22 @@ jobs' checks carry the caller's job name: `Tests / Provider Tests`. The
 contribution gates in `docs-impact.yml` (Commit Signatures, Docs Impact) run
 only for pull requests into `master`.
 
+Release Integrity's checks (53 test scripts and source checks, none of which
+reads another's output) run in one step, `Run the release integrity checks`,
+through `scripts/run-concurrent-checks.py`: at most one per CPU of the runner
+(4 on its 4x16 lane) at a time, in the listed order, longest first. Each
+check gets its own `TMPDIR`; the test servers bind ephemeral loopback ports.
+The step prints each check's output whole, in the listed order, with its exit
+status and duration, then a summary line with the run's wall time and the sum
+of the checks' durations. It fails, with an annotation naming each failed
+check, once every check has run; it retries nothing and adds no time limit.
+Run the same list locally by piping the step's lines to the script, or a file
+of commands with `python3 scripts/run-concurrent-checks.py --jobs N FILE`.
+Run one after another, the checks took 165 s in run 44675837013, 112 s of it
+in two suites (`.github/scripts/test-threat-budget.py`, 72 s, and
+`scripts/test-darkbloom-route.py`, 40 s), so the step cannot end before the
+longest one.
+
 ## CI Runner Routing
 
 `.github/workflows/darkbloom-route.yml` chooses where routed read-only CI jobs
@@ -597,19 +676,21 @@ shard the lane its matrix entry names, `matrix.lane`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-4`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-5`, one per shard), `test-provider-gates`, `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2, 3, 6 and 7, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lane requested by `provider-plan.yml` on every run of the test jobs) | `ci-plan-checks` (Check the CI plans) | `ubuntu-24.04` (GitHub-hosted) |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml` | `check`, `frontend` | `blacksmith-4vcpu-ubuntu-2404` |
 | `desktop.yml` | `desktop-package`, manual dispatch only | `blacksmith-12vcpu-macos-27` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
+| `release-qualify.yml` (job `qualify` of `release-dev-branch.yml` and `release-swift.yml`) | `qualify-sdk-shard`, shards 1 to 5 on one lane, `release-qualify`; not in tag runs | `blacksmith-12vcpu-macos-27` |
 
 `nightly-linear-package.yml` runs its `test` job on
 `blacksmith-4vcpu-ubuntu-2404` directly, with no route. On a Darkbloom Linux
 sandbox, `actions/setup-python` cannot upgrade pip: the sandbox proxy answers
 502 for PyPI (run 44696912484). The job is routed again when d-inference's
-sandbox network template (darkbloom-sandbox
-`deploy/gcp/templates/d-inference-ci.json`) allows `pypi.org` and
+sandbox network template (the `d-inference-ci` template in the
+darkbloom-sandbox repository) allows `pypi.org` and
 `files.pythonhosted.org`.
 
 `.github/workflows/darkbloom-watchdog.yml` is darkbloom-sandbox's GitHub-side
@@ -714,7 +795,9 @@ which pushed branches it admits. Other branches get `branch_not_admitted` and
 keep their fallback, so a push saves caches on Darkbloom only from an admitted
 branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
-`master` or dispatched cache warming keep literal Blacksmith labels. In CI,
+`master` or dispatched cache warming keep literal Blacksmith labels. The one
+exception is the release's unsigned SDK qualification
+([Release qualification on Darkbloom](#release-qualification-on-darkbloom)). In CI,
 every macOS job reads its lane of the plan's one route request (the plane
 routes a run attempt once); the plan's own bookkeeping (one job: the
 classifier, the tree lookup and the component choice), the CI plan checks and
@@ -734,6 +817,72 @@ decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
 off and use **Re-run all jobs** to move a run back to Blacksmith. See the
 [routing checks](test.md#focused-tooling-checks).
 
+### Release Qualification On Darkbloom
+
+The plane refuses a routable job inside a reusable workflow call that passes
+secrets, and it requires read-only permissions on the calling job. So the
+release's SDK qualification is a workflow of its own, `release-qualify.yml`:
+the five `qualify-sdk-shard` jobs, their `route` job and the gate
+`qualify-sdk` ("Qualify provider with SDK 27", `ubuntu-24.04`). Each caller,
+`release-dev-branch.yml` and `release-swift.yml`, calls it from one job,
+`qualify`, with `permissions: contents: read` and no `secrets`. Each caller's
+credentialed `release-provider.yml` call needs `qualify`. A resume skips
+`qualify`, because its retained run passed it. So a run sends one route request,
+and the gate passes before the source gate, the build and signing start.
+
+- The route asks for lane `release-qualify` (profile `macos_arm64`, count 5,
+  `balanced`, size 12x32). That is the size of the qualification lane of
+  `provider-release-cache.yml`'s warm: each shard compiles the suite cold, and
+  shard 1 runs the parallel class, which needs 12x32 as `test-provider-1` does
+  ([Job sizes](#job-sizes)). A tag run (prod) asks for nothing. Recovery of a failed tag run
+  takes its retained unsigned artifact by name
+  (`scripts/provider_release_resume/identity.py`), so a tag run never has a
+  routed job. The plane does not admit tags either.
+- A lane the plane does not grant keeps `blacksmith-12vcpu-macos-27`. An
+  approval that lists lanes refuses an unlisted one with `lane_not_enabled`.
+- A shard tests an unsigned build at the run's commit. It gets no secret, no
+  OIDC token, only `contents: read`, and no signing keychain.
+  `.github/actions/provider-release-build` reads no secret.
+
+A shard on a host we do not own could upload anything under any artifact name.
+So no job that signs, notarizes, stages, publishes or smoke-tests signed bytes
+selects an artifact by name. The producing Blacksmith job exports its upload's
+`artifact-id` and `artifact-digest`. The consumer downloads that ID with
+`scripts/provider-release-publication.py download`. The downloader requires
+the same ID, digest and run in the artifact's metadata. It then compares the
+zip's SHA-256 with the digest before it extracts anything, and fails on a
+mismatch. These pins are on `build-provider` to `build-and-release`,
+`build-and-release` to stage, publish and the older-OS smoke, and in
+`provider-signing-validation.yml`, `build` to `signing`.
+
+No release job restores or saves an Actions cache. Every job of a run gets
+the run's Actions cache token, and that token can write any cache key in the
+branch's scope, a routed job's token too. GitHub cannot limit a key to
+Blacksmith jobs, so no key is safe to restore into signed bytes or a release
+gate. `release-provider.yml` and `release-qualify.yml` set
+`CI_ACTIONS_CACHE: 'off'` at their top, which skips every cache step of
+`.github/actions/provider-release-build`. Nothing in them turns it back on.
+The desktop release (`release-desktop.yml`) uses no npm cache, for the same
+reason. The route checks and the release pins fail if a release job restores
+a cache.
+
+Cost:
+
+- The build no longer runs beside qualification.
+- The build, each shard and the Metal library compile cold. With the Metal
+  library cached but no Swift cache, the release lane took 16.9 minutes and
+  the unsharded qualification 27.2 minutes (run 42918120844). A cold Metal
+  library build adds to that; it was not measured.
+- With caches, a dev release took 17 minutes from source gate to registration
+  (run 42597808851). Expect roughly 45 to 60 minutes now.
+
+A watchdog rescue of a stranded shard re-runs the route job and the jobs that
+need it, the release call included. That call cannot have started yet. The
+route checks (`scripts/test-darkbloom-route.py`) and the release pins
+(`scripts/test-provider-release-pipeline.py`) refuse a routed job in a call
+that passes secrets, a signing, staging or publishing download by name or
+without its digest, and a release job that restores a cache.
+
 ### Job sizes
 
 Every lane in every workflow names a size, `<vCPUs>x<GiB>`, after its count
@@ -751,8 +900,8 @@ shards.
 
 Each size is the smallest signed size (4x16, 4x24, 8x16, 12x32) that holds the
 job's used memory times 1.25, on which the job takes at most 5% longer than on
-12 vCPUs; `test-cluster-1` and `test-provider-1` ask for more, for the reasons
-in their rows. Used memory is app + wired + compressed, the peak that
+12 vCPUs; `test-cluster-1`, `test-provider-1` and `test-provider-gates` ask for
+more, for the reasons in their rows. Used memory is app + wired + compressed, the peak that
 `scripts/ci-resource-sampler.py` recorded ([Build Once](#build-once)). The
 test jobs were sampled in the 20 full dev runs 42741850921 to 42921272802
 (2026-11-10, Blacksmith, 12 vCPUs and 48 GiB) and in the 4 pull request runs
@@ -787,11 +936,12 @@ shard 5 took 453 s on Blacksmith (458 s).
 
 | Lane | Jobs | Size | Used memory (GiB) |
 |---|---|---|---|
-| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`); both before the 2026-11-20 rebalance moved three GPU selections from shard 2 to shard 3 and qwen-tp-aqv-gpu from shard 3 to shard 1 |
+| `test-cluster-2` (runtime shards 2, 3, 6 and 7, the concurrent groups) | 4 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`); both before the 2026-11-20 rebalance moved three GPU selections from shard 2 to shard 3 and qwen-tp-aqv-gpu from shard 3 to shard 1 |
 | `test-cluster-3` (runtime shards 4 and 5, each two concurrent groups of model-free base selections) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 11.48 (15.33 before, in the Gemma 4 paged synthetic stages); both with one process per shard, before the two groups |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 |
-| `test-provider-2`, `test-provider-3`, `test-provider-4` | 1 each | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821), both of shard 2 of 2. The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12. Each of the four shards runs 3 of 12 selections, a smaller part of the suite; they keep this size until sampled |
+| `test-provider-2`, `test-provider-3`, `test-provider-4`, `test-provider-5` | 1 each | 4x24 | 13.93 on Darkbloom (run 42939123765); 13.03 on Blacksmith (run 42754786821), both of shard 2 of 2. The peak is one 5 s sample, 105 to 176 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12. Each of the five shards runs 3 of 15 selections, a smaller part of the suite; they keep this size until sampled |
 | `test-cluster-1` | 1 | 4x24 | 11.99. Its GLM-5.3 resident-stage tests need more than 16 GiB of physical memory: `ClusterStageResidency` keeps max(16 GiB, a tenth) for the system and refuses at or below it ("Stage residency requires a GPU device and its recommended working set"). At 4x16 it failed 10 of 10 Darkbloom runs on 2026-11-20 |
+| `test-provider-gates` | 1 | 4x24 | 7.92 in the last shard of run 44771184962 (4x24, Darkbloom), 7.63 to 7.75 while its gates ran there and in runs 44828405682 and 44832255099; at most 3.25 of 4 vCPUs busy, 1.4 on average. The memory would fit 4x16, but the complete-prefix, media admission, retained-fault and lifecycle drain gates size their KV budget from the host's physical memory (`GlobalKVCacheBudget` over `ProcessInfo.physicalMemory`, with 5.5 GiB of activation and 4 GiB of config reserve), and they have run only on 24 GiB and more. On 4x24 the gates took 172 to 230 s, about as long as a shard's tests; 12x32 would not end the run sooner |
 | `test-provider-1` | 1 | 12x32 | 11.52. It runs the parallel class after selection 1, one process whose tests run concurrently. On 4 vCPUs the bounded waits of its fan helper and hardware-load tests (2 s, and 5 s for the fan read gate) timed out in 14 of 14 Darkbloom runs on 2026-11-20, also in run 44678601420, in which the class ran after the job's serial selections had ended. At 8x16 (16 GiB) the memory-budget suites that share its selections (`NemotronSuperLocalPrefixCacheTests`, `EngineV2ResliceFloorWiringTests`) failed: they size their budgets from physical memory. 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB |
 | `build-cluster` | 1 | 8x16 | 13.60 cold (run 42855511039; a Metal library link, `air-lld`, used 6.5 of it), about 7.5 with a reused build. A cold build takes 1 to 9% longer on 8 vCPUs. With 12 compile jobs the peak is above 16 / 1.25; on 8 vCPUs SwiftPM runs 8 |
 | `build-provider` | 1 | 12x32 | 20.39 cold (run 42918933020), about 8.2 with a reused build; 8x24 is not signed, and a cold build takes 17 to 31% longer on 8 vCPUs |
@@ -813,7 +963,7 @@ on every Linux lane too. `scripts/test-darkbloom-route.py` fails if any lane in 
 no count, no `balanced` placement, no size, or a size outside the signed set
 of its profile: 4x16 on Linux; 4x16, 4x24, 8x16 and 12x32 on macOS.
 
-A run that tests every component asks for 17 macOS jobs. Each GPU shard has
+A run that tests every component asks for 18 macOS jobs. Each GPU shard has
 a lane of its own and falls back alone; shards 1 and 3 each run half of the
 real-geometry rows check. GPU shard 2 used 40.99
 GiB in run 42917194201, 34.26 GiB of it in the one process of
@@ -901,8 +1051,8 @@ audio codec entry is 1,575 MiB compressed.
 | SwiftPM repositories | `/private/tmp/dinf-ci/swiftpm-repositories`, which `~/Library/Caches/org.swift.swiftpm/repositories` links to | `spm-repos-v1-<os>-<layout>-<lane>-<Package.resolved hash>`; `spm-repos-v1-<os>-<layout>-<lane>-` | each build lane |
 | Swift test build | each lane's `.build` directory | `swift-key` (`swift-prefix` and the commit), or on a Darkbloom host `swift-prefix` and `day-<YYYY-MM-DD>`; `swift-prefix`, then `swift-loose-prefix`, then `swift-mlx-prefix`, from `scripts/provider-ci-cache.py` | each build lane |
 | Metal library | `/private/tmp/dinf-ci/metallib-cache` | `metallib-key`, exact only | each build lane |
-| MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard |
-| MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | the last provider shard |
+| MiMo metadata downloads | `/private/tmp/dinf-ci/mimo-metadata-cache`, one file per pinned SHA-256 | `mimo-metadata-v1-<hash of the pin scripts>`, exact only | each provider shard and Provider Gates |
+| MiMo audio codec | `/private/tmp/dinf-ci/mimo-audio-source` | `mimo-audio-source-v2-<sha256>`, exact only; fetched only when the audio gate runs ([test guide](test.md)) | Provider Gates |
 | Prompt fixture downloads | `/private/tmp/dinf-ci/prompt-fixture-cache`, one file per pinned SHA-256 | `prompt-fixtures-v1-<hash of the v1 and Nemotron prompt-contract manifests>`, exact only | provider shard 1, after both parity steps pass |
 | Cluster metadata build | `$RUNNER_TEMP/cluster-native-metadata` | `cluster-metadata-release-v2-<base>-<pins>-<commit>`; `...-<base>-<pins>-`, then `...-<base>-` (not on CI (master)) | `cluster-release-checks` |
 
@@ -913,8 +1063,13 @@ leaves out the recipe, which changes often and rarely changes an object, so an
 edit to a workflow or a CI script no longer makes every build cold.
 `swift-mlx-prefix` keeps only the toolchain, the checkout path and the MLX
 gitlinks (`libs/mlx`, `libs/mlx-swift`, `libs/mlx-swift-lm`), so a change to
-`Package.swift` or another pin still restores the compiled MLX. Source timestamps are
-restored only for unchanged files, so SwiftPM rebuilds what changed. If a build
+`Package.swift` or another pin still restores the compiled MLX. Every tier also
+binds the lane's purpose (`LANE_PURPOSES`), which names a build flag that
+changes every object: the provider lane's purpose names its build without DWARF
+(`-debug-info-format none`), so no tier restores a build made with DWARF, which
+SwiftPM would recompile in full while keeping its stale `.dSYM` bundles. Source
+timestamps are restored only for unchanged files, so SwiftPM rebuilds what
+changed. If a build
 restored from the loose tier fails, `scripts/provider-ci-cold-retry.sh` deletes
 the restored builds and the step builds once more from nothing; a failure over
 an entry of the job's own recipe fails the step at once. CI (master) restores
@@ -944,8 +1099,19 @@ in a submodule's `.git/modules` directory), or has a config that sets
 with `find` and `git config --file`, which run nothing, before any git command
 reads the `.git`. It then deletes the `.git` unless `git rev-parse --verify HEAD`
 and `git fsck --connectivity-only` accept it. One ordinary `actions/checkout`
-follows: it fetches only the objects `.git` lacks and reuses the submodule
-repositories under `.git/modules`, and its failure fails the job. No step uses
+follows: it fetches only the objects `.git` lacks, and its failure fails the
+job. In the macOS jobs, `scripts/ci-checkout-submodules.py` then checks out the
+submodules, as `submodules: recursive` would. `submodules: recursive` clones
+each submodule's default branch at depth 1 and then fetches its recorded
+commit, one submodule after another: two round trips each, 36 s for the five on
+Darkbloom (run 44873769645). The script first fetches each missing submodule's
+recorded commit at depth 1, all at once, and a nested submodule as soon as its
+parent is checked out. `git submodule absorbgitdirs` moves those repositories
+to `.git/modules`, and the same `submodule sync` and `submodule update --init
+--force --depth=1 --recursive` as actions/checkout's then only check them out.
+They reuse the repositories a restored `.git` holds, which the script does not
+fetch again. A failed fetch fails the job. `scripts/test-ci-checkout-submodules.py`
+checks that the result matches the standard update's. No step uses
 `continue-on-error` (only the report-only upload of the resource samples
 does). A `.git` that passes fsck but still breaks the checkout
 fails the job; change the key version, such as `git-v1`, to start over. The
@@ -973,7 +1139,8 @@ flowchart LR
   R --> V{"no hook, no hook or monitor config,<br/>and git fsck accepts .git?"}
   V -- no --> D[Delete .git] --> K
   V -- yes --> K[actions/checkout]
-  K --> G{"master or dev push,<br/>no exact hit?"}
+  K --> U["Check out the submodules<br/>(parallel fetch, then submodule update)"]
+  U --> G{"master or dev push,<br/>no exact hit?"}
   G -- yes --> S[Save .git]
   G -- no --> B
   S --> B["Build job: restore SwiftPM,<br/>build and Metal caches; build"]

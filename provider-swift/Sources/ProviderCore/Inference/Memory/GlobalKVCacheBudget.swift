@@ -18,6 +18,9 @@ public actor GlobalKVCacheBudget {
     }
 
     nonisolated let processLedger: ProcessMemoryLedger
+    /// The RAM-only prefix tier's entries, charged here and yielding to this
+    /// budget's refused charges. `.shared` outside tests.
+    nonisolated let memoryOnlyPool: MemoryOnlyCheckpointPool
     nonisolated let physicalMemoryBytes: UInt64
     nonisolated let loadReserveBytes: UInt64
     /// The operator's `memory_reserve_gb` this budget honors, in bytes.
@@ -156,6 +159,7 @@ public actor GlobalKVCacheBudget {
             configReserveBytes: configReserveBytes,
             prepareUsage: { _ = Self.allocatorReady }, snapshot: snapshot)
         self.processLedger = ledger
+        self.memoryOnlyPool = .shared
         let idleSweep = Self.idleCacheSweepEnabled(environment: environment)
         self.signalsEngineRefusals = Self.busyEnginesKeepReclaimableMemory(environment: environment)
         self.flushCache = clearCache
@@ -204,8 +208,10 @@ public actor GlobalKVCacheBudget {
         rejectionStreakContinuityWindow: Duration = GlobalKVCacheBudget.defaultRejectionStreakContinuityWindow,
         auditMinInterval: Duration = GlobalKVCacheBudget.defaultAuditMinInterval,
         clockNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
-        emitAuditEvent: @escaping @Sendable (TelemetrySeverity, String, [String: AnyCodableValue]) -> Void = { _, _, _ in }
+        emitAuditEvent: @escaping @Sendable (TelemetrySeverity, String, [String: AnyCodableValue]) -> Void = { _, _, _ in },
+        memoryOnlyPool: MemoryOnlyCheckpointPool = .shared
     ) {
+        self.memoryOnlyPool = memoryOnlyPool
         let serviceBudget = suppliedServiceBudget ?? WholeMacServiceBudget()
         self.serviceBudget = serviceBudget
         let total = memorySnapshot().total
@@ -310,10 +316,17 @@ public actor GlobalKVCacheBudget {
     /// estimates have been rehydrated into exact MLX arrays.
     public func resizeReservationBytes(requestID: String, bytes: UInt64) -> Bool {
         guard bytes > 0, var current = reservations[requestID] else { return false }
-        do {
-            current.state = try processLedger.replaceCharge(
-                owner: current.state.owner, expectedRevision: current.state.revision,
+        let state = current.state
+        func charge() throws -> ProcessMemoryLedger.OwnerState {
+            try processLedger.replaceCharge(
+                owner: state.owner, expectedRevision: state.revision,
                 expectedPolicyEpoch: processLedger.policySnapshot().epoch, chargedBytes: bytes)
+        }
+        do {
+            do { current.state = try charge() }
+            catch where bytes > current.bytes && yieldMemoryOnlyTier(for: bytes - current.bytes) {
+                current.state = try charge()
+            }
         } catch {
             if bytes > current.bytes { recordReservationRefusal(bytes: bytes - current.bytes) }
             return false
@@ -362,10 +375,14 @@ public actor GlobalKVCacheBudget {
 
     private func commit(requestID: String, bytes: UInt64) -> Bool {
         let owner = processLedger.createOwner()
-        do {
-            let accepted = try processLedger.replaceCharge(
+        func charge() throws -> ProcessMemoryLedger.OwnerState {
+            try processLedger.replaceCharge(
                 owner: owner.owner, expectedRevision: owner.revision,
                 expectedPolicyEpoch: processLedger.policySnapshot().epoch, chargedBytes: bytes)
+        }
+        do {
+            let accepted: ProcessMemoryLedger.OwnerState
+            do { accepted = try charge() } catch where yieldMemoryOnlyTier(for: bytes) { accepted = try charge() }
             reservations[requestID] = Reservation(state: accepted, createdAt: clockNow())
         } catch {
             _ = processLedger.retire(owner.owner)
@@ -392,6 +409,17 @@ public actor GlobalKVCacheBudget {
     }
 
     func reservationClockNow() -> ContinuousClock.Instant { clockNow() }
+
+    /// The RAM-only prefix tier holds headroom a request's charge takes first:
+    /// when its entries cover the shortfall, the least recently used ones are
+    /// released here, synchronously, so the caller's charge can be retried once.
+    private func yieldMemoryOnlyTier(for bytes: UInt64) -> Bool {
+        let pool = memoryOnlyPool
+        let available = processLedger.snapshot().remainingBytes
+        guard bytes > available, bytes - available <= pool.bytesInUse else { return false }
+        pool.release(bytes: bytes - available, reason: .shortfall)
+        return true
+    }
 
     func recordReservationRefusal(bytes: UInt64) {
         let available = processLedger.snapshot().remainingBytes
@@ -486,8 +514,15 @@ public actor GlobalKVCacheBudget {
     /// directly; nil unless `signalsEngineRefusals`.
     nonisolated func directChargeRefusalSignal() -> (@Sendable (UInt64) -> Void)? {
         guard signalsEngineRefusals else { return nil }
-        let reclaimer = reclaimer
-        return { shortfall in reclaimer.scheduleReclaim(shortfall: shortfall) }
+        let reclaimer = reclaimer, pool = memoryOnlyPool
+        return { shortfall in
+            // Called under the engine's admission lock: the RAM-only prefix tier
+            // yields off it, and the engine retries at its next step.
+            if pool.bytesInUse > 0 {
+                Task.detached { pool.release(bytes: shortfall, reason: .shortfall) }
+            }
+            reclaimer.scheduleReclaim(shortfall: shortfall)
+        }
     }
 
     private static func makeLedger(

@@ -45,6 +45,27 @@ enum SSDPrefixCachePolicy {
         return n
     }
 
+    /// Whether a hit extends an entry's reuse. `sliding` (the default)
+    /// restarts its TTL at each hit; `fixed` never does, so an entry is not
+    /// reused `ttlSeconds` after it was written; maintenance removes its file
+    /// later. `DARKBLOOM_SSD_KV_TTL_MODE` selects it; unset or empty is
+    /// `sliding`, and any value but `sliding` is `fixed`, the shorter reuse.
+    enum TTLMode: String, Sendable, Equatable {
+        case sliding, fixed
+        var refreshesOnHit: Bool { self == .sliding }
+    }
+
+    static let ttlModeEnvironmentFlag = "DARKBLOOM_SSD_KV_TTL_MODE"
+
+    static func ttlMode(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> TTLMode {
+        guard let raw = environment[ttlModeEnvironmentFlag]?.trimmingCharacters(in: .whitespaces).lowercased(),
+            !raw.isEmpty
+        else { return .sliding }
+        return raw == TTLMode.sliding.rawValue ? .sliding : .fixed
+    }
+
     // MARK: - Endurance (daily write cap)
 
     /// Root-wide rolling-day budget for SSD write endurance. `0` ⇒ unlimited;
@@ -224,6 +245,15 @@ enum SSDPrefixCachePolicy {
 
     static func incrementalCheckpoints(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         !["0", "false", "no", "off"].contains(environment[incrementalCheckpointsFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    /// Complete-checkpoint restores read and authenticate chunks ahead of the
+    /// copy into staged memory (`SSDChunkPrefetcher`); a negative value keeps
+    /// the sequential stage.
+    static let parallelStageFlag = "DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE"
+
+    static func parallelStage(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        !["0", "false", "no", "off"].contains(environment[parallelStageFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
     /// Deliver a donor's response before its complete checkpoint is durable

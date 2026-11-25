@@ -157,7 +157,7 @@ struct CoordinatorIntegrationTests {
                 switch event {
                 case .inferenceRequest(
                     let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _, _,
-                    let firstContentDeadline, _, _, let reservationID, _, let gemmaPromptContract, _
+                    let firstContentDeadline, _, _, let reservationID, _, let gemmaPromptContract, _, _
                 ):
                     #expect(rid == requestId)
                     // The frame's Gemma prompt contract reaches the loop's event.
@@ -412,21 +412,24 @@ struct CoordinatorIntegrationTests {
         #expect(resp.publicKey == keys.publicKeyBase64)
     }
 
-    // MARK: 3c. A service-restart close (1012) reconnects within 1 s
+    // MARK: 3c. A fleet-wide close (1001 or 1012) waits the fleet-close range, not the grown backoff
 
     /// Fault injected at the socket seam: the stand-in coordinator writes a
-    /// WebSocket close frame with code 1012 (service restart) and the reason
-    /// "conductor failover" on the live provider socket. The provider's grown
-    /// backoff would wait 2-4 s, so a provider that handled 1012 like any other
-    /// close cannot register again within the bound.
-    @Test("a 1012 close from the coordinator side brings the provider back within 1 s")
-    func serviceRestartCloseReconnectsWithinOneSecond() async throws {
-        try await withGrownReconnectBackoff { mock in
+    /// WebSocket close frame with code 1001 (going away) or 1012 (service
+    /// restart) on the live provider socket. The policy here draws the wait
+    /// after these codes from 0-0.25 s instead of 0-15 s. The provider's grown
+    /// backoff would wait 2-4 s, so a provider that handled these codes like
+    /// any other close cannot register again within the bound.
+    @Test("a 1001 or 1012 close from the coordinator side waits the fleet-close range, not the grown backoff",
+          arguments: [UInt16(1001), 1012])
+    func fleetCloseReconnectsWithinTheFleetCloseRange(closeCode: UInt16) async throws {
+        let policy = CoordinatorReconnectPolicy(fleetCloseDelayRange: 0...0.25)
+        try await withGrownReconnectBackoff(reconnectPolicy: policy) { mock in
             let restart = try await reregistrationTime(
-                after: mock, closeCode: 1012, reason: "conductor failover")
-            let elapsed = try #require(restart, "no registration after the 1012 close")
-            // The wait is 0-1 s, plus a loopback reconnect. The grown backoff waits 2 s or more.
-            #expect(elapsed < .milliseconds(1500), "registered again \(elapsed) after the 1012 close")
+                after: mock, closeCode: closeCode, reason: "conductor failover")
+            let elapsed = try #require(restart, "no registration after the \(closeCode) close")
+            // The wait is 0-0.25 s, plus a loopback reconnect. The grown backoff waits 2 s or more.
+            #expect(elapsed < .milliseconds(1500), "registered again \(elapsed) after the \(closeCode) close")
         }
     }
 
@@ -434,7 +437,7 @@ struct CoordinatorIntegrationTests {
 
     /// The policy here counts a session of 1 s as stable instead of 60 s.
     /// After the backoff has grown to a 2-4 s wait, the next session stays open
-    /// for 1.5 s, so its ordinary close (code 1001) must reconnect after the
+    /// for 1.5 s, so its ordinary close (code 1000) must reconnect after the
     /// stable session's first retry, 0-0.25 s.
     @Test("a session open past the stable duration reconnects within the first-retry range")
     func stableSessionCloseReconnectsWithinFirstRetryRange() async throws {
@@ -591,7 +594,7 @@ private func makeClient(
 /// the provider took to send its next `register`; nil when none came in 10 s.
 private func reregistrationTime(
     after mock: MockCoordinator,
-    closeCode: UInt16 = 1001,
+    closeCode: UInt16 = 1000,
     reason: String? = "mock dropping"
 ) async throws -> Duration? {
     let registersBefore = mock.snapshot().registers.count
@@ -604,7 +607,7 @@ private func reregistrationTime(
 }
 
 /// Connects a provider with `reconnectPolicy` to a fresh `MockCoordinator` and
-/// grows its reconnect backoff with two ordinary closes (code 1001) of short
+/// grows its reconnect backoff with two ordinary closes (code 1000) of short
 /// sessions, each followed by the next registration. The provider's next
 /// ordinary wait is then 2-4 s. Runs `body` against the connected stand-in.
 private func withGrownReconnectBackoff(

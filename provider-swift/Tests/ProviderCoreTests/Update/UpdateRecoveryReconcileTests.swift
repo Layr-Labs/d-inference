@@ -179,6 +179,21 @@ private func isUpToDate(_ result: UpdateCheckResult, at version: String) -> Bool
 
 @Suite("Update record reconciled with the installed app", .serialized, .timeLimit(.minutes(2)))
 struct UpdateRecoveryReconcileTests {
+    /// The doctor compares a pair's saved worker pin with the worker of the release this Mac updated from: the one in
+    /// the kept rollback copy, named by the copy's release. No copy, no earlier worker.
+    @Test func theKeptRollbackCopyNamesItsReleaseAndItsWorker() throws {
+        let mac = try InstalledMac(installed: "0.10.18")
+        defer { mac.cleanUp() }
+        #expect(mac.updater(running: "0.10.18").keptRollbackWorker() == nil, "no copy is kept")
+        let copy = try mac.keepRollbackCopy(signed: "0.10.17", recordedAs: "0.10.17", generation: 1)
+        try mac.store.writeState(UpdateRecoveryState(installGeneration: 2,
+            current: try InstalledMac.record(of: mac.app, version: "0.10.18", generation: 2), predecessor: copy))
+        let kept = try #require(mac.updater(running: "0.10.18").keptRollbackWorker())
+        #expect(kept.version == "0.10.17")
+        #expect(kept.worker.standardizedFileURL == mac.rollbackCopy
+            .appendingPathComponent("Darkbloom.app/Contents/Helpers/darkbloom-cluster-worker").standardizedFileURL)
+    }
+
     /// Before its cluster service starts, the supervisor reconciles the record with the installed app: 0.10.7 is the
     /// installed release, the pending 0.10.6 is dropped without a start counted against it, and the rollback copy is
     /// removed, so nothing is rolled back until the next update keeps a copy of 0.10.7.

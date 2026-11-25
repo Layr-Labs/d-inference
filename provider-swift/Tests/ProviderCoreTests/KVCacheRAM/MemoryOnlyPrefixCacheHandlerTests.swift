@@ -68,7 +68,7 @@ struct MemoryOnlyPrefixCacheHandlerTests {
                 prefixCacheProtocol: 2, cacheReceiptBoundaryMode: "checkpoint", send: SendHandle(recorder.record))
             #expect(await recorder.terminal.wait(), "terminal: \(recorder.diagnosticSummary)")
             let usages = recorder.snapshot.compactMap { message -> UsageInfo? in
-                if case .inferenceComplete(_, let usage, _, _) = message { return usage }
+                if case .inferenceComplete(_, let usage, _, _, _) = message { return usage }
                 return nil
             }
             #expect(!memoryOnly || !recorder.snapshot.contains {

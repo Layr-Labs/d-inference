@@ -1024,7 +1024,7 @@ extension ProviderLoop {
                 return
             }
             if rejectExpiredDeadline() { return }
-            let responseSealer = ResponseFrameSealer(keyPair: kp, sharedKey: sharedKey)
+            let responseSealer = ResponseFrameSealer(keyPair: kp, sharedKey: sharedKey, digestsFrames: blindFrame != nil)
 
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
@@ -1824,14 +1824,25 @@ extension ProviderLoop {
                 stopSequence: v2UsageSignal.matchedStopSequence,
                 responseHash: attestation.hash, seSignature: attestation.signature)
             let encryptedUsage: EncryptedPayload
+            // A blind request's usage, signed by this Mac over the frames and
+            // sealed usage it sent (`BlindStatement.usage`).
+            var blindUsage: SignedBlindStatement?
             do {
                 #if DEBUG
                 if usageSealFails { throw CryptoError.encryptionFailed }
                 #endif
+                let chunkCount = responseSealer.framesSealed
                 encryptedUsage = try responseSealer.sealUsage(usageInfo, terminal: terminalFields)
+                if let blindFrame {
+                    blindUsage = try Self.signedBlindUsage(
+                        blindFrame, requestId: requestId, usage: usageInfo, finishReason: terminalFields.finishReason,
+                        chunkCount: chunkCount, framesSHA256: responseSealer.framesSHA256 ?? Data(),
+                        encryptedUsage: encryptedUsage, signer: signingIdentity)
+                }
             } catch {
                 // No clear copy goes out instead: the request ends as one whose
-                // frame cannot be sealed does.
+                // frame cannot be sealed does. A blind request's usage that
+                // cannot be signed ends it the same way.
                 log.error("[\(requestId)] usage encryption failed")
                 providerStats.incrementChunkEncryptionErrors()
                 finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
@@ -1852,7 +1863,8 @@ extension ProviderLoop {
                     // Live builder: SendHandle.send stamps flush/terminal_sent,
                     // the codec materializes the wire object at encode time.
                     profile: profile,
-                    encryptedUsage: encryptedUsage),
+                    encryptedUsage: encryptedUsage,
+                    blindUsage: blindUsage),
                 fallbackFailure: .policy,
                 send: send)
 

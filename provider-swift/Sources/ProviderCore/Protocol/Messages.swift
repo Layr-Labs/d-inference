@@ -469,6 +469,9 @@ public enum ProviderMessage: Sendable, Equatable {
         public fileprivate(set) var stopSequence: String?
         public fileprivate(set) var seSignature: String?
         public fileprivate(set) var responseHash: String?
+        /// A blind request's usage statement, signed by the Mac's Secure
+        /// Enclave key (`BlindStatement.usage`). Omitted on the wire when nil.
+        public var blindUsage: SignedBlindStatement?
         /// Profiler per-attempt profile (slice 2). OBSERVABILITY ONLY — the
         /// coordinator decodes it after the terminal has been fully processed
         /// and it never influences routing, billing, or client bytes. Omitted
@@ -479,11 +482,13 @@ public enum ProviderMessage: Sendable, Equatable {
             requestId: String,
             usage: UsageInfo,
             encryptedUsage: EncryptedPayload? = nil,
+            blindUsage: SignedBlindStatement? = nil,
             profile: InferenceProfile? = nil
         ) {
             self.requestId = requestId
             self.usage = usage
             self.encryptedUsage = encryptedUsage
+            self.blindUsage = blindUsage
             self.profile = profile
         }
     }
@@ -1048,6 +1053,7 @@ extension ProviderMessage: Codable {
         // InferenceComplete
         case usage
         case encryptedUsage = "encrypted_usage"
+        case blindUsage = "blind_usage"
         case stopSequence = "stop_sequence"
         case seSignature = "se_signature"
         case responseHash = "response_hash"
@@ -1227,6 +1233,7 @@ extension ProviderMessage: Codable {
             try container.encode(c.requestId, forKey: .requestId)
             try container.encode(c.usage, forKey: .usage)
             try container.encodeIfPresent(c.encryptedUsage, forKey: .encryptedUsage)
+            try container.encodeIfPresent(c.blindUsage, forKey: .blindUsage)
             // `stop_sequence`, `se_signature` and `response_hash` are never
             // written: they travel only inside `encrypted_usage`.
             // Saturated at the canonical wire boundary so EVERY producer path
@@ -1517,6 +1524,7 @@ extension ProviderMessage: Codable {
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
                 encryptedUsage: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedUsage),
+                blindUsage: (try? container.decodeIfPresent(SignedBlindStatement.self, forKey: .blindUsage)).flatMap { $0 },
                 profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
             )
             complete.stopSequence = try container.decodeIfPresent(String.self, forKey: .stopSequence)

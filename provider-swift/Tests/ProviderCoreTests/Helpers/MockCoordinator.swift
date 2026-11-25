@@ -52,6 +52,8 @@ public struct CapturedMessages: Sendable {
     public var serviceReservationReleases: [String] = []
     public var inferenceChunks: [ProviderMessage.InferenceResponseChunk] = []
     public var inferenceComplete: [ProviderMessage.InferenceComplete] = []
+    /// The exact bytes of each `inference_complete` frame, in arrival order.
+    public var inferenceCompleteFrames: [Data] = []
     public var inferenceErrors: [ProviderMessage.InferenceError] = []
     /// The exact bytes of each `inference_error` frame, in arrival order.
     public var inferenceErrorFrames: [Data] = []
@@ -730,7 +732,9 @@ public final class MockCoordinator: @unchecked Sendable {
             case .inferenceAccepted(let a):   captured.inferenceAccepted.append(a)
             case .serviceReservationReleased(let id): captured.serviceReservationReleases.append(id)
             case .inferenceResponseChunk(let c): captured.inferenceChunks.append(c)
-            case .inferenceComplete(let c):   captured.inferenceComplete.append(c)
+            case .inferenceComplete(let c):
+                captured.inferenceComplete.append(c)
+                captured.inferenceCompleteFrames.append(data)
             case .inferenceError(let e):
                 captured.inferenceErrors.append(e)
                 captured.inferenceErrorFrames.append(data)

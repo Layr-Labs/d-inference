@@ -92,7 +92,7 @@ enum ScriptedCoordinatorRelay {
         await bridge.shutdown()
         _ = await runtime.unregister(modelId: modelID)
         var sealedUsage: [String: Any]?
-        for case .inferenceComplete(_, _, _, let sealed?) in recorder.terminals {
+        for case .inferenceComplete(_, _, _, let sealed?, _) in recorder.terminals {
             sealedUsage = try JSONSerialization.jsonObject(with: sender.decryptPayload(sealed)) as? [String: Any]
         }
         return Output(frames: try frames(), terminals: recorder.terminals, sealedUsage: sealedUsage)

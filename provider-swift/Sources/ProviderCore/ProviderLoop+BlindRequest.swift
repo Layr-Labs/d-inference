@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 import MLXLMServer
@@ -60,6 +61,28 @@ extension ProviderLoop {
         return BlindBodyCheck.check(facts, frame: frame, now: now) {
             servedBlindClientNonces.admitBlindClientNonce(frame.terms, now: now)
         }.mapError(frame.refusal)
+    }
+
+    /// A served blind request's usage statement, signed by `signer`: its terms,
+    /// the usage, how it finished, and digests of the `chunkCount` frames and
+    /// the sealed usage it sent. Throws without a signer.
+    nonisolated static func signedBlindUsage(
+        _ frame: VerifiedBlindFrame, requestId: String, usage: UsageInfo,
+        finishReason: SealedTerminalFields.FinishReason, chunkCount: UInt64, framesSHA256: Data,
+        encryptedUsage: EncryptedPayload, signer: (any AttestationSigner)?
+    ) throws -> SignedBlindStatement {
+        guard let signer else { throw BlindRefusalReason.posture }
+        let terms = BlindStatement.UsageTerms(
+            requestID: requestId, signedRequestSHA256: frame.signedRequestSHA256,
+            recipientPublicKey: frame.signature.payload.recipientPublicKey,
+            clientPublicKey: frame.terms.clientPublicKey, clientNonce: frame.terms.clientNonce,
+            model: frame.terms.model, maxTokens: frame.terms.maxTokens)
+        let sealedUsage = Data(base64Encoded: encryptedUsage.ciphertext) ?? Data()
+        return try BlindStatement.usage(
+            terms, usage: usage, finishReason: BlindFinishReason(finishReason), chunkCount: chunkCount,
+            framesSHA256: framesSHA256, sealedUsageSHA256: Data(SHA256.hash(data: sealedUsage)),
+            issuedAtMs: Int64((Date().timeIntervalSince1970 * 1000).rounded(.down))
+        ).signed(by: signer)
     }
 
     /// The failure that answers a refused blind request, its refusal signed by

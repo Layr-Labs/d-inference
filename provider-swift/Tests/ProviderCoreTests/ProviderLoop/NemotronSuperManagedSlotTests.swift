@@ -29,7 +29,7 @@ struct NemotronSuperManagedSlotTests {
         func terminal(_ id: String) -> OutboundMessage? {
             snapshot.first {
                 switch $0 {
-                case .inferenceComplete(let request, _, _, _), .inferenceError(let request, _, _):
+                case .inferenceComplete(let request, _, _, _, _), .inferenceError(let request, _, _):
                     request == id
                 default: false
                 }
@@ -226,7 +226,7 @@ struct NemotronSuperManagedSlotTests {
     }
 
     static func usage(_ terminal: OutboundMessage) -> UsageInfo? {
-        if case .inferenceComplete(_, let usage, _, _) = terminal { return usage }
+        if case .inferenceComplete(_, let usage, _, _, _) = terminal { return usage }
         return nil
     }
 

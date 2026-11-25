@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 
@@ -16,36 +17,62 @@ final class ResponseFrameSealer: Sendable {
     private let keyPair: NodeKeyPair
     private let sharedKey: Data
     let prefix: [UInt8]
-    /// Frames sealed so far, which is also the next frame's number. Held
-    /// across each seal so that a number goes to exactly one box.
-    private let sealedFrames = os.OSAllocatedUnfairLock<UInt64>(initialState: 0)
+    private struct Sealed {
+        /// Frames sealed so far, which is also the next frame's number.
+        var count: UInt64 = 0
+        /// SHA-256 over the raw `nonce ‖ box` of every frame sealed so far,
+        /// for a sealer that digests its frames.
+        var digest: SHA256?
+    }
 
-    init(keyPair: NodeKeyPair, sharedKey: Data, prefix: [UInt8] = ResponseFrameSealer.randomPrefix()) {
+    /// Held across each seal so that a number goes to exactly one box.
+    private let sealed: os.OSAllocatedUnfairLock<Sealed>
+
+    /// `digestsFrames`: keep `framesSHA256`, which a blind request's signed
+    /// usage names.
+    init(keyPair: NodeKeyPair, sharedKey: Data, prefix: [UInt8] = ResponseFrameSealer.randomPrefix(),
+         digestsFrames: Bool = false) {
         precondition(prefix.count == Self.prefixLength)
         self.keyPair = keyPair
         self.sharedKey = sharedKey
         self.prefix = prefix
+        sealed = os.OSAllocatedUnfairLock(uncheckedState: Sealed(digest: digestsFrames ? SHA256() : nil))
     }
 
     /// Seals the next frame of the response.
     func sealFrame(_ plaintext: some Collection<UInt8>) throws -> EncryptedPayload {
-        try sealedFrames.withLockUnchecked { count in
+        try sealed.withLockUnchecked { state in
             let payload = try keyPair.encryptPayloadFast(
-                sharedKey: sharedKey, plaintext: plaintext, nonce: nonce(count))
-            count += 1
+                sharedKey: sharedKey, plaintext: plaintext, nonce: nonce(state.count))
+            if state.digest != nil, let box = Data(base64Encoded: payload.ciphertext) {
+                state.digest?.update(data: box)
+            }
+            state.count += 1
             return payload
         }
+    }
+
+    /// Frames sealed so far.
+    var framesSealed: UInt64 {
+        sealed.withLockUnchecked { $0.count }
+    }
+
+    /// SHA-256 over the raw `nonce ‖ box` of every frame sealed so far, in
+    /// order; nil for a sealer that does not digest its frames.
+    var framesSHA256: Data? {
+        sealed.withLockUnchecked { state in state.digest.map { Data($0.finalize()) } }
     }
 
     /// Seals the request's usage and frame count, and `terminal` when given,
     /// under the number after the last frame. Sealing it ends the sequence:
     /// call it once, after the last frame.
     func sealUsage(_ usage: UsageInfo, terminal: SealedTerminalFields? = nil) throws -> EncryptedPayload {
-        try sealedFrames.withLockUnchecked { count in
+        try sealed.withLockUnchecked { state in
             let body = try Self.usageEncoder.encode(
-                SealedResponseUsage(frameCount: count, usage: usage, terminal: terminal))
-            let payload = try keyPair.encryptPayloadFast(sharedKey: sharedKey, plaintext: body, nonce: nonce(count))
-            count += 1
+                SealedResponseUsage(frameCount: state.count, usage: usage, terminal: terminal))
+            let payload = try keyPair.encryptPayloadFast(
+                sharedKey: sharedKey, plaintext: body, nonce: nonce(state.count))
+            state.count += 1
             return payload
         }
     }

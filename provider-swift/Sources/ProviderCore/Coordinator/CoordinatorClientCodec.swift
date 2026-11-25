@@ -211,11 +211,12 @@ public enum CoordinatorClientCodec {
                 encryptedData: encryptedData
             ))
 
-        case .inferenceComplete(let requestId, let usage, let profile, let encryptedUsage):
+        case .inferenceComplete(let requestId, let usage, let profile, let encryptedUsage, let blindUsage):
             return .inferenceComplete(ProviderMessage.InferenceComplete(
                 requestId: requestId,
                 usage: usage,
                 encryptedUsage: encryptedUsage,
+                blindUsage: blindUsage,
                 // Materialized HERE (encode time) so `terminal_sent_us` /
                 // `flush_us` stamped by SendHandle.send are included and
                 // `total_us` covers the outbound-queue wait.

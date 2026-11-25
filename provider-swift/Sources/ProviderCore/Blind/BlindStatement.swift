@@ -154,4 +154,13 @@ public enum BlindFinishReason: String, Sendable, Equatable {
     case toolCalls = "tool_calls"
     case cancelled
     case error
+
+    init(_ reason: SealedTerminalFields.FinishReason) {
+        switch reason {
+        case .stop: self = .stop
+        case .length: self = .length
+        case .toolCalls: self = .toolCalls
+        case .cancelled: self = .cancelled
+        }
+    }
 }

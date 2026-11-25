@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 
@@ -66,6 +67,29 @@ struct ResponseFrameSealerTests {
         #expect(number == 3)
         let opened = try JSONDecoder().decode(SealedResponseUsage.self, from: consumer.decryptPayload(payload))
         #expect(opened == SealedResponseUsage(frameCount: 3, usage: usage))
+    }
+
+    @Test("a sealer that digests its frames keeps SHA-256 over their raw nonce and box, in order")
+    func framesDigest() throws {
+        let provider = NodeKeyPair.generate()
+        let consumer = NodeKeyPair.generate()
+        let sharedKey = try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes)
+        let sealer = ResponseFrameSealer(keyPair: provider, sharedKey: sharedKey, digestsFrames: true)
+        #expect(sealer.framesSHA256 == Data(SHA256.hash(data: Data())))
+        var expected = SHA256()
+        for text in ["a", "bc", "def"] {
+            let payload = try sealer.sealFrame(Data(text.utf8))
+            let box = try #require(Data(base64Encoded: payload.ciphertext))
+            expected.update(data: box)
+        }
+        #expect(sealer.framesSealed == 3)
+        #expect(sealer.framesSHA256 == Data(expected.finalize()))
+        _ = try sealer.sealUsage(UsageInfo(promptTokens: 1, completionTokens: 3))
+        #expect(sealer.framesSHA256 == Data(expected.finalize()), "the usage is not a frame")
+
+        let plain = ResponseFrameSealer(keyPair: provider, sharedKey: sharedKey)
+        _ = try plain.sealFrame(Data("a".utf8))
+        #expect(plain.framesSHA256 == nil)
     }
 
     @Test("terminal fields given to the usage are sealed beside it")

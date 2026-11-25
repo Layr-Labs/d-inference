@@ -970,6 +970,7 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 | `stop_sequence` | `string` | `String?` (decoded only) | opt | exact caller stop string matched; only from providers that do not register `terminal_fields_sealed` |
 | `se_signature` | `string` | `String?` (decoded only) | opt | Secure Enclave signature over `response_hash`; only from providers that do not register `terminal_fields_sealed` |
 | `response_hash` | `string` | `String?` (decoded only) | opt | SHA-256 of the response data; only from providers that do not register `terminal_fields_sealed` |
+| `blind_usage` | — | `SignedBlindStatement?` | opt | only on a served [blind request](#blind-requests): its usage statement, signed by the Mac's Secure Enclave key |
 | `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker ([coordinator/internal/observation/profile/profiler_provider.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/observation/profile/profiler_provider.go)). Observability only. Field list and validation: [../architecture/system-profiler.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/system-profiler.md) |
 
 A provider that registers `terminal_fields_sealed` sends `stop_sequence`,
@@ -1620,6 +1621,24 @@ maps every such `inference_error` of the request once its frame verified). A
 blind refusal carries no `profile`. Capacity, load and transport failures
 keep their ordinary errors, and so does a generation failure; a frame without
 a decodable sealed body is refused before the handler, as any other.
+
+A served blind request's frames are sealed to the client's key as for any
+request, and its `inference_complete` carries, beside the clear `usage` and
+`encrypted_usage`, `blind_usage`:
+`{"statement":{…},"signature":"<base64 DER>"}`. The statement has the members
+`request_id`, `signed_request_sha256`, `recipient_public_key`,
+`client_public_key`, `client_nonce`, `model` and `max_tokens` (the signed
+terms'), `prompt_tokens`, `completion_tokens`, `reasoning_tokens` and
+`cached_tokens` (the clear usage's; an absent count is 0), `finish_reason`
+(`stop`, `length`, `tool_calls` or `cancelled`), `chunk_count` (the response
+frames sent), `frames_sha256` (base64 SHA-256 over the raw `nonce ‖ box` of
+those frames, in order), `sealed_usage_sha256` (base64 SHA-256 of the raw
+`encrypted_usage`) and `issued_at_ms`, integers as JSON numbers. The signature
+is ECDSA P-256 over SHA-256, by the Mac's Secure Enclave key, of the 4-byte
+big-endian length and bytes of `darkbloom-blind-usage-v1` and then of each
+member's string form in that order (`BlindStatement.usage`,
+`ProviderLoop.signedBlindUsage`). A usage that cannot be signed ends the
+request with `encryption_failure`, as one that cannot be sealed does.
 
 A refusal is an `inference_error` with `failure_code` `blind_refused`,
 `status_code` 502 for `signature_invalid` and `posture` and 400 for every

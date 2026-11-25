@@ -295,7 +295,10 @@ public enum OutboundMessage: Sendable {
         requestId: String,
         usage: UsageInfo,
         profile: RequestProfileBuilder? = nil,
-        encryptedUsage: EncryptedPayload? = nil
+        encryptedUsage: EncryptedPayload? = nil,
+        /// A blind request's usage statement, signed by this Mac
+        /// (`BlindStatement.usage`); nil for every other request.
+        blindUsage: SignedBlindStatement? = nil
     )
     case inferenceError(
         requestId: String,

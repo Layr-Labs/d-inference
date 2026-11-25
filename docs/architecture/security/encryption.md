@@ -89,6 +89,12 @@ session key reads them; a usage that cannot be sealed ends the request with
 and closed-set categories stay readable for routing and billing
 (`SealedTerminalFields`; [protocol messages](../../reference/protocol-messages.md#inference_complete)).
 
+For a [blind request](../../reference/protocol-messages.md#blind-requests)
+the sealer also keeps SHA-256 over the raw `nonce ‖ box` of each frame it
+seals, in order (`ResponseFrameSealer.framesSHA256`). The Mac signs that
+digest, the sealed usage's and the usage in the request's `blind_usage`, so a
+client can check that the frames it received are the ones the Mac sent.
+
 Provider cryptography is implemented by
 `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` and the provider loop.
 Authentication, code identity and encrypted transport are distinct properties.

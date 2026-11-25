@@ -394,14 +394,15 @@ class WorkflowRoutingTests(unittest.TestCase):
         # The plan (provider-plan.yml) runs the classifier and the tree lookup,
         # then routes only the lanes of the components it chose; the test jobs
         # read those components as inputs, on pull requests and pushes alike.
-        # One job classifies, looks up and chooses; the route job follows it.
+        # One job classifies, looks up, chooses and routes, in its last step.
         plan = workflow.job_blocks((ROOT / ".github/workflows/provider-plan.yml").read_text().split("\njobs:\n", 1)[1])
-        self.assertEqual(set(plan), {"commit", "components", "route"})
+        self.assertEqual(set(plan), {"commit", "components"})
         steps = workflow.step_blocks(plan["components"])
         self.assertEqual([workflow.field(step, "name", indent=6) for step in steps],
                          [None, "Classify complete base-to-head Git diff", "Name the change this run tests",
-                          "Look for a successful run that tested it", "Choose the components to test"])
-        checkout, classify, tree, lookup, choose = steps
+                          "Look for a successful run that tested it", "Choose the components to test",
+                          "Choose a Darkbloom or fallback runner for each lane"])
+        checkout, classify, tree, lookup, choose, route = steps
         self.assertEqual(workflow.uses(checkout), workflow.CHECKOUT)
         self.assertIn("    permissions:\n      contents: read\n      actions: read\n    outputs:\n", plan["components"])
         # Without run_tests, or when a dispatch's ref was refused, nothing is
@@ -426,7 +427,13 @@ class WorkflowRoutingTests(unittest.TestCase):
         # skipped lookup leaves skip empty, which tests.
         self.assertEqual(workflow.field(choose, "if"), "${{ !cancelled() }}")
         self.assertIn("          SKIP: ${{ steps.lookup.outputs.skip }}\n", choose)
-        self.assertIn("    needs: components\n", plan["route"])
+        # The route reads the choice, after any failure but cancellation
+        # (scripts/test-darkbloom-route.py pins its script to the router's).
+        self.assertEqual(workflow.field(route, "if"), "${{ !cancelled() }}")
+        self.assertEqual(workflow.field(route, "shell"), "bash")
+        self.assertIsNone(workflow.uses(route))
+        self.assertIn("steps.choose.outputs.provider == 'true'", route)
+        self.assertIn("      routes: ${{ steps.route.outputs.routes }}\n", plan["components"])
         for name in routing.COMPONENTS:
             self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])

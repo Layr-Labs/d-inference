@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-24
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -2685,7 +2685,9 @@ takes only the labels of that size and placement. It also covers the lane
 grammar and its bounds (names, at most 32 lanes, counts up to 16, placements,
 sizes), the default of 2 attempts, `require-darkbloom`, and the GitHub OIDC
 token that a job with `id-token: write` sends. It pins the router's SHA-256 to
-darkbloom-sandbox's `route.yml`. It also pins each routed job's lanes (one per
+darkbloom-sandbox's `route.yml`, and the CI plan job's route step to the
+router's script, byte for byte, and to its environment but for `LANES` and
+the two defaulted inputs. It also pins each routed job's lanes (one per
 provider or cluster shard, matching the job's matrix), size, fallback, timeout
 and read-only permissions, fails on any lane without a signed size, and keeps
 release workflows on literal Blacksmith runners. No check contacts the real

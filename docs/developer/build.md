@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-24
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -321,7 +321,7 @@ then the same tests, `.github/workflows/provider-tests.yml` (the build jobs,
 the provider shards, the cluster jobs, the CI plan checks and the `Provider Tests` gate). Pull
 requests and pushes run the same jobs; only pushes save caches.
 
-The plan has three jobs, one after another. The first, `Resolve the commit to
+The plan has two jobs, one after the other. The first, `Resolve the commit to
 test`, resolves a dispatch's `ref` (it does nothing on other events). The
 second, `Plan the components to test`, runs the component classifier
 (`scripts/ci-component-paths.py`), then the tree lookup
@@ -329,8 +329,9 @@ second, `Plan the components to test`, runs the component classifier
 chooses the components the test jobs run: the classifier's, or none when the
 tree was tested. A failed or skipped lookup leaves the components to test. A
 failed classifier, or a refused dispatch `ref`, makes the `Provider Tests`
-gate fail. The third job, `route`, sends the run's one route request. No macOS
-job starts before the route job ends.
+gate fail. Its last step sends the run's one route request
+([CI Runner Routing](#ci-runner-routing)), also after an earlier failure
+unless the run is cancelled. No macOS job starts before the plan job ends.
 
 CI tests each change once (`scripts/ci-tested-tree.py`). The gate of a passing
 run that tested something uploads an empty artifact named
@@ -428,8 +429,8 @@ checkout of the tested tree, the tested-tree record and the run name
 every component and never skips a tested tree. Its check runs belong to the
 head of `--ref`, not to the tested commit, so when the two differ Release
 Integrity reports as `Release Integrity (dispatch)` and never satisfies
-`master`'s ruleset. The route job sends no OIDC token (this repository is
-public), on a dispatch as on any event.
+`master`'s ruleset. The route (in CI, the plan job's last step) sends no OIDC
+token (this repository is public), on a dispatch as on any event.
 
 The non-blocking `Cluster GPU Tests (shard 1..3)` jobs run only when `cluster`
 is selected and the trigger is a `master` push, a manual `workflow_dispatch`, or
@@ -674,6 +675,22 @@ where the lane is the job's name; each provider shard reads its own lane,
 `format('test-provider-{0}', matrix.shard)`, and each Cluster Runtime Tests
 shard the lane its matrix entry names, `matrix.lane`.
 
+CI (dev) and CI (master) route without that job: the plan job's last step,
+`Choose a Darkbloom or fallback runner for each lane`, runs the route
+workflow's step script, byte for byte, with its environment
+(`scripts/test-darkbloom-route.py` pins both). It lists the lanes in `LANES`
+and keeps the script's defaults for the attempts and `require-darkbloom`. The
+test jobs read `inputs.routes`, the plan's `routes` output. The plan job holds
+`contents: read` and `actions: read` and no `id-token`, so the step sends no
+OIDC token, as the route job did. A separate route job added a second
+GitHub-hosted job's queue, setup and teardown before the routed jobs: a median
+7 s, 90th percentile 8 s, from the plan job's end to the first routed job's
+creation in 102 runs on 2026-11-23 and 2026-11-24. With the step, about 2 s
+remain (model). If the plan job ends before the step, for example on its
+10-minute timeout, the run has no routes: a routed job that would run fails to
+start instead of falling back, and the run fails either way, since its plan
+job failed.
+
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
 | `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` to `test-provider-5`, one per shard), `test-provider-gates`, `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2, 3, 6 and 7, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
@@ -707,8 +724,9 @@ rescue. The watchdog sees only GitHub: a job that
 waits at the payer's concurrency or resource limit looks stranded to it. Set
 `DARKBLOOM_WATCHDOG_MINUTES` above such waits. It marks the run with a
 `Darkbloom watchdog` check run, cancels it and re-runs its route job
-(`Select Runners`, here `plan / route / Select Runners`) and the jobs that
-need it; the new route keeps every fallback. A run is rescued once; stranded
+(`Select Runners`, as in `route / Select Runners`) and the jobs that need it,
+or the whole run when it has no route job, as a CI run does (its plan job
+routes); the new route keeps every fallback. A run is rescued once; stranded
 again, it is only cancelled. Its token has `actions: write` and
 `checks: write` on this repository and nothing else. Only CI and the other
 routed workflows carry Darkbloom labels, so release and signing runs are never
@@ -719,7 +737,8 @@ touched. `DARKBLOOM_WATCHDOG=off` turns it off.
 (last changed upstream in c79f29871). Update it only by copying a newer
 upstream file; `scripts/test-darkbloom-route.py` pins its SHA-256.
 
-Each caller lists its lanes in the route job's `lanes` input, one per line:
+Each caller lists its lanes in the route job's `lanes` input (CI's plan: its
+route step's), one per line:
 
 ```text
 <lane> <profile> <fallback-label> [count] [placement] [shape]
@@ -739,7 +758,8 @@ Each caller lists its lanes in the route job's `lanes` input, one per line:
 Every lane in this repository names all six fields, with `balanced`, for
 example
 `release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16`.
-The route job fails on a bad line before it sends a request.
+The route job (in CI, the plan job) fails on a bad line before it sends a
+request.
 
 Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
 `on`. The route job reads no other repository variable except
@@ -800,9 +820,10 @@ exception is the release's unsigned SDK qualification
 ([Release qualification on Darkbloom](#release-qualification-on-darkbloom)). In CI,
 every macOS job reads its lane of the plan's one route request (the plane
 routes a run attempt once); the plan's own bookkeeping (one job: the
-classifier, the tree lookup and the component choice), the CI plan checks and
-the `Provider Tests` gate run on `ubuntu-24.04`. A lane without a size gets the
-approval's pinned image size for its profile (one for macOS, one for Linux).
+classifier, the tree lookup, the component choice and the route), the CI plan
+checks and the `Provider Tests` gate run on `ubuntu-24.04`. A lane without a
+size gets the approval's pinned image size for its profile (one for macOS, one
+for Linux).
 The macOS one measured 12 vCPU / 32 GiB on 2026-11-05 (run 42105290034,
 attempt 1), the class of the Blacksmith 12-vCPU fallback; it is not a fixed
 default. Every lane here names its size, so no lane gets the pinned size
@@ -893,8 +914,8 @@ against the plane's grammar and bounds before it sends a request: decimal, no
 leading zeros, 1 to 256 vCPUs and 1 to 1024 GiB. It fails on a bad value. It
 sends every size; no repository variable turns sizes off.
 
-The lane table in the `route` job of `provider-plan.yml` is the one place that
-names each CI job's lane and size. It lists the critical-path test shards
+The lane table in the plan job's route step (`LANES`) of `provider-plan.yml`
+is the one place that names each CI job's lane and size. It lists the critical-path test shards
 first, then the build jobs and Cluster Release Build Checks, then the GPU
 shards.
 
@@ -990,10 +1011,10 @@ lane). A new lane routes only after the operator adds it to the approval's
 `lanes`; until then it keeps its fallback. On 2026-11-10 the approval named
 `test-cluster-gpu-1` and `test-cluster-gpu-2` but not `test-cluster-gpu-3`
 (run 42924487818).
-For each lane, the route job's log and step summary show the runner and the
-decision with its reason. They do not show the request body. The size
-appears only in a granted lane's last label; the lane table of the caller
-names every lane's size.
+For each lane, the route job's log and step summary (in CI, the plan job's)
+show the runner and the decision with its reason. They do not show the
+request body. The size appears only in a granted lane's last label; the lane
+table of the caller names every lane's size.
 
 ## CI Caching
 

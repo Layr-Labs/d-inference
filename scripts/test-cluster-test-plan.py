@@ -33,6 +33,8 @@ class ClusterTestPlanTests(unittest.TestCase):
     def setUp(self):
         self.jobs = {**workflow.job_blocks(plan.WORKFLOW.read_text()),
                      **workflow.job_blocks(workflow.PLAN_WORKFLOW.read_text().split("\njobs:\n", 1)[1])}
+        # The plan job's route step and its lanes, to the end of the plan job.
+        self.route = self.jobs["components"].split(workflow.ROUTE_STEP, 1)[1]
 
     def test_plan_names_every_gated_test_and_runner(self):
         self.assertEqual(plan.audit(), [])
@@ -443,7 +445,7 @@ class ClusterTestPlanTests(unittest.TestCase):
                     self.assertEqual([int(shard) for shard, _ in entries], plan.shards(lane))
                     self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)[matrix.lane] }}\n", job)
                     for _, route_lane in entries:
-                        self.assertIn(f"        {route_lane} macos_arm64 ", self.jobs["route"])
+                        self.assertIn(f"            {route_lane} macos_arm64 ", self.route)
                 else:
                     # Each GPU shard reads a lane of its own.
                     matrix = re.search(r"(?m)^        shard: \[([0-9, ]+)\]$", job).group(1)
@@ -451,7 +453,7 @@ class ClusterTestPlanTests(unittest.TestCase):
                     routed = f"fromJSON(inputs.routes)[format('{job_id}-{{0}}', matrix.shard)]"
                     self.assertIn(f"    runs-on: ${{{{ {routed} }}}}\n", job)
                     for shard in plan.shards(lane):
-                        self.assertIn(f"        {job_id}-{shard} macos_arm64 ", self.jobs["route"])
+                        self.assertIn(f"            {job_id}-{shard} macos_arm64 ", self.route)
                 steps = {workflow.field(step, "name", indent=6): step for step in workflow.step_blocks(job)}
                 products = steps["Download cluster test products"]
                 self.assertEqual(workflow.field(products, "uses"), workflow.PRODUCTS_ACTION)
@@ -466,7 +468,7 @@ class ClusterTestPlanTests(unittest.TestCase):
         self.assertEqual(workflow.run_command(focused["Run cluster focused checks"]),
                          "python3 scripts/cluster-test-plan.py run focused 1")
         self.assertIn("matrix.shard == 1 && ", workflow.field(focused["Run cluster focused checks"], "if"))
-        self.assertIn("        test-cluster-focused macos_arm64 ", self.jobs["route"])
+        self.assertIn("            test-cluster-focused macos_arm64 ", self.route)
 
     def test_only_the_gpu_job_continues_after_a_failure_and_the_gate_requires_the_others(self):
         # Besides the report-only resource samples.

@@ -26,6 +26,8 @@ WORKFLOW = ROOT / ".github/workflows/provider-tests.yml"
 MASTER_WORKFLOW = ROOT / ".github/workflows/ci-master.yml"
 # The plan the callers share: the classifier, the tree lookup and the route.
 PLAN_WORKFLOW = ROOT / ".github/workflows/provider-plan.yml"
+# The plan job's last step, which routes the run.
+ROUTE_STEP = "      - name: Choose a Darkbloom or fallback runner for each lane\n"
 DEV_WORKFLOW = ROOT / ".github/workflows/ci-dev.yml"
 
 
@@ -269,6 +271,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.jobs = {**job_blocks(WORKFLOW.read_text().split("\njobs:\n", 1)[1]),
                      **job_blocks(MASTER_WORKFLOW.read_text().split("\njobs:\n", 1)[1]),
                      **job_blocks(PLAN_WORKFLOW.read_text().split("\njobs:\n", 1)[1])}
+        # The route step and its lanes, to the end of the plan job.
+        self.route = self.jobs["components"].split(ROUTE_STEP, 1)[1]
 
     def test_nested_wrapper_preserves_long_filters_and_failure_gates(self):
         selector = "NativeSuite/" + "VeryLongTestName" * 30 + "|OtherSuite/testCase"
@@ -340,9 +344,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 # The plan's components are the classifier's, or none for a
                 # tree that already passed (provider-plan.yml).
                 for route_lane in route_lanes:
-                    self.assertRegex(self.jobs["route"], re.escape(
-                        "        %s macos_arm64 blacksmith-12vcpu-macos-27 "
-                        "${{ needs.components.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + LANE_PLACEMENT_AND_SIZE + r"\n")
+                    self.assertRegex(self.route, re.escape(
+                        "            %s macos_arm64 blacksmith-12vcpu-macos-27 "
+                        "${{ steps.choose.outputs.provider == 'true' && 1 || 0 }} " % route_lane) + LANE_PLACEMENT_AND_SIZE + r"\n")
                 self.assertIn("    timeout-minutes: 60\n", job)
                 # It starts beside its build job and waits for the products
                 # (test_each_lane_builds_once_and_its_test_jobs_run_its_products).
@@ -358,7 +362,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # free Mac for every shard at once and otherwise fall back entirely.
         # test_lanes_are_independent_on_dedicated_supported_mac_runners pins
         # the matrix to PROVIDER_SHARDS.
-        self.assertEqual(sorted(re.findall(r"(?m)^        (test-provider(?:-[0-9]+)?) ", self.jobs["route"])),
+        self.assertEqual(sorted(re.findall(r"(?m)^            (test-provider(?:-[0-9]+)?) ", self.route)),
                          [f"test-provider-{shard}" for shard in PROVIDER_SHARDS])
 
     def test_the_checked_in_weights_load_every_provider_shard_alike(self):
@@ -778,7 +782,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # MiMoV26NativeMediaDeadlineTests; un-skipping it there is the SDK's
         # (work/d-inference-test-dedup-inventory.md, class C).
         self.assertNotIn("test-provider-sdk", self.jobs)
-        self.assertNotIn("test-provider-sdk", self.jobs["route"])
+        self.assertNotIn("test-provider-sdk", self.route)
         for selector in ("MiMoV26NativeMediaDeadlineTests", "CBv2PagedSafetyTests", "NemotronH35MTPTests",
                          "run-paged-kernel-tests.sh", "swift package edit"):
             self.assertNotIn(selector, self.workflow)
@@ -960,7 +964,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # runner; the others in shard 2 of Cluster Focused Checks, beside
         # shard 1's runner scripts.
         self.assertNotIn("test-cluster-checks", self.jobs)
-        self.assertNotIn("test-cluster-checks", self.jobs["route"])
+        self.assertNotIn("test-cluster-checks", self.route)
         focused, release = self.jobs["test-cluster-focused"], self.jobs["cluster-release-checks"]
         self.assertIn("    name: Cluster Focused Checks (shard ${{ matrix.shard }})\n", focused)
         self.assertIn("    name: Cluster Release Build Checks\n", release)
@@ -968,13 +972,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         # The release build checks ask with their size.
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-focused'] }}\n", focused)
         self.assertIn("      matrix:\n        shard: [1, 2]\n", focused)
-        self.assertRegex(self.jobs["route"], re.escape(
-            "        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 "
-            "${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
+        self.assertRegex(self.route, re.escape(
+            "            test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 "
+            "${{ steps.choose.outputs.cluster == 'true' && 2 || 0 }} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}\n", release)
-        self.assertRegex(self.jobs["route"], re.escape(
-            f"        cluster-release-checks macos_arm64 {BLACKSMITH_MAC} "
-            "${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
+        self.assertRegex(self.route, re.escape(
+            f"            cluster-release-checks macos_arm64 {BLACKSMITH_MAC} "
+            "${{ steps.choose.outputs.cluster == 'true' && 1 || 0 }} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
         for job in (focused, release):
             self.assertIn("    if: ${{ inputs.cluster == 'true' }}\n", job)
             self.assertNotRegex(job, r"(?m)^    needs:")
@@ -1134,9 +1138,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertIn(f"    if: ${{{{ inputs.{lane} == 'true' }}}}\n", job)
                 # Requested exactly when the job runs: the plan's components
                 # (already false when skip is true in provider-plan.yml).
-                self.assertRegex(self.jobs["route"], re.escape(
-                    f"        {job_id} macos_arm64 {BLACKSMITH_MAC} "
-                    f"${{{{ needs.components.outputs.{lane} == 'true' && 1 || 0 }}}} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
+                self.assertRegex(self.route, re.escape(
+                    f"            {job_id} macos_arm64 {BLACKSMITH_MAC} "
+                    f"${{{{ steps.choose.outputs.{lane} == 'true' && 1 || 0 }}}} ") + LANE_PLACEMENT_AND_SIZE + r"\n")
                 self.assertNotRegex(job, r"(?m)^    (needs|strategy):")
                 steps = step_blocks(job)
                 builds = [step for step in steps if field(step, "uses") == BUILD_ACTION]

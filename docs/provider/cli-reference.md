@@ -206,7 +206,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `local` | Serve only you: start Only me where nothing serves, then print the local API's address and key; where Darkbloom serves, ask in a terminal before switching ([below](#darkbloom-local)) | | `LocalCommand.swift` (`Local`) |
 | `route` | Where your requests go when this Mac's local API can't take them: `this-mac`, `my-macs` or `my-macs-first` saves `[local] route` ([below](#darkbloom-route-this-mac-my-macs-my-macs-first)); `key` saves the account API key | ✓ | `RouteCommand.swift` (`Route`), `RouteChoiceCommand.swift` (`RouteChoiceFlow`) |
 | `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. In a terminal it asks nothing about serving: the pair serves through Darkbloom with the leading Mac's local API beside it and Darkbloom keeps serving while you use it (once the pair switches, starts or is shown serving, it saves `[local] mode = "both"` and, where none is saved, `me_first = false`; a saved `me_first` stays, and `me_first = true` set by hand plus `darkbloom restart` turns the pair's pause back on; a run that changes nothing saves nothing; a pair saved as Only me or network switches and says so in one line; `darkbloom start` in a terminal opens the same screen but keeps how the pair is saved to serve), and it chooses tensor parallel unless that can't run on these Macs or was measured slower here (a stopped pair's own model keeps the mode it last served in) ([Both](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom), [tensor parallel or pipeline](./two-mac-cluster.md#tensor-parallel-or-pipeline)); without a terminal it sets nothing. The first Mac's wait ends on "→ Now run `darkbloom cluster` on the other Mac". Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it and tests it, or starts it again), no mode and no speed, and **Start over** (`cluster local`'s list keeps its line to switch to Darkbloom); another model asks once before the serving one stops, and every start ends on one line, "✓ Serving <model> on both Macs", and "`darkbloom status` for details", then "Press Enter to exit." on an interactive terminal only ([the ending](./two-mac-cluster.md#the-ending)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
-| `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), or put the account on one and show where it stands (`waitlist cluster`, `waitlist sandbox`); waitlists are per account | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
+| `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), or put the account on one and show where it stands (`waitlist sandbox`); waitlists are per account | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
@@ -2273,8 +2273,7 @@ darkbloom sandbox uninstall [--yes]
    (`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupCommand.swift`,
    `SandboxSetupFlow.requireApproval`; the outcomes are
    `provider-swift/Sources/darkbloom/Waitlist/FeatureWaitlistGate.swift`,
-   `FeatureWaitlistGate`, which [`darkbloom cluster`](#the-cluster-waitlist-gate)
-   shares).
+   `FeatureWaitlistGate`).
 2. **Check.** Prints chip, macOS, desktop session, network, power and sleep
    in the `doctor` style (`[PASS]`, `[WARN]` with a `↳ fix:` line, `[FAIL]`). A
    refusal (table below) prints `Not eligible` and stops before anything is
@@ -2531,14 +2530,14 @@ it is installed.
 
 ## `darkbloom waitlist`
 
-Darkbloom opens some features, such as clusters and Darkbloom Sandbox, to the
-accounts it approves from a waitlist per feature. A waitlist is per account:
+Darkbloom opens some features, such as Darkbloom Sandbox, to the accounts it
+approves from a waitlist per feature. A waitlist is per account:
 the account joins it and Darkbloom approves the account, not a Mac, so a join
 sends nothing about this Mac. The coordinator's catalog is the only list of
 waitlists: the CLI asks it which waitlists exist and takes each one's title and
 start command from its answer. Bare `darkbloom waitlist` lists every waitlist
 and where the account stands; `darkbloom waitlist <name>`, such as
-`darkbloom waitlist cluster` or `darkbloom waitlist sandbox`, puts the account
+`darkbloom waitlist sandbox`, puts the account
 on one and shows where it stands. Admins approve accounts on the coordinator.
 Code:
 `provider-swift/Sources/darkbloom/Waitlist/WaitlistCommand.swift`
@@ -2597,30 +2596,10 @@ account and to run `darkbloom login` again, and exits `1`. A coordinator without
 with or without a token: the command says there is nothing to join there and
 exits `1`. Another status exits `1` with that status and its message; an
 unreadable answer, or none at all, exits `1` with the reason.
-[Darkbloom Sandbox setup](#setup) requires an approved `sandbox` entry, and a
-new pair of [`darkbloom cluster`](#the-cluster-waitlist-gate) an approved
-`cluster` entry.
-
-### The cluster waitlist gate
-
-`darkbloom cluster` on a Mac that holds no pairing asks the coordinator of `provider.toml` whether Darkbloom approved this
-account from the `cluster` waitlist (`GET /v1/waitlists/cluster` with the
-`darkbloom login` token) before the setup screen opens, with the outcomes of the
-[sandbox setup gate](#setup): approved goes on; a coordinator without the
-waitlist (`404`) prints `<coordinator> has no Clusters waitlist; going on.` and
-goes on; not on the waitlist asks `Join the Clusters waitlist now? [y/N]` (no
-prints `Join it: darkbloom waitlist cluster`); waitlisted, revoked, `401`,
-`403` and no usable answer say why and exit `1` with nothing set up; every
-such stop ends with ``To use the pair just for yourself, run `darkbloom
-cluster local` (no approval needed).`` The waitlist gates clustering through Darkbloom only:
-`darkbloom cluster local` serves on the owner's own Macs, is never asked and
-makes no waitlist call, so it works offline. A Mac that
-holds a pairing, or one whose pairing can't be read, is never asked and makes no
-waitlist call: a pair set up before the waitlist, or serving now, keeps working
-across updates and restarts, and `darkbloom start`, `stop`, `restart`,
-`status`, the cluster service, **Start over** and **Pair again** are unchanged
-(`provider-swift/Sources/darkbloom/ClusterSetupWizardCommand.swift`,
-`Cluster.Setup.requireNewPairApproval`).
+[Darkbloom Sandbox setup](#setup) requires an approved `sandbox` entry.
+Clusters have no waitlist since 2026-11-23: `darkbloom cluster` asks for no
+approval (a release before this one still asks, reads the coordinator's `404`
+and prints `<coordinator> has no Clusters waitlist; going on.`).
 
 ## `darkbloom stop`
 

@@ -129,23 +129,20 @@ struct Waitlist: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "List the waitlists Darkbloom approves accounts from, or join one.",
         discussion: """
-        Darkbloom opens some features, such as clusters and Darkbloom Sandbox, to the accounts it approves \
-        from a waitlist; the coordinator lists the waitlists. A waitlist is for your account, not for a Mac: \
+        Darkbloom opens some features, such as Darkbloom Sandbox, to the accounts it approves from a \
+        waitlist; the coordinator lists the waitlists. A waitlist is for your account, not for a Mac: \
         joining sends nothing about this Mac. Without a name, this command shows each waitlist and where your \
         account stands. With a name, it puts your account on that waitlist and shows where it stands; running \
         it again keeps your place. Use a Mac linked to your account (`\(BuildEnvironment.current.cliName) login`); \
-        `\(BuildEnvironment.current.cliName) sandbox setup` installs nothing, and `\(BuildEnvironment.current.cliName) cluster` \
-        sets up no new pair through Darkbloom, until Darkbloom approves the account; Macs already paired, and \
-        `\(BuildEnvironment.current.cliName) cluster local`, keep working without it.
+        `\(BuildEnvironment.current.cliName) sandbox setup` installs nothing until Darkbloom approves the account.
 
         Examples:
           \(BuildEnvironment.current.cliName) waitlist
-          \(BuildEnvironment.current.cliName) waitlist cluster
           \(BuildEnvironment.current.cliName) waitlist sandbox
         """)
 
     @Argument(help: ArgumentHelp(
-        "The waitlist to join, by its id as the list shows it in parentheses, such as cluster or sandbox. "
+        "The waitlist to join, by its id as the list shows it in parentheses, such as sandbox. "
             + "Without one, lists every waitlist.",
         valueName: "name"))
     var name: String?

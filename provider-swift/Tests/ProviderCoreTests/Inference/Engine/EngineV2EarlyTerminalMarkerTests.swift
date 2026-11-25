@@ -59,10 +59,10 @@ private final class MarkerTelemetry: @unchecked Sendable {
     }
 }
 
-/// With the early-terminal opt-in, a request whose retirement (its
+/// With the early terminal on, a request whose retirement (its
 /// complete-checkpoint publication, then the rows' release) comes after the
 /// client's terminal is marked once it retires, with how long that took: the
-/// per-request evidence a measurement of the opt-in needs.
+/// per-request evidence a measurement of the early terminal needs.
 @Suite("Early terminal marker")
 struct EngineV2EarlyTerminalMarkerTests {
     @Test(arguments: [

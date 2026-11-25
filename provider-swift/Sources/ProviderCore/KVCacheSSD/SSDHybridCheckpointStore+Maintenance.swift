@@ -224,7 +224,8 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     }
 
     func markReadyReceiptTerminal(requestID: CBv2RequestID) {
-        // Complete-checkpoint publication finishes before the engine terminal.
+        // Called once the engine has retired the request, after
+        // complete-checkpoint publication even when the terminal came first.
         discardReadyReceipt(requestID: requestID)
     }
 

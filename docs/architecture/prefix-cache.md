@@ -359,7 +359,7 @@ prefill, exactly as a complete-checkpoint adopter does
 checkpoint and KV have materialized. By default an unseeded donor's terminal
 precedes that publication; a seeded donor's follows it, as every donor's does
 when `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` is negative
-([inference.md](inference.md)). The bank
+([early terminal](inference.md#prompt-completion-measurements-and-qualified-profiles)). The bank
 inherits the earliest checkpoint and the endpoint actually adopted, then rolls
 its newest checkpoint as the continuation advances. It never inherits a donor
 endpoint beyond the adopted prefix. A completion with no new checkpoint refreshes

@@ -298,10 +298,11 @@ enum SSDPrefixCachePolicy {
     /// bound: attention jobs must also fit the queued-byte cap below, and a
     /// queued complete checkpoint holds only donor state and I/O scratch
     /// that stay charged to the admission or process memory ledger. The
-    /// engine ends a complete-checkpoint donor's stream and releases its
-    /// state only after all its checkpoints settle, so under write backlog a
-    /// deeper queue trades stream-end latency and longer-held donor memory
-    /// for fewer dropped checkpoints.
+    /// engine releases a complete-checkpoint donor's state only after all its
+    /// checkpoints settle, and ends its stream then too unless its terminal
+    /// precedes publication (`terminalBeforePublication`), so under write
+    /// backlog a deeper queue trades longer-held donor memory, and stream-end
+    /// latency where the terminal waits, for fewer dropped checkpoints.
     static let writeQueueMaxJobs = 6
     /// Floor on host bytes queued across buffered donation jobs. The
     /// effective cap is `max(this, maxStageBytes + writeQueueSlackBytes)`

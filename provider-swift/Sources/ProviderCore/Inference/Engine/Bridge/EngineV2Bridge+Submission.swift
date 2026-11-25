@@ -610,8 +610,8 @@ extension EngineV2Bridge {
             }
             // The donate contract has no slot for coordinator metadata, so the
             // demand hint rides the receipt ID. It survives an abandoned stage
-            // (the same receipt retries cold) and clears at terminal or when the
-            // request ends in error below.
+            // (the same receipt retries cold) and clears at retirement or when
+            // the request ends in error below.
             if submissionPolicy.usesSSDTier, let donationDemand, let store = ssdHybridCheckpointStore {
                 store.registerDonationDemand(donationDemand, requestID: receiptID)
             }

@@ -5,7 +5,8 @@ import MLXLMCommon
 
 /// Fixed framing of a Qwen 3.5 call, as its chat template renders one:
 /// `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n…`
-/// `</function>\n</tool_call>`.
+/// `</function>\n</tool_call>`. Nemotron 3.5 renders the same frame, and its
+/// parser also reads a bare `<function=NAME>…</function>` frame.
 enum QwenStrictToolFraming: Int8, Hashable, Sendable {
     /// After the function name's `>`, and after a text value's `</parameter>`.
     case lineBreak
@@ -17,6 +18,8 @@ enum QwenStrictToolFraming: Int8, Hashable, Sendable {
     case valueClose
     /// `</function>\n</tool_call>`, entered after its first two bytes.
     case callClose
+    /// `</function>`, the close of a bare frame, entered after its first two bytes.
+    case bareCallClose
 
     var bytes: [UInt8] {
         switch self {
@@ -24,12 +27,14 @@ enum QwenStrictToolFraming: Int8, Hashable, Sendable {
         case .parameterOpen: Self.parameterOpenBytes
         case .valueClose: QwenStrictToolSchema.valueClose
         case .callClose: Self.callCloseBytes
+        case .bareCallClose: Self.bareCallCloseBytes
         }
     }
 
     private static let lineBreakBytes: [UInt8] = [10]
     private static let parameterOpenBytes = Array("<parameter=".utf8)
     private static let callCloseBytes = Array("</function>\n</tool_call>".utf8)
+    private static let bareCallCloseBytes = Array("</function>".utf8)
 }
 
 /// The spellings each span of a call watches, built once per constraint,
@@ -41,11 +46,26 @@ struct QwenStrictToolMarkers: Sendable {
     let value: [[UInt8]]
     /// `parallel_tool_calls: false`: no call opens after one closed.
     let singleCall: Bool
+    /// Text outside calls: `<tool_call>` opens a call, and where the parser
+    /// also reads a bare frame (Nemotron), so does `<function=`.
+    let content: [[UInt8]]
+    /// `text` and `value` inside a bare frame, which `</function>` also ends
+    /// for the parser: no value may spell it there.
+    let bareText: [[UInt8]]
+    let bareValue: [[UInt8]]
+    /// The last bytes of the `content` markers: a piece holding none of them
+    /// cannot complete one.
+    let contentFinals: Set<UInt8>
 
-    init(forbidding markers: [[UInt8]], singleCall: Bool = false) {
+    init(forbidding markers: [[UInt8]], singleCall: Bool = false, bareFunctionCalls: Bool = false) {
         text = markers + [QwenStrictToolBoundary.parameterClose]
         value = text + QwenStrictToolBoundary.surrogateEscapes
         self.singleCall = singleCall
+        content = bareFunctionCalls ? [QwenStrictToolBoundary.callOpen, QwenStrictToolBoundary.functionOpen]
+            : [QwenStrictToolBoundary.callOpen]
+        bareText = text + [QwenStrictToolBoundary.functionClose]
+        bareValue = value + [QwenStrictToolBoundary.functionClose]
+        contentFinals = Set(content.compactMap(\.last))
     }
 }
 
@@ -84,13 +104,13 @@ struct QwenStrictToolBoundary: Hashable {
     static let callOpen = Array("<tool_call>".utf8)
     static let parameterClose = Array("</parameter>".utf8)
     static let functionOpen = Array("<function=".utf8)
+    static let functionClose = Array("</function>".utf8)
     /// Whitespace the parser skips between `<tool_call>` and `<function=`.
     static func isOpeningWhitespace(_ byte: UInt8) -> Bool { (9...13).contains(byte) || byte == 32 }
     /// Refused right after `<tool_call>`: the JSON dialect, and a non-ASCII
     /// byte, which could be whitespace the parser would skip.
     static func isRefusedAfterCallMarker(_ byte: UInt8) -> Bool { byte == 123 || byte >= 0x80 }
     private static let reasoningMarkers = [thinkClose]
-    private static let contentMarkers = [callOpen]
     /// `\uD800`…`\uDFFF`: the parser's JSONSerialization refuses a lone
     /// surrogate escape, which would leave the whole value a string, so a JSON
     /// value never writes one (a character outside the BMP is written as is).
@@ -105,6 +125,8 @@ struct QwenStrictToolBoundary: Hashable {
     private(set) var seen = FlintJSONPropertySet()
     /// A call closed earlier in this answer.
     private(set) var closedCall = false
+    /// The open call is a bare `<function=` frame, closed by `</function>` alone.
+    private(set) var bare = false
 
     init(reasoning: Bool) { step = reasoning ? .reasoning : .content }
 
@@ -148,10 +170,15 @@ struct QwenStrictToolBoundary: Hashable {
             }
             return true
         case .content:
-            if Self.advance(&window, with: byte, markers: Self.contentMarkers) != nil {
+            if let marker = Self.advance(&window, with: byte, markers: markers.content) {
                 guard !(markers.singleCall && closedCall) else { return false }
                 window = []
-                step = .opening(0)
+                if marker == Self.functionOpen {
+                    bare = true
+                    step = .name([])
+                } else {
+                    step = .opening(0)
+                }
             }
             return true
         case .opening(let matched):
@@ -164,7 +191,7 @@ struct QwenStrictToolBoundary: Hashable {
             // Text again, watched from the bytes after `<tool_call>` on.
             step = .content
             for previous in Self.functionOpen.prefix(Int(matched)) {
-                _ = Self.advance(&window, with: previous, markers: Self.contentMarkers)
+                _ = Self.advance(&window, with: previous, markers: markers.content)
             }
             return consume(byte, schema: schema, markers: markers)
         case .fixed(let framing, let offset):
@@ -200,7 +227,7 @@ struct QwenStrictToolBoundary: Hashable {
                 return true
             }
             if byte == 47, seen.isSuperset(of: declared.required) {
-                step = .fixed(.callClose, 2)
+                step = .fixed(bare ? .bareCallClose : .callClose, 2)
                 return true
             }
             return false
@@ -220,7 +247,7 @@ struct QwenStrictToolBoundary: Hashable {
             step = .key(extended)
             return true
         case .text:
-            guard let marker = Self.advance(&window, with: byte, markers: markers.text) else {
+            guard let marker = Self.advance(&window, with: byte, markers: bare ? markers.bareText : markers.text) else {
                 return true
             }
             guard marker == Self.parameterClose else { return false }
@@ -252,7 +279,7 @@ struct QwenStrictToolBoundary: Hashable {
             }
             // A value may never spell a marker, the tag that ends it, or a
             // surrogate escape.
-            guard Self.advance(&window, with: byte, markers: markers.value) == nil,
+            guard Self.advance(&window, with: byte, markers: bare ? markers.bareValue : markers.value) == nil,
                   state.consume(byte, grammar: grammar) else { return false }
             step = .json(state)
             return true
@@ -274,10 +301,11 @@ struct QwenStrictToolBoundary: Hashable {
         case .valueClose:
             parameter = -1
             step = .between(false)
-        case .callClose:
+        case .callClose, .bareCallClose:
             tool = -1
             seen = FlintJSONPropertySet()
             closedCall = true
+            bare = false
             step = .content
         }
     }
@@ -332,13 +360,15 @@ final class QwenStrictToolConstraint: CBv2FreeSpanTokenConstraint, @unchecked Se
     static let releasedState = Int.max
 
     init(schema: QwenStrictToolSchema, vocabulary: JSONAnswerVocabulary, forbidding markers: [[UInt8]],
-         startsInReasoning: Bool, allowsParallelCalls: Bool = true, maxTokens: Int) throws {
+         startsInReasoning: Bool, allowsParallelCalls: Bool = true, bareFunctionCalls: Bool = false,
+         maxTokens: Int) throws {
         guard maxTokens > 0 else {
             throw ToolConstraintSchemaError.invalid("strict tool grammars require a positive output budget")
         }
         self.schema = schema
         self.vocabulary = vocabulary
-        self.markers = QwenStrictToolMarkers(forbidding: markers, singleCall: !allowsParallelCalls)
+        self.markers = QwenStrictToolMarkers(forbidding: markers, singleCall: !allowsParallelCalls,
+                                             bareFunctionCalls: bareFunctionCalls)
         self.startsInReasoning = startsInReasoning
         self.maxTokens = maxTokens
         fallbackTokenID = vocabulary.fallbackTokenID
@@ -476,7 +506,11 @@ final class QwenStrictToolConstraint: CBv2FreeSpanTokenConstraint, @unchecked Se
             let byte = piece[index]
             let keepsOpening = byte == open[matched]
             if !keepsOpening, matched == 0, QwenStrictToolBoundary.isRefusedAfterCallMarker(byte) { continue }
-            if keepsOpening || piece[index...].contains(62) {
+            // A piece that leaves the opening is text again; it can be refused
+            // only by completing a content marker, so only one holding a
+            // marker's last byte (`>`, and `=` where bare frames open calls)
+            // is simulated.
+            if keepsOpening || piece[index...].contains(where: markers.contentFinals.contains) {
                 if transition(boundary, token: id) != nil { allowed.append(id) }
             } else {
                 allowed.append(id)

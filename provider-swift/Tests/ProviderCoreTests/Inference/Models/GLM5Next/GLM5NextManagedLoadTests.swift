@@ -402,14 +402,18 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
         }
     }
 
-    @Test func httpMediaRejectsUnknownPartsAndNonUserMediaBeforeDecode() async throws {
+    /// GLM's template renders media in every role, so an assistant or system
+    /// image now reaches the bounded decode (which refuses this one as a URL)
+    /// instead of a role refusal.
+    @Test(.enabled(if: MediaIngest.everyRoleEnabled, "DARKBLOOM_MEDIA_ON_EVERY_ROLE is off"))
+    func httpMediaInNonUserRolesReachesTheBoundedDecode() async throws {
         for role in ["assistant", "system"] {
             let body = Data(
                 """
-                {"model":"synthetic","messages":[{"role":"\(role)","content":[{"type":"image_url","image_url":{"url":"not-a-url"}}]}]}
+                {"model":"synthetic","messages":[{"role":"\(role)","content":[{"type":"image_url","image_url":{"url":"not-a-url"}}]},{"role":"user","content":"What is it?"}]}
                 """.utf8)
             let request = try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
-            await #expect(throws: EngineV2VisionPrefillError.self) {
+            await #expect(throws: MediaIngest.MediaError.self) {
                 try await EngineV2VisionPrefill.glm5NextUserInput(
                     request: request, controls: .init())
             }

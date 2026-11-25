@@ -166,10 +166,11 @@ private actor SuperLoopEvents {
 }
 
 /// review-2005 F1: Super's coordinator and local requests take the owner's
-/// own chat route (`NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding`),
-/// not the scheduler's text path. That route now resolves the same loop guard
-/// from its request plan and passes it to the bridge.
-@Suite("Loop guard on Super's own text route")
+/// own chat route (`NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding`
+/// for text, `NemotronSuperLocalImageBinding` for images and video), not the
+/// scheduler's text path. That route resolves the same loop guard from its
+/// request plan and passes it to the bridge.
+@Suite("Loop guard on Super's own route: text, image and video")
 struct NemotronSuperLoopGuardTests {
     private static let defaults = GenerationLoopGuardPolicy.Setting.modelTypes(
         GenerationLoopGuardPolicy.defaultModelTypes)
@@ -187,7 +188,7 @@ struct NemotronSuperLoopGuardTests {
         #expect(loopGuard.modelType == "nemotron_h_omni")
     }
 
-    @Test("the scheduler's exclusions and switch hold: JSON output, a forced call, media, off, unlisted")
+    @Test("the scheduler's exclusions and switch hold: JSON output, a forced call, off, unlisted")
     func exclusionsAndSwitch() throws {
         #expect(try plan(",\"response_format\":{\"type\":\"json_object\"}").loopGuard(setting: Self.defaults) == nil)
         let schema = #","response_format":{"type":"json_schema","json_schema":{"name":"a","schema":{"type":"object"}}}"#
@@ -196,9 +197,6 @@ struct NemotronSuperLoopGuardTests {
         #expect(try plan(tool + #","tool_choice":"required""#).loopGuard(setting: Self.defaults) == nil)
         // Tools the model may call: guarded until a tool-call frame appears.
         #expect(try plan(tool).loopGuard(setting: Self.defaults) != nil)
-        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="
-        let image = #"[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":""# + png + #""}}]"#
-        #expect(try plan(content: image).loopGuard(setting: Self.defaults) == nil)
         #expect(try plan().loopGuard(setting: .off) == nil)
         #expect(try plan().loopGuard(setting: .modelTypes(["nemotron_h"])) == nil)
     }
@@ -233,6 +231,60 @@ struct NemotronSuperLoopGuardTests {
         // Every token's text reaches the client, the in-flight ones after the stop included.
         #expect(await events.text.hasPrefix("Wait, the reaction is:"))
         #expect(await events.text.utf8.count > 4_096)
+    }
+
+    // MARK: Image and video answers
+
+    private static let imageContent = #"[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="}}]"#
+    private static let videoContent = #"[{"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAAGGZ0eXA="}},{"type":"text","text":"hi"}]"#
+
+    @Test("an image or video request takes the same guard as text, with the same exclusions, and no exit")
+    func mediaRequestsAreGuardedWithoutTheExit() throws {
+        for content in [Self.imageContent, Self.videoContent] {
+            let loopGuard = try #require(try plan(content: content).loopGuard(setting: Self.defaults))
+            #expect(loopGuard.modelType == "nemotron_h_omni")
+            #expect(loopGuard.exitThinking == nil)
+            #expect(try plan(",\"response_format\":{\"type\":\"json_object\"}", content: content)
+                .loopGuard(setting: Self.defaults) == nil)
+            #expect(try plan(content: content).loopGuard(setting: .off) == nil)
+            // The exit stays text-only, even where Super's is switched on.
+            #expect(try plan(content: content).exitThinking(
+                promptTokens: SuperThoughtVocabulary.thinkingPrompt, tokenizer: SuperThoughtVocabulary.tokenizer,
+                setting: Self.exitOn) == nil)
+        }
+    }
+
+    /// One evaluated media submission through the image owner's execution,
+    /// over a scripted engine that repeats one clause.
+    private func serveMedia(_ engine: SuperLoopingEngine, setting: GenerationLoopGuardPolicy.Setting) async throws
+        -> SuperLoopEvents {
+        let tokenizer = TokenizerHandle(QwenByteTestTokenizer())
+        let bridge = EngineV2Bridge(engine: engine, modelId: NemotronSuperLocalBinding.modelID, tokenizer: tokenizer,
+            eosTokenIds: [248046, 248044], defaultMaxTokens: 64, maxConcurrentRequests: 1)
+        let plan = try plan(content: Self.videoContent)
+        let events = SuperLoopEvents()
+        try await NemotronSuperLocalImageBinding.execute(bridge: bridge,
+            prepared: .init(promptTokens: [1, 2, 3], spans: [], embeddings: [], mediaKind: .video),
+            cacheScope: nil, request: plan.bridgeRequest, requestID: "super-media-loop", logprobs: nil,
+            progress: .init(), loopGuard: plan.loopGuard(setting: setting), onEvent: { await events.record($0) })
+        await bridge.shutdown()
+        return events
+    }
+
+    @Test("a repeating Super video answer is stopped in the engine and ends as length; off, it runs on")
+    func repeatingMediaAnswerEndsAsLength() async throws {
+        let guarded = SuperLoopingEngine(tokens: 4_200)
+        let events = try await serveMedia(guarded, setting: Self.defaults)
+        #expect(guarded.cancelCount == 1)
+        #expect(await events.errors == 0)
+        #expect(await events.stopReason == "length")
+        #expect(await events.completionTokens == 4_200)
+        // The switch off: nothing stops the row; it ends at its own cap.
+        let unguarded = SuperLoopingEngine(tokens: 4_200)
+        let off = try await serveMedia(unguarded, setting: .off)
+        #expect(unguarded.cancelCount == 0)
+        #expect(await off.errors == 0)
+        #expect(await off.stopReason == "length")
     }
 
     // MARK: Ending a repeating thought

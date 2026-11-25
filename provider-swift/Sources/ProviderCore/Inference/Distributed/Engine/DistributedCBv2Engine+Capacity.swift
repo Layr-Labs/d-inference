@@ -27,6 +27,17 @@ final class DistributedCapacityPublication: @unchecked Sendable {
 
     func publish(_ next: Value) { lock.withLock { value = next } }
 
+    /// The engine admits nothing again: published before any request is told
+    /// why it stopped, so a reader that saw that terminal never reads the
+    /// capacity the engine had. The queue's next `publish` keeps it closed.
+    func close() {
+        lock.withLock {
+            value.closed = true
+            value.snapshot.kvBytesCapacity = 0
+            value.snapshot.kvBytesBackendCapacity = 0
+        }
+    }
+
     /// True for the one caller that should queue a refresh; later callers
     /// read the published value until that refresh starts.
     func claimRefresh() -> Bool {

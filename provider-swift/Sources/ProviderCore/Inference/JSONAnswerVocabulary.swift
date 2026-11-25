@@ -29,7 +29,8 @@ final class JSONAnswerVocabulary: ByteOrderedPieceVocabulary, Sendable {
         let family: String
         let stops: Set<Int>
     }
-    private static let cache = TokenizerVocabularyCache<Key, JSONAnswerVocabulary>(capacity: 4)
+    /// A GPT-OSS slot holds two entries (call arguments and final answers).
+    private static let cache = TokenizerVocabularyCache<Key, JSONAnswerVocabulary>(capacity: 6)
 
     static func cached(for handle: TokenizerHandle, profile: JSONAnswerProfile,
                        stopTokenIDs: Set<Int>) throws -> JSONAnswerVocabulary {

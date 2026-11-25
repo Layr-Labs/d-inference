@@ -208,4 +208,47 @@ struct Gemma4ToolSchemaEnforcementTests {
         #expect((opts["properties"] as? [String: any Sendable])?.count == 1)
         #expect(root["required"] as? [String] == ["city"])
     }
+
+    /// One tool whose `x` property is an `anyOf` of `count` empty schemas,
+    /// each of which the shared normalization rewrites into a two-key map.
+    private func emptyUnionTool(count: Int) -> [String: any Sendable] {
+        tool(parameters: [
+            "type": "object",
+            "properties": [
+                "x": [
+                    "type": "string",
+                    "anyOf": Array(repeating: [String: any Sendable](), count: count) as [any Sendable],
+                ] as [String: any Sendable]
+            ] as [String: any Sendable],
+        ] as [String: any Sendable])
+    }
+
+    private func firstUnionMember(of tool: [String: any Sendable]?) -> [String: any Sendable]? {
+        let properties = params(of: tool)?["properties"] as? [String: any Sendable]
+        let x = properties?["x"] as? [String: any Sendable]
+        return (x?["anyOf"] as? [any Sendable])?.first as? [String: any Sendable]
+    }
+
+    @Test("past the node budget a request's tool schemas are left as sent")
+    func nodeBudgetLeavesOversizedSchemasUnchanged() throws {
+        // Under the budget the empty members are rewritten, as on the inbound pass.
+        let small = Gemma4TemplateFix.normalizeTools([emptyUnionTool(count: 8)])
+        #expect(firstUnionMember(of: small.first)?["type"] as? String == "string")
+
+        // Past it the members are left as sent; the render invariants still hold.
+        let large = Gemma4TemplateFix.normalizeTools(
+            [emptyUnionTool(count: ToolSchemaNormalization.maxNormalizedNodes)])
+        #expect(firstUnionMember(of: large.first)?.isEmpty == true)
+        let root = try #require(params(of: large.first))
+        #expect(root["type"] as? String == "object")
+        let x = try #require((root["properties"] as? [String: any Sendable])?["x"] as? [String: any Sendable])
+        #expect(x["type"] as? String == "string")
+
+        // The budget is the request's, shared by its tools.
+        let half = ToolSchemaNormalization.maxNormalizedNodes / 2
+        let split = Gemma4TemplateFix.normalizeTools(
+            [emptyUnionTool(count: half), emptyUnionTool(count: half)])
+        #expect(firstUnionMember(of: split.first)?["type"] as? String == "string")
+        #expect(firstUnionMember(of: split.last)?.isEmpty == true)
+    }
 }

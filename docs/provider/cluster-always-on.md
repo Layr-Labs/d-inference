@@ -212,7 +212,9 @@ The rules each Mac applies to the other's progress are in
    ended that halfway, with the pair's start cleared, and the pair stayed
    "■ Stopped" until `darkbloom start`. Now the leader's service doesn't start
    that while its own update has drained or is restarting, on a local-only
-   pair too (the service after the restart sets the pair up again), and if a
+   pair too (the service after the restart sets the pair up again). Its
+   `service.log` says so once: "this Mac's update to … restarts the cluster
+   service next: setting the cluster up again waits for that restart". If a
    run is still ended halfway, the next one puts the pair's start back, as
    above. `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off that wait on any
    pair, and that mark on a pair that isn't local-only.

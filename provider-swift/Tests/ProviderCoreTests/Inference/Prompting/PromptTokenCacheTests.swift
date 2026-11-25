@@ -206,6 +206,75 @@ struct PromptTokenCacheTests {
         #expect(store.lookup(keys) == retained)
     }
 
+    final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private let start = ContinuousClock.now
+        private var offset: Duration = .zero
+        var now: ContinuousClock.Instant { lock.withLock { start + offset } }
+        func advance(_ duration: Duration) { lock.withLock { offset += duration } }
+    }
+
+    @Test("a piece expires once unused for the TTL; reuse restarts it")
+    func piecesExpireAfterTheirTTL() {
+        let clock = TestClock()
+        let store = PromptPieceTokenStore(capacityBytes: 4096, ttl: .seconds(100), now: { clock.now })
+        let keys = (0..<3).map { Self.digest($0) }
+        store.insert([(keys[0], [1]), (keys[1], [2])])
+        clock.advance(.seconds(60))
+        #expect(store.lookup([keys[0]]) == [[1]])
+        clock.advance(.seconds(60))
+        #expect(store.lookup([keys[0], keys[1]]) == [[1], nil])
+        #expect(store.storedBytes == 100)
+        // A miss on an expired piece lets the caller store it again.
+        store.insert([(keys[1], [3])])
+        #expect(store.lookup([keys[1]]) == [[3]])
+        clock.advance(.seconds(100))
+        store.removeExpired()
+        #expect(store.storedBytes == 0)
+        #expect(store.lookup(keys) == [nil, nil, nil])
+    }
+
+    @Test("an old-generation piece expires too, and promotion restarts its TTL")
+    func oldGenerationExpiry() {
+        let clock = TestClock()
+        let store = PromptPieceTokenStore(capacityBytes: 4096, ttl: .seconds(100), now: { clock.now })
+        let keys = (0..<26).map { Self.digest($0) }
+        let tokens = (0..<25).map { Array(repeating: Int32($0), count: 16) }
+        // 13 pieces rotate into old (160 bytes each), 12 stay young.
+        store.insert(Array(zip(keys.prefix(25), tokens)))
+        clock.advance(.seconds(90))
+        #expect(store.lookup([keys[0]]) == [tokens[0]])
+        clock.advance(.seconds(20))
+        #expect(store.lookup([keys[0], keys[1], keys[24]]) == [tokens[0], nil, nil])
+        store.removeExpired()
+        #expect(store.storedBytes == 160)
+    }
+
+    @Test("an idle store drops expired pieces by itself")
+    func idleSweep() async throws {
+        let store = PromptPieceTokenStore(capacityBytes: 4096, ttl: .milliseconds(20))
+        store.insert([(Self.digest(0), [1])])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while store.storedBytes > 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.storedBytes == 0)
+    }
+
+    @Test("TTL setting: 30 minutes by default, lower only, 0 keeps pieces until evicted")
+    func ttlSetting() {
+        let key = PromptTokenCachePolicy.ttlEnvironmentKey
+        #expect(PromptTokenCachePolicy.ttl(environment: [:]) == .seconds(1_800))
+        #expect(PromptTokenCachePolicy.ttl(environment: [key: "600"]) == .seconds(600))
+        #expect(PromptTokenCachePolicy.ttl(environment: [key: " 0 "]) == nil)
+        for value in ["3600", "-5", "soon", ""] {
+            #expect(PromptTokenCachePolicy.ttl(environment: [key: value]) == .seconds(1_800), "\(value)")
+        }
+        #expect(LaunchAgent.passthroughEnvKeys.contains(key))
+        let store = PromptPieceTokenStore(capacityBytes: 4096)
+        #expect(store.ttl == nil)
+    }
+
     @Test("a background comparison that disagrees with the unchanged path disables reuse")
     func backgroundMismatchDisablesReuse() async throws {
         let (fixture, tokenizer, cache) = try await Self.markerTemplateTokenizer()

@@ -1,4 +1,0 @@
-### Release builds keep their state files in the install directory
-
-- A release build now keeps its daemon state, PID file, warm-model journal, verified weight records, watchdog state, crash-loop guard, device token and local API files at their defaults in its install directory, and downloads models from its build's CDN. The variables that moved them (`DARKBLOOM_STATE_FILE`, `DARKBLOOM_PID_FILE`, `DARKBLOOM_LOADED_MODELS_FILE`, `DARKBLOOM_VERIFIED_WEIGHTS_FILE`, `DARKBLOOM_WATCHDOG_STATE`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_AUTH_TOKEN_PATH`, `DARKBLOOM_LOCAL_DIR`, `DARKBLOOM_R2_CDN_URL`) are read by debug builds only (tests and development).
-- The native serve qualification still keeps its state in its own run directory, and `sudo darkbloom report` still reads the invoking user's state file. `darkbloom models download --r2-cdn` still picks a mirror explicitly.

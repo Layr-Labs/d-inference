@@ -45,16 +45,22 @@ struct QwenVideoBudgetTests {
         }
     }
 
-    @Test("the clips of the user messages share the request's token budget")
+    @Test("the clips the request places share its token budget")
     func clipsShareTheBudget() throws {
         var request = Self.request(model: "Qwen3.5-9B", videos: 4)
         let processing = try #require(MediaIngest.videoProcessing(for: request, environment: [:]))
         #expect(processing.maxFrames == 32)
         #expect(processing.maxPixels == 1_024 * 2_048, "4,096 tokens / 4 clips")
-        // An assistant turn's video is dropped by buildUserInput: it takes no share.
+        // An assistant turn's video is placed too (`MediaIngest.everyRoleEnabled`):
+        // it takes a share.
         request.messages.append(
             .init(role: .assistant, content: .parts([.videoURL("data:video/mp4;base64,AA==")])))
-        #expect(MediaIngest.videoProcessing(for: request, environment: [:]) == processing)
+        let five = try #require(MediaIngest.videoProcessing(for: request, environment: [:]))
+        if MediaIngest.everyRoleEnabled {
+            #expect(five.maxPixels == (4_096 / 5) * 2_048, "4,096 tokens / 5 clips")
+        } else {
+            #expect(five == processing, "DARKBLOOM_MEDIA_ON_EVERY_ROLE off: the assistant video is dropped")
+        }
     }
 
     @Test("other models keep their processor's defaults")

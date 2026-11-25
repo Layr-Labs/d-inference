@@ -574,6 +574,9 @@ extension ProviderLoop {
         }
         // Drop only this exact slot/candidate after actual proof and host joins.
         // The core owns bundle release; do not call releaseAssistant again here.
+        let regrowth = UUID()
+        pendingSurvivorRegrowth[regrowth] = modelID
+        defer { pendingSurvivorRegrowth.removeValue(forKey: regrowth) }
         if modelSlots[modelID].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) === load {
             modelSlots.removeValue(forKey: modelID)
         }

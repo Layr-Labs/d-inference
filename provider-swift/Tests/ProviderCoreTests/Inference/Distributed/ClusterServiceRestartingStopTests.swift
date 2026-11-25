@@ -531,9 +531,11 @@ struct ClusterServiceRestartingStopTests {
 
     /// This Mac's coordinated update drained, or installed and restarts the cluster service: the old service's update
     /// check finds the new workers on disk, and a re-plan begun now would be ended by that restart with the pair's start
-    /// cleared (seen on a DevNet pair during an update). The check waits instead; the service after the restart sets the pair up
-    /// again. A progress no supervisor rewrites any more, a release this process already runs, and the switch off
-    /// (`DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0`) re-plan as before. The actual service loop.
+    /// cleared (seen on a DevNet pair during an update). The check waits instead, and says so once however many checks
+    /// it waits through (two here, 5 s apart), so a run's log shows the wait; the service after the restart sets the pair
+    /// up again. A wait that ends without the restart (the cycle gave up) lets the next check go on. A progress no
+    /// supervisor rewrites any more, a release this process already runs, and the switch off
+    /// (`DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0`) re-plan as before, with no such line. The actual service loop.
     @Test(arguments: ["drained", "restarting", "a stale progress", "the release it runs", "switch off"])
     func anUpdateCheckWaitsWhileThisMacsUpdateRestartsIntoIt(_ arm: String) throws {
         let (macs, service) = try leader()
@@ -551,12 +553,30 @@ struct ClusterServiceRestartingStopTests {
             try Self.confirmedLeader(service, macs)
             let loop = Self.run(service)
             let waits = arm == "drained" || arm == "restarting"
-            let until = Date().addingTimeInterval(waits ? 3 : 15)
-            while replanned.values.isEmpty, Date() < until { usleep(50_000) }
+            if waits {
+                // Two checks wait, 5 s apart: each one that waits sets the next 5 s ahead (`recheckWhileWaitingSeconds`),
+                // where a check that begins sets it a minute ahead.
+                func due() -> Date { service.lock.withLock { service.nextUpdateCheck } }
+                func waited() -> Bool { (0...5.5).contains(due().timeIntervalSinceNow) }
+                #expect(Self.waitUntil(seconds: 5) { waited() }, "\(arm): the first check waited")
+                let first = due()
+                #expect(Self.waitUntil(seconds: 10) { due() > first.addingTimeInterval(1) && waited() },
+                        "\(arm): a second check waited")
+            } else {
+                _ = Self.waitUntil(seconds: 15) { !replanned.values.isEmpty }
+            }
+            #expect(replanned.values.isEmpty == waits, "\(arm): \(loop.lines.values)")
+            let held = loop.lines.values.filter { $0.contains("restarts the cluster service next") }
+            #expect(held == (waits ? ["this Mac's update to 9.9.9 restarts the cluster service next: setting the cluster up again "
+                                      + "waits for that restart"] : []), "\(arm): \(loop.lines.values)")
+            if arm == "restarting" {
+                ClusterPairUpdate.writeProgress(.init(phase: .idle, running: ProviderCore.version, writtenAt: Date().timeIntervalSince1970),
+                                                to: ClusterServiceAgent.updateProgressPath(serviceDirectory: service.store.paths.directory))
+                #expect(Self.waitUntil(seconds: 15) { !replanned.values.isEmpty }, "the wait ended: \(loop.lines.values)")
+            }
             let lines = loop.stop()
-            #expect(replanned.values.isEmpty == waits, "\(arm): \(lines)")
-            #expect(lines.contains { $0.hasPrefix("Darkbloom changed on both Macs: setting the cluster up again") } == !waits,
-                    "\(arm): \(lines)")
+            #expect(lines.contains { $0.hasPrefix("Darkbloom changed on both Macs: setting the cluster up again") }
+                    == (!waits || arm == "restarting"), "\(arm): \(lines)")
         }
     }
 
@@ -578,6 +598,10 @@ struct ClusterServiceRestartingStopTests {
         #expect(!holds(.restarting, writtenAt: now - ClusterPairUpdate.progressStaleSeconds - 1), "a progress no supervisor rewrites")
         #expect(!holds(.restarting, target: "1.0.0"), "the release this process runs")
         #expect(!ClusterUpdateReplanGuard.holdsReplan(nil, running: "1.0.0", now: now))
+        #expect(ClusterUpdateReplanGuard.holdLine(.init(phase: .drained, target: "9.9.9", running: "1.0.0", writtenAt: now))
+                == "this Mac's update to 9.9.9 restarts the cluster service next: setting the cluster up again waits for that restart")
+        #expect(ClusterUpdateReplanGuard.holdLine(.init(phase: .restarting, running: "1.0.0", writtenAt: now))
+                == "this Mac's update restarts the cluster service next: setting the cluster up again waits for that restart")
     }
 
     /// The re-plan compares the builds before it takes the command lock, so a person's stop, or a hand-over, can finish
@@ -700,6 +724,38 @@ struct ClusterServiceRestartingStopTests {
     /// instead of being refused until the slot passes. A re-plan put off by another command that holds the lock keeps
     /// its slot: the pair still runs, and re-plans stay at most one per 10 minutes. The trigger as the service calls it
     /// at each part's end.
+    /// A memory re-plan adopts a new split, whose setups carry no cluster approval (as after an update's re-plan). This
+    /// run's approval check had already happened, so without a fresh one the pair served on its local API only, "not
+    /// offered … no cluster approval is attached", until its service restarted (a DevNet pair, 2026-11-24). After a
+    /// re-plan that served, the next check is the run's first again and due now, so it asks the coordinator; one that
+    /// failed leaves the check as it was.
+    @Test(arguments: [true, false])
+    func aMemoryReplanThatServesAsksForTheApprovalAgain(_ serves: Bool) throws {
+        let (macs, service) = try leader()
+        try withExtendedLifetime(macs) {
+            try Self.confirmedLeader(service, macs)
+            let model = ClusterApprovalMacs.model, later = Date().addingTimeInterval(3_600)
+            // This run's first check happened (the coordinator was asked); the next one is an hour away.
+            service.lock.withLock { service.approvalChecked = true; service.nextApprovalCheck = later }
+            let offered = ClusterOnboardingModelChoice(title: model, lines: ["fixture plan"], blocker: nil, modelID: model)
+            let lines = ClusterApprovalRecorder<String>()
+            service.memoryReplan = .init(reachMembers: { .success([]) }, planModels: { .success([offered]) },
+                adopt: { _ in .success([]) },
+                serve: { serves ? .success([]) : .failure(.init("the other Mac's part was not started yet: fixture")) },
+                restoreStart: { service.restoreStart() })
+            service.replanForMemory(model: model) { lines.append($0) }
+            let (checked, next) = service.lock.withLock { (service.approvalChecked, service.nextApprovalCheck) }
+            if serves {
+                #expect(!checked && next == .distantPast, "the next approval check is not due at once: \(lines.values)")
+                // The check of a pair that serves without an approval asks the coordinator only as the run's first.
+                #expect(ClusterApprovalCheck.asks(first: !checked, serving: true, scope: .publicServing, offered: false,
+                                                  setAside: false))
+            } else {
+                #expect(checked && next == later, "a re-plan that did not serve changed the approval check: \(lines.values)")
+            }
+        }
+    }
+
     @Test(arguments: ["the owner stopped the pair", "another command held the lock"])
     func aSkippedMemoryReplanGivesItsSlotBackOnlyForAnOwnersStop(_ skipped: String) throws {
         let (macs, service) = try leader()

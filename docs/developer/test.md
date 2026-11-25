@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-20
+> Last updated: 2026-11-22
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -171,6 +171,16 @@ Run these with the normal source-matched provider test products and isolated
 runner below. Tiny fixtures do not qualify full-model throughput, production
 resource use or native completion-tracked engines.
 
+The Inkling image-role fixtures in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Inkling2/image-role-requests.json`
+exercise the public request decoder, the image-role guard and native image ingest.
+Run `Inkling2ServingWiringTests/imageRolesMatchPublicContract` and
+`mediaRefusalsAreExplicit` twice in fresh test processes, once with
+`DARKBLOOM_MEDIA_ON_EVERY_ROLE` unset and once with it set to `0`.
+User and paired tool images reach ingest in both runs. System, assistant and
+aliased developer images return HTTP 400 in both. Check the error code and
+refusal reason for each mode, and the separate invalid-media response for video.
+
 From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
 to prepare the inputs and run `make provider-test`.
 
@@ -179,22 +189,54 @@ The Make target builds test products, stages source-matched metallibs and uses
 snapshots. Preserve its watchdog, cleanup and state isolation when using a focused
 selector. Use `scripts/run-nested-suite.sh` for documented nested Swift Testing
 cases and `scripts/run-exclusive-native-gpu-test.sh` for exclusive native work.
+`run-nested-suite.sh` fails a run that executes no test or skips one, and
+fails when it cannot count the run. It never counts from the merged
+console: SwiftPM writes its own warnings to stderr at no fixed point, and the
+test output to stdout through a block buffer, so in one pipe a warning can land
+inside any line (in run 44909219943, between `✔ Test run with 29` and
+` tests in 3 suites passed`). Swift Testing's counts and skips come from the
+xUnit report the script requests with `--xunit-output`; SwiftPM 6.4 writes it
+beside that path as `<name>-swift-testing.xml`. Without `--parallel` SwiftPM
+writes no XCTest report, so XCTest's `Executed N tests, with K tests skipped`
+summary and its `skipped` cases come from SwiftPM's stdout alone, which holds
+only the test process's output; stderr still reaches the log. A test that
+ends itself with `Test.cancel` counts as run, as before. The script refuses
+`--parallel` and `--xunit-output`. `scripts/verify-prompt-parity.sh` runs its suite through it.
+With `NESTED_SUITE_REPORT=<prefix>` it keeps the report as
+`<prefix>-swift-testing.xml` and the stdout as `<prefix>.log` (removing older
+ones first), so the provider shard audit can count Prompt Parity the same way.
 
-CI runs the provider suite in four shards (`Provider Unit Tests (shard K)`), one
-Mac each, 12 selections in all. Each shard runs the products of the one provider build
+CI runs the provider suite in five shards (`Provider Unit Tests (shard K)`), one
+Mac each, 15 selections in all. Each shard runs the products of the one provider build
 ([build once](build.md#build-once)) and three selections at the same time. `PROVIDER_TEST_SHARD=K/N` and `PROVIDER_TEST_PROCESSES=P` make
 `scripts/run-provider-tests.sh` run selections `(K-1)*P+1` to `K*P` of `N*P`,
 each in its own `--no-parallel` process with its own `TMPDIR` and provider
 state files; `scripts/provider-test-shards.py` chooses each selection's suites.
-The processes start `PROVIDER_TEST_START_GAP` seconds apart (default 15).
-SwiftPM in one process can find the build database locked by another's
-startup (`unable to attach DB: ... database is locked`); it then runs the
-tests and exits 1. Such a selection runs once more, but only when its log
-proves that every test passed (`scripts/swift_test_lock_retry.py`: a passing
-Swift Testing summary, XCTest summaries with 0 failures, no failed test or
-issue). The first attempt's log and xUnit report stay beside the second's as
-`attempt-1-shard-<selection>.log` and `.xml`, and both upload.
-Without `PROVIDER_TEST_PROCESSES` (the release qualification lane), a shard
+A shard's processes start together.
+The planner fills the selections longest suite first onto the least loaded
+one, where each selection starts loaded with its shard's fixed work: the parallel process
+after selection 1, Prompt Parity in shard 1 and the isolated processes in the
+last shard (`*_EXTRA_SECONDS` in `scripts/provider-test-shards.py`, measured on
+CI).
+The processes share one build, so each runs `swift test --skip-build` with
+`--ignore-lock` (SwiftPM's workspace lock on `.build` would run them one after
+another) and `--disable-build-manifest-caching`. Without that flag, SwiftPM's
+native build system plans each `swift test` inside llbuild's package-structure
+step, which holds `.build/build.db` in an exclusive SQLite transaction (every
+CI process re-plans there: each log shows `[0/1] Planning build`); a process
+that waited 5 s (SQLite's busy timeout in llbuild) for another's step printed
+`unable to attach DB: ... database is locked`, ran its tests and exited 1. In
+the 90 provider runs from 2026-11-20 20:50 to 2026-11-21 10:24 UTC, 11
+selections in 9 runs (each the second or third process of its shard) failed
+that way and were retried. Each retry ran the whole selection again for 1 to
+4.5 minutes, and in the 6 such runs of the 4-shard layout that shard ended
+last, 1.5 to 5.7 minutes after the next one. With the flag, each process plans in memory
+and never opens the database, so each selection runs once. Until
+2026-11-21 the processes started 15 s apart for that lock, and the planner
+gave each later slot 15 s less work; the processes of a shard now start
+together, so each selection gets the same share. Replaying four dev runs'
+measured seconds through both plans, the longest shard ends 15 to 35 s
+sooner. Without `PROVIDER_TEST_PROCESSES` (the release qualification lane), a shard
 runs one selection, as before:
 
 | Class | Process | Suites |
@@ -205,32 +247,89 @@ runs one selection, as before:
 Shard 1 (the shard of selection 2) also runs Prompt Parity (`scripts/verify-prompt-parity.sh` with
 `PROMPT_PARITY_SKIP_BUILD=1`, and `scripts/verify-nemotron-prompt-parity.sh`)
 against its own build; a parity failure fails that shard and the
-`Provider Tests` gate. The last shard also runs the isolated processes and the
-native MiMo, desktop and installer gates, after its selections finish, one at
-a time. It also runs `scripts/test-provider-profiles-unprivileged.py`, a
-regression check (a source scan) that the provider runs no `profiles` command
-but the unprivileged `profiles status -type enrollment`, and never through
-`sudo` or an administrator AppleScript. Each shard then lists the suite with `swift test list` from its own
+`Provider Tests` gate. The last shard also runs the isolated processes, after
+its selections finish, one at a time.
+
+The checks that run once beside the suite run in a job of their own,
+`Provider Gates` (`test-provider-gates`), which starts beside the build as the
+shards do and runs the same products: the relocated Qwen resources, SwiftPM
+resource bundle staging and
+`scripts/test-provider-profiles-unprivileged.py` (a regression check, a source
+scan, that the provider runs no `profiles` command but the unprivileged
+`profiles status -type enrollment`, and never through `sudo` or an
+administrator AppleScript), then the Gemma quoted-argument and
+reopened-thought conformance switches, the desktop control API with isolated
+local state, the native MiMo startup, memory admission, media admission,
+complete-prefix, retained-fault and lifecycle drain gates, the MiMo audio gate
+when its inputs changed, and the atomic installer tests, each in processes of
+its own. It prepares the MiMo fixtures the shards prepare, so each gate runs
+in the environment it had in the last shard, and reports its own coverage.
+The gates used to run after the last shard's selections; on Darkbloom's 4
+vCPUs that shard then ended about 100 s after the others (run 44771184962).
+Provider Gates runs no selection, so it has no audit of its own: each gate
+fails when it executes no test or skips one (`scripts/run-nested-suite.sh`).
+The `Provider Tests` gate requires the job.
+
+Each shard then lists the suite with `swift test list` from its own
 build and fails unless each of its selections executed exactly its plan
 (`provider-test-shards.py audit-job`); shard 1 also checks that each Prompt
 Parity run executed every listed test of its suite, and the last shard checks
 that the plans of all selections list every test once. With every shard
 required to pass, that is the full-suite audit; no Mac job exists only for it.
-Each shard reports the coverage of its own processes. The last selection runs
+The executed counts (`provider-test-shards.py counts`) never come from the
+merged console either, where a SwiftPM warning can split the
+`Test run with N tests` line as it split the nested-suite gate's. Swift
+Testing's count is the test cases of the selection's xUnit report
+(`shard-<selection>-swift-testing.xml`), skipped ones included, as the console
+summary counted them. XCTest's is the outermost suite's `Executed N tests`
+(skips included) in SwiftPM's stdout alone (`shard-<selection>.log`):
+`run-provider-tests.sh` sends SwiftPM's stderr past that log, to the job log
+and `slot-*.out`. Prompt Parity's runs keep their report and stdout with
+`NESTED_SUITE_REPORT`. A missing or unreadable report fails the selection, and
+an old one is removed before each run. Replayed on run 44914459288's
+artifacts, these counts equal the console counts for all 13 selections. The
+stdout stream keeps one limit, shared with the nested-suite gate: SwiftPM
+drops a 4 KiB read of the test process's output that isn't valid UTF-8 on its
+own. A lost XCTest summary makes the selection's count fall short, so the
+audit fails; it can't make a selection pass.
+Each shard reports the coverage of its own processes. Each shard's audit also
+prints, per selection, the seconds its suites ran against their weights, and
+warns when the two differ by more than `STALE_SELECTION_SECONDS` (60 s): the
+plan then no longer balances the shards. In run 44696233902 selection 4 ran
+402 s of suites weighed at 199 s (`BootSecurityServeLoopTests` alone went from
+26 s to 181 s on the 4-vCPU lanes), and its shard ended the run 1.8 minutes
+after the next one. The last selection runs
 every serial suite without a weight, so new suites make it grow. The last
 shard's audit warns about every such suite and about weights of suites no
 selection runs. It fails when the suites without a weight ran more than
 `UNWEIGHTED_SECONDS_LIMIT` (60 s) in that run, and it prints their measured
 seconds as entries for the weights file. To refresh the whole file, download
 the `provider-unit-shard-*` and `provider-test-diagnostics-*` artifacts of one
-green run and run
-`python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out>`.
+green run, preferably of the current `dev` tree, and run
+`python3 scripts/provider-test-shards.py weights --prune <every shard-*.xml> <every slot-*.out> > scripts/provider-test-shard-weights.json`.
 The xUnit reports hold the Swift Testing seconds and the slot logs the XCTest
 seconds (SwiftPM writes no XCTest xUnit report for a serial run). `--prune`
-drops the weights of suites the run did not measure. The command ignores a
-retried selection's `attempt-1-shard-*` files. A
+drops the weights of suites the run did not measure and reads no checked-in
+weights, so its output can replace the file directly. A
 suite moves from the parallel class to the serial class when it fails or flakes
 in parallel; when in doubt, a suite stays serial.
+
+A pull request runs whole components (`scripts/ci-component-paths.py`), not
+the test targets its diff reaches. On 2026-11-20 the last 150 pull requests
+into `dev` were measured against the SwiftPM target graphs of
+`provider-swift/Package.swift` and `libs/darkbloom-cluster`, with
+Package.swift, Package.resolved, `scripts/`, `.github/`, the MLX pins and
+fixtures as run-everything inputs. 130 ran the provider lane; 98 of them
+changed `ProviderCore`, which every heavy test target imports
+(`ProviderCoreTests` holds 86% of the provider test seconds,
+`DarkbloomCLITests` 13%), and 45 changed a run-everything input. Per-target
+selection would have saved 1% of the provider test seconds at the median and
+3% on average; 3 pull requests would have saved 15% or more. Of the 79 that ran
+the cluster lane, 27 changed only provider-side cluster sources (the
+`DarkbloomClusterRuntimeTests` package would not need to run, but the focused
+runners, which compile those sources, would), and every one of them also ran
+the provider lane, which ends later. Neither saving shortens a run, so CI keeps
+whole components.
 
 The build jobs (the `provider-ci-build` action) and the cluster metadata runners
 restore their build cache by the exact key first, then by the key prefix; the
@@ -243,13 +342,15 @@ restores its base branch's entry and saves nothing
 already tested runs no test job; the build jobs of the components the push
 changed save their caches.
 
-The last provider shard runs the MiMo audio gate (`testNativeAudioRelease`),
+Provider Gates runs the MiMo audio gate (`testNativeAudioRelease`),
 whose fixture needs the 1.87 GB pinned audio codec, only when the gate's
 inputs change (`MIMO_AUDIO` in `scripts/ci-component-paths.py`: the MiMo,
 audio and media provider code, the MiMo tests, the MLX pins, the audio and
 provider fixture scripts and the gate's recipe), on a pull request and on a
 push alike. A change outside those inputs neither downloads the codec nor runs
-the gate.
+the gate. The fixture needs no test products, so Provider Gates prepares it
+before the products download, while the build runs (after the products it
+took 21 to 137 s, runs 44914459288 and 44912466550).
 
 The SDK has independent test products under `libs/mlx-swift-lm`: native memory
 ownership, cancellation, media decoding, paged KV and resource packaging. They
@@ -594,6 +695,33 @@ The SDK's reference-math policy disables TF32 on M5 for float32 comparisons
 (`libs/mlx-swift-lm/CONTRIBUTING.md`). This test precision setting is not proof
 of an ordinary serving default or of full-model performance.
 
+### Inkling 2 Mini contract tests
+
+`Inkling2PromptContractTests`, `Inkling2OutputChannelsTests`,
+`Inkling2ToolStreamRouterTests` and `Inkling2DSparkArtifactTests` need no weights
+or GPU. They read the unmodified upstream template, configuration and tokenizer
+configuration pinned in `provider-swift/Tests/ProviderCoreTests/Fixtures/Inkling2/`
+(provenance and hashes in its README) and the regenerated
+`fixtures/prompt-contract/v1/reasoning_effort_vectors.json`:
+
+```bash
+swift test --skip-build --filter 'Inkling2|CachePromptParityTests|ReasoningEffortValuesTests|TemplateRenderCheck'
+```
+
+They cover the template's byte output through the provider's filters, the cache
+layout and media policy from the configuration, the integrity set of every file
+the load path reads, the output lexer under every split, malformed and deeply
+nested frames, forced, streamed and withheld routing, the loop guard
+(`Inkling2LoopGuardTests`) and the 48 GB KV sizing (`Inkling2MemorySizingTests`).
+The native model, its drafter and media prefill are separate SDK gates.
+
+Two checks need files outside the repository and are skipped, not passed,
+without them: `INKLING2_ORACLE_TEMPLATE_DIR` names the reference renders of the
+chat template (byte-identical prompts and refusals), and with it
+`INKLING2_MODEL_DIR` names a verified checkpoint whose tokenizer and processor
+files (no weights) run the provider's image path
+(`Inkling2ImagePromptOracleTests`: identical input ids, bit-identical pixels).
+
 ### MiMo regression fixtures
 
 Before the full provider test gate, provision its ordinary MiMo regression
@@ -745,7 +873,9 @@ before the retry deadline plus acceptance at the deadline despite fresh rates.
 `ProviderLoopCalibrationTests` runs registration against loopback and exercises
 normal and timed-out startup preloads. It checks eager scheduling after the
 self-test, before the first capacity tick, while retaining a blocked-posture
-case. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
+case. `calibrationStartsWhenTheSelfTestIsReleased` holds the self-test's pump
+after its stream ended and checks that calibration still starts once it is
+released. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
 cannot suppress the unfinished bootstrap.
 The loop suite also checks serial calibration across three resident engines
 without another capacity tick, stops that chain for foreground work or draining
@@ -1211,14 +1341,18 @@ are not successful physical runs.
 ## SDK 27 Release Qualification
 
 Release SDK qualification uses SDK 27.2 / Swift 6.4.2 (Xcode 27.2, the
-[`release` toolchain](build.md#sdk-27-release-builds-and-caches)) and runs independently of
-optimized compilation. The `qualify-sdk-shard` jobs run the provider suite in
-five shards on separate Macs, with the shard plan of CI
-(`scripts/provider-test-shards.py`). Shard 2 also runs Prompt Parity, and the
-last shard runs the isolated processes and the audio gate. The `qualify-sdk`
-job runs after every shard passes. It audits the executed counts of each shard
-against the full suite list. Signing requires `qualify-sdk` and optimized
-compilation. GPU suites retain serial execution and exclusive-process isolation.
+[`release` toolchain](build.md#sdk-27-release-builds-and-caches)) and runs before
+optimized compilation, in `release-qualify.yml`. The `qualify-sdk-shard` jobs
+run the provider suite in five shards on separate Macs, with the shard plan of
+CI (`scripts/provider-test-shards.py`). The shards run on Darkbloom Sandboxes
+when the plane grants lane `release-qualify`
+([Release qualification on Darkbloom](build.md#release-qualification-on-darkbloom)).
+Shard 2 also runs Prompt Parity, and the last shard runs the isolated processes
+and the audio gate. The `qualify-sdk` job runs after every shard passes. It
+audits the executed counts of each shard against the full suite list. Each
+caller's release call needs the caller's job `qualify`, which calls
+`release-qualify.yml`. So the build and signing start only after `qualify-sdk`
+passed, or on a resume. GPU suites retain serial execution and exclusive-process isolation.
 A cache hit never skips a test.
 
 The SDK 27.2 Date checks run without a Mac. The CI plan checks job of
@@ -1418,6 +1552,13 @@ its `README.md`). `TemplateRenderStackTests` renders that template, and
 nested 64 levels deep, the most a request may carry, on the render stack
 (`TemplateRenderStack`) in the debug test build.
 
+The same directory holds `tool-schema-corpus.json`, the distinct tool
+`parameters` of a realistic tool-call schema corpus (descriptions and titles
+reduced to `d`). `GPTOSSToolSchemaRenderTests` renders each through that
+template as the ingress repair forwards it and requires a byte-identical
+prompt and an unchanged cache context, and renders each as written without a
+template failure (`GPTOSSToolSchemaRender`).
+
 `scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
 download only the committed manifests' hash-pinned public prompt assets, never
 weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
@@ -1478,7 +1619,7 @@ SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
-`fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json` (14 cases) is
+`fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json` (22 cases) is
 this repository's: Transformers' chat-template render (jinja2 with Transformers'
 environment and `tojson`) of the served `gemma-4-26b-qat-4bit` template and
 tokenizer, whose SHA-256s it records, in both
@@ -1491,8 +1632,19 @@ runs in the same parity step and holds the provider to both, uncached and
 through the prompt-token cache. A case marked
 `provider_matches_transformers: false` (the Tau2 body, whose `$ref` tools
 already render differently) is checked only as contract 2's one-token change to
-the provider's own contract 1 render. darkbloom-platform must copy the file
-byte for byte to hold its prompt sidecar to the same two contracts.
+the provider's own contract 1 render. Eight cases (`list_system_tool_required`
+through `null_system_tool_required`) render the messages as the provider
+prepares them: the response-format system message, and the forcing
+instruction of a `required` or named tool choice. `ToolChoicePromptPolicy`
+appends that instruction to the first message when that is a system message
+(otherwise to a new system message inserted first) and to the last user
+message: as one more part of a list, after a blank line in a string (an empty
+one too) and alone for null content. The template trims message
+content, so an empty string or null content under a forcing instruction
+renders as the instruction alone. Where contract 2 changes the render in more
+than one place, the test holds the provider to the vectors alone.
+darkbloom-platform must copy the file byte for byte to hold its prompt sidecar
+to the same two contracts.
 
 `fixtures/prompt-contract/v1/native_reasoning_vectors.json` (28 cases) is this
 repository's: the template context the provider gives each reasoning control,
@@ -1714,18 +1866,22 @@ with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
 exits non-zero on a failure. When the classifier selects `cluster` (see below),
-CI (`.github/workflows/provider-tests.yml`) runs them in three places. The job
+CI (`.github/workflows/provider-tests.yml`) runs them in four places. The job
 `cluster-release-checks` (Cluster Release Build Checks; its runner is in
 [Job sizes](build.md#job-sizes)) runs
 `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh` and
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`, which compile a
-release build of the cluster runtime, and
+release build of the cluster runtime. Shard 6 of Cluster Runtime Tests runs
 `libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh`: the worker
 package's own request lifecycle tests (`WorkerTests` and `WorkerLaneTests`, the
 worker coordinator over its real pipes with a fake runtime, in a debug build
-with `DARKBLOOM_WORKER_TEST_JOBS` jobs, 4 by default and 12 in CI), among them
+with `DARKBLOOM_WORKER_TEST_JOBS` jobs, 4 by default and in CI), among them
 a running request that a rank's memory refused ending alone while the worker
-serves the next. No other job runs that package's tests. Shard 2 of
+serves the next. They need no test products, so the shard starts them in the
+background (`scripts/ci-background-step.py`) while it waits for the cluster
+build, builds them in `DARKBLOOM_WORKER_TEST_SCRATCH` outside the checkout,
+and waits for their result before its runtime tests start; the runtime tests
+run either way. No other job runs that package's tests. Shard 2 of
 `test-cluster-focused` (Cluster Focused Checks) runs
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
@@ -1770,9 +1926,10 @@ provider-side cluster runners (`provider-swift/Tests/Cluster*Checks`), the
 other provider files the cluster runners compile, the cluster plan and the
 shared build recipe. The
 `Provider Tests` gate accepts a skipped cluster job only when `cluster` was not
-selected. A provider-only change runs 3 Macs (the provider build and the 2
-provider shards). A cluster change adds 12 Macs (the cluster build, the release
-build checks, 5 runtime shards, 2 focused shards and 3 GPU shards). Every
+selected. A provider-only change runs 7 Macs (the provider build, the 5
+provider shards and Provider Gates). A cluster change adds 14 Macs (the cluster
+build, the release build checks, 7 runtime shards, 2 focused shards and, when
+they run, 3 GPU shards). Every
 Mac job is routed ([job sizes](build.md#job-sizes)). A change whose tree a
 successful run of the same workflow already tested runs no test job at all
 (`scripts/ci-tested-tree.py`).
@@ -1781,30 +1938,45 @@ CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
 provider's macOS CI runners (see [CI runner routing](build.md#ci-runner-routing)),
 in selections that `scripts/cluster-test-plan.py` defines. Each selection runs
 in a process of its own through `scripts/run-nested-suite.sh`, which fails when
-the selection runs no test or skips a test. Each blocking shard's test step
-stays under about 360 s on a 12-vCPU runner (about 470 s on a 4-vCPU
-Darkbloom runner). Seconds below are each process's wall time in dev run
-44670152270 (2026-11-20), before this layout.
+the selection runs no test or skips a test. Every shard's test step is
+planned to stay under about 300 s on a 4-vCPU Darkbloom runner. Seconds below
+are each process's wall time in the Darkbloom runs 44924815069 and
+44927907327 (2026-11-21), in which shards 1, 4 and 5 ran 267 to 395 s and
+ended a run's cluster jobs, and the other shards 169 to 243 s.
 
-Runtime shard 1 runs one process at a time: `base` (198 s), then the share
-probe, then `qwen-tp-aqv-gpu` (151 s). The probe times each rank's share
-against a 1.5 s budget, so it runs right after `base` and never on a Mac right
-after the concurrent GPU groups.
+Runtime shard 1 runs one process at a time: `base` (108 to 145 s), then the
+share probe, then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`,
+92 to 109 s). The probe times each rank's share against a 1.5 s budget, so it
+runs right after `base` and never on a Mac right after the concurrent GPU
+groups. After the build database fix, shard 1 was the longest runtime shard
+(411 and 469 s in runs 44895671420 and 44898503457), so the three longest base
+suites that need no model's memory run in `base-shard-5` instead.
 
-Shards 2 to 5 each run two groups at the same time, each in plan order with
-its own `TMPDIR`. The second group starts `CLUSTER_TEST_START_GAP` seconds
-(default 15) after the first, as the provider shards' processes do, so their
-SwiftPM startups do not meet on the shared build database. Shards 2 and 3 run
-a GPU group beside a CPU group of the batch-session suite
-(`QwenTensorParallelBatchSessionTests`). Shards 4 and 5 run model-free base
-suites, nearly all on the CPU, where one process keeps about one vCPU busy.
+Shards 2 to 7 each run two groups at the same time, each in plan order with
+its own `TMPDIR`. Their selections share one build with `--ignore-lock` and
+`--disable-build-manifest-caching`, as the provider shards' processes do, so
+they never open `.build/build.db`. The second group still starts
+`CLUSTER_TEST_START_GAP` seconds (default 15) after the first: in run
+44903571797, the one run in which the groups started together, shard 2's
+`base-batch-session` failed its bitwise batch-against-solo check
+(`actualShardsBatchIndependentHistoriesWithoutMultiplyingCollectives`) beside
+a GPU group that ran 468 s instead of 260 to 308 s. Shards 2, 3, 6 and 7
+run a GPU group beside a CPU group that starts with a selection of the
+batch-session suite (`QwenTensorParallelBatchSessionTests`); three of them
+then run a base selection that ran on shard 4 or 5, where shards 4 and 5 ran
+316 to 395 s. On five shards, shards 2 and 3 ran 439 to 571 s on Darkbloom.
+Shards 4 and 5 run model-free base suites, nearly all on the CPU, where one
+process keeps about one vCPU busy. Shard 6 also runs the worker package's
+request lifecycle tests while it waits for the cluster build (above).
 
 | Shard | Group 1 | Group 2 |
 |---|---|---|
-| 2 | `qwen-tp-batch-gpu` (278 s), `glm53-paged-kv` (55 s), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (322 s) |
-| 3 | `qwen-tp-batch-gpu-paged` (66 s), `qwen-tp-mtp-gpu` (220 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-prefix-tiers`: the warm and balanced SSD prefix tier tests (`BATCH_SESSION_PREFIX_TIER_TESTS`, 297 s) |
-| 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 218 s), then `base-gemma-runtime` (`Gemma4TensorParallelRuntimeTests`, 99 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 201 s), `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 82 s), then `base-shard-4` (three small suites, `SHARD_4_BASE_SUITES`, 33 s) |
-| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 164 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 139 s) | `base-gemma` (the other Gemma suites, 130 s), `base-mimo-tp` (the four MiMo tensor-parallel suites, 106 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 96 s) |
+| 2 | `qwen-tp-batch-gpu` (182 s), `tf32-off` | `base-batch-session`: every test of the suite that no other selection names (155 s), then `base-qwen-tp-cpu` (the Qwen tensor-parallel wavefront and MTP session suites, 86 s) |
+| 3 | `qwen-tp-batch-gpu-paged` (75 to 89 s), `qwen-tp-moe-gpu`, `glm53-prefix-ssd`, `glm53-paged-kv` (35 to 54 s), `glm53-row-invariance`, `glm53-depth-invariance`, `gemma-tp-diag` | `base-batch-session-warm-prefix-tier`: the warm prefix tier test (`BATCH_SESSION_WARM_PREFIX_TIER_TESTS`, 179 to 217 s) |
+| 4 | `base-gemma-tensor-parallel-oracle` (the split-sum oracle of `Gemma4TensorParallelTests`, 195 to 247 s) | `base-gemma-tensor-parallel` (the other tests of `Gemma4TensorParallelTests`, 183 to 231 s), then `base-shard-4` (three small suites, `SHARD_4_BASE_SUITES`, 32 to 46 s) |
+| 5 | `base-gemma-batch-decode` (`Gemma4BatchDecodeTests`, 146 s), then `base-shard-5` (the synthetic Qwen 3.5 stage KV and SSD prefix record suites, `SHARD_5_BASE_SUITES`, 65 to 67 s) | `base-gemma` (the other Gemma suites, 123 to 125 s), then `base-mimo-tp` (the four MiMo tensor-parallel suites, 101 to 104 s) |
+| 6 | `qwen-tp-mtp-gpu` (179 s) | `base-batch-session-ssd-prefix-tier`: the balanced SSD prefix tier test (`BATCH_SESSION_SSD_PREFIX_TIER_TESTS`, 112 s), then `base-gemma-prefix` (`Gemma4TensorParallelPrefixTests`, 75 to 87 s) |
+| 7 | `qwen-tp-batch-gpu-prefix-depth` (the batch GPU switch's `deepRestoresEqualColdPrefillOnBothRanks`, the one test of its suite that the switch enables, 80 s), then `qwen-tp-aqv-gpu` (128 to 161 s) | `base-batch-session-histories`: the suite's two history tests (`BATCH_SESSION_HISTORY_TESTS`, 148 s), then `base-batch-session-partitions` (the suite's partition test, `BATCH_SESSION_PARTITION_TESTS`, 89 s) |
 
 Each Gemma suite has exactly one base selection of whole Gemma suites; only
 `Gemma4TensorParallelTests` also has a selection of one of its functions.
@@ -1814,9 +1986,7 @@ runs there.
 Cluster GPU Tests shards 1 and 3 each run one half of the real-geometry rows
 check alone ([Qwen27 capacity consistency checks](#qwen27-capacity-consistency-checks));
 shard 2 runs the other non-blocking selections one at a time.
-A grouped selection that finds SwiftPM's build database locked, and whose log
-proves every test passed, runs once more, as in the provider shards; the job
-log prints both attempts' logs. Every process starts with
+Every grouped selection runs once. Every process starts with
 `MLX_QMV_BATCH_INVARIANT=1`, as every cluster process does.
 
 | Selection | Job | Tests |
@@ -2270,6 +2440,14 @@ registered artifact for them.
    neighbouring token.
 
 ## Focused Tooling Checks
+
+Release Integrity runs its offline checks at the same time through
+`scripts/run-concurrent-checks.py` ([CI workflows](build.md#ci-workflows)).
+`python3 scripts/test-run-concurrent-checks.py` tests the runner with real
+child processes: checks that must meet do run together, `--jobs` bounds them,
+each output prints whole and in the listed order, any failure fails the run
+after every check ran once, and each check gets its own `TMPDIR` and no
+standard input.
 
 For the PR reviewer, run the seven offline suites listed in
 [threat-review verification](threat-model-review.md#verify). They cover bounded
@@ -2828,7 +3006,10 @@ local stream and the local complete response carry identical entries for
 thinking-on replies that call a tool: only the reasoning and answer tokens'
 when the call ends the reply, and every entry before a newline that follows
 the call. `NemotronSuperLocalOutputTests` checks the same selection for a
-complete response without a model (`NemotronSuperCompleteLogprobs`). The local
+stream and a complete response without a model (`NemotronSuperCarriedLogprobs`),
+and that a stream's entries reach the caller's channel only before a chunk that
+shows text, so a frames loop that reads the channel early cannot pick up a
+tool-call token's entry. The local
 hook's `liveHTTPTextReasoningToolsAndStructuredOutput` checks streamed and
 complete logprobs on the tiny installed fixture for a mixed reply and one that
 ends while reasoning, with entries on the stream's reasoning chunks, and none

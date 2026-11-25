@@ -166,6 +166,9 @@ final class VerifiedCheckpoint {
     init(directory: URL, configurationData: Data,
          expectedAggregateSHA256: String? = nil, maximumPayloadBytes: Int? = nil,
          expectedManifestSHA256: String? = nil, hashingConcurrency: Int = 1) throws {
+        // The whole verification, every file hashed (a record only).
+        let started = DispatchTime.now().uptimeNanoseconds
+        defer { ClusterLoadPhaseClock.add(.checkpointVerify, nanoseconds: DispatchTime.now().uptimeNanoseconds &- started) }
         guard (1...16).contains(hashingConcurrency) else {
             throw ProbeError("Checkpoint hashing concurrency must be 1...16")
         }

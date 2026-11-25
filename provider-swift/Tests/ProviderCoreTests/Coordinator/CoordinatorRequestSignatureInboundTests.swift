@@ -100,7 +100,7 @@ struct CoordinatorRequestSignatureInboundTests {
         for await _ in outbound { sent += 1 }
         var served: [String] = []
         for await event in events {
-            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
+            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
         }
         #expect(served == frames.map { $0.0 })
         #expect(sent == 0)
@@ -168,7 +168,7 @@ struct CoordinatorRequestSignatureInboundTests {
         }
         var served: [String] = []
         for await event in events {
-            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
+            if case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) = event { served.append(id) }
         }
         return (served, released)
     }

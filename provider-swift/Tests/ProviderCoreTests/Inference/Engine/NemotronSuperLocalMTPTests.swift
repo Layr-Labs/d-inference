@@ -95,6 +95,26 @@ struct NemotronSuperLocalMTPTests {
         #expect(try MTP.loadSupplementBytes(.init(payloadBytes: 3, constructionBytes: 4)) == 7)
     }
 
+    /// A row under Super's call grammar drafts by default: constraint spans and
+    /// grammar-aware verification are on unless the operator sets either switch.
+    @Test func callGrammarRowsDraftUnlessTheOperatorSaysOtherwise() {
+        typealias M = NemotronSuperLocalMTP
+        let setting = M.Setting(depth: 2)
+        let unset = M.config(setting, requests: 2, processEnvironment: [:])
+        #expect(unset.freeSpanSpeculation && unset.constrainedSpeculation)
+        // The defaults change nothing else the serving policy sizes from.
+        #expect(unset.maxDraftTokens == 2 && unset.maxSpeculativeBatch == 2 && unset.verificationMode == .rectangularExact)
+        for value in ["", "1"] {
+            let config = M.config(setting, requests: 1, processEnvironment: [SDKFeatureDefaults.constraintSpansKey: value])
+            #expect(config.freeSpanSpeculation == (value.isEmpty || CBv2MTPConfig.envFreeSpanSpeculation), "\(value)")
+        }
+        let spansOff = M.config(setting, requests: 1, processEnvironment: [SDKFeatureDefaults.constraintSpansKey: "0"])
+        #expect(spansOff.freeSpanSpeculation == CBv2MTPConfig.envFreeSpanSpeculation)
+        let grammarOff = M.config(setting, requests: 1, processEnvironment: [SDKFeatureDefaults.grammarMTPKey: "0"])
+        #expect(grammarOff.freeSpanSpeculation)
+        #expect(grammarOff.constrainedSpeculation == CBv2MTPConfig.envConstrainedSpeculation)
+    }
+
     /// The shared factory serves both speculative targets like the ordinary
     /// adapter: same layer kinds and capabilities plus MTP, and the same hard
     /// calibrated prefill bound on every scheduler.

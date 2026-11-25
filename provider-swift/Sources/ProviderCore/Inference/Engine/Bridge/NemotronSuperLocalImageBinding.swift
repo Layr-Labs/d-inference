@@ -12,8 +12,8 @@ import MLXVLM
 /// at a time: a request that arrives while the active one's answer has
 /// already ended, or is streaming, may wait for it instead of being refused
 /// (`admit(stackedUntil:)`). The load owner retains this actor and drains it
-/// before retiring its bridge. Opt-in image rows share a serialized preparation
-/// lane, then decode concurrently; video remains exclusive with other media.
+/// before retiring its bridge. Media rows (images, or one video) share a
+/// serialized preparation lane, then decode concurrently.
 actor NemotronSuperLocalImageBinding {
     enum Failure: Error, Equatable {
         case closed, busy, wrongModel, invalidInput, capacity, retainedFault
@@ -98,9 +98,17 @@ actor NemotronSuperLocalImageBinding {
         /// native settlement, as a slow settlement would (`execute`).
         var testSettlement: (@Sendable () async -> Void)?
         var testPreparation: (@Sendable (String, Bool) async -> Void)?
+        var testQuarantine: (@Sendable () async -> Void)?
+        var testSubmission: (@Sendable (GenerationLoopGuard?) -> Void)?
         #endif
 
+        /// Whether the request's native preparation started: its charges then
+        /// stay with a quarantined owner (`settle`).
+        private var preparing = false
+
         var isEnded: Bool { lock.withLock { ended } }
+        var enteredPreparation: Bool { lock.withLock { preparing } }
+        func markPreparing() { lock.withLock { preparing = true } }
         /// The answer is streaming, or has ended.
         var hasStarted: Bool { lock.withLock { streaming || ended } }
 
@@ -127,15 +135,33 @@ actor NemotronSuperLocalImageBinding {
     private struct ActiveMedia {
         let cleanup: Task<Void, Error>
         let progress: MediaProgress
-        let concurrentImage: Bool
+        let sharesRows: Bool
         let cancel: @Sendable () -> Void
     }
     private var active: [String: ActiveMedia] = [:]
     private var preparingRequest: String?
+    /// Since when the lane's holder has ended and only its video's queued
+    /// frame reads keep it (`releaseLane` in `prepareAndExecute`).
+    private var laneDrainingSince: ContinuousClock.Instant?
     /// The one request waiting for the active one, if any; it is admitted
     /// before any newcomer.
     private var waiter: UUID?
     #if DEBUG
+    /// TEST SEAM: the request holding the preparation lane, if any, and
+    /// whether only its video's queued frame reads still keep it.
+    var preparingRequestForTesting: String? { preparingRequest }
+    var laneDrainingForTesting: Bool { laneDrainingSince != nil }
+    /// TEST SEAM: the next preparation that fails is handled as a retained
+    /// native fault (quarantine), as a failed fence would be.
+    private var testRetainedFault = false
+    func setTestRetainedFault(_ value: Bool) { testRetainedFault = value }
+    fileprivate func takeTestRetainedFault() -> Bool {
+        defer { testRetainedFault = false }
+        return testRetainedFault
+    }
+    /// TEST SEAM: observes the loop guard each media row is submitted with.
+    private var testSubmission: (@Sendable (GenerationLoopGuard?) -> Void)?
+    func setTestSubmission(_ hook: (@Sendable (GenerationLoopGuard?) -> Void)?) { testSubmission = hook }
     private var testSettlement: (@Sendable () async -> Void)?
     /// TEST SEAM: the next requests' answers run `hook` once they end.
     func setTestSettlement(_ hook: (@Sendable () async -> Void)?) { testSettlement = hook }
@@ -144,6 +170,10 @@ actor NemotronSuperLocalImageBinding {
     func setTestPreparation(_ hook: (@Sendable (String, Bool) async -> Void)?) {
         testPreparation = hook
     }
+    /// Runs after a retained fault is published (the bridge's submission
+    /// fence closed), before the bridge cancels its committed rows.
+    private var testQuarantine: (@Sendable () async -> Void)?
+    func setTestQuarantine(_ hook: (@Sendable () async -> Void)?) { testQuarantine = hook }
     #endif
 
     /// Only the exact installed Owner creates this binding. There is no API
@@ -162,8 +192,8 @@ actor NemotronSuperLocalImageBinding {
     func run(request: ChatCompletionRequest, input: Input, cacheScope: String? = nil,
              stackedUntil: ContinuousClock.Instant? = nil,
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
-        let concurrentImage = owner.maximumConcurrentImages > 1
-        try await admit(concurrentImage: concurrentImage, stackedUntil: stackedUntil)
+        let sharesRows = owner.maximumConcurrentImages > 1
+        try await admit(sharesRows: sharesRows, stackedUntil: stackedUntil)
         guard request.model == owner.modelID else { throw Failure.wrongModel }
         guard request.tools == nil, request.tool_choice == nil, request.response_format == nil,
             request.logprobs != true, request.top_logprobs == nil, request.prompt_cache_key == nil
@@ -174,7 +204,7 @@ actor NemotronSuperLocalImageBinding {
         // that key would make its KV admission look like a duplicate claim.
         let mediaReservationID = id + "-media"
         let owner = self.owner, gate = self.gate, progress = makeProgress()
-        let preparationBinding = concurrentImage ? self : nil
+        let preparationBinding = sharesRows ? self : nil
         let task = Task<Void, Error> {
             try Task.checkCancellation()
             guard await gate.reserve(requestId: mediaReservationID, mediaDecodeBytes: quote.totalBytes, kvTokens: 0)
@@ -182,11 +212,11 @@ actor NemotronSuperLocalImageBinding {
             try await Self.prepareAndExecute(owner: owner, prepare: { construction in
                 try owner.prepareLocalImage(input, maximumFeatureBytes: quote.featureBytes,
                                             construction: construction)
-            }, request: request, requestID: id, cacheScope: cacheScope, logprobs: nil, progress: progress,
-               preparationBinding: preparationBinding, onEvent: onEvent)
+            }, request: request, requestID: id, cacheScope: cacheScope, cachePolicy: .default, logprobs: nil,
+               progress: progress, preparationBinding: preparationBinding, loopGuard: nil, onEvent: onEvent)
         }
         try await settle(task, requestID: id, reservations: [mediaReservationID],
-                         progress: progress, concurrentImage: concurrentImage)
+                         progress: progress, sharesRows: sharesRows)
     }
     #endif
 
@@ -202,19 +232,30 @@ actor NemotronSuperLocalImageBinding {
     /// substituted. A `logprobs` request needs the `logprobs` channel its
     /// entries leave on. `admitPrompt` sees the rendered prompt's kind and
     /// length, visual tokens included, before the media reservation, tower or
-    /// prefill, and may refuse the request there.
+    /// prefill, and may refuse the request there; on a media row it runs
+    /// again after a wait for the preparation lane, which `laneWaited`
+    /// reports as the wait begins. `toolConstraint` makes the request's call
+    /// grammar from the exact prompt submitted, visual tokens included
+    /// (`NemotronSuperToolGrammar`; nil, or a nil result: none).
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
-                    cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
-                    stackedUntil: ContinuousClock.Instant? = nil,
+                    cacheScope: String? = nil, cachePolicy: RequestCachePolicy = .default,
+                    logprobs: EngineV2LogprobsChannel? = nil, stackedUntil: ContinuousClock.Instant? = nil,
+                    loopGuardSetting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
                     admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)? = nil,
+                    laneWaited: (@Sendable () -> Void)? = nil,
+                    toolConstraint: (@Sendable ([Int]) -> (any CBv2TokenConstraint)?)? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
-        let concurrentImage = owner.maximumConcurrentImages > 1 && Self.hasOnlyImages(plan)
-        try await admit(concurrentImage: concurrentImage, stackedUntil: stackedUntil)
+        // Bridge translation drops the response format and tools that inform
+        // guard eligibility. The thinking exit is text-only.
+        let loopGuard = plan.loopGuard(setting: loopGuardSetting)
+        let sharesRows = owner.maximumConcurrentImages > 1
+            && Self.sharesMediaRows(plan, video: owner.videoSharesMediaRows)
+        try await admit(sharesRows: sharesRows, stackedUntil: stackedUntil)
         let headerBytes = try Self.encodedHeaderQuote(bodyBytes: body.count, templateBytes: templateBytes.count)
         let id = "super-local-encoded-" + UUID().uuidString
         let ingressID = id + "-ingress", mediaID = id + "-media"
         let owner = self.owner, gate = self.gate, progress = makeProgress()
-        let preparationBinding = concurrentImage ? self : nil
+        let preparationBinding = sharesRows ? self : nil
         let task = Task<Void, Error> {
             try Task.checkCancellation()
             // Before JSON/base64/header expansion, using the real shared ledger.
@@ -226,8 +267,9 @@ actor NemotronSuperLocalImageBinding {
                 try await VideoReaderFailureReport.reporting(to: { TelemetryClient.shared.emit($0) }) {
                     try await Self.executeEncodedVideo(video, plan: plan, body: body, templateBytes: templateBytes,
                         request: parsed.request, owner: owner, gate: gate, mediaID: mediaID, requestID: id,
-                        cacheScope: cacheScope, logprobs: logprobs, progress: progress,
-                        admitPrompt: admitPrompt, onEvent: onEvent)
+                        cacheScope: cacheScope, cachePolicy: cachePolicy, logprobs: logprobs, progress: progress,
+                        preparationBinding: preparationBinding, loopGuard: loopGuard, admitPrompt: admitPrompt,
+                        laneWaited: laneWaited, toolConstraint: toolConstraint, onEvent: onEvent)
                 }
                 return
             }
@@ -238,6 +280,7 @@ actor NemotronSuperLocalImageBinding {
             guard await gate.reserve(requestId: mediaID, mediaDecodeBytes: imagePlan.totalBytes, kvTokens: 0)
             else { throw Failure.capacity }
             try Task.checkCancellation()
+            let imagePromptTokens = tokens.count
             try await Self.prepareAndExecute(owner: owner, prepare: { construction in
                 var decoded: [NemotronSuperImageDecode.Prepared] = []
                 for image in imagePlan.images {
@@ -255,30 +298,37 @@ actor NemotronSuperLocalImageBinding {
                 }
                 return try owner.prepareLocalImage(input, maximumFeatureBytes: imagePlan.featureBytes,
                                                    construction: construction)
-            }, request: parsed.request, requestID: id, cacheScope: cacheScope, logprobs: logprobs,
-               progress: progress, preparationBinding: preparationBinding, onEvent: onEvent)
+            }, request: parsed.request, requestID: id, cacheScope: cacheScope, cachePolicy: cachePolicy,
+               logprobs: logprobs,
+               progress: progress, preparationBinding: preparationBinding, loopGuard: loopGuard,
+               laneWaited: laneWaited,
+               afterLaneWait: { try admitPrompt?(.image, imagePromptTokens) },
+               toolConstraint: toolConstraint, onEvent: onEvent)
         }
         // No suspension precedes installing active: includes both admissions.
         try await settle(task, requestID: id, reservations: [ingressID, mediaID],
-                         progress: progress, concurrentImage: concurrentImage)
+                         progress: progress, sharesRows: sharesRows)
     }
 
     /// Reads the already validated plan without decoding or copying media before
-    /// ingress admission. Unsupported parts and video retain exclusive admission.
-    private static func hasOnlyImages(_ plan: NemotronSuperRequestPlan) -> Bool {
-        var hasImage = false
+    /// ingress admission: images only, or (when `video`) one video only, take a
+    /// media row. Unsupported parts, mixed media, a second video, and a video
+    /// on an owner whose videos run alone retain exclusive admission.
+    static func sharesMediaRows(_ plan: NemotronSuperRequestPlan, video: Bool) -> Bool {
+        var images = 0, videos = 0
         for message in plan.request.messages {
             if case .parts(let parts) = message.content {
                 for part in parts {
                     switch part {
                     case .text: break
-                    case .imageURL: hasImage = true
+                    case .imageURL: images += 1
+                    case .videoURL: videos += 1
                     default: return false
                     }
                 }
             }
         }
-        return hasImage
+        return videos == 0 ? images > 0 : video && videos == 1 && images == 0
     }
 
     /// One inline video under the ingress reservation: its compressed samples
@@ -288,18 +338,26 @@ actor NemotronSuperLocalImageBinding {
     /// tower's tubelet batches; cancelling the request, as `drain` does,
     /// ends a wait on the decoder at once, and the reader stops once the read
     /// in progress returns. The charges return only after that read (`settle`).
+    /// On a media row (`preparationBinding`), the frame decode and the tower
+    /// wait for the serial preparation lane, as an image's do.
     private static func executeEncodedVideo(_ uri: String, plan requestPlan: NemotronSuperRequestPlan,
         body: Data, templateBytes: Data,
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
-        mediaID: String, requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
-        progress: MediaProgress, admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)?,
+        mediaID: String, requestID: String, cacheScope: String?, cachePolicy: RequestCachePolicy,
+        logprobs: EngineV2LogprobsChannel?,
+        progress: MediaProgress, preparationBinding: NemotronSuperLocalImageBinding?,
+        loopGuard: GenerationLoopGuard?,
+        admitPrompt: (@Sendable (NemotronSuperFirstContentPace.Kind, Int) throws -> Void)?,
+        laneWaited: (@Sendable () -> Void)?,
+        toolConstraint: (@Sendable ([Int]) -> (any CBv2TokenConstraint)?)?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let video = try await NemotronSuperVideoDecode.inspect(uri)
         let prompt = try owner.localVideoPrompt(plan: requestPlan, body: body, templateBytes: templateBytes,
                                                 labels: video.labels)
         let plan = try encodedVideoPlan(video, prompt: prompt, pruningRate: owner.videoPruningRate,
                                         contextLength: gate.contextLength)
-        try admitPrompt?(.video, plan.promptTokens)
+        let promptTokens = plan.promptTokens
+        try admitPrompt?(.video, promptTokens)
         guard await gate.reserve(requestId: mediaID, mediaDecodeBytes: plan.totalBytes, kvTokens: 0)
         else { throw Failure.capacity }
         try Task.checkCancellation()
@@ -310,8 +368,11 @@ actor NemotronSuperLocalImageBinding {
                 try owner.prepareLocalVideo(frames, prompt: prompt, maximumFeatureBytes: plan.featureBytes,
                                             construction: construction)
             }
-        }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, progress: progress,
-           onEvent: onEvent)
+        }, request: request, requestID: requestID, cacheScope: cacheScope, cachePolicy: cachePolicy,
+           logprobs: logprobs, progress: progress,
+           preparationBinding: preparationBinding, loopGuard: loopGuard, laneWaited: laneWaited,
+           afterLaneWait: { try admitPrompt?(.video, promptTokens) },
+           toolConstraint: toolConstraint, onEvent: onEvent)
     }
 
     /// Cleanup coordinator holds no image arrays. Actual work task completion
@@ -321,11 +382,13 @@ actor NemotronSuperLocalImageBinding {
     /// logs one fixed warning and ends, and the refund runs when those reads
     /// return. drain awaits this same cleanup task.
     private func settle(_ work: Task<Void, Error>, requestID: String, reservations: [String],
-                        progress: MediaProgress, concurrentImage: Bool) async throws {
+                        progress: MediaProgress, sharesRows: Bool) async throws {
         let owner = self.owner, gate = self.gate
         let cleanup = Task<Void, Error> {
             let result = await work.result
-            if !owner.hasRetainedImageFault {
+            // A request refused, or cancelled while it waited for the lane,
+            // never reached native preparation: a quarantine holds nothing of it.
+            if !owner.hasRetainedImageFault || !progress.enteredPreparation {
                 let release: @Sendable () async -> Void = {
                     for id in reservations { await gate.release(requestId: id) }
                 }
@@ -340,25 +403,27 @@ actor NemotronSuperLocalImageBinding {
             try result.get()
         }
         active[requestID] = ActiveMedia(cleanup: cleanup, progress: progress,
-            concurrentImage: concurrentImage, cancel: { progress.markCancelled(); work.cancel() })
+            sharesRows: sharesRows, cancel: { progress.markCancelled(); work.cancel() })
         defer { active.removeValue(forKey: requestID) }
         try await withTaskCancellationHandler {
             try await cleanup.value
         } onCancel: { progress.markCancelled(); work.cancel() }
     }
 
-    /// Admits one media request at a time (SUPER-IMAGE-504: an instant
-    /// `busy` is a coordinator bounce). A request that finds one active may
-    /// wait for it, one request at a time and reserving nothing until it is
-    /// admitted: for up to `NemotronSuperServingPolicy.finishingWait` while
-    /// the active answer has ended and only its settlement remains, and until
-    /// `stackedUntil` while the active answer streams and the owner still has
-    /// a free request slot besides this one's. The active request's charge is
+    /// Admits one media request at a time, or up to the owner's media rows
+    /// while this request and every active one share rows (images, or one
+    /// video each; SUPER-IMAGE-504: an instant `busy` is a coordinator
+    /// bounce). A request that finds no free row may wait for one, one
+    /// request at a time and reserving nothing until it is admitted: for up
+    /// to `NemotronSuperServingPolicy.finishingWait` while every active
+    /// answer has ended and only its settlement remains, and until
+    /// `stackedUntil` while every active answer streams and the owner still
+    /// has a free request slot besides this one's. The active request's charge is
     /// released before the waiting one reserves, unless a frame read of its
     /// video outlasts `NemotronSuperServingPolicy.videoReaderDrainWait`: that
     /// charge stays until the read returns (`settle`). Any other request is
     /// refused at once, as before.
-    private func admit(concurrentImage: Bool, stackedUntil: ContinuousClock.Instant?) async throws {
+    private func admit(sharesRows: Bool, stackedUntil: ContinuousClock.Instant?) async throws {
         let finishingEnd = ContinuousClock.now + NemotronSuperServingPolicy.finishingWait
         let id = UUID()
         defer { if waiter == id { waiter = nil } }
@@ -366,8 +431,8 @@ actor NemotronSuperLocalImageBinding {
             guard !closing else { throw Failure.closed }
             guard waiter == nil || waiter == id else { throw Failure.busy }
             guard !active.isEmpty else { return }
-            if concurrentImage, active.count < owner.maximumConcurrentImages,
-                active.values.allSatisfy(\.concurrentImage) { return }
+            if sharesRows, active.count < owner.maximumConcurrentImages,
+                active.values.allSatisfy(\.sharesRows) { return }
             let now = ContinuousClock.now
             let settling = now < finishingEnd && active.values.allSatisfy { $0.progress.isEnded }
             // A stacked wait never holds the owner's last free request slot,
@@ -381,23 +446,51 @@ actor NemotronSuperLocalImageBinding {
         }
     }
 
-    /// Only the bounded admitted images can wait here, already fully charged.
-    /// The owner is drained before retirement, so no waiter outlives the model.
-    private func acquirePreparation(requestID: String) async throws {
+    /// Only the bounded admitted media rows can wait here, already fully
+    /// charged. The owner is drained before retirement, so no waiter outlives
+    /// the model. Returns whether the request waited for another holder;
+    /// `onWait` runs once, as that wait begins. A holder kept
+    /// only by its cancelled video's frame read past
+    /// `NemotronSuperServingPolicy.videoReaderDrainWait` refuses the waiter
+    /// (`busy`, before its native preparation: its charges return) instead of
+    /// keeping it until the read returns; the lane stays with the read.
+    private func acquirePreparation(requestID: String, onWait: (@Sendable () -> Void)?) async throws -> Bool {
+        var waited = false
         while true {
             try Task.checkCancellation()
             guard !closing else { throw Failure.closed }
             guard !owner.hasRetainedImageFault else { throw Failure.retainedFault }
             if preparingRequest == nil {
                 preparingRequest = requestID
-                return
+                return waited
             }
+            if let since = laneDrainingSince,
+                ContinuousClock.now - since > NemotronSuperServingPolicy.videoReaderDrainWait {
+                throw Failure.busy
+            }
+            if !waited { onWait?() }
+            waited = true
             try await Task.sleep(for: .milliseconds(5))
         }
     }
 
     private func releasePreparation(requestID: String) {
-        if preparingRequest == requestID { preparingRequest = nil }
+        guard preparingRequest == requestID else { return }
+        preparingRequest = nil
+        laneDrainingSince = nil
+    }
+
+    /// The holder ended; its video's queued frame reads keep the lane until
+    /// they return.
+    private func noteLaneDraining(requestID: String) {
+        if preparingRequest == requestID, laneDrainingSince == nil { laneDrainingSince = .now }
+    }
+
+    /// A retained native fault quarantined the installation: the other media
+    /// rows stop, and those whose preparation started keep their charges
+    /// with it (`settle`).
+    private func cancelRows(besides requestID: String) {
+        for (id, media) in active where id != requestID { media.cancel() }
     }
 
     /// Each media request's admission-to-first-chunk time feeds the owner's
@@ -409,23 +502,48 @@ actor NemotronSuperLocalImageBinding {
         #if DEBUG
         progress.testSettlement = testSettlement
         progress.testPreparation = testPreparation
+        progress.testQuarantine = testQuarantine
+        progress.testSubmission = testSubmission
         #endif
         return progress
     }
 
     /// `prepare` builds the evaluated submission in `construction`; a
-    /// retained fault there quarantines the owner with this request's charge.
+    /// retained fault there quarantines the owner with this request's charge
+    /// and stops the other media rows. On a media row (`preparationBinding`)
+    /// a wait for the lane is reported to `laneWaited` as it begins, and
+    /// `afterLaneWait` rechecks the first-content budget it spent.
     private static func prepareAndExecute(owner: NemotronSuperLocalBridgeBuilder.Owner,
         prepare: (NativeConstructionScope) async throws -> EngineV2VisionPrefill.PreparedSubmission,
-        request: ChatCompletionRequest, requestID: String, cacheScope: String?,
+        request: ChatCompletionRequest, requestID: String, cacheScope: String?, cachePolicy: RequestCachePolicy,
         logprobs: EngineV2LogprobsChannel?, progress: MediaProgress,
-        preparationBinding: NemotronSuperLocalImageBinding? = nil,
+        preparationBinding: NemotronSuperLocalImageBinding? = nil, loopGuard: GenerationLoopGuard?,
+        laneWaited: (@Sendable () -> Void)? = nil,
+        afterLaneWait: (@Sendable () throws -> Void)? = nil,
+        toolConstraint: (@Sendable ([Int]) -> (any CBv2TokenConstraint)?)? = nil,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
-        try await preparationBinding?.acquirePreparation(requestID: requestID)
+        let waitedForLane = try await preparationBinding?.acquirePreparation(
+            requestID: requestID, onWait: laneWaited) ?? false
+        // A video's frame read can outlive a cancelled pull on its reader's
+        // queue: the lane returns once its queued reads have, so the next
+        // preparation never starts a reader beside one still decoding.
+        let releaseLane: @Sendable () async -> Void = {
+            guard let preparationBinding else { return }
+            guard let reader = progress.readerQueue else {
+                await preparationBinding.releasePreparation(requestID: requestID)
+                return
+            }
+            let released = await reader.afterQueuedReads(waitingAtMost: .zero) {
+                await preparationBinding.releasePreparation(requestID: requestID)
+            }
+            if !released { await preparationBinding.noteLaneDraining(requestID: requestID) }
+        }
         let construction = NativeConstructionScope()
         let activity = owner.imageServiceBudget.beginUnboundedActivity()
         do {
             try Task.checkCancellation()
+            if waitedForLane { try afterLaneWait?() }
+            progress.markPreparing()
             #if DEBUG
             await progress.testPreparation?(requestID, true)
             let prepared: EngineV2VisionPrefill.PreparedSubmission
@@ -442,19 +560,33 @@ actor NemotronSuperLocalImageBinding {
             activity.finish()
             // Preparation returns evaluated, fenced features. Decoding and native
             // settlement keep their full media reservation, but not this lane.
-            await preparationBinding?.releasePreparation(requestID: requestID)
+            await releaseLane()
             try Task.checkCancellation()
+            // Another row's retained fault quarantined the installation.
+            guard !owner.hasRetainedImageFault else { throw Failure.retainedFault }
             try await execute(bridge: owner.bridge, prepared: prepared,
-                cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
-                request: request, requestID: requestID, logprobs: logprobs, progress: progress, onEvent: onEvent)
+                cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil, cachePolicy: cachePolicy,
+                request: request, requestID: requestID, logprobs: logprobs, progress: progress,
+                loopGuard: loopGuard, tokenConstraint: toolConstraint?(prepared.promptTokens), onEvent: onEvent)
         } catch {
-            if construction.snapshot.isRetainedFault {
+            var retained = construction.snapshot.isRetainedFault
+            #if DEBUG
+            if await preparationBinding?.takeTestRetainedFault() == true { retained = true }
+            #endif
+            if retained {
+                // Publishing the fault closes the bridge's submission commit;
+                // every row committed on it, text included, is then cancelled.
                 owner.quarantineLocalImage(construction: construction, activity: activity)
-                await preparationBinding?.releasePreparation(requestID: requestID)
+                #if DEBUG
+                await progress.testQuarantine?()
+                #endif
+                await owner.bridge.fenceAfterRetainedFault()
+                await preparationBinding?.cancelRows(besides: requestID)
+                await releaseLane()
                 throw Failure.retainedFault
             }
             activity.finish()
-            await preparationBinding?.releasePreparation(requestID: requestID)
+            await releaseLane()
             throw error
         }
     }
@@ -718,20 +850,26 @@ actor NemotronSuperLocalImageBinding {
     /// bound to an identity of its evaluated features and spans, hashed while
     /// the media charge still covers the copy, and may restore only
     /// checkpoints of that identity in that scope; without one it stays cold
-    /// and never publishes.
-    private static func execute(bridge: EngineV2Bridge,
+    /// and never publishes. A `memoryOnly` request runs with its prefix cache
+    /// off whatever its scope (`PrefixCacheSubmissionPolicy`).
+    static func execute(bridge: EngineV2Bridge,
         prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
+        cachePolicy: RequestCachePolicy = .default,
         request: ChatCompletionRequest, requestID: String, logprobs: EngineV2LogprobsChannel?,
-        progress: MediaProgress, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
+        progress: MediaProgress, loopGuard: GenerationLoopGuard?, tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
         let identity = cacheScope == nil ? nil : try prepared.hybridPrefixIdentity()
+        #if DEBUG
+        progress.testSubmission?(loopGuard)
+        #endif
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(promptTokens: prepared.promptTokens,
                 request: request, requestId: requestID, cacheScope: cacheScope ?? "",
-                cacheEnabled: identity != nil, usageSignal: usage,
+                cacheEnabled: identity != nil, cachePolicy: cachePolicy, usageSignal: usage,
                 multimodal: prepared.multimodalInput(), hybridPrefixIdentity: identity,
-                mediaKind: prepared.mediaKind)
+                mediaKind: prepared.mediaKind, tokenConstraint: tokenConstraint, loopGuard: loopGuard)
             for await event in stream {
                 if Task.isCancelled { break }
                 // The bridge yields a delta's entries just before its text;

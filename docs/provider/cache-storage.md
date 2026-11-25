@@ -1,6 +1,6 @@
 # Set provider cache writes and storage
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-23
 
 Set a persistent write limit and optionally store encrypted inference caches on
 a separate disk. These commands affect cache payloads; use
@@ -50,6 +50,13 @@ a separate disk. These commands affect cache payloads; use
    Normal expiration prevents reuse but cannot delete files on detached or
    previously selected disks. Cleanup needs the selected volume mounted and accessible;
    see the [retention limits](../architecture/security/encryption.md#provider-cache-storage).
+
+   To stop a cache hit from extending an entry's 30 minutes of reuse, set
+   `DARKBLOOM_SSD_KV_TTL_MODE=fixed` in the provider's environment: no entry is
+   then reused more than 30 minutes (or the configured TTL) after it was written.
+   Its file is removed later, by maintenance that can reach it on the selected
+   volume, so removal has no fixed time
+   ([TTL](../reference/ssd-kv-cache.md#size-and-eviction-rules)).
 
 3. Restart the provider to load the saved settings:
 

@@ -3,7 +3,9 @@ import Foundation
 
 public struct ClusterDiagnosticsReport: Encodable, Sendable {
     public enum ConfigurationState: String, Encodable, Sendable { case notConfigured, verified, invalid }
-    public enum Outcome: String, Encodable, Sendable { case passed, failed, notRun, notObserved }
+    /// `warning`: nothing is wrong now, but something needs a step that runs by itself (the doctor reports it as WARN;
+    /// `cluster doctor` exits 0).
+    public enum Outcome: String, Encodable, Sendable { case passed, warning, failed, notRun, notObserved }
     public struct Check: Encodable, Sendable {
         public let name: String
         public let outcome: Outcome

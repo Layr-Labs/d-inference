@@ -8,9 +8,12 @@ with environment `dev`, which builds, signs with the Developer ID, notarizes
 and publishes the `dev` commit to the DEV coordinator. Dev builds dev and
 master builds master.
 
-These assertions pin the caller: its `dev` job runs only on `workflow_dispatch`
-for `refs/heads/dev`, calls the reusable workflow with environment `dev` and
-`secrets: inherit`, and names no secret or signing path of its own. The
+These assertions pin the caller: its `qualify` and `dev` jobs run only on
+`workflow_dispatch` for `refs/heads/dev`. Job `qualify` calls the reusable
+`release-qualify.yml` (the SDK qualification, whose shards may run on a
+Darkbloom Sandbox) with read-only permissions and no secrets. Job `dev` needs
+it, calls the reusable workflow with environment `dev` and `secrets: inherit`,
+and names no secret or signing path of its own. The
 scheduled `gate` job runs on `ubuntu-24.04` without secrets or `contents: write`
 and dispatches `release-dev-branch.yml` on `dev` only when release-relevant
 paths (matching `release-swift.yml`'s master push paths) changed since the last
@@ -124,8 +127,23 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
                     for path in expected]
         self.assertEqual(gate_patterns(self.text), expected)
 
-    def test_the_gate_and_dev_jobs_are_strictly_scoped(self):
-        self.assertEqual(set(self.jobs), {"gate", "dev"})
+    def test_qualification_is_a_secret_free_read_only_call_before_the_release(self):
+        # The plane refuses a Darkbloom-routable job inside a call that passes
+        # secrets, and qualification must pass before anything is signed.
+        job = self.jobs["qualify"]
+        self.assertIn(DEV_GUARD, job)
+        self.assertEqual(re.findall(r"(?m)^    uses: (.+)$", job), ["./.github/workflows/release-qualify.yml"])
+        self.assertEqual(
+            [key for key in re.findall(r"(?m)^    ([a-z_-]+):", without_comments(job))],
+            ["if", "permissions", "uses", "with"])
+        self.assertIn("\n    permissions:\n      contents: read\n    uses:", job)
+        self.assertNotRegex(without_comments(job), r"(?i)secrets")
+        with_block = job.split("\n    with:\n", 1)[1]
+        self.assertEqual(re.findall(r"(?m)^      ([a-z_]+): (.+)$", with_block), [("environment", "dev")])
+        self.assertRegex(self.jobs["dev"], r"(?m)^    needs: qualify$")
+
+    def test_the_gate_qualify_and_dev_jobs_are_strictly_scoped(self):
+        self.assertEqual(set(self.jobs), {"gate", "qualify", "dev"})
         gate = self.jobs["gate"]
         self.assertIn("    if: github.event_name == 'schedule'\n", gate)
         self.assertIn("    runs-on: ubuntu-24.04\n", gate)
@@ -148,7 +166,7 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
                          [("environment", "dev")])
         self.assertEqual(
             [key for key in re.findall(r"(?m)^    ([a-z_-]+):", without_comments(job))],
-            ["if", "permissions", "uses", "with", "secrets"])
+            ["needs", "if", "permissions", "uses", "with", "secrets"])
         self.assertIn("\n    secrets: inherit\n", job)
         # The caller grants exactly what the reusable workflow declares.
         self.assertIn("\n    permissions:\n      contents: write\n      actions: read\n", job)
@@ -173,7 +191,7 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
                          ["secrets"])
         self.assertEqual(self.code.count("secrets: inherit"), 1)
         self.assertEqual(re.findall(r"(?m)^\s+environment:.*$", self.code),
-                         ["      environment: dev"])
+                         ["      environment: dev", "      environment: dev"])
         for token in ("PROD_", "STAGING_", "'prod'", '"prod"', "'staging'", "refs/tags",
                       "tags:", "github.ref_type", "ref_name"):
             self.assertNotIn(token, self.code, token)
@@ -324,10 +342,17 @@ class ReusableDevPathTests(unittest.TestCase):
         self.assertIn('"-R=$FAN_HELPER_REQUIREMENT"', signing)
 
     def test_linux_orchestration_jobs_use_hosted_ubuntu_and_macos_keeps_blacksmith(self):
-        for linux_job in ("resolve-env", "qualify-sdk", "stage-release", "publish-release"):
+        for linux_job in ("resolve-env", "stage-release", "publish-release"):
             self.assertIn("    runs-on: ubuntu-24.04\n", self.jobs[linux_job], linux_job)
-        for mac_job in ("build-provider", "qualify-sdk-shard", "build-and-release"):
+        for mac_job in ("build-provider", "build-and-release"):
             self.assertIn("    runs-on: blacksmith-12vcpu-macos-27\n", self.jobs[mac_job], mac_job)
+        # The SDK qualification (release-qualify.yml): its gate on ubuntu-24.04,
+        # its shards on their routed lane, whose fallback is Blacksmith.
+        qualify = jobs((ROOT / ".github/workflows/release-qualify.yml").read_text())
+        self.assertIn("    runs-on: ubuntu-24.04\n", qualify["qualify-sdk"])
+        self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['release-qualify'] }}\n",
+                      qualify["qualify-sdk-shard"])
+        self.assertIn(" release-qualify macos_arm64 blacksmith-12vcpu-macos-27 ", qualify["route"])
         self.assertIn("    runs-on: blacksmith-12vcpu-macos-26\n", self.jobs["validate-older-macos"])
 
     def test_dev_publication_serializes_per_environment(self):

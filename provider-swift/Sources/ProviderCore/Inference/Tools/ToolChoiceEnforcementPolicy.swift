@@ -83,9 +83,14 @@ enum ToolChoiceEnforcementPolicy {
         // GLM's forced calls are prompt-forced, withheld and validated like
         // Qwen and Nemotron; its engine constrains only JSON answers
         // (`JSONAnswerPolicy`; `DARKBLOOM_GLM_JSON_ANSWERS=0` turns that off).
+        // Inkling 2's template has no tool-choice control: its calls are
+        // framed in the sampler (`InklingForcedToolConstraint`, with
+        // `DARKBLOOM_INKLING_FORCED_TOOLS` off prompt-forced alone), and each
+        // frame is checked when it closes.
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
             || modelContext.modelType == "mimo_v2"
-            || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
+            || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType)
+            || Inkling2PromptContract.applies(modelType: modelContext.modelType) {
             return .structuredPostValidation
         }
         if GPTOSSForcedToolCalls.applies(to: modelContext) { return .harmonyFraming }
@@ -124,6 +129,12 @@ enum ToolChoiceEnforcementPolicy {
             return model.modelType == admittedType
         }
         if GPTOSSForcedToolCalls.advertises(model) { return true }
+        // Inkling 2 frames required/named calls in the sampler
+        // (`InklingForcedToolConstraint`) and checks each native call frame
+        // (`Inkling2OutputChannels`) before it leaves.
+        if Inkling2PromptContract.applies(modelType: model.modelType), model.templateRenderOK == true {
+            return true
+        }
         return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)
             && Qwen35TemplateFix.applies(to: context)
     }

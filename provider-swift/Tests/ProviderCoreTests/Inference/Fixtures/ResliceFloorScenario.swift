@@ -103,6 +103,10 @@ enum ResliceFloorScenario {
     /// A real ordinary engine over a contiguous backend holding `grant`, with
     /// `fixedRequestBytes` of workspace per request at the SDK's default
     /// watermark: its bridge reports the production floor and serving width.
+    /// The engine stays idle, so its loop publishes its capacity once and then
+    /// waits an hour: an idle loop's 1 ms republish can overwrite a re-slice's
+    /// point update with the capacity it read just before it, and the floor
+    /// (gauge capacity against ledger admissible) then reads too high.
     static func makeBridge(modelId: String, fixedRequestBytes: Int, grant: Int,
                            kvBytesPerToken: Int = 0) -> EngineV2Bridge {
         let fixture = DeadlineAdmissionFixtureModel()
@@ -111,6 +115,7 @@ enum ResliceFloorScenario {
             backend: CBv2ContiguousKVBackend(config: .init(bytesCapacity: grant)),
             cacheProvider: CBv2LayerCacheBank(layerKinds: fixture.kinds),
             schedulerConfig: .init(maxConcurrentRequests: 4, enablePrefixCache: false),
+            loopConfig: CBv2EngineLoopConfig(idleRecheckInterval: 3_600),
             admissionConfig: admission)
         return EngineV2Bridge(engine: engine, modelId: modelId,
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [],

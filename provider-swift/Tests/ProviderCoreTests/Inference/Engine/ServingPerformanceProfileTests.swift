@@ -207,6 +207,78 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
     await explicit.shutdown()
 }
 
+/// The automatic width (no reviewed profile) holds at thermal state fair, where
+/// a Mac Studio under sustained load sits; serious, critical and Low Power Mode
+/// still return it to the unqualified width. Reviewed profiles keep nominal.
+@Test func automaticWidthHoldsAtThermalFairButNotSeriousOrLowPower() async {
+    #expect(ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: false, thermalState: .nominal))
+    #expect(ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: false, thermalState: .fair))
+    #expect(!ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: false, thermalState: .serious))
+    #expect(!ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: false, thermalState: .critical))
+    #expect(!ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: true, thermalState: .nominal))
+    #expect(!ServingPerformanceProfiles.postureAllowsAutomaticWidth(lowPowerMode: true, thermalState: .fair))
+
+    let budget = GlobalKVCacheBudget(memorySnapshot: {
+        .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+    })
+    let automatic = EngineV2Bridge(engine: ProfileContextSentinelEngine(), modelId: "generic-model",
+        tokenizer: TokenizerHandle(ProfileContextTokenizer()), eosTokenIds: [],
+        maxConcurrentRequests: 8, unqualifiedMaxConcurrentRequests: 4, kvBudget: budget)
+    let current = (ProcessInfo.processInfo.isLowPowerModeEnabled, ProcessInfo.processInfo.thermalState)
+    #expect(await automatic.widthPostureAllowsExpansion == ServingPerformanceProfiles.postureAllowsAutomaticWidth(
+        lowPowerMode: current.0, thermalState: current.1))
+    await automatic.shutdown()
+}
+
+/// Admission without an explicit `allowExpansion` follows the bridge's posture
+/// (`servingPosture`). The automatic width reports and admits 8 at nominal and
+/// fair, and 4 at serious, critical or under Low Power Mode. A reviewed profile
+/// keeps its width of 16 and its whole-Mac share only at nominal.
+@Test func admissionFollowsTheBridgePosture() async {
+    let budget = GlobalKVCacheBudget(memorySnapshot: {
+        .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+    })
+    let profile = measuredProfileFixture()
+    /// The reported width, and the whole-Mac share of one request admitted
+    /// beside `pending` others (nil when refused).
+    func serve(_ lowPowerMode: Bool, _ thermalState: ProcessInfo.ThermalState,
+               profile: ServingPerformanceProfile? = nil, pending: Int = 4) async -> (width: Int, share: Double?) {
+        let bridge = EngineV2Bridge(engine: ProfileContextSentinelEngine(), modelId: profile?.modelId ?? "generic-model",
+            tokenizer: TokenizerHandle(ProfileContextTokenizer()), eosTokenIds: [],
+            maxConcurrentRequests: profile == nil ? 8 : 16, performanceProfile: profile,
+            unqualifiedMaxConcurrentRequests: 4, kvBudget: budget,
+            servingPosture: { (lowPowerMode, thermalState) })
+        let width: Int = await bridge.effectiveServingConcurrency
+        let admitted = await bridge.postureTestAcquire(requestID: "next", pending: pending)
+        let share = admitted ? budget.serviceBudget.usedFraction : nil
+        if admitted { await bridge.releaseServiceAllowance(requestID: "next") }
+        await bridge.shutdown()
+        return (width, share)
+    }
+    func near(_ share: Double?, _ expected: Double) -> Bool { share.map { abs($0 - expected) < 1e-12 } == true }
+
+    let nominal = await serve(false, .nominal)
+    #expect(nominal.width == 8 && near(nominal.share, 1.0 / 24))
+    let fair = await serve(false, .fair)
+    #expect(fair.width == 8 && near(fair.share, 1.0 / 24))
+    let narrowing: [(Bool, ProcessInfo.ThermalState)] = [(false, .serious), (false, .critical), (true, .nominal),
+                                                         (true, .fair)]
+    for (lowPowerMode, thermalState) in narrowing {
+        let held = await serve(lowPowerMode, thermalState)
+        #expect(held.width == 4 && held.share == nil, "\(lowPowerMode) \(thermalState.rawValue)")
+    }
+
+    let reviewed = await serve(false, .nominal, profile: profile)
+    #expect(reviewed.width == 16 && near(reviewed.share, 1.0 / 16))
+    let reviewedFair = await serve(false, .fair, profile: profile)
+    #expect(reviewedFair.width == 4 && reviewedFair.share == nil)
+    let reviewedFairWithin = await serve(false, .fair, profile: profile, pending: 3)
+    #expect(near(reviewedFairWithin.share, 1.0 / 24))
+    let reviewedLowPower = await serve(true, .nominal, profile: profile)
+    #expect(reviewedLowPower.width == 4 && reviewedLowPower.share == nil)
+    #expect(budget.serviceBudget.count == 0)
+}
+
 /// W14/W8d.6: right after a start on a warm Mac the automatic width falls back
 /// to 4, and a local stream holding its head sits in both the active map and
 /// the pending set until its submit returns. Each request counts once, so a
@@ -245,6 +317,13 @@ private extension EngineV2Bridge {
         pendingSubmissionIDs = Set((0..<pending).map { "pending-\($0)" })
         defer { pendingSubmissionIDs.removeAll() }
         return acquireServiceAllowance(requestID: requestID, allowExpansion: allowExpansion)
+    }
+
+    /// The same, at the bridge's own posture (`allowExpansion: nil`).
+    func postureTestAcquire(requestID: String, pending: Int) -> Bool {
+        pendingSubmissionIDs = Set((0..<pending).map { "pending-\($0)" })
+        defer { pendingSubmissionIDs.removeAll() }
+        return acquireServiceAllowance(requestID: requestID)
     }
 
     /// A streamed local request during its head hold: admitted to the engine

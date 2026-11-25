@@ -31,7 +31,8 @@
   "glm5_next",
   "glm5_next_text",
   "glm5_next_mtp",
-  "flint"
+  "flint",
+  "inkling2_loop"
  ],
  "qwen35_template_model_types": [
   "qwen3_5",
@@ -4375,6 +4376,374 @@
     }
    },
    "refused": "reasoning.effort"
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=none",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=none",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=minimal",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=minimal",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "minimal"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=low",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=low",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=medium",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=medium",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "medium"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=high",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=high",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=xhigh",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=xhigh",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "xhigh"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=max",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=max",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=High",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=High",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=OFF",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=OFF",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=0",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=0",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=off",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=off",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "enable_thinking": false,
+    "reasoning_effort": "none"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=HİGH",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "HİGH"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=HİGH",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "HİGH"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=turbo",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "inkling2_loop/reasoning.effort=turbo",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "low"
+   }
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "inkling2_loop/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "thinkingmachines/Inkling-2-Mini",
+   "model_type": "inkling2_loop",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "enable_thinking": null,
+    "reasoning_effort": "high"
+   }
   },
   {
    "name": "llama/reasoning_effort=none",

@@ -110,6 +110,7 @@ class ReleasePipelineTests(unittest.TestCase):
         scripts = set(re.findall(r'scripts/[A-Za-z0-9_.*-]+\.(?:sh|py)', RELEASE + CALLER + ACTION))
         scripts |= {'scripts/provider_release_resume/api.py', 'scripts/provider_release_artifact.py',
                     'scripts/provider_release_github.py', 'scripts/provider_release_notes.py',
+                    'scripts/provider_release_build_list.py',
                     'scripts/changelog.py', 'scripts/provider_release_cache/mtimes.py',
                     'scripts/stage-swiftpm-resource-bundles.sh'}
         for script in sorted(scripts):
@@ -308,8 +309,10 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotRegex(content, r'(?m)^    if:.*always')
         # Every release step is required. The only exceptions are the cluster
         # runtime facts steps: their failure fails the job only when the
-        # payload carries the block (CLUSTER_RUNTIME_SEND).
-        self.assertEqual(RELEASE.count('continue-on-error:'), 3)
+        # payload carries the block (CLUSTER_RUNTIME_SEND); and the provider
+        # build list's dry run, which starts after publication.
+        self.assertEqual(RELEASE.count('continue-on-error:'), 4)
+        self.assertIn('    continue-on-error: true\n', job(RELEASE, 'provider-build-list'))
         self.assertIn("continue-on-error: ${{ env.CLUSTER_RUNTIME_SEND != 'true' }}\n", step(content, FACTS_STEP))
         for name in (SHOW_STEP, RETAIN_STEP):
             self.assertIn('continue-on-error: true\n', step(content, name))
@@ -366,7 +369,7 @@ class ReleasePipelineTests(unittest.TestCase):
                         resolver.index('./scripts/resolve-provider-release.sh'))
         self.assertIn('workflow_sha: ${{ steps.trust.outputs.source_sha }}', resolver)
         for name in ['build-provider', 'build-and-release',
-                     'stage-release', 'publish-release', 'validate-older-macos']:
+                     'stage-release', 'publish-release', 'validate-older-macos', 'provider-build-list']:
             content = job(RELEASE, name)
             self.assertIn('ref: ${{ needs.resolve-env.outputs.workflow_sha }}', content)
             self.assertIn('resolve-env', content.split('steps:', 1)[0])
@@ -780,6 +783,7 @@ class ReleasePipelineTests(unittest.TestCase):
             'stage-release': ('build-and-release', 'publication_artifact'),
             'publish-release': ('build-and-release', 'publication_artifact'),
             'validate-older-macos': ('build-and-release', 'validation_artifact'),
+            'provider-build-list': ('build-and-release', 'publication_artifact'),
         }
         producers = {('build-provider', 'artifact'): 'unsigned_retention',
                      ('build-and-release', 'publication_artifact'): 'publication_retention',
@@ -1180,12 +1184,44 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('    permissions:\n      contents: write', job(RELEASE, 'publish-release'))
         self.assertIn('gh release create', (ROOT / 'scripts/provider_release_github.py').read_text() + RELEASE)
         for name in ('resolve-env', 'build-provider', 'build-and-release',
-                     'stage-release', 'validate-older-macos'):
+                     'stage-release', 'validate-older-macos', 'provider-build-list'):
             with self.subTest(job=name):
                 self.assertIn('    permissions:\n      contents: read\n', job(RELEASE, name))
         for name in ('qualify-sdk-shard', 'qualify-sdk'):
             with self.subTest(job=name):
                 self.assertIn('    permissions:\n      contents: read\n', job(QUALIFY, name))
+
+    def test_the_provider_build_list_is_prepared_after_publication_without_credentials(self):
+        # The next signed provider build list adds this release's build, read
+        # from the publication artifact by ID and digest. It holds no secret,
+        # no environment and no write permission, starts only after a
+        # production publication succeeded, and cannot fail the release. Until
+        # a signing key is configured it signs only with the RFC 8032 test key
+        # and publishes nothing (scripts/test-provider-release-build-list.py).
+        content = job(RELEASE, 'provider-build-list')
+        self.assertIn('    needs: [resolve-env, build-and-release, publish-release]\n', content)
+        self.assertEqual(condition(content), "!cancelled() && needs.publish-release.result == 'success' && "
+                                             "needs.resolve-env.outputs.environment == 'prod'")
+        self.assertIn('    runs-on: ubuntu-24.04\n', content)
+        self.assertIn('    permissions:\n      contents: read\n      actions: read\n    # ', content)
+        for forbidden in ('secrets.', 'id-token', 'contents: write', 'APPLE_', 'RELEASE_KEY', 'aws s3'):
+            self.assertNotIn(forbidden, content)
+        self.assertNotRegex(content, r'(?m)^    environment:')
+        self.assertEqual(re.findall(r'--signer (\S+)', content), ['test'])
+        steps = named_steps(content)
+        names = [name for name, _ in steps]
+        self.assertEqual(names, ["Download this run's exact signed publication artifact",
+                                 "Prepare the next list with this release's build",
+                                 'Sign it with the test key and show the publication plan (dry run)',
+                                 'Retain the prepared list'])
+        body = dict(steps)
+        self.assertIn('provider-release-build-list.py prepare release', body[names[1]])
+        dry_run = body[names[2]]
+        self.assertEqual(dry_run.count('--dry-run'), 2)
+        self.assertIn('provider-release-build-list.py sign release', dry_run)
+        self.assertIn('provider-release-build-list.py publish release', dry_run)
+        self.assertNotIn('gh release', content)
+        self.assertIn('group: provider-build-list-publication\n      cancel-in-progress: false', content)
 
     def test_every_job_that_reads_a_secret_names_the_lanes_environment(self):
         jobs = re.findall(r'(?m)^  ([A-Za-z0-9_-]+):\n', RELEASE.split('\njobs:\n', 1)[1])

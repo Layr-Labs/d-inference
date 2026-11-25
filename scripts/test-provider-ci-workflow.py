@@ -994,9 +994,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "Run cluster console checks": (focused, 2, "bash provider-swift/Tests/ClusterConsoleChecks/run.sh"),
             "Run cluster qualification checks":
                 (focused, 2, "bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh"),
-            # It also runs the provider's pairing, diagnostics and placement
-            # flow runners (scripts/cluster-test-plan.py).
-            "Run cluster focused checks": (focused, 1, "python3 scripts/cluster-test-plan.py run focused 1"),
+            # Each shard's runner scripts of the plan's focused lane; on shard 1
+            # also the provider's pairing, diagnostics and placement flow
+            # runners (scripts/cluster-test-plan.py).
+            "Run cluster focused checks": (focused, None, 'python3 scripts/cluster-test-plan.py run focused "$SHARD"'),
         }
         for job in (focused, release):
             steps = step_blocks(job)

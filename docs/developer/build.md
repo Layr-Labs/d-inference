@@ -527,7 +527,7 @@ size ([Job sizes](#job-sizes)).
 | `test-provider-gates` (Provider Gates) | routed | `build-provider` (in the job) | The checks that run once beside the suite: the relocated-resource, MDM-reader and installer checks, the Gemma conformance switches, the desktop control API and the native MiMo gates (the audio gate when its inputs changed), and its own coverage |
 | `test-cluster`, shards 1 to 7 | routed | `build-cluster` (in the job) | The blocking cluster selections; shard 6 first starts the worker package's request lifecycle tests (a debug build of their own) and waits for them before its selections |
 | `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` (in the job) | The non-blocking cluster GPU selections |
-| `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
+| `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding, console, qualification and link worker runners (shard 2) |
 
 No job of the table `needs` another. The test jobs start beside their build
 job, so each one's runner, checkout and toolchain are ready when the products

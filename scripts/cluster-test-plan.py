@@ -327,9 +327,13 @@ SELECTIONS = (
     Selection("glm53-window-width-census", "nonblocking", 2, {"GLM53_WINDOW_CENSUS": "1"}, tests=(
         "windowWidthCensus",
     )),
+    # Focused shard 1's step ran 541 to 648 s on a 4-vCPU Darkbloom Mac (runs
+    # 44924815069, 44927907327 and 44935109278): its compile phase 144 to
+    # 191 s, then its checks alone 397 to 457 s. Shard 2's runner steps ended
+    # 2 to 4 min before it.
     *(Selection(f"focused-{name}", "focused", 1, runner=name) for name in (
         "BootstrapChecks", "CapabilityChecks", "CheckpointChecks", "DeadlineChecks", "ExitChecks",
-        "GLMImageAdmissionChecks", "LinkControlChecks", "LinkWorkerChecks", "NativePairChecks",
+        "GLMImageAdmissionChecks", "LinkControlChecks", "NativePairChecks",
         "ObservabilityChecks", "PlacementChecks", "PrefixPolicyChecks", "PreludeChecks",
         "ProcessChecks", "ProtocolChecks", "QwenMediaChecks", "RemoteChecks", "SSHChecks",
         "SecurityChecks", "StageTransferChecks", "StillImageChecks", "TensorParallelPlanChecks",
@@ -340,6 +344,9 @@ SELECTIONS = (
         ("ClusterDiagnosticsChecks", "provider-swift/Tests/ClusterDiagnosticsChecks/run.sh"),
         ("ClusterPlacementFlowChecks", "provider-swift/Tests/ClusterPlacementChecks/run-flow.sh"),
     )),
+    # Shard 1's second longest checks (87 to 89 s, compile phase 21 to 24 s in
+    # those runs), after shard 2's other runner steps.
+    Selection("focused-LinkWorkerChecks", "focused", 2, runner="LinkWorkerChecks"),
 )
 
 # Gated tests that need a model directory, an artifact or its metadata. CI has

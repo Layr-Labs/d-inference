@@ -73,8 +73,9 @@ struct BlindRequestServeTests {
         }
         let snapshot = try #require(done)
         let complete = try #require(snapshot.inferenceComplete.first { $0.requestId == request.requestID })
-        let opened = try #require(try JSONSerialization.jsonObject(
-            with: request.client.decryptPayload(try #require(complete.encryptedUsage))) as? [String: Any])
+        let sealed = try #require(complete.encryptedUsage)
+        let opened = try #require(
+            try JSONSerialization.jsonObject(with: request.client.decryptPayload(sealed)) as? [String: Any])
         #expect(opened["chunk_count"] as? Int == snapshot.inferenceChunks.filter { $0.requestId == request.requestID }.count)
         #expect(await fixture.stop(task))
     }

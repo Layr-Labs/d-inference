@@ -20,15 +20,18 @@ struct CoordinatorRequestJWSVectorTests {
             root = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
             let keys = try #require(root["keys"] as? [String: [String: Any]])
             let verifier = try #require(root["verifier"] as? [String: Any])
-            pins = try (try #require(verifier["pins"] as? [[String: Any]])).map { pin in
-                let key = try #require(keys[try #require(pin["key"] as? String)])
-                let built = try #require(CoordinatorRequestSigningPin(
-                    base64PublicKey: try #require(key["public_key"] as? String),
-                    expiresAtMs: try #require(pin["expires_at_ms"] as? NSNumber).int64Value))
+            let pinObjects = try #require(verifier["pins"] as? [[String: Any]])
+            pins = try pinObjects.map { pin in
+                let name = try #require(pin["key"] as? String)
+                let key = try #require(keys[name])
+                let publicKey = try #require(key["public_key"] as? String)
+                let expiresAtMs = try #require(pin["expires_at_ms"] as? NSNumber).int64Value
+                let built = try #require(CoordinatorRequestSigningPin(base64PublicKey: publicKey, expiresAtMs: expiresAtMs))
                 #expect(built.keyID == pin["kid"] as? String)
                 return built
             }
-            recipient = try #require(Data(base64Encoded: try #require(verifier["recipient_public_key"] as? String)))
+            let recipientText = try #require(verifier["recipient_public_key"] as? String)
+            recipient = try #require(Data(base64Encoded: recipientText))
             let verifyAt = try #require(verifier["verify_at_ms"] as? NSNumber).int64Value
             now = Date(timeIntervalSince1970: Double(verifyAt) / 1000)
         }
@@ -38,14 +41,15 @@ struct CoordinatorRequestJWSVectorTests {
         func verify(_ frame: [String: Any], signedRequest: String? = nil) throws
             -> Result<CoordinatorRequestJWS.Verified, CoordinatorRequestJWS.Refusal> {
             let body = try #require(frame["encrypted_body"] as? [String: Any])
+            let requestID = try #require(frame["request_id"] as? String)
+            let senderText = try #require(body["ephemeral_public_key"] as? String)
+            let ciphertextText = try #require(body["ciphertext"] as? String)
+            let sender = try #require(Data(base64Encoded: senderText))
+            let ciphertext = try #require(Data(base64Encoded: ciphertextText))
             return CoordinatorRequestJWS.verify(
                 signedRequest ?? frame["signed_request"] as? String, pins: pins,
-                requestID: try #require(frame["request_id"] as? String),
-                serviceReservationID: frame["service_reservation_id"] as? String,
-                recipientPublicKey: recipient,
-                senderPublicKey: try #require(Data(base64Encoded: try #require(body["ephemeral_public_key"] as? String))),
-                ciphertext: try #require(Data(base64Encoded: try #require(body["ciphertext"] as? String))),
-                now: now)
+                requestID: requestID, serviceReservationID: frame["service_reservation_id"] as? String,
+                recipientPublicKey: recipient, senderPublicKey: sender, ciphertext: ciphertext, now: now)
         }
     }
 

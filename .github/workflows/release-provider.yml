@@ -1418,6 +1418,78 @@ jobs:
           RELEASE_KEY: ${{ env.release_key }}
         run: python3 scripts/provider-release-publication.py publish --directory "$RUNNER_TEMP/provider-publication"
 
+  provider-build-list:
+    # The signed provider build list (scripts/provider-release-build-list.py):
+    # after a production publication, prepare the next list, which adds this
+    # release's build from the digest-checked publication artifact, and show
+    # its SHA-256 and exact change in the job summary for the signer. Until a
+    # signing key is configured this is a dry run: it signs with the RFC 8032
+    # test key, which no verifier accepts, prints the publication plan and
+    # uploads nothing. It holds no secret, starts after publication and cannot
+    # fail the release.
+    name: Prepare the provider build list (dry run)
+    needs: [resolve-env, build-and-release, publish-release]
+    if: ${{ !cancelled() && needs.publish-release.result == 'success' && needs.resolve-env.outputs.environment == 'prod' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45   # 2 artifact-download attempts of 20 minutes (scripts/provider_release_artifact.py)
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read
+    # One list is published at a time (.github/workflows/provider-release-build-list.yml).
+    concurrency:
+      group: provider-build-list-publication
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+      RELEASE_SOURCE_SHA: ${{ needs.resolve-env.outputs.source_sha }}
+      RELEASE_PAYLOAD_SHA256: ${{ needs.build-and-release.outputs.payload_sha256 }}
+      RELEASE_PROVENANCE_SHA256: ${{ needs.build-and-release.outputs.provenance_sha256 }}
+      RELEASE_SIGNING_RUN_ID: ${{ needs.build-and-release.outputs.signing_run_id }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
+          persist-credentials: false
+      - name: Download this run's exact signed publication artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLICATION_ARTIFACT_ID: ${{ needs.build-and-release.outputs.publication_artifact_id }}
+          PUBLICATION_ARTIFACT_DIGEST: ${{ needs.build-and-release.outputs.publication_artifact_digest }}
+        run: |
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$PUBLICATION_ARTIFACT_ID" --artifact-digest "$PUBLICATION_ARTIFACT_DIGEST" \
+            --run-id "$RELEASE_SIGNING_RUN_ID" --directory "$RUNNER_TEMP/provider-publication"
+      - name: Prepare the next list with this release's build
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/provider-release-build-list.py prepare release \
+            --publication "$RUNNER_TEMP/provider-publication" --output "$RUNNER_TEMP/provider-build-list"
+      - name: Sign it with the test key and show the publication plan (dry run)
+        env:
+          DOCUMENT_SHA256: ${{ steps.prepare.outputs.document_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 scripts/provider-release-build-list.py sign release \
+            --publication "$RUNNER_TEMP/provider-publication" \
+            --prepared "$RUNNER_TEMP/provider-build-list" --document-sha256 "$DOCUMENT_SHA256" \
+            --dry-run --signer test --output "$RUNNER_TEMP/provider-build-list-signed"
+          python3 scripts/provider-release-build-list.py publish release \
+            --publication "$RUNNER_TEMP/provider-publication" \
+            --prepared "$RUNNER_TEMP/provider-build-list" --document-sha256 "$DOCUMENT_SHA256" \
+            --dry-run --list-dir "$RUNNER_TEMP/provider-build-list-signed"
+      - name: Retain the prepared list
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: provider-build-list-${{ needs.resolve-env.outputs.source_sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/provider-build-list
+            ${{ runner.temp }}/provider-build-list-signed
+          if-no-files-found: error
+          retention-days: 30
+
   validate-older-macos:
     name: Signed SDK 27 artifact on older macOS
     needs: [resolve-env, build-and-release]

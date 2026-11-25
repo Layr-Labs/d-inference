@@ -1,0 +1,26 @@
+{
+  "v": 1,
+  "typ": "darkbloom-provider-builds",
+  "app_id": "SLDQ2GJ6TL.io.darkbloom.provider",
+  "environment": "production",
+  "seq": 1,
+  "issued_at": 1795590130,
+  "expires_at": 1796281330,
+  "min_version": "0.10.18",
+  "builds": [
+    {
+      "version": "0.10.18",
+      "code_directory_hash": "2caa50848c41dbeaca3d4bc3e8bcf5fdd3783db5cd4adf7f53e51f6e771a3f2d",
+      "binary_sha256": "a6711fa75faffb26d3c1862630935d46e71d0a76013c4a332f6f84fb64ef2826",
+      "source_commit": "0174ccf83e26fb0d62245ec3bb17afb8b86474f1",
+      "revoked": false
+    },
+    {
+      "version": "0.10.19",
+      "code_directory_hash": "4363d9247f903761ce24770ae3fd353accecb6fbbcdade0b5e2787d553574348",
+      "binary_sha256": "85725784081a4735f74414ee74bcbd67bad8ea7f29d2f2b3b3bf701f657095a5",
+      "source_commit": "ebda1f79838cd170da45f89ed0caea901124908f",
+      "revoked": false
+    }
+  ]
+}

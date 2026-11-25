@@ -1124,6 +1124,107 @@ model's request envelope then admits text only:
   --app /Applications/Darkbloom.app --model Qwen3.5-9B=/path/to/Qwen3.5-9B-folder
 ```
 
+## Signed Provider Build List
+
+`scripts/provider-release-build-list.py` keeps a signed list of the qualified
+production provider builds, `provider-builds.jws`, on the GitHub release
+`provider-builds`:
+`https://github.com/Layr-Labs/d-inference/releases/download/provider-builds/provider-builds.jws`.
+A verifier pins the provider-release public key and accepts a provider build
+only when the list names its CodeDirectory hash. Until a signing key is
+configured, every run is a dry run: it signs only with the
+[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032#section-7.1) TEST 1 key,
+which no verifier accepts, and uploads nothing.
+
+The document, `provider-builds.json`, is exactly these fields in this order,
+with no whitespace:
+
+```json
+{"v":1,"typ":"darkbloom-provider-builds","app_id":"SLDQ2GJ6TL.io.darkbloom.provider","environment":"production","seq":7,"issued_at":1700000000,"expires_at":1700691200,"min_version":"0.10.20","builds":[{"version":"0.10.20","code_directory_hash":"<64 hex>","binary_sha256":"<64 hex>","source_commit":"<40 hex>","revoked":false}]}
+```
+
+The list is a compact JWS whose payload is those bytes and whose protected
+header is exactly
+`{"alg":"Ed25519","kid":"<RFC 7638 thumbprint>","typ":"darkbloom-provider-builds+jws"}`.
+`scripts/provider-release-build-list-keys.json` pins at most two public keys,
+the current one and the next; it is empty until a key is configured. A verifier
+accepts a list only when:
+
+- the header is exactly that header with a pinned key ID, and the Ed25519
+  signature verifies;
+- the document is in that canonical form, with this type, app ID and
+  environment;
+- it has not expired (`expires_at` is 8 days after `issued_at`);
+- `seq` is not below the highest sequence number it has accepted.
+
+A build matches when the list names its full CodeDirectory hash, or a 20-byte
+prefix that no other entry shares, and it is not revoked and not below
+`min_version`. Fetch the list over HTTPS from `github.com`, following at most
+one redirect, to `release-assets.githubusercontent.com` only, without an
+`Authorization` header. The list records published builds; it does not attest
+how a build was produced.
+
+Four changes make the next list, each with `seq` + 1 and new dates:
+
+| Change | What it may change |
+|---|---|
+| `release` | Adds exactly this release's build, from the release run's publication artifact, checked against its digests. A version or CodeDirectory hash any earlier list named is never added again |
+| `republish` | Nothing but `seq`, `issued_at` and `expires_at`: every build and `min_version` stay byte for byte |
+| `revoke` | Flips the named versions from `revoked: false` to `true`; a revocation is never undone |
+| `floor` | Raises `min_version` and drops only the builds below it; the floor never falls |
+
+Every list change has three steps:
+
+1. `prepare` computes the next list from the newest published list and writes
+   the unsigned document, its SHA-256 and the exact change to the job summary
+   and a run artifact. It holds no secret. The release run's job
+   `provider-build-list` prepares the `release` change after a production
+   publication. `.github/workflows/provider-release-build-list.yml` prepares the
+   others on a dispatch.
+2. `sign` reads the newest published list again, which must still be the one
+   the document was prepared from, derives the change from its own inputs and
+   checks it, the dates and the exact SHA-256 before it signs. For a release it
+   recomputes the added build's CodeDirectory and binary hashes from the
+   published release bundle (`--bundle`), after `codesign --verify -R` accepts
+   the app against the team's Developer ID requirement. Sign from a separate
+   device, or at least a separate non-administrator macOS user with FileVault,
+   that runs no automation. Use the tool from a verified checkout (a pinned
+   commit whose signature you check), the shortest cloud session and no cached
+   credentials, and end the session after signing.
+3. `publish` accepts only a list that a pinned key verifies, never the test key.
+   Its document must have the prepared SHA-256 and follow the newest published
+   list. It uploads `provider-builds-<seq>.jws` without replacing an existing
+   asset, so each sequence number is published once, then replaces
+   `provider-builds.jws` and reads it back. The release run and the workflow
+   share the concurrency group `provider-build-list-publication`.
+
+The workflow's daily check (`check`) reads the published list. Once the list is
+4 days old, it prepares the next re-publication and posts a notice that a
+re-sign is due. With 2 days or less left, it fails and opens one issue. A
+release resets the clock. Pure Ed25519 signs the whole signing input, so the
+tool refuses a list over the signer's input limit and warns at half of it;
+raising `min_version` keeps the list under it.
+
+Dry run, until a signing key is configured:
+
+- the release run's `provider-build-list` job runs after publication, with
+  read-only permissions, no environment and no secret, and cannot fail the
+  release (`continue-on-error`);
+- the workflow's scheduled check waits for the repository variable
+  `PROVIDER_BUILD_LIST_PUBLISHING`; a dispatched change starts from
+  `scripts/provider-release-build-list-dry-run.json`, signed with the test key;
+- `sign --dry-run --signer test` and `publish --dry-run` check everything, show
+  the publication plan and upload nothing. The workflow's `prepare` and
+  `publish` jobs refuse a ref other than the default branch.
+
+Check a list by hand (OpenSSL 3 is required; set `OPENSSL` on macOS, whose
+`/usr/bin/openssl` is LibreSSL):
+
+```bash
+OPENSSL=/opt/homebrew/opt/openssl@3/bin/openssl \
+  python3 scripts/provider-release-build-list.py verify --list provider-builds.jws
+```
+
 ## Signing Certificates
 
 Darkbloom code is accepted only when a listed Developer ID Application

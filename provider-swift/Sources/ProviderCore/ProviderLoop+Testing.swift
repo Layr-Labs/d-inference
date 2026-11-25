@@ -133,6 +133,17 @@ extension ProviderLoop {
     }
 
     #if DEBUG
+    /// Test seam: the request-signing keys blind requests are verified
+    /// against, in place of the build's (`BlindRequestRegistration.pinnedKeys`).
+    func setBlindRequestPinsForTesting(_ pins: [CoordinatorRequestSigningPin]) {
+        blindRequestPins = pins
+    }
+
+    /// Test seam: every later request's usage seal fails, as a failed seal would.
+    func setUsageSealFailsForTesting(_ fails: Bool) {
+        usageSealFailsForTesting = fails
+    }
+
     /// Test seam: startup collects its posture with the real collector, on these
     /// boot-settings command results and kernel SIP value (`applySecurityHardening`).
     func setBootSettingsReadingForTesting(commands: SecurityCommandRunner, kernelSIP: SIPConfiguration?) {

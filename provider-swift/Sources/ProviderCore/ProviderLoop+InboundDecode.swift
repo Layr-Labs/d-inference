@@ -251,6 +251,7 @@ struct InboundChatExtensions {
     }
     private struct BiasProbe: Decodable { let logit_bias: [String: Float]? }
     private struct SeedProbe: Decodable { let seed: UInt64? }
+    private struct CompletionTokensProbe: Decodable { let max_completion_tokens: Int? }
 
     private(set) var templateControls = ChatTemplateControls()
     private(set) var logprobsSpec: (topLogprobs: Int?, requested: Bool)?
@@ -260,6 +261,11 @@ struct InboundChatExtensions {
     private(set) var sealedPrefixCache: SealedPrefixCacheMetadata?
     /// The sealed member's `cache_policy`, whatever its nonce or scope.
     private(set) var cachePolicy: RequestCachePolicy = .default
+    /// The client's `_darkbloom_blind` binding of a blind request body.
+    private(set) var blindBinding: SealedBlindBinding.Lookup = .absent
+    /// `max_completion_tokens`, which a blind request body may carry in place
+    /// of `max_tokens`; the upstream request shape reads only `max_tokens`.
+    private(set) var maxCompletionTokens: Int?
 
     init(from data: Data) {
         struct Whole: Decodable {
@@ -291,5 +297,7 @@ struct InboundChatExtensions {
         let cacheProbe = try? SealedPrefixCacheMetadata.BodyProbe(from: decoder)
         sealedPrefixCache = cacheProbe?.value
         cachePolicy = cacheProbe?.cachePolicy ?? .default
+        blindBinding = SealedBlindBinding.lookup(decoder: decoder)
+        maxCompletionTokens = (try? CompletionTokensProbe(from: decoder))?.max_completion_tokens
     }
 }

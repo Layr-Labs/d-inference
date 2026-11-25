@@ -446,9 +446,11 @@ extension EngineV2Bridge {
     /// the text path can name it on the request before the bridge resolves it.
     /// `ownerRequest`: the owner's request on the pair's own API, which a pair cuts to what it serves the owner
     /// (`pairOwnerLimits`).
-    nonisolated func outputTokens(requested: Int?, promptTokens: Int, ownerRequest: Bool = false) -> Int {
+    nonisolated func outputTokens(requested asked: Int?, promptTokens: Int, ownerRequest: Bool = false) -> Int {
         let pair = ownerRequest ? pairOwnerLimits : pairServedLimits
-        guard let requested else {
+        // A blind request never generates past its signed bound, whichever
+        // budget this sizes (`BlindRequestBounds`).
+        guard let requested = BlindRequestBounds.current.map({ $0.outputLimit(requested: asked) }) ?? asked else {
             return EngineV2Translation.defaultOutputTokens(defaultMaxTokens, promptTokens: promptTokens,
                 contextLimit: ownerRequest ? pair?.contextTokens ?? defaultOutputContextLimit : defaultOutputContextLimit)
         }

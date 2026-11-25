@@ -314,6 +314,7 @@ struct InferenceRefusalLoggingTests {
         .missingSenderKey: "Inference failure: invalid request (missing sender key)",
         .undecryptableRequest: "Inference failure: invalid request (undecryptable request)",
         .reservedToolSchemaMetadata: "Inference failure: invalid request (reserved tool schema metadata)",
+        .sealedForBlindRequest: "Inference failure: invalid request (sealed for a blind request)",
         .malformedBody: "Inference failure: invalid request (malformed body)",
         .invalidMessages: "Inference failure: invalid request (invalid messages)",
         .unsupportedMessageRole: "Inference failure: invalid request (unsupported message role)",

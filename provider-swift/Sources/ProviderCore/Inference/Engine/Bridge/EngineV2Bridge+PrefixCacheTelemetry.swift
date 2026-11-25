@@ -28,6 +28,42 @@ extension EngineV2Bridge {
         emit(event)
     }
 
+    /// An answered request whose retirement takes longer than this is overdue:
+    /// its publication has not settled and its capacity is still held.
+    static let answeredUnretiredWarnAfter: Duration = .seconds(60)
+
+    /// How many requests were answered before their publication and have not
+    /// retired, and how long ago the oldest of them was answered.
+    func answeredUnretiredSnapshot(now: ContinuousClock.Instant = .now) -> (count: Int, oldest: Duration?) {
+        (answeredUnretired.count, answeredUnretired.values.min().map { $0.duration(to: now) })
+    }
+
+    /// Heartbeat cadence, on change only: one WARN when the oldest answered
+    /// request passes `answeredUnretiredWarnAfter` without retiring, one INFO
+    /// when none is past it again. A provider-log line and an `engine_health`
+    /// event (`ssd_answered_unretired`, `ssd_answered_unretired_recovered`).
+    func emitAnsweredUnretiredTransitionIfNeeded(now: ContinuousClock.Instant) {
+        let (count, oldest) = answeredUnretiredSnapshot(now: now)
+        let overdue = (oldest ?? .zero) >= Self.answeredUnretiredWarnAfter
+        guard overdue != answeredUnretiredOverdueEmitted else { return }
+        answeredUnretiredOverdueEmitted = overdue
+        let oldestMs = oldest.map { Int($0 / .milliseconds(1)) } ?? 0
+        if overdue {
+            Self.earlyTerminalLogger.warning(
+                "Early terminal: \(count) answered request(s) (\(modelId)) not retired; the oldest was answered \(oldestMs) ms ago and its checkpoint publication still holds its capacity")
+        } else {
+            Self.earlyTerminalLogger.info(
+                "Early terminal: no answered request (\(modelId)) is past \(Int(Self.answeredUnretiredWarnAfter / .seconds(1))) s without retiring")
+        }
+        emit(EngineHealthEvent.make(
+            severity: overdue ? .warn : .info,
+            message: overdue
+                ? "engine_v2: answered request not retired" : "engine_v2: answered requests retired",
+            operation: overdue ? "ssd_answered_unretired" : "ssd_answered_unretired_recovered",
+            model: modelId, kvBackend: kvBackendKind.rawValue,
+            extra: ["answered_unretired": .int(count), "oldest_answered_unretired_ms": .int(oldestMs)]))
+    }
+
     func emitPrefixCacheColdFallback(
         requestId: String, reason: String, capacityRefusal: Bool
     ) {

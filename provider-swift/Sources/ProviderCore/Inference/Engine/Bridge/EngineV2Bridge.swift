@@ -452,6 +452,11 @@ public actor EngineV2Bridge {
     var modelLoadTimeMs: Int64 = 0
     /// Last wedge verdict emitted, for transition-edge telemetry.
     var lastWedgeSuspectedEmitted = false
+    /// Requests answered before their checkpoint publication that have not
+    /// retired yet, by request ID, with the instant of their answer.
+    var answeredUnretired: [String: ContinuousClock.Instant] = [:]
+    /// Last overdue verdict emitted for them, for transition-edge telemetry.
+    var answeredUnretiredOverdueEmitted = false
     /// True while a wedge-recovery rebuild is in flight for this slot
     /// (`ProviderLoop+EngineV2Liveness`). The heartbeat then reports
     /// slot state "reloading" — the legacy `isReloadingForRecovery`

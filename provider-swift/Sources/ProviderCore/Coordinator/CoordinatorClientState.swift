@@ -632,6 +632,7 @@ internal final class CoordinatorSessionRecorder: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var openedAt: ContinuousClock.Instant?
     private var closeCode: UInt16?
+    private var closeReason: String?
 
     func markOpened() {
         let now = ContinuousClock.now
@@ -639,14 +640,18 @@ internal final class CoordinatorSessionRecorder: @unchecked Sendable {
     }
 
     /// `receiveLoop` ends at the first close frame, so this runs at most once.
-    func recordCloseCode(_ code: UInt16) {
-        lock.withLock { closeCode = code }
+    func recordClose(code: UInt16, reason: String?) {
+        lock.withLock {
+            closeCode = code
+            closeReason = reason
+        }
     }
 
     func end() -> CoordinatorSessionEnd {
         let now = ContinuousClock.now
         return lock.withLock {
-            CoordinatorSessionEnd(openDuration: openedAt.map { now - $0 }, closeCode: closeCode)
+            CoordinatorSessionEnd(
+                openDuration: openedAt.map { now - $0 }, closeCode: closeCode, closeReason: closeReason)
         }
     }
 }

@@ -249,12 +249,14 @@ before #709 both Macs lose it for the pause plus the idle minutes
 The provider reads the code of a WebSocket close frame from the coordinator side
 to choose the wait before its next connection attempt
 (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`,
-`CoordinatorReconnectPolicy`). It does not read the close reason. The code is
-part of the WebSocket close frame, not of a JSON frame.
+`CoordinatorReconnectPolicy`). It reads the close reason only to find the
+coordinator's planned close. The code and the reason are part of the WebSocket
+close frame, not of a JSON frame.
 
 | Close from the coordinator side | Wait before the next attempt |
 |---|---|
-| Code `1001` (going away) or `1012` (service restart) | Drawn from `fleetCloseDelayRange` (0 to 15 s); the backoff does not grow |
+| Code `1012` with the reason `planned move` | None (`plannedCloseRange`); the backoff does not grow |
+| Any other close with code `1001` (going away) or `1012` (service restart) | Drawn from `fleetCloseDelayRange` (0 to 15 s); the backoff does not grow |
 | Any other code, or no close frame, after a stable session | Drawn from `stableSessionRetryRange`; the backoff does not grow |
 | Any other code, or no close frame, after a shorter session | The next `ExponentialBackoff` range; the backoff grows |
 
@@ -265,6 +267,14 @@ from 0.10.5 until this change handle `1001` like any other close and wait 0 to
 1 s after `1012`; earlier providers handle both like any other close. The
 coordinator can therefore send them to every provider version. Every reconnect
 sends a fresh `register`.
+
+Only the coordinator's close pacer sends `1012 planned move`. It closes the
+sockets of a planned event (an edge restart, a coordinator that stops, the move
+of a pair to its home, the share move) at a bounded rate per coordinator, the
+members of a pair first, so a provider that reconnects at once does not start a
+reconnect storm. A provider that does not know the reason handles it as any
+other `1012` close. A coordinator without the pacer never sends it, so this
+provider keeps the 0 to 15 s spread there.
 
 ## Envelope and the single-parse rule
 

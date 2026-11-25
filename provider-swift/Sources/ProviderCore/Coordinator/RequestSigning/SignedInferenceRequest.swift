@@ -3,7 +3,9 @@ import Foundation
 /// The payload of `signed_request`: every outer field a provider acts on,
 /// plus the values that bind the request to one provider and one sealed body.
 /// It is decoded from the verified bytes only, never re-encoded to compare.
-/// An advisory field that fails to decode, or is empty or zero, reads as absent.
+/// `prompt_work`, `cache_scope`, `gemma_prompt_contract` and `blind` read as
+/// absent when they do not decode, as do an empty scope and a zero contract;
+/// any other field that does not decode refuses the payload.
 public struct SignedInferenceRequest: Decodable, Sendable, Equatable {
     public let issuedAtMs: Int64
     public let requestID: String

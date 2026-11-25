@@ -2,13 +2,12 @@ import Foundation
 
 /// What a provider that serves blind requests registers: the protocol version
 /// and the coordinator request-signing keys it pins. The keys come from the
-/// build (`pinned(for:)`), never from the connection.
+/// build (`pinnedKeys(for:)`), never from the connection.
 public struct BlindRequestRegistration: Sendable {
-    public let protocolVersion: Int
+    public let protocolVersion = BlindSignedTerms.currentVersion
     public let pins: [CoordinatorRequestSigningPin]
 
-    public init(protocolVersion: Int = BlindSignedTerms.currentVersion, pins: [CoordinatorRequestSigningPin]) {
-        self.protocolVersion = protocolVersion
+    public init(pins: [CoordinatorRequestSigningPin]) {
         self.pins = pins
     }
 

@@ -362,16 +362,17 @@ extension ProviderLoop {
         } else {
             blindFrame = nil
         }
-        // A blind request is served by the values the coordinator signed, not
-        // by their clear copies in the frame.
-        let servedToolSchemaMetadataProtocol = blindFrame.map { $0.signature.payload.toolSchemaMetadataProtocol }
+        // A blind request is served by the values the coordinator signed, an
+        // absent one included, never by their clear copies in the frame.
+        let servedToolSchemaMetadataProtocol: Int? = blindFrame.map { $0.signature.payload.toolSchemaMetadataProtocol }
             ?? toolSchemaMetadataProtocol
-        let servedGemmaPromptContract = blindFrame.map { $0.signature.payload.gemmaPromptContract }
+        let servedGemmaPromptContract: Int? = blindFrame.map { $0.signature.payload.gemmaPromptContract }
             ?? gemmaPromptContract
-        // A blind body that cannot be read has no binding to check.
-        func rejectUnreadableBody(_ refusal: InferenceRefusalReason) {
+        // Refuses the body; a blind request's refusal names `blindReason`
+        // instead, signed.
+        func rejectInvalidBody(_ refusal: InferenceRefusalReason, blind blindReason: BlindRefusalReason) {
             if let blindFrame {
-                refuseBlind(blindFrame.refusal(.bindingMissing))
+                refuseBlind(blindFrame.refusal(blindReason))
             } else {
                 rejectInvalidRequest(refusal)
             }
@@ -384,11 +385,7 @@ extension ProviderLoop {
                 ciphertext: ciphertext
             )
         } catch {
-            if let blindFrame {
-                refuseBlind(blindFrame.refusal(.sealUnopenable))
-            } else {
-                rejectInvalidRequest(.undecryptableRequest)
-            }
+            rejectInvalidBody(.undecryptableRequest, blind: .sealUnopenable)
             return
         }
         heldBody = decryptedData
@@ -405,14 +402,14 @@ extension ProviderLoop {
 
         // Every parse below recurses per JSON level on this task's stack.
         if JSONNestingLimit.refuses(decryptedData) {
-            rejectUnreadableBody(.malformedBody)
+            rejectInvalidBody(.malformedBody, blind: .bindingMissing)
             return
         }
 
         if servedToolSchemaMetadataProtocol != ToolSchemaNormalization.metadataProtocolVersion,
             ToolSchemaNormalization.containsReservedMetadata(in: decryptedData)
         {
-            rejectUnreadableBody(.reservedToolSchemaMetadata)
+            rejectInvalidBody(.reservedToolSchemaMetadata, blind: .bindingMissing)
             return
         }
 
@@ -446,7 +443,7 @@ extension ProviderLoop {
             // the coordinator in plaintext and is logged server-side, so interpolating
             // the raw error could resurface a prompt fragment in coordinator logs
             // (defense-in-depth for the "coordinator never sees plaintext" invariant).
-            rejectUnreadableBody(InferenceRefusalReason(chatDecodeFailure: error))
+            rejectInvalidBody(InferenceRefusalReason(chatDecodeFailure: error), blind: .bindingMissing)
             return
         }
         let chatRequest = inbound.request
@@ -474,7 +471,8 @@ extension ProviderLoop {
         // the client's own `_darkbloom_cache` is not read.
         let plannedCache = blindFrame.map {
             RemotePrefixCacheContext(
-                cacheScope: BlindBodyCheck.cacheScope(signed: $0.signature.payload.cacheScope, salt: blindTerms?.cacheSalt),
+                cacheScope: BlindBodyCheck.cacheScope(
+                    signed: $0.signature.payload.cacheScope, salt: blindTerms?.cacheSalt),
                 cacheReceiptNonce: nil, repeatedPrefixTokens: nil)
         } ?? frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
         // Unlike the scope, the policy needs no matching nonce (it can only

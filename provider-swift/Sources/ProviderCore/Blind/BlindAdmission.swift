@@ -38,8 +38,9 @@ public struct VerifiedBlindFrame: Sendable, Equatable {
 }
 
 /// The checks of a blind frame before its body is opened: the coordinator's
-/// signature, the terms' version, this Mac's place in the seal set, the meta
-/// the coordinator acted on, and the client key the body is sealed with.
+/// signature, the terms' version and bounds, this Mac's place in the seal set,
+/// the meta the coordinator acted on, and the client key the body is sealed
+/// with.
 enum BlindFrameCheck {
     static func verify(
         _ frame: BlindFrame, requestID: String, serviceReservationID: String?,
@@ -53,11 +54,10 @@ enum BlindFrameCheck {
         case .success(let verified): signature = verified
         case .failure: return .failure(BlindRefusal(.signatureInvalid))
         }
-        let digest = signature.jwsSHA256
         guard let terms = signature.payload.blind else {
             // A signature over an ordinary request does not cover a blind one.
             let reason: BlindRefusalReason = signature.payload.hasBlindMember ? .unsupportedVersion : .signatureInvalid
-            return .failure(BlindRefusal(reason, signedRequestSHA256: digest))
+            return .failure(BlindRefusal(reason, signedRequestSHA256: signature.jwsSHA256))
         }
         let verified = VerifiedBlindFrame(signature: signature, terms: terms)
         guard terms.version == BlindSignedTerms.currentVersion, frame.member.version == BlindSignedTerms.currentVersion,

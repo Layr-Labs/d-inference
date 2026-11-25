@@ -1571,8 +1571,8 @@ The provider checks, in this order, refusing at the first that fails
 
 | Check | Refusal reason |
 |---|---|
-| a valid JWS from a key the build pins, for this request, this provider's key and this sealed body | `signature_invalid` |
-| the terms' version is 1, and this Mac's key is in `seal_set` | `unsupported_version`, `not_in_set` |
+| a valid JWS from a key the build pins, for this request, this provider's key and this sealed body, whose payload has a `blind` member | `signature_invalid` |
+| the terms and the frame's `blind` decode with `v` 1, the terms' `max_tokens` and `prompt_token_bound` are positive, and this Mac's key is in `seal_set` | `unsupported_version`, `not_in_set` |
 | SHA-256 of the meta bytes is `meta_sha256` | `meta_mismatch` |
 | the terms' `client_public_key` is the frame's `ephemeral_public_key` | `binding_mismatch` |
 | the Mac serves blind requests now (as for `register.blind_protocol`) | `posture` |

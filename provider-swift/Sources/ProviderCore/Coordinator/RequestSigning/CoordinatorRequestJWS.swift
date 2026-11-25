@@ -16,7 +16,9 @@ public enum CoordinatorRequestJWS {
     /// `issued_at_ms` must be strictly within this of the provider's clock, either way.
     public static let freshnessMs: Int64 = 300_000
 
-    /// Why a signature was not accepted, in the order the checks run.
+    /// Why a signature was not accepted, in the order the checks run, except
+    /// `bad_payload`: a payload that does not decode is refused before the
+    /// freshness checks, one whose bindings are malformed after them.
     public enum Refusal: String, Error, Sendable, Equatable, CaseIterable {
         case missingSignature = "missing_signature"
         case malformedJWS = "malformed_jws"

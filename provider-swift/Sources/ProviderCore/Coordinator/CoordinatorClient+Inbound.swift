@@ -56,6 +56,22 @@ extension CoordinatorClient {
         }
     }
 
+    /// Whether `request` repeats a blind request whose signature verified when
+    /// it was first received; the first copy is recorded until its signature's
+    /// window ends. The handler runs every check of the request in full.
+    private func isRepeatOfBlindRequest(_ request: CoordinatorMessage.InferenceRequest,
+        senderPublicKey: Data, ciphertext: Data) -> Bool {
+        guard let blind = request.blind, let pins = config.blindRequests?.pins,
+              let ownKey = config.publicKey.flatMap({ Data(base64Encoded: $0) }) else { return false }
+        let now = Date()
+        guard case .success(let signature) = CoordinatorRequestJWS.verify(
+            blind.signedRequest, pins: pins, requestID: request.requestId,
+            serviceReservationID: request.serviceReservationID, recipientPublicKey: ownKey,
+            senderPublicKey: senderPublicKey, ciphertext: ciphertext, now: now)
+        else { return false }
+        return !servedBlindRequests.admitBlindSignature(signature, now: now)
+    }
+
     internal func handleIncomingFrame(
         _ data: Data,
         receivedAt: ContinuousClock.Instant,
@@ -191,16 +207,9 @@ extension CoordinatorClient {
                 return
             }
 
-            // A repeat of a blind request already served gets no answer: an
-            // answer would end the copy being served. Its checks run in full
-            // in the handler.
-            if let blind = request.blind, let pins = config.blindRequests?.pins,
-               let ownKey = config.publicKey.flatMap({ Data(base64Encoded: $0) }),
-               case .success(let signature) = CoordinatorRequestJWS.verify(
-                   blind.signedRequest, pins: pins, requestID: requestId,
-                   serviceReservationID: request.serviceReservationID, recipientPublicKey: ownKey,
-                   senderPublicKey: senderKeyBytes, ciphertext: cipherBytes, now: Date()),
-               !servedBlindRequests.admitBlindSignature(signature, now: Date()) {
+            // A repeat of a blind request already received gets no answer: an
+            // answer would end the copy being served.
+            if isRepeatOfBlindRequest(request, senderPublicKey: senderKeyBytes, ciphertext: cipherBytes) {
                 logger.error("Ignoring a repeat of blind request \(requestId)")
                 return
             }

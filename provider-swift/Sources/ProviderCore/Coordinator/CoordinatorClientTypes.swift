@@ -205,8 +205,9 @@ public struct CoordinatorClientConfig: Sendable {
     /// (`CoordinatorRequestVerifier.pinned()` unless set).
     public let requestVerifier: CoordinatorRequestVerifier
     /// What a provider that serves blind requests registers: the protocol and
-    /// the request-signing keys it pins (`ProviderLoop.blindRequestRegistration`).
-    /// Nil for a provider that serves none.
+    /// the request-signing keys it pins (`ProviderLoop.blindRequestRegistration`),
+    /// which also recognize a repeated blind frame on arrival. Nil for a
+    /// provider that serves none.
     public let blindRequests: BlindRequestRegistration?
 
     public init(

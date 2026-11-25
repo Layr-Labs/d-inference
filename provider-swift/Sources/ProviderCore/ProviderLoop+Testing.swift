@@ -132,13 +132,13 @@ extension ProviderLoop {
         securityPosture = posture
     }
 
+    #if DEBUG
     /// Test seam: the request-signing keys blind requests are verified
     /// against, in place of the build's (`BlindRequestRegistration.pinnedKeys`).
     func setBlindRequestPinsForTesting(_ pins: [CoordinatorRequestSigningPin]) {
         blindRequestPins = pins
     }
 
-    #if DEBUG
     /// Test seam: every later request's usage seal fails, as a failed seal would.
     func setUsageSealFailsForTesting(_ fails: Bool) {
         usageSealFailsForTesting = fails

@@ -1,0 +1,4 @@
+### Provider CI: failed tests keep the evidence of a stalled runner
+
+- After a failed `Run Swift tests` step, and only then, each Provider Unit Tests shard uploads `provider-system-diagnostics-<shard>` (kept 5 days): the guest's crash and hang reports of the last hour (up to 32 MiB, with a list of every one) and ten minutes of the unified log of the test and helper processes, the crash reporter, `spindump`, `amfid` and `syspolicyd` (within 150 s and 32 MiB). Both steps continue on error, so they cannot change the job's result.
+- A native-pair member fixture wait that times out (no frame within its unchanged 8 s) now also reports, for each rank, whether the native child wrote its `native-started` marker and when, and each helper process's kernel state, thread run states and age. The wait and its assertions are unchanged.

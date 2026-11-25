@@ -265,8 +265,13 @@ final class MemberFixturePeer: @unchecked Sendable {
     func wait(_ type: String) async throws -> NativePairMessage {
         let snapshot = try await mock.waitForSnapshot(timeout: .seconds(8)) { $0.nativePairs.contains { $0.type == type } }
         let message = try #require(snapshot?.nativePairs.first { $0.type == type },
-            "no \(type) within 8 s; member control is \(control.status), frames sent: \(mock.snapshot().nativePairs.map(\.type))")
+            "no \(type) within 8 s; member control is \(control.status), frames sent: \(mock.snapshot().nativePairs.map(\.type)); \(helperProcesses)")
         try signer.verify(message); return message
+    }
+    /// For a timed-out wait: what each rank's helper processes were doing.
+    /// The fixture root holds `rank-N/owner-fixture`, the native executable.
+    private var helperProcesses: String {
+        memberFixtureProcessReport(root: control.installation.artifacts[0].deletingLastPathComponent().deletingLastPathComponent())
     }
     /// Opt-in cleanup for a test that owns a running session. A joined run
     /// does not prove release; the test must check the real receipt separately.
@@ -290,4 +295,58 @@ func memberFixtureWaitUntil(_ condition: () -> Bool) async throws {
     let end = ContinuousClock.now.advanced(by: .seconds(8))
     while !condition() && ContinuousClock.now < end { try await Task.sleep(for: .milliseconds(5)) }
     #expect(condition())
+}
+
+/// For a failure message only: for each rank directory under `root`, whether
+/// its native child wrote `native-started` and when, and each process that
+/// runs that rank's helper (the owner and its child, by executable path, plus
+/// the marker's pid) as the kernel reports it. It only reads.
+func memberFixtureProcessReport(root: URL) -> String {
+    let now = Date().timeIntervalSince1970
+    let ago = { (unixSeconds: Double) in String(format: "%.1f s ago", now - unixSeconds) }
+    let executables = ClusterMachineDeviceLock.runningIdentifiers().compactMap { pid in
+        ClusterProcessTable.executablePath(of: pid).map { (pid: pid, path: $0) }
+    }
+    return (0..<2).map { rank -> String in
+        let directory = root.appendingPathComponent("rank-\(rank)")
+        let marker = directory.appendingPathComponent("native-started")
+        let written = (try? FileManager.default.attributesOfItem(atPath: marker.path))?[.modificationDate] as? Date
+        let markerText = written.map { "native-started written \(ago($0.timeIntervalSince1970))" } ?? "no native-started"
+        let helper = directory.appendingPathComponent("owner-fixture").path
+        let pids = executables.filter { $0.path == helper }.map { $0.pid }
+        var processes = pids.sorted().map { memberFixtureProcessState($0, ago: ago) }
+        if let raw = try? String(contentsOf: marker, encoding: .utf8),
+           let child = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)), !pids.contains(child) {
+            processes.append("marker " + memberFixtureProcessState(child, ago: ago))
+        }
+        return "rank \(rank): \(markerText), helper processes: \(processes.isEmpty ? "none" : processes.joined(separator: "; "))"
+    }.joined(separator: " | ")
+}
+
+/// One process: its BSD state (`SIDL`…`SZOMB`; a running or sleeping process
+/// reports `SRUN`), its threads' run states (`TH_STATE_*`; "uninterruptible"
+/// is `ps`'s `U`) and when it started.
+private func memberFixtureProcessState(_ pid: Int32, ago: (Double) -> String) -> String {
+    var info = proc_bsdinfo()
+    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+    // A nonzero argument also finds a zombie (an exited child not yet reaped).
+    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 1, &info, size) == size else { return "pid \(pid) not found" }
+    let processStates: [UInt32: String] = [1: "SIDL", 2: "SRUN", 3: "SSLEEP", 4: "SSTOP", 5: "SZOMB"]
+    let threadStates: [Int32: String] = [1: "running", 2: "stopped", 3: "waiting", 4: "uninterruptible", 5: "halted"]
+    var handles = [UInt64](repeating: 0, count: 256)
+    let listed = handles.withUnsafeMutableBytes { proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, $0.baseAddress, Int32($0.count)) }
+    var threads: [String: Int] = [:]
+    for handle in handles.prefix(Int(max(listed, 0)) / MemoryLayout<UInt64>.size) {
+        var thread = proc_threadinfo()
+        let threadSize = Int32(MemoryLayout<proc_threadinfo>.size)
+        var state = "unreadable"
+        if proc_pidinfo(pid, PROC_PIDTHREADINFO, handle, &thread, threadSize) == threadSize {
+            state = threadStates[thread.pth_run_state] ?? "state \(thread.pth_run_state)"
+        }
+        threads[state, default: 0] += 1
+    }
+    let process = processStates[info.pbi_status] ?? "status \(info.pbi_status)"
+    let threadText = threads.isEmpty ? "unreadable" : threads.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
+    let started = Double(info.pbi_start_tvsec) + Double(info.pbi_start_tvusec) / 1_000_000
+    return "pid \(pid) (parent \(info.pbi_ppid)) \(process), threads: \(threadText), started \(ago(started))"
 }

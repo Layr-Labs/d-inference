@@ -446,7 +446,8 @@ class WorkflowRoutingTests(unittest.TestCase):
                     self.assertIn(f"    if: ${{{{ inputs.{build_input} == 'true' }}}}\n", ci[build])
                 self.assertIn("    if: ${{ inputs." + condition_input + " == 'true' }}\n", ci[lane])
                 if lane != "test-cluster-gpu":
-                    self.assertEqual(workflow.continues_on_error(ci[lane]), [workflow.SAMPLER_STEPS[-1]])
+                    failure_only = list(workflow.FAILURE_DIAGNOSTIC_STEPS) if lane == "test-provider" else []
+                    self.assertEqual(workflow.continues_on_error(ci[lane]), [*failure_only, workflow.SAMPLER_STEPS[-1]])
         # Pull requests and pushes run the same blocking jobs; only cache saving
         # and the opt-in cluster_gpu gate in provider-plan.yml read the event.
         for name, job in ci.items():

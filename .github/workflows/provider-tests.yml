@@ -477,6 +477,48 @@ jobs:
             ${{ runner.temp }}/provider-unit-shard/slot-*.out
           if-no-files-found: warn
           retention-days: 7
+      # After a failed test step only, and report-only: the guest's crash and
+      # hang reports of the last hour and ten minutes of the unified log of the
+      # test and helper processes, the crash reporter and the launch checks, so
+      # the next intermittent failure can tell a stalled runner from a slow
+      # test. Each is bounded in size and time. Both steps continue on error:
+      # neither can change the job's result, and the failed test step still
+      # fails the job. The job reads no repository secret, and checkout persists
+      # no credentials.
+      - name: Collect system diagnostics after failed tests
+        if: ${{ failure() && steps.provider-unit-tests.outcome == 'failure' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          out="$RUNNER_TEMP/provider-system-diagnostics"
+          mkdir -p "$out/reports"
+          budget=$((32 * 1024 * 1024))
+          find "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports \
+            -type f -mmin -60 2>/dev/null | sort > "$out/reports.txt" || true
+          while IFS= read -r report; do
+            size=$(stat -f %z "$report" 2>/dev/null) || continue
+            [ "$size" -le "$budget" ] || { echo "$report ($size bytes)" >> "$out/reports-over-the-bound.txt"; continue; }
+            name=$(printf '%s' "${report##*/}" | tr -c 'A-Za-z0-9._-' '_')
+            cp "$report" "$out/reports/$name" 2>/dev/null && budget=$((budget - size)) ||
+              echo "$report" >> "$out/reports-unreadable.txt" || true
+          done < "$out/reports.txt"
+          predicate='process == "xctest" OR process == "swiftpm-testing-helper" OR process == "owner-fixture"'
+          predicate+=' OR process == "cluster-member-fixture-child" OR process == "darkbloom" OR process == "darkbloom-enclave"'
+          predicate+=' OR process == "darkbloom-fan-helper" OR process == "darkbloom-cluster-worker"'
+          predicate+=' OR process BEGINSWITH "ReportCrash" OR process == "spindump" OR process == "amfid" OR process == "syspolicyd"'
+          python3 -c 'import subprocess, sys; subprocess.run(sys.argv[1:], timeout=150)' \
+            /usr/bin/log show --last 10m --info --style compact --predicate "$predicate" 2>&1 |
+            head -c $((32 * 1024 * 1024)) > "$out/unified-log.txt" || true
+          du -sh "$out" || true
+      - name: Upload system diagnostics after failed tests
+        if: ${{ failure() && steps.provider-unit-tests.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-system-diagnostics-${{ matrix.shard }}
+          path: ${{ runner.temp }}/provider-system-diagnostics
+          if-no-files-found: ignore
+          retention-days: 5
       # The prompt artifacts both parity steps download (tokenizers, templates
       # and configs), one file per pinned SHA-256
       # (scripts/verified_download_cache.py). The key hashes the manifests that

@@ -83,7 +83,7 @@ extension NemotronSuperManagedSlotTests {
         let firstUsage = try #require(Self.usage(first.terminal))
         #expect(firstUsage.cacheOutcome == .missAbsent && firstUsage.cacheTier == .memory)
         #expect(firstUsage.cachedTokens == 0)
-        // The donor publishes its checkpoints before its terminal.
+        // The donor's terminal can precede its bank publication; wait for its ready receipt.
         let readyDeadline = ContinuousClock.now + .seconds(5)
         while Self.ready(recorder, nonce: "nonce-first") == nil, ContinuousClock.now < readyDeadline {
             try await Task.sleep(for: .milliseconds(5))

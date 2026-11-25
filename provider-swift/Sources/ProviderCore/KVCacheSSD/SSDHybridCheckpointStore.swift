@@ -206,8 +206,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
             stageReservations.removeValue(forKey: requestID)
             return (stages.removeValue(forKey: requestID), access)
         }
-        // The engine delivers the terminal after complete-checkpoint
-        // publication, so the write gate has already consulted this hint.
+        // Staging completes once the engine has retired the request, after
+        // complete-checkpoint publication even when the terminal came first,
+        // so the write gate has already consulted this hint.
         donationDemandHints.discard(requestID)
         access?.cancel()
         staged?.close()
@@ -216,7 +217,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     /// Retires a staged read. The request itself continues: the bridge
     /// abandons staging and then retries the same receipt cold, and its
     /// completion still consults the demand hint, so the hint stays until
-    /// `completeStaging` (terminal) or an explicit `discardDonationDemand`.
+    /// `completeStaging` (retirement) or an explicit `discardDonationDemand`.
     func abandonStaging(requestID: CBv2RequestID) async {
         if MemoryOnlyReceipt.contains(requestID), let memoryOnlyTier {
             return await memoryOnlyTier.abandonStaging(requestID: requestID)

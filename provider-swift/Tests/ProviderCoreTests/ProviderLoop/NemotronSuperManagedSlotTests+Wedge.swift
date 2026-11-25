@@ -154,6 +154,8 @@ extension NemotronSuperManagedSlotTests {
         }
         let loop = fixture.loop
         let owner = try await Self.loadQuietOwner(fixture)
+        // Super answers only after the request's cleanup, so its terminal follows publication.
+        #expect(await owner.bridge.terminalBeforeCheckpointPublication == false)
         // Complete SSD checkpoints, the default reuse, reserve nothing.
         #expect(await Self.ownerReservations(fixture.budget).count == 2, "lane and decode rows")
         let recorder = Recorder(), consumer = NodeKeyPair.generate()

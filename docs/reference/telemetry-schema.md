@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-11-18
+> Last updated: 2026-11-25
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -203,7 +203,8 @@ field allowlist.
 
 ### Provider early terminal
 
-With `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`, the event pump
+With `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` on (the default
+unless the variable is negative), the event pump
 times each request that asked to be answered before its complete-checkpoint
 publication, from its terminal to its retirement (that publication, then the
 rows' release). One that retires at least 1 ms after its answer

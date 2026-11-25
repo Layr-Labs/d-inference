@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-25
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -356,7 +356,10 @@ and continues it bit for bit (`NemotronSuperLocalPrefixCache`, see
 resumes at the restored boundary under ordinary chunking, out of packed
 prefill, exactly as a complete-checkpoint adopter does
 (`EngineV2.hybridPrefixLookup`). Completed `stop`/`length` donors publish after the
-checkpoint and KV have materialized, before their terminal completion. The bank
+checkpoint and KV have materialized. By default an unseeded donor's terminal
+precedes that publication; a seeded donor's follows it, as every donor's does
+when `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` is negative
+([early terminal](inference.md#prompt-completion-measurements-and-qualified-profiles)). The bank
 inherits the earliest checkpoint and the endpoint actually adopted, then rolls
 its newest checkpoint as the continuation advances. It never inherits a donor
 endpoint beyond the adopted prefix. A completion with no new checkpoint refreshes

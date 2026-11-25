@@ -89,13 +89,14 @@ struct ResponseFrameSealerTests {
     @Test("a matched stop string longer than the sealed bound is left out whole, never cut")
     func longStopSequenceIsOmitted() throws {
         let hash = String(repeating: "e", count: 64)
-        // The bound is on UTF-8 bytes: "é" is two.
+        // The bound counts UTF-8 bytes, not characters: "é" is two.
         let fits = String(repeating: "é", count: 4096 / 2)
         let over = fits + "a"
         #expect(SealedTerminalFields.maxStopSequenceBytes == 4096)
-        #expect(SealedTerminalFields(finishReason: .stop, stopSequence: fits, responseHash: hash, seSignature: nil)
-            .stopSequence == fits)
-        let omitted = SealedTerminalFields(finishReason: .stop, stopSequence: over, responseHash: hash, seSignature: nil)
+        let kept = SealedTerminalFields(finishReason: .stop, stopSequence: fits, responseHash: hash, seSignature: nil)
+        #expect(kept.stopSequence == fits)
+        let omitted = SealedTerminalFields(
+            finishReason: .stop, stopSequence: over, responseHash: hash, seSignature: nil)
         #expect(omitted.stopSequence == nil)
 
         let (sealer, _, consumer) = try makeSealer()

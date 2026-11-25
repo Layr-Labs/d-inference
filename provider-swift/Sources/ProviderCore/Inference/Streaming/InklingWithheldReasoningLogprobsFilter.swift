@@ -1,8 +1,9 @@
 // Copyright © 2026 Eigen Labs.
 
-/// Relay logprobs for an Inkling 2 request whose reasoning is withheld
-/// (`Inkling2PromptContract.withholdsReasoning`). Inkling does not reason in
-/// `<think>` spans: its output is a run of framed messages
+/// Relay logprobs for every Inkling 2 request that asks for them, whether its
+/// reasoning is returned or withheld (`Inkling2PromptContract.withholdsReasoning`):
+/// `logprobs.content` holds the answer's tokens only, so they join to `content`.
+/// Inkling does not reason in `<think>` spans: its output is a run of framed messages
 /// (`[<|message_model|>NAME]<|content_KIND|>BODY<|end_message|>`, see
 /// `Inkling2OutputChannels`), and a thought is a `thinking` message that may
 /// come before, between or after answer and call messages.
@@ -38,14 +39,17 @@ enum WithheldReasoningLogprobs {
     case think(WithheldReasoningLogprobsFilter)
     case inkling(InklingWithheldReasoningLogprobsFilter)
 
-    /// nil unless the request withholds reasoning and asked for logprobs.
+    /// nil unless the request asked for logprobs. An Inkling 2 request always
+    /// gets its filter: its frame markers and thoughts are never answer
+    /// tokens, even when the thought is returned as reasoning. Other families
+    /// filter only when they withhold reasoning.
     static func forRequest(
         withholdsReasoning: Bool, logprobs: Bool, inklingChannels: Bool, startsInThought: Bool
     ) -> WithheldReasoningLogprobs? {
-        guard withholdsReasoning, logprobs else { return nil }
-        return inklingChannels
-            ? .inkling(InklingWithheldReasoningLogprobsFilter())
-            : .think(WithheldReasoningLogprobsFilter(startsInThought: startsInThought))
+        guard logprobs else { return nil }
+        if inklingChannels { return .inkling(InklingWithheldReasoningLogprobsFilter()) }
+        guard withholdsReasoning else { return nil }
+        return .think(WithheldReasoningLogprobsFilter(startsInThought: startsInThought))
     }
 
     mutating func visible(_ entries: [SSETokenLogprob]) -> [SSETokenLogprob] {

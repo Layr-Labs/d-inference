@@ -52,10 +52,12 @@ on overflow. This does not classify parser source spans: reasoning/tool entries
 still attach to the next visible content, and trailing entries without visible
 content are discarded on stream termination. No token metadata enters telemetry.
 The scheduler limits entries to the requested alternatives and drops those of
-withheld reasoning (`WithheldReasoningLogprobsFilter` for `<think>` spans;
-`InklingWithheldReasoningLogprobsFilter` for Inkling 2, which classifies each
-entry by the message its token lands in, as `Inkling2OutputChannels` reads the
-output, and also drops the frame markers) before either encoder sees them. One exception keeps the vLLM-style contract on the coordinator relay: for
+withheld reasoning (`WithheldReasoningLogprobsFilter` for `<think>` spans)
+before either encoder sees them. Inkling 2 keeps only its answer's and calls'
+entries on every request with logprobs, whether its reasoning is returned or
+withheld (`InklingWithheldReasoningLogprobsFilter`, which classifies each entry
+by the message its token lands in, as `Inkling2OutputChannels` reads the
+output, and drops the frame markers), so its entries join to `content`. One exception keeps the vLLM-style contract on the coordinator relay: for
 GLM5-Next and the Nemotron Super owner (`ProviderLoop.logprobsCoverReasoning`)
 the scheduler or the owner appends entries to an `EngineV2LogprobsChannel` before
 the text they precede, and the frames loop splices them into reasoning and content

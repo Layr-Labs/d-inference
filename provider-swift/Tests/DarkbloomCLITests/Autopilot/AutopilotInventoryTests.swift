@@ -80,7 +80,7 @@ struct AutopilotInventoryTests {
         let inventory = try await Start.verifiedAutopilotInventory(local: [local("a"), local("b")],
             catalog: [catalog("a"), catalog("b")], memoryGb: 64, runtimeCapabilities: [], approved: ["a", "b"],
             verify: { entry in
-                if entry.id == "b" { throw ModelArtifactBusy(modelID: "b", operation: "verification") }
+                if entry.id == "b" { throw SelectedModelBusy(modelID: "b", underlying: .downloadFailed("b is being downloaded, updated or verified by another process; retry verification after it finishes")) }
             }, keptUnverified: { kept.append($0) })
         #expect(inventory == ["a", "b"])
         #expect(kept == ["b"])
@@ -97,7 +97,7 @@ struct AutopilotInventoryTests {
         await #expect(throws: (any Error).self) {
             try await Start.verifiedAutopilotInventory(local: [local("a"), local("b")],
                 catalog: [catalog("a"), catalog("b")], memoryGb: 64, runtimeCapabilities: [], approved: ["a", "b"],
-                verify: { throw ModelArtifactBusy(modelID: $0.id, operation: "verification") },
+                verify: { throw SelectedModelBusy(modelID: $0.id, underlying: .downloadFailed("\($0.id) is being downloaded, updated or verified by another process; retry verification after it finishes")) },
                 keptUnverified: { kept.append($0) })
         }
         #expect(kept.isEmpty)
@@ -124,7 +124,7 @@ struct AutopilotInventoryTests {
         #expect(kept.isEmpty)
     }
 
-    @Test(arguments: ["missing-local", "removed-catalog", "ineligible"])
+    @Test(arguments: ["transient-verification", "revision-not-current", "missing-local", "removed-catalog", "ineligible"])
     func ordinaryStartCannotPersistPartialRecordedInventory(failure: String) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -140,7 +140,13 @@ struct AutopilotInventoryTests {
             : [catalog("a"), catalog("b", capabilities: failure == "ineligible" ? [.mlxNAX] : nil)]
         await #expect(throws: (any Error).self) {
             let inventory = try await Start.verifiedAutopilotInventory(local: models, catalog: entries,
-                memoryGb: 64, runtimeCapabilities: [], approved: ["a", "b"], verify: { _ in })
+                memoryGb: 64, runtimeCapabilities: [], approved: ["a", "b"], verify: { entry in
+                    guard entry.id == "b" else { return }
+                    if failure == "transient-verification" { throw URLError(.timedOut) }
+                    if failure == "revision-not-current" {
+                        throw ModelCatalogError.downloadFailed("Selected revision is not current: b")
+                    }
+                })
             try await Start.completeDaemonReplacement(autopilot: true, models: inventory,
                 configPath: path.path, stop: { Issue.record("Partial validation must not stop the daemon") },
                 install: { Issue.record("Partial validation must not install a replacement") })

@@ -48,17 +48,25 @@ struct ModelArtifactWriteLeaseTests {
         }
     }
 
-    @Test("a held writer lease is reported as its own error type, with the same text")
+    @Test("a start's verification reports a held writer lease as its own error type, with the same text")
     func heldLeaseIsTyped() async throws {
         let id = "test-org/typed-lease-\(UUID().uuidString)"
         let lease = try await ModelArtifactWriteLease.acquire(modelID: id)
         defer { lease.release() }
         let model = CatalogModel(id: id, s3Name: id, displayName: id, sizeGb: 1, weightHash: "test")
-        await #expect(throws: ModelArtifactBusy.self) { try await ModelDownloader().verifySelectedModel(model) }
-        #expect(throws: ModelArtifactBusy.self) { try ModelArtifactWriteLease.acquireIfAvailable(modelID: id) }
-        #expect(ModelArtifactBusy(modelID: id, operation: "verification").localizedDescription
-            == "download failed: \(id) is being downloaded, updated or verified by another process; "
-                + "retry verification after it finishes")
+        let expected = "download failed: \(id) is being downloaded, updated or verified by another process; "
+            + "retry verification after it finishes"
+        do {
+            try await ModelDownloader().verifySelectedModel(model)
+            Issue.record("verification of a held model succeeded")
+        } catch let busy as SelectedModelBusy {
+            #expect(busy.modelID == id)
+            #expect(busy.localizedDescription == expected)
+        } catch {
+            Issue.record("expected SelectedModelBusy, got \(error)")
+        }
+        // The lease itself, and its other callers, are unchanged.
+        #expect(throws: ModelCatalogError.self) { try ModelArtifactWriteLease.acquireIfAvailable(modelID: id) }
     }
 
     @Test("recreating the model directory cannot create a second writer lock")

@@ -82,3 +82,17 @@ extension ModelDownloader {
         }
     }
 }
+
+/// Red control: declared so the new tests compile; nothing throws it here.
+public struct SelectedModelBusy: Error, CustomStringConvertible, LocalizedError, Sendable {
+    public let modelID: String
+    public let underlying: ModelCatalogError
+
+    public init(modelID: String, underlying: ModelCatalogError) {
+        self.modelID = modelID
+        self.underlying = underlying
+    }
+
+    public var description: String { underlying.description }
+    public var errorDescription: String? { underlying.errorDescription }
+}

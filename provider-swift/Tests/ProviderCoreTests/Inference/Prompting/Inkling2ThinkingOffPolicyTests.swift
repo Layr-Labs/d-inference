@@ -13,7 +13,9 @@ import Testing
 @Suite("Inkling 2 thinking off without a thought")
 struct Inkling2ThinkingOffPolicyTests {
     static let type = Inkling2ModelIdentity.modelType
-    static let on = [Inkling2ThinkingOffPolicy.environmentKey: "1"]
+    static let switchOn = [Inkling2ThinkingOffPolicy.environmentKey: "1"]
+    /// A slot vocabulary that resolves only the thought opener's spelling.
+    static let ids = ["<|content_thinking|>": 200_010]
 
     static func request(_ json: String) throws -> (OpenAIChatCompletionRequest, ChatTemplateControls) {
         let body = Data((#"{"model":"m","messages":[{"role":"user","content":"hi"}]"# + json + "}").utf8)
@@ -23,12 +25,13 @@ struct Inkling2ThinkingOffPolicyTests {
 
     @Test func theSwitchReachesTheLaunchAgent() {
         let key = Inkling2ThinkingOffPolicy.environmentKey
+        #expect(key == "DARKBLOOM_INKLING_THINKING_OFF_SKIPS_THOUGHT")
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
         #expect(LaunchAgent.passthroughEnvironment(from: [key: "1"])[key] == "1")
         #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
     }
 
-    @Test func theSwitchIsOffByDefault() {
+    @Test func theSwitchIsOffUnlessAnOnWordIsSet() {
         #expect(!Inkling2ThinkingOffPolicy.skipsThought(environment: [:]))
         for (raw, on) in [("1", true), (" ON ", true), ("yes", true), ("true", true),
                           ("0", false), ("off", false), ("No", false), ("2", false), ("", false)] {
@@ -48,33 +51,37 @@ struct Inkling2ThinkingOffPolicyTests {
         ] {
             let (decoded, controls) = try Self.request(json)
             #expect(Inkling2ThinkingOffPolicy.bansThought(decoded, controls: controls, modelType: Self.type,
-                environment: Self.on) == off, "\(json)")
+                environment: Self.switchOn) == off, "\(json)")
             #expect(!Inkling2ThinkingOffPolicy.bansThought(decoded, controls: controls, modelType: Self.type,
                 environment: [:]), "\(json)")
             #expect(!Inkling2ThinkingOffPolicy.bansThought(decoded, controls: controls, modelType: "gemma4",
-                environment: Self.on), "\(json)")
+                environment: Self.switchOn), "\(json)")
         }
     }
 
+    /// The ban is −100 on the id the slot's vocabulary gives the opener.
     @Test func theBanJoinsTheCallersOverrides() {
-        let opener = 200_010
         // No caller overrides: the ban alone.
-        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(nil, bansThought: true, openerID: { opener })
+        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(nil, bansThought: true, tokenToId: { Self.ids[$0] })
             == EngineV2SamplingOverrides(logitBias: ["200010": -100], seed: nil))
         // The caller's seed and other biases stay; its bias on the opener is replaced.
         let caller = EngineV2SamplingOverrides(logitBias: ["7": 2.5, "200010": 5], seed: 42)
-        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(caller, bansThought: true, openerID: { opener })
+        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(caller, bansThought: true, tokenToId: { Self.ids[$0] })
             == EngineV2SamplingOverrides(logitBias: ["7": 2.5, "200010": -100], seed: 42))
     }
 
     @Test func withoutTheBanOrAnOpenerNothingChanges() {
         let caller = EngineV2SamplingOverrides(logitBias: ["7": 2.5], seed: 42)
         var asked = false
-        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(caller, bansThought: false,
-            openerID: { asked = true; return 200_010 }) == caller)
+        let unbanned = Inkling2ThinkingOffPolicy.samplingOverrides(caller, bansThought: false,
+            tokenToId: { asked = true; return Self.ids[$0] })
+        #expect(unbanned == caller)
         #expect(!asked, "the tokenizer is not consulted without a ban")
-        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(nil, bansThought: false, openerID: { 200_010 }) == nil)
-        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(caller, bansThought: true, openerID: { nil }) == caller)
-        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(caller, bansThought: true, openerID: { -1 }) == caller)
+        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(nil, bansThought: false, tokenToId: { Self.ids[$0] })
+            == nil)
+        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(caller, bansThought: true, tokenToId: { _ in nil })
+            == caller)
+        #expect(Inkling2ThinkingOffPolicy.samplingOverrides(caller, bansThought: true, tokenToId: { _ in -1 })
+            == caller)
     }
 }

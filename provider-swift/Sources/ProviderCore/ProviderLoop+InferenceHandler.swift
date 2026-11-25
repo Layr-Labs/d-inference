@@ -1025,7 +1025,7 @@ extension ProviderLoop {
                 engineV2Sampling: Inkling2ThinkingOffPolicy.samplingOverrides(samplingOverrides,
                     bansThought: Inkling2ThinkingOffPolicy.bansThought(
                         chatRequest, controls: templateControls, modelType: modelType),
-                    openerID: { tokenizer.inner.convertTokenToId(Inkling2ThinkingOffPolicy.thoughtOpener) }),
+                    tokenToId: { tokenizer.inner.convertTokenToId($0) }),
                 engineV2Usage: v2UsageSignal,
                 firstContentDeadline: firstContentDeadline,
                 profile: profile,

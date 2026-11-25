@@ -180,13 +180,25 @@ enum SSDPrefixCachePolicy {
     static let largeMemoryCompleteCheckpointStageBytes = 7168 * 1_048_576  // 7 GiB
     static let largeMemoryCompleteCheckpointStageMillis = 15_000
 
+    /// Macs with at least 256 GiB default to 12 GiB. At about 36.9 KB per
+    /// token, Inkling 2 Mini's 7 GiB depth ends near 198K tokens; at 12 GiB a
+    /// 262,079-token prompt restores 260,096 tokens. The deeper captures add
+    /// prefill time past that depth on a cold prompt (262,079 tokens: 199 s →
+    /// 243 s), and the repeat's first token comes in 5.9 s instead of 58.4 s.
+    /// A full-size file estimates about 8.6 s, still inside the 15 s time cap.
+    static let veryLargeMemoryThresholdBytes: UInt64 = 256 << 30
+    static let veryLargeMemoryCompleteCheckpointStageBytes = 12_288 * 1_048_576  // 12 GiB
+
     static func completeCheckpointMaxStageBytes(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) -> Int {
-        configuredMaxStageBytes(environment: environment)
-            ?? (physicalMemoryBytes >= largeMemoryThresholdBytes
-                ? largeMemoryCompleteCheckpointStageBytes : defaultMaxStageBytes)
+        if let configured = configuredMaxStageBytes(environment: environment) { return configured }
+        if physicalMemoryBytes >= veryLargeMemoryThresholdBytes {
+            return veryLargeMemoryCompleteCheckpointStageBytes
+        }
+        return physicalMemoryBytes >= largeMemoryThresholdBytes
+            ? largeMemoryCompleteCheckpointStageBytes : defaultMaxStageBytes
     }
 
     static func completeCheckpointMaxStageMillis(

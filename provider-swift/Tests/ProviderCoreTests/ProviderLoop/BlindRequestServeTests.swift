@@ -63,20 +63,21 @@ struct BlindRequestServeTests {
         let recipient = await fixture.loop.keyPair.publicKeyBytes
         var request = BlindRequestFixture()
         if let bodyMaxTokens { request.bodyFields = [#""max_tokens":\#(bodyMaxTokens)"#] }
+        let requestID = request.requestID
         try await fixture.mock.pushInferenceRequest(try request.frame(recipient: recipient))
         try await fixture.awaitSubmissions(1)
         #expect(fixture.engine.submittedMaxTokens == [bodyMaxTokens ?? request.maxTokens])
         fixture.completeSubmission(0)
 
         let done = try await fixture.mock.waitForSnapshot(timeout: .seconds(10)) {
-            ServeLoopFixture.terminalCount($0, requestId: request.requestID) > 0
+            ServeLoopFixture.terminalCount($0, requestId: requestID) > 0
         }
         let snapshot = try #require(done)
-        let complete = try #require(snapshot.inferenceComplete.first { $0.requestId == request.requestID })
+        let complete = try #require(snapshot.inferenceComplete.first { $0.requestId == requestID })
         let sealed = try #require(complete.encryptedUsage)
         let opened = try #require(
             try JSONSerialization.jsonObject(with: request.client.decryptPayload(sealed)) as? [String: Any])
-        #expect(opened["chunk_count"] as? Int == snapshot.inferenceChunks.filter { $0.requestId == request.requestID }.count)
+        #expect(opened["chunk_count"] as? Int == snapshot.inferenceChunks.filter { $0.requestId == requestID }.count)
         #expect(await fixture.stop(task))
     }
 
@@ -107,6 +108,15 @@ struct BlindRequestServeTests {
             ("meta other than the signed meta", .metaMismatch, true, {
                 try BlindRequestFixture().frame(recipient: recipient, member: BlindFrameMember(version: 1, meta: Data("{}".utf8)))
             }),
+            ("terms naming a client key other than the frame's sender", .bindingMismatch, true, {
+                try request { $0.termsClientKey = other }.frame(recipient: recipient)
+            }),
+            ("an all-zero sender key", .sealUnopenable, true, {
+                try request { $0.senderKey = Data(count: 32) }.frame(recipient: recipient)
+            }),
+            ("a sender key of small order", .sealUnopenable, true, {
+                try request { $0.senderKey = Data([1] + [UInt8](repeating: 0, count: 31)) }.frame(recipient: recipient)
+            }),
             ("a body sealed to another key", .sealUnopenable, true, {
                 try BlindRequestFixture().frame(recipient: recipient, sealedTo: other)
             }),
@@ -116,6 +126,11 @@ struct BlindRequestServeTests {
             ("a binding to another nonce", .bindingMismatch, true, {
                 try request {
                     $0.sealedBinding = #"{"v":1,"meta_sha256":"\#($0.metaSHA256)","nonce":"other","cred":"\#($0.cred)","ts":\#($0.clientTs)}"#
+                }.frame(recipient: recipient)
+            }),
+            ("a cache salt shorter than 16 bytes", .bindingMismatch, true, {
+                try request {
+                    $0.sealedBinding = #"{"v":1,"meta_sha256":"\#($0.metaSHA256)","nonce":"\#($0.nonce)","cred":"\#($0.cred)","ts":\#($0.clientTs),"cache_salt":"AAAA"}"#
                 }.frame(recipient: recipient)
             }),
             ("a client clock eleven minutes behind", .stale, true, {
@@ -133,6 +148,11 @@ struct BlindRequestServeTests {
             ("tools the terms do not declare", .traitsMismatch, true, {
                 try request {
                     $0.bodyFields = [#""tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{}}}}]"#]
+                }.frame(recipient: recipient)
+            }),
+            ("a media part the terms do not declare", .traitsMismatch, true, {
+                try request {
+                    $0.messages = #"[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]"#
                 }.frame(recipient: recipient)
             }),
             ("a body that is not a chat request", .bindingMissing, true, {
@@ -157,6 +177,31 @@ struct BlindRequestServeTests {
                     "\(testCase.name)")
         }
         #expect(fixture.engine.ordinarySubmissionCount == 0)
+        #expect(await fixture.stop(task))
+    }
+
+    @Test("the engine gets the signed scope narrowed by the client's salt, never the frame's clear scope")
+    func signedScopeReachesTheEngine() async throws {
+        let (fixture, task) = try await Self.serving()
+        let recipient = await fixture.loop.keyPair.publicKeyBytes
+        let salt = Data(repeating: 7, count: 16)
+        var salted = BlindRequestFixture()
+        salted.sealedBinding = #"{"v":1,"meta_sha256":"\#(salted.metaSHA256)","nonce":"\#(salted.nonce)","cred":"\#(salted.cred)","ts":\#(salted.clientTs),"cache_salt":"\#(CoordinatorRequestJWS.base64URL(salt))"}"#
+        var unscoped = BlindRequestFixture()
+        unscoped.cacheScope = nil
+        for (index, request) in [salted, unscoped].enumerated() {
+            try await fixture.mock.pushInferenceRequest(
+                try request.frame(recipient: recipient, clearCacheScope: "clear-frame-scope"))
+            try await fixture.awaitSubmissions(index + 1)
+            fixture.completeSubmission(index)
+            let requestID = request.requestID
+            _ = try await fixture.mock.waitForSnapshot(timeout: .seconds(10)) {
+                ServeLoopFixture.terminalCount($0, requestId: requestID) > 0
+            }
+        }
+        let expected = BlindBodyCheck.cacheScope(signed: salted.cacheScope, salt: salt)
+        #expect(expected?.hasPrefix("blind-v1:account-scope|s:") == true)
+        #expect(fixture.engine.submittedCacheSalts == [expected, nil])
         #expect(await fixture.stop(task))
     }
 
@@ -188,8 +233,9 @@ struct BlindRequestServeTests {
         try await fixture.mock.pushInferenceRequest(frame)
         try await Task.sleep(for: .milliseconds(200))
         fixture.completeSubmission(0)
+        let requestID = request.requestID
         let done = try await fixture.mock.waitForSnapshot(timeout: .seconds(10)) {
-            ServeLoopFixture.terminalCount($0, requestId: request.requestID) > 0
+            ServeLoopFixture.terminalCount($0, requestId: requestID) > 0
         }
         let snapshot = try #require(done)
         try await Task.sleep(for: .milliseconds(200))

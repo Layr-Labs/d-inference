@@ -238,7 +238,9 @@ extension ProviderLoop {
             cacheReceiptNonce: cacheReceiptNonce,
             repeatedPrefixTokens: cacheRepeatedPrefixTokens)
         var receiptCallbacks: PrefixCacheReceiptEmitter.Callbacks = (nil, nil)
-        if prefixCacheProtocol != 2 {
+        // A blind request's cache plan is the signed scope alone: no receipt
+        // is bound to a nonce from its clear frame.
+        if prefixCacheProtocol != 2 && blind == nil {
             receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
                 requestID: requestId,
                 nonce: frameCache.receiptNonce,
@@ -368,6 +370,7 @@ extension ProviderLoop {
             ?? toolSchemaMetadataProtocol
         let servedGemmaPromptContract: Int? = blindFrame.map { $0.signature.payload.gemmaPromptContract }
             ?? gemmaPromptContract
+        let servedPromptWork: PromptWork? = blindFrame.map { $0.signature.payload.promptWork } ?? promptWork
         // Refuses the body; a blind request's refusal names `blindReason`
         // instead, signed.
         func rejectInvalidBody(_ refusal: InferenceRefusalReason, blind blindReason: BlindRefusalReason) {
@@ -1112,7 +1115,7 @@ extension ProviderLoop {
                     guard let me else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID) }
                     return try await me.nativeMiMoConsumerLease(modelID: modelID, entry: entry)
                 },
-                promptWork: promptWork
+                promptWork: servedPromptWork
             )
             }
 

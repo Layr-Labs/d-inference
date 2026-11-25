@@ -349,7 +349,7 @@ connection, first.
 | `tool_constraint_models` | `[]string` | `[String]?` | opt | concrete model IDs the provider enforces |
 | `gemma_prompt_contract` | `int` | `Int?` | opt | highest [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the provider renders when an `inference_request` asks for it: `2` (the template's text parts, vLLM's prompt for system and user content). Provider-wide: it says which contract the provider can render for the Gemma 4 model types it honours (`gemma4`, `gemma4_text`), not which models it serves. Swift omits nil and 1 (contract 1 only); `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` omits it. Older coordinators ignore it |
 | `terminal_fields_sealed` | `int` | `Int?` | opt | `1`: the provider sends a response's terminal fields only inside `encrypted_usage`, on every connection, and never their clear copies on `inference_complete` ([`inference_complete`](#inference_complete); `SealedTerminalFields`, `provider-swift/Sources/ProviderCore/Crypto/ResponseFrameSealer.swift`). A claim only: it proves nothing about the build that sent it. Older providers omit it; older coordinators ignore it |
-| `blind_protocol` | `int` | `Int?` | opt | `1`: the provider serves [blind requests](#blind-requests). Sent only when the build pins a coordinator request-signing key for blind requests, the Mac has its Secure Enclave signer, serves alone (never as a cluster member) and its posture holds SIP on, Secure Boot full, debugger attachment denied and core dumps off (`ProviderLoop.blindRequestRegistration`, `provider-swift/Sources/ProviderCore/ProviderLoop+BlindRequest.swift`). Omitted otherwise, and by older providers |
+| `blind_protocol` | `int` | `Int?` | opt | `1`: the provider serves [blind requests](#blind-requests). Sent only when the build pins a coordinator request-signing key for blind requests that has not expired, the Mac has its Secure Enclave signer, serves alone (never as a cluster member) and its posture holds SIP on, Secure Boot full, debugger attachment denied and core dumps off (`ProviderLoop.blindRequestRegistration`, `provider-swift/Sources/ProviderCore/ProviderLoop+BlindRequest.swift`). Omitted otherwise, and by older providers |
 | `request_signing` | `ProviderRequestSigning` | `ProviderRequestSigning?` | opt | `{"keys":[{"kid":…,"expires_at_ms":…}]}`: the coordinator request-signing keys the build pins for blind requests that have not expired by the Mac's clock (`kid` is the RFC 7638 thumbprint, unpadded base64url). Sent beside `blind_protocol` only. A hint: a peer that changes it can only cause refusals (`provider-swift/Sources/ProviderCore/Protocol/ProviderRequestSigning.swift`) |
 | `apns_device_token` | `string` | `String?` | opt | hex APNs token for the `E_K(nonce)` code-identity push |
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
@@ -1575,6 +1575,7 @@ The provider checks, in this order, refusing at the first that fails
 | the terms and the frame's `blind` decode with `v` 1, the terms' `max_tokens` and `prompt_token_bound` are positive, and this Mac's key is in `seal_set` | `unsupported_version`, `not_in_set` |
 | SHA-256 of the meta bytes is `meta_sha256` | `meta_mismatch` |
 | the terms' `client_public_key` is the frame's `ephemeral_public_key` | `binding_mismatch` |
+| that key is not of small order (all zero or a low-order point: its product with this Mac's key is not zero) | `seal_unopenable` |
 | the Mac serves blind requests now (as for `register.blind_protocol`) | `posture` |
 | the body opens | `seal_unopenable` |
 | the body parses and carries `_darkbloom_blind` version 1 | `binding_missing` |
@@ -1589,20 +1590,26 @@ The provider checks, in this order, refusing at the first that fails
 The posture is checked before the body is opened, so a Mac that cannot serve
 blind requests never opens one. A cluster member or pair refuses every blind
 request with `posture`. A second copy of a signed frame already received gets
-no answer, so the first copy keeps its reservation. A body that carries
+no answer, so the first copy keeps its reservation. A frame's
+`coordinator_signature` is not read for a blind request. A body that carries
 `_darkbloom_blind` on a frame without `blind` is refused with
 `invalid_request` and `refusal_reason` `sealed_for_blind_request`.
 
 A blind request is served with the values the coordinator signed, never their
 clear copies: generation is capped at the body's own limit, at most the
-terms' `max_tokens`, on every engine path (the bridge holds every submission
-of the request to the signed bounds, `BlindRequestBounds`); the template
-contract and tool-schema protocol are the payload's; the prefix-cache scope is
+terms' `max_tokens`, on every engine path (the bridge holds every output
+budget it sizes for the request to the signed bounds, `BlindRequestBounds`);
+the template contract, tool-schema protocol and `prompt_work` are the
+payload's; no prefix-cache receipt is bound to the frame's clear nonce; the
+prefix-cache scope is
 the payload's `cache_scope` (none: no cache), narrowed by the client's
 `cache_salt` as `<scope>|s:<first 22 characters of unpadded base64url
 SHA-256("darkbloom-blind-cache-salt-v1" ‖ 0x00 ‖ salt)>`, and the body's
-`_darkbloom_cache` is not read. Capacity, load and generation failures keep
-their ordinary errors.
+`_darkbloom_cache` is not read. A request whose content no engine serves (an
+unsupported content part type or audio, template controls the model does not
+take) gets the same `invalid_request` an ordinary request does, as do
+capacity, load and generation failures; a frame without a decodable sealed
+body is refused before the handler, as any other.
 
 A refusal is an `inference_error` with `failure_code` `blind_refused`,
 `status_code` 502 for `signature_invalid` and `posture` and 400 for every

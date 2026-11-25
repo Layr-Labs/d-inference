@@ -32,6 +32,24 @@ struct BlindRequestBoundsTests {
         #expect(bounds.outputLimit(requested: 4_096) == 64)
     }
 
+    @Test("every output budget the bridge sizes under a blind request's bounds is within the signed bound")
+    func bridgeOutputBudgets() async {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+        }
+        let bridge = EngineV2Bridge(
+            engine: PrefillScriptEngine(), modelId: "blind-bounds",
+            tokenizer: TokenizerHandle(CancelledPrefixTokenizer(prompt: [1, 2, 3])), eosTokenIds: [],
+            kvBytesPerToken: 4_000, kvBudget: budget)
+        #expect(bridge.outputTokens(requested: 1_000, promptTokens: 3) == 1_000)
+        BlindRequestBounds.$current.withValue(Self.bounds(maxTokens: 8)) {
+            #expect(bridge.outputTokens(requested: nil, promptTokens: 3) == 8)
+            #expect(bridge.outputTokens(requested: 4, promptTokens: 3) == 4)
+            #expect(bridge.outputTokens(requested: 1_000, promptTokens: 3) == 8)
+        }
+        await bridge.shutdown()
+    }
+
     @Test("the cache scope is the signed scope, narrowed by the client's salt")
     func cacheScope() {
         #expect(BlindBodyCheck.cacheScope(signed: nil, salt: Data(count: 16)) == nil)

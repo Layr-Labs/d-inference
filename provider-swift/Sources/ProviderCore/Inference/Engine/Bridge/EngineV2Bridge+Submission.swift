@@ -405,8 +405,7 @@ extension EngineV2Bridge {
         }
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
-        let requestedOutput = BlindRequestBounds.current?.outputLimit(requested: request.max_tokens) ?? request.max_tokens
-        let maxOutputTokens = outputTokens(requested: requestedOutput, promptTokens: promptTokens.count,
+        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count,
                                            ownerRequest: ownerRequest)
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,

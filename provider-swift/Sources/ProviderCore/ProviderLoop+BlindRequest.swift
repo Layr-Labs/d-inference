@@ -18,10 +18,12 @@ extension ProviderLoop {
             && posture.antiDebugEnabled && posture.coreDumpsDisabled
     }
 
-    /// What this Mac registers for blind requests: nil when it pins no
-    /// request-signing key or cannot serve them (`blindServingPostureHolds`).
+    /// What this Mac registers for blind requests: nil when no pinned
+    /// request-signing key is live or it cannot serve them
+    /// (`blindServingPostureHolds`).
     func blindRequestRegistration() -> BlindRequestRegistration? {
-        guard !blindRequestPins.isEmpty, blindServingPostureHolds() else { return nil }
+        guard ProviderRequestSigning(pins: blindRequestPins, now: Date()) != nil, blindServingPostureHolds()
+        else { return nil }
         return BlindRequestRegistration(pins: blindRequestPins)
     }
 
@@ -35,6 +37,11 @@ extension ProviderLoop {
             ownPublicKey: keyPair.publicKeyBytes, senderPublicKey: senderPublicKey, ciphertext: ciphertext,
             pins: blindRequestPins, now: Date())
         guard case .success(let verified) = checked else { return checked }
+        // A client key of small order leaves no seal to open: the client's
+        // fault, refused before the body is touched.
+        guard (try? keyPair.precomputeSharedKey(recipientPublicKey: senderPublicKey)) != nil else {
+            return .failure(verified.refusal(.sealUnopenable))
+        }
         guard blindServingPostureHolds() else { return .failure(verified.refusal(.posture)) }
         return .success(verified)
     }

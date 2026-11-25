@@ -34,8 +34,17 @@ struct BlindRequestFixture {
     var nonce = CoordinatorRequestJWS.base64URL(Data((0..<16).map { _ in UInt8.random(in: .min ... .max) }))
     var cred = "credential-binding"
     var cacheScope: String? = "blind-v1:account-scope"
+    /// The sealed body's `messages` (raw JSON).
+    var messages = #"[{"role":"user","content":"fixture"}]"#
+    /// Members of the sealed body after `model`, `messages` and `stream`
+    /// (raw JSON members, no braces).
+    var defaultMembers = [#""reasoning_parser":"none""#]
     /// Extra members of the sealed body (raw JSON members, no braces).
     var bodyFields: [String] = []
+    /// The key the frame names as the body's sender, in place of `client`'s.
+    var senderKey: Data?
+    /// The client key the terms name, in place of the sender's.
+    var termsClientKey: Data?
     /// The body's `_darkbloom_blind` member: nil for the one matching the
     /// terms, `.some(nil)` for none, or the raw JSON of another.
     var sealedBinding: String?? = nil
@@ -52,11 +61,8 @@ struct BlindRequestFixture {
     func ciphertext(to recipient: Data) throws -> Data {
         let binding = sealedBinding
             ?? #"{"v":1,"meta_sha256":"\#(metaSHA256)","nonce":"\#(nonce)","cred":"\#(cred)","ts":\#(clientTs)}"#
-        var members = [
-            #""model":"\#(bodyModel)""#, #""messages":[{"role":"user","content":"fixture"}]"#,
-            #""stream":true"#, #""reasoning_parser":"none""#,
-        ]
-        members += bodyFields
+        var members = [#""model":"\#(bodyModel)""#, #""messages":\#(messages)"#, #""stream":true"#]
+        members += defaultMembers + bodyFields
         if let binding { members.append(#""_darkbloom_blind":\#(binding)"#) }
         return try client.encrypt(recipientPublicKey: recipient,
                                   plaintext: Data(("{" + members.joined(separator: ",") + "}").utf8))
@@ -64,7 +70,8 @@ struct BlindRequestFixture {
 
     /// The coordinator's signed JWS over a frame carrying `ciphertext` to `recipient`.
     func signedRequest(recipient: Data, ciphertext: Data, sealSet: [Data]? = nil) throws -> String {
-        let digest = CoordinatorRequestJWS.sealedBodySHA256(senderPublicKey: client.publicKeyBytes, ciphertext: ciphertext)
+        let sender = senderKey ?? client.publicKeyBytes
+        let digest = CoordinatorRequestJWS.sealedBodySHA256(senderPublicKey: sender, ciphertext: ciphertext)
         var payload: [String: Any] = [
             "issued_at_ms": issuedAtMs, "request_id": requestID, "model": model,
             "recipient_public_key": recipient.base64EncodedString(), "sealed_body_sha256": digest.base64EncodedString(),
@@ -73,7 +80,7 @@ struct BlindRequestFixture {
                 "prompt_token_bound": promptTokenBound, "traits": ["tools": tools, "vision": vision],
                 "account_binding": cred, "client_nonce": nonce, "client_ts": clientTs,
                 "seal_set": (sealSet ?? [recipient]).map { $0.base64EncodedString() }.sorted(),
-                "client_public_key": client.publicKeyBytes.base64EncodedString(),
+                "client_public_key": (termsClientKey ?? sender).base64EncodedString(),
             ] as [String: Any],
         ]
         if let cacheScope { payload["cache_scope"] = cacheScope }
@@ -85,16 +92,19 @@ struct BlindRequestFixture {
     }
 
     /// The whole `inference_request` for a provider whose X25519 key is `recipient`.
+    /// `clearCacheScope` is the frame's unsigned `cache_scope`.
     func frame(
         recipient: Data, sealedTo: Data? = nil, sealSet: [Data]? = nil,
-        member: BlindFrameMember? = nil, signedRequest override: String? = nil
+        member: BlindFrameMember? = nil, signedRequest override: String? = nil, clearCacheScope: String? = nil
     ) throws -> CoordinatorMessage.InferenceRequest {
         let ciphertext = try ciphertext(to: sealedTo ?? recipient)
         let jws = try override ?? signedRequest(recipient: recipient, ciphertext: ciphertext, sealSet: sealSet)
         return CoordinatorMessage.InferenceRequest(
             requestId: requestID,
             encryptedBody: EncryptedPayload(
-                ephemeralPublicKey: client.publicKeyBase64, ciphertext: ciphertext.base64EncodedString()),
+                ephemeralPublicKey: (senderKey ?? client.publicKeyBytes).base64EncodedString(),
+                ciphertext: ciphertext.base64EncodedString()),
+            cacheScope: clearCacheScope,
             blind: BlindFrame(member: member ?? BlindFrameMember(version: 1, meta: meta), signedRequest: jws))
     }
 

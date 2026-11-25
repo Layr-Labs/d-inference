@@ -2769,12 +2769,15 @@ start, and the bridge checks it in every submission
 (`EngineV2Bridge.submitTokenized`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`),
 which the scheduler engine, the loop-exit continuation and the managed
-Nemotron Super owner all submit through. The first submission's tokenized
+Nemotron Super owner all submit through, and in every output budget it sizes
+(`EngineV2Bridge.outputTokens`), which bounds a submission's limit, the
+budget a loop exit's continuation is cut from and the managed Super owner's
+limit for a raw body that names none. The first submission's tokenized
 prompt must fit `prompt_token_bound`: a longer one is refused before
 admission (`prompt_bound_exceeded`), and its lookup settles as a policy
 refusal. A later submission (a loop exit's continuation) carries the
-request's own output and is not compared. No submission generates more than
-the signed `max_tokens`. A blind request whose stream reaches its first
+request's own output and is not compared. No budget exceeds the signed
+`max_tokens`, so neither does the request's whole output. A blind request whose stream reaches its first
 content without a submission having applied the bounds ends there, refused
 with `posture` (`ProviderLoop.handleInferenceRequest`,
 `provider-swift/Sources/ProviderCore/Blind/BlindRequestBounds.swift`).

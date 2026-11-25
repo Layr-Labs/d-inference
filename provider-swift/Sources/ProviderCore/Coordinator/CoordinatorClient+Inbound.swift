@@ -192,7 +192,9 @@ extension CoordinatorClient {
                     serviceReservationID: request.serviceReservationID)
                 return
             }
-            if config.requestVerifier.checksRequests, let refusal = config.requestVerifier.check(
+            // A blind frame is verified by its own signature (`signed_request`)
+            // in the handler; `coordinator_signature` is not read for it.
+            if request.blind == nil, config.requestVerifier.checksRequests, let refusal = config.requestVerifier.check(
                 request, senderPublicKey: senderKeyBytes, ciphertext: cipherBytes,
                 recipientPublicKey: config.publicKey.flatMap { Data(base64Encoded: $0) },
                 now: Date(), served: &servedSignedRequests) {

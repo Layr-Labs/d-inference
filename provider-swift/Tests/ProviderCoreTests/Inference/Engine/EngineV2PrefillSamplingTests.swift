@@ -103,6 +103,11 @@ final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
         lock.withLock { _requests.map(\.maxTokens) }
     }
 
+    /// The cache salt of each ordinary submission, in order.
+    var submittedCacheSalts: [String?] {
+        lock.withLock { _requests.map(\.cacheSalt) }
+    }
+
     var deadlineAdmissions: [CBv2FirstTokenDeadlineAdmission] {
         lock.withLock { _deadlineAdmissions }
     }

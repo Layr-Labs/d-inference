@@ -595,6 +595,7 @@ public enum LaunchAgent: Sendable {
         QwenStrictToolGrammar.nemotronEnvironmentKey,
         NemotronSuperToolGrammar.environmentKey,
         ChatTemplateLoopRewrites.environmentKey,
+        Inkling2PromptContract.foldSystemEnvironmentKey,
         ToolSchemaRefPolicy.environmentKey,
         // SDK-read (`StreamingGemma4ReasoningParser.reopenedThoughtsEnabled`, once per
         // process): reopened Gemma thoughts go to reasoning; `0` keeps 0.10.12's parsing.

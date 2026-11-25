@@ -265,8 +265,8 @@ public enum ProviderMessage: Sendable, Equatable {
         /// otherwise; older coordinators ignore it.
         public var busy: ProviderBusy?
         /// This provider seals a response's terminal fields inside its usage
-        /// for a coordinator that advertises reading them there
-        /// (`SealedTerminalFields`); omitted by older providers.
+        /// on every connection (`SealedTerminalFields`); omitted by older
+        /// providers.
         public var terminalFieldsSealed: Int?
 
         public init(

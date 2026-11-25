@@ -8,6 +8,8 @@ struct SSDCompleteCheckpointStageCapTests {
     /// The 256 GiB tier's byte cap, spelled out so this file also reads the
     /// default on builds without the tier.
     private static let twelveGiB = 12_288 * 1_048_576
+    /// The complete-checkpoint-only setting, spelled out for the same reason.
+    private static let checkpointKey = "DARKBLOOM_PREFIX_CACHE_SSD_CHECKPOINT_MAX_STAGE_MB"
 
     @Test("below the large-memory threshold the general defaults apply",
           arguments: [UInt64(16), 24, 36, 47])
@@ -72,21 +74,46 @@ struct SSDCompleteCheckpointStageCapTests {
             == SSDPrefixCachePolicy.defaultMaxStageMillis)
     }
 
-    @Test("7168 keeps a 256 GiB Mac at the 7 GiB depth, and the installed provider receives it")
-    func killSwitchReachesTheInstalledProvider() {
-        let key = SSDPrefixCachePolicy.maxStageMBFlag
-        #expect(key == "DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB")
-        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
-        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
-        let foreground = [key: "7168", "UNRELATED_SECRET": "excluded"]
+    @Test("the checkpoint setting alone decides the complete-checkpoint cap and leaves attention staging alone",
+          arguments: [7168, 4096])
+    func checkpointSettingDecidesTheCheckpointCapOnly(megabytes: Int) {
+        let environment = [Self.checkpointKey: "\(megabytes)"]
+        #expect(SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(
+            environment: environment, physicalMemoryBytes: 512 * Self.gib) == megabytes * 1_048_576)
+        #expect(SSDPrefixCachePolicy.maxStageBytes(environment: environment)
+            == SSDPrefixCachePolicy.defaultMaxStageBytes)
+    }
+
+    @Test("the checkpoint setting wins over the general one, and an invalid value falls through to it")
+    func checkpointSettingPrecedence() {
+        let general = SSDPrefixCachePolicy.maxStageMBFlag
+        let both = [Self.checkpointKey: "7168", general: "512"]
+        #expect(SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(
+            environment: both, physicalMemoryBytes: 512 * Self.gib) == 7168 * 1_048_576)
+        #expect(SSDPrefixCachePolicy.maxStageBytes(environment: both) == 512 * 1_048_576)
+        #expect(SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(
+            environment: [Self.checkpointKey: "0", general: "512"], physicalMemoryBytes: 512 * Self.gib)
+            == 512 * 1_048_576)
+    }
+
+    @Test("both settings reach the installed provider; the checkpoint one keeps a 256 GiB Mac at 7 GiB")
+    func settingsReachTheInstalledProvider() {
+        #expect(SSDPrefixCachePolicy.maxStageMBFlag == "DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB")
+        for key in [SSDPrefixCachePolicy.maxStageMBFlag, Self.checkpointKey] {
+            #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key), "\(key)")
+            #expect(!WatchdogAgent.passthroughEnvKeys.contains(key), "\(key)")
+        }
+        let foreground = [Self.checkpointKey: "7168", "UNRELATED_SECRET": "excluded"]
         let plist = LaunchAgent.makeServicePlist(
             label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
             logPath: "/test/provider.log", environment: foreground)
         let launchd = plist["EnvironmentVariables"] as? [String: String] ?? [:]
-        #expect(launchd[key] == "7168")
+        #expect(launchd[Self.checkpointKey] == "7168")
         #expect(launchd["UNRELATED_SECRET"] == nil)
         #expect(SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(
             environment: launchd, physicalMemoryBytes: 256 * Self.gib)
             == SSDPrefixCachePolicy.largeMemoryCompleteCheckpointStageBytes)
+        #expect(SSDPrefixCachePolicy.maxStageBytes(environment: launchd)
+            == SSDPrefixCachePolicy.defaultMaxStageBytes)
     }
 }

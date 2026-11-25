@@ -140,8 +140,15 @@ enum SSDPrefixCachePolicy {
         configuredMaxStageBytes(environment: environment) ?? defaultMaxStageBytes
     }
 
-    private static func configuredMaxStageBytes(environment: [String: String]) -> Int? {
-        guard let raw = environment[maxStageMBFlag],
+    /// The complete-checkpoint byte cap alone: when set it decides
+    /// `completeCheckpointMaxStageBytes`, ahead of `maxStageMBFlag`, and leaves
+    /// attention staging at `maxStageBytes`. `7168` restores the 7 GiB depth.
+    static let checkpointMaxStageMBFlag = "DARKBLOOM_PREFIX_CACHE_SSD_CHECKPOINT_MAX_STAGE_MB"
+
+    private static func configuredMaxStageBytes(
+        environment: [String: String], flag: String = maxStageMBFlag
+    ) -> Int? {
+        guard let raw = environment[flag],
             let mb = Int(raw.trimmingCharacters(in: .whitespaces)), mb > 0,
             mb < Int.max / 1_048_576
         else { return nil }
@@ -193,7 +200,11 @@ enum SSDPrefixCachePolicy {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) -> Int {
-        if let configured = configuredMaxStageBytes(environment: environment) { return configured }
+        if let configured = configuredMaxStageBytes(environment: environment, flag: checkpointMaxStageMBFlag)
+            ?? configuredMaxStageBytes(environment: environment)
+        {
+            return configured
+        }
         if physicalMemoryBytes >= veryLargeMemoryThresholdBytes {
             return veryLargeMemoryCompleteCheckpointStageBytes
         }

@@ -402,8 +402,9 @@ public enum LaunchAgent: Sendable {
     /// terminal follows its complete-checkpoint write by default; the opt-in
     /// to answer first must reach the job to apply to an installed provider.
     /// `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`: the staging byte cap, whose
-    /// memory-based complete-checkpoint default an explicit value replaces;
-    /// `7168` keeps a 256 GiB Mac at the 7 GiB depth and must reach the job.
+    /// memory-based complete-checkpoint default an explicit value replaces.
+    /// `DARKBLOOM_PREFIX_CACHE_SSD_CHECKPOINT_MAX_STAGE_MB`: the complete-checkpoint
+    /// cap alone; `7168` keeps a 256 GiB Mac at the 7 GiB depth and must reach the job.
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out
@@ -582,6 +583,7 @@ public enum LaunchAgent: Sendable {
         SSDPrefixCachePolicy.parallelStageFlag,
         SSDPrefixCachePolicy.terminalBeforePublicationFlag,
         SSDPrefixCachePolicy.maxStageMBFlag,
+        SSDPrefixCachePolicy.checkpointMaxStageMBFlag,
         SSDPrefixCachePolicy.ttlModeEnvironmentFlag,
         RequestCachePolicy.localServingEnvironmentKey,
         "DARKBLOOM_TTFT_GDN_BLOCKED",

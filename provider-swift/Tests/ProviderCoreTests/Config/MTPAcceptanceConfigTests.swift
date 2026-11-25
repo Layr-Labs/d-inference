@@ -103,6 +103,30 @@ struct MTPAcceptanceConfigTests {
         }
     }
 
+    @Test("Inkling defaults to exact; settings still win")
+    func inklingDefaultsToExact() {
+        let typical = CBv2MTPAcceptance.typical(delta: CBv2MTPAcceptance.defaultTypicalDelta)
+        let inkling = "thinkingmachines/Inkling-2-Mini"
+        #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: inkling).acceptance == .exact)
+        // Only the served identity: a case variant, another revision's id and
+        // every other drafting model keep their built-in rule.
+        for id in [
+            "thinkingmachines/inkling-2-mini", "thinkingmachines/Inkling-2", "Inkling-2-Mini",
+            "nvidia-nemotron-3.5-lightning", "glm-5.3-flash", "gemma-4-26b",
+        ] {
+            #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: id).acceptance == typical, "\(id)")
+        }
+        // The earlier exact builds stay exact.
+        for id in ["gemma-4-26b-qat-4bit", "Qwen3.5-9B", "EigenLabs/Qwen3.8-27B-4bit-mtp"] {
+            #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: id).acceptance == .exact, "\(id)")
+        }
+        // The precedence is unchanged: a per-model or global value still wins.
+        #expect(MTPAcceptancePolicy.resolve(
+            global: nil, byModel: [inkling: "typical"], modelID: inkling).acceptance == typical)
+        #expect(MTPAcceptancePolicy.resolve(
+            global: "typical", byModel: [:], modelID: inkling).acceptance == typical)
+    }
+
     @Test("an unknown value resolves to exact and is reported")
     func unknownValue() {
         let resolved = MTPAcceptancePolicy.resolve(

@@ -244,7 +244,7 @@ enum SSDPrefixCachePolicy {
     static let incrementalCheckpointsFlag = "DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS"
 
     static func incrementalCheckpoints(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        !["0", "false", "no", "off"].contains(environment[incrementalCheckpointsFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
+        !isOptedOut(incrementalCheckpointsFlag, environment: environment)
     }
 
     /// Complete-checkpoint restores read and authenticate chunks ahead of the
@@ -253,7 +253,7 @@ enum SSDPrefixCachePolicy {
     static let parallelStageFlag = "DARKBLOOM_PREFIX_CACHE_PARALLEL_STAGE"
 
     static func parallelStage(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        !["0", "false", "no", "off"].contains(environment[parallelStageFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
+        !isOptedOut(parallelStageFlag, environment: environment)
     }
 
     /// Deliver a donor's response before its complete checkpoint is durable
@@ -265,8 +265,7 @@ enum SSDPrefixCachePolicy {
     static func terminalBeforePublication(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        !["0", "false", "no", "off"].contains(
-            environment[terminalBeforePublicationFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
+        !isOptedOut(terminalBeforePublicationFlag, environment: environment)
     }
 
     static func strictFsync(
@@ -280,6 +279,13 @@ enum SSDPrefixCachePolicy {
     private static func isOptedIn(_ flag: String, environment: [String: String]) -> Bool {
         let value = environment[flag]?.trimmingCharacters(in: .whitespaces).lowercased()
         return ["1", "true", "yes", "on"].contains(value)
+    }
+
+    /// An on-by-default flag is off only for 0, false, no or off, in any case
+    /// and with surrounding spaces or tabs.
+    private static func isOptedOut(_ flag: String, environment: [String: String]) -> Bool {
+        let value = environment[flag]?.trimmingCharacters(in: .whitespaces).lowercased()
+        return ["0", "false", "no", "off"].contains(value)
     }
 
     // MARK: - Write-behind bounds

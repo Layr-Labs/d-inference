@@ -397,10 +397,10 @@ extension ProviderLoop {
                         plan: $0, heldForModelID: modelRevisionActivationID)
                     : try GLM5NextArtifactOwnership.acquire(plan: $0)
             }
+        } catch is ModelArtifactBusy {
+            throw artifactBusyLoadRefusal(modelId)
         } catch ModelCatalogError.downloadFailed {
-            let message = "Model '\(modelId)' is being downloaded or verified; retry after it finishes"
-            recordModelLoadError(model: modelId, message: message)
-            throw InferenceError.modelLoadFailed(message)
+            throw artifactBusyLoadRefusal(modelId)
         }
         defer { glmOwnership?.release() }
         // Super's own slot state refuses its load before either eviction below.
@@ -1738,4 +1738,13 @@ extension ProviderLoop {
             at: directory.appendingPathComponent("config.json"), modelID: modelID)
     }
 
+}
+
+extension ProviderLoop {
+    /// A load whose model files another process is writing or verifying: refused retriably, so routing moves on.
+    func artifactBusyLoadRefusal(_ modelId: String) -> InferenceError {
+        let message = "Model '\(modelId)' is being downloaded or verified; retry after it finishes"
+        recordModelLoadError(model: modelId, message: message)
+        return InferenceError.modelLoadFailed(message)
+    }
 }

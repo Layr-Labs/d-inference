@@ -27,10 +27,7 @@ final class ModelArtifactWriteLease: @unchecked Sendable {
         do {
             while flock(fd, LOCK_EX | LOCK_NB) != 0 {
                 if errno == EINTR { continue }
-                if errno == EWOULDBLOCK {
-                    throw ModelCatalogError.downloadFailed(
-                        "\(modelID) is being downloaded, updated or verified by another process; retry \(operation) after it finishes")
-                }
+                if errno == EWOULDBLOCK { throw ModelArtifactBusy(modelID: modelID, operation: operation) }
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
             return ModelArtifactWriteLease(fd)
@@ -53,4 +50,23 @@ final class ModelArtifactWriteLease: @unchecked Sendable {
 
     func release() { flock(descriptor, LOCK_UN) }
     deinit { close(descriptor) }
+}
+
+/// Another process holds the model's write lease (`ModelArtifactWriteLease.acquireIfAvailable`): a download,
+/// update or verification of it is in progress. Its text is the `ModelCatalogError.downloadFailed` text it
+/// replaces; callers that can wait it out match this type.
+public struct ModelArtifactBusy: Error, CustomStringConvertible, LocalizedError, Sendable {
+    public let modelID: String
+    public let operation: String
+
+    public init(modelID: String, operation: String) {
+        self.modelID = modelID
+        self.operation = operation
+    }
+
+    public var description: String {
+        "download failed: \(modelID) is being downloaded, updated or verified by another process; retry \(operation) after it finishes"
+    }
+
+    public var errorDescription: String? { description }
 }

@@ -769,10 +769,11 @@ inventory check (`Start.PickerReserveMode`, `Start.resolveFallbackSelection` in
 
 Autopilot inventory verification names each cached model before checking its bytes.
 If another process holds that model’s update/verification lock, the check reports
-the busy model immediately. An ordinary start with saved consent keeps such a model:
-when at least one other enrolled model verified, it prints `Keeping <model> in the
-recorded Autopilot inventory`, saves the recorded inventory unchanged and starts, and
-the running provider checks that build again. When none verified, it fails before
+the busy model immediately (`ModelArtifactBusy`). An ordinary start with saved consent
+keeps such a model: when at least one other enrolled model verified, it prints
+`Keeping <model> in the recorded Autopilot inventory`, saves the recorded inventory
+unchanged and starts; the serving process hashes that build again when it starts,
+before it joins the Autopilot set it reports. When none verified, it fails before
 changing enrollment or draining the running provider; retry after the update finishes.
 `status` and `autopilot status` read the same daemon snapshot, including nested
 Autopilot residents and load history. Enrollment does not make a live daemon disappear
@@ -2105,10 +2106,12 @@ bounds fail without stopping the existing daemon or installing a replacement.
 
 The recorded inventory is an exact-build allowlist. Ordinary starts with saved
 enrollment validate all recorded IDs before persistence or drain, and nothing a
-start does shrinks consent. A recorded build that is on disk and eligible but
-fails verification now (a held download lock, a transient manifest error) is kept
+start does shrinks consent. A recorded build that is on disk and eligible but whose
+write lease another process holds now (a download or update in progress) is kept
 unchanged and named, and the start goes on while another recorded build verified.
-A missing or ineligible build, or no verified build at all, fails the start. The saved selection never grows by itself, but
+A build that fails its check (corrupt, unreadable, not the catalog's build, or a
+manifest error), a missing or ineligible build, or no verified build at all, fails
+the start. The saved selection never grows by itself, but
 with saved consent the running provider adds every verified catalog build in
 the cache, including builds Autopilot downloads on the operator's behalf and
 verified coordinator-desired replacements, to the Autopilot set it reports

@@ -48,6 +48,19 @@ struct ModelArtifactWriteLeaseTests {
         }
     }
 
+    @Test("a held writer lease is reported as its own error type, with the same text")
+    func heldLeaseIsTyped() async throws {
+        let id = "test-org/typed-lease-\(UUID().uuidString)"
+        let lease = try await ModelArtifactWriteLease.acquire(modelID: id)
+        defer { lease.release() }
+        let model = CatalogModel(id: id, s3Name: id, displayName: id, sizeGb: 1, weightHash: "test")
+        await #expect(throws: ModelArtifactBusy.self) { try await ModelDownloader().verifySelectedModel(model) }
+        #expect(throws: ModelArtifactBusy.self) { try ModelArtifactWriteLease.acquireIfAvailable(modelID: id) }
+        #expect(ModelArtifactBusy(modelID: id, operation: "verification").localizedDescription
+            == "download failed: \(id) is being downloaded, updated or verified by another process; "
+                + "retry verification after it finishes")
+    }
+
     @Test("recreating the model directory cannot create a second writer lock")
     func lockSurvivesModelDirectoryReplacement() async throws {
         let id = "test-org/replace-lease-\(UUID().uuidString)"

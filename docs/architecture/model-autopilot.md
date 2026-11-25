@@ -28,10 +28,13 @@ network alone. Both, me first never asks and keeps the saved answer
 has no Autopilot (`start --autopilot` is refused for it) and leaves the saved
 answer as it is. An ordinary start with saved consent verifies the recorded
 inventory without changing it (`Start.verifiedAutopilotInventory`): a recorded
-build that is on disk and eligible but fails verification at that moment, for
-example while an Autopilot download holds it, is named and kept, and the start
-goes on while another recorded build verified; the running provider checks that
-build again. A missing or ineligible build, or none verified, fails the start.
+build that is on disk and eligible but whose write lease another process holds
+at that moment (`ModelArtifactBusy`, for example an Autopilot download in
+progress) is named and kept, and the start goes on while another recorded build
+verified; the serving process hashes it again when it starts
+(`attachWeightHashes`), and only a hashed build joins the Autopilot set. A build
+that fails its check, a missing or ineligible build, or none verified, fails
+the start.
 
 | Responsibility | Provider source |
 |---|---|

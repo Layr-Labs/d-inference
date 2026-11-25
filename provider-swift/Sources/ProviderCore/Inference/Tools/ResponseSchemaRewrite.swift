@@ -19,7 +19,7 @@ import MLXLMCommon
 /// `maximumWork`, a definition name over 256 bytes, or what the compiler
 /// refuses wherever it reads it, refused here at every node so that no copy
 /// is read at length: a key over 20 bytes, a `type` name over 7, more than
-/// 128 `required` names or one over 64), so the caller keeps its fallback. It
+/// 128 `required` names or one over the caller's byte bound), so the caller keeps its fallback. It
 /// rewrites `properties` and `items` whatever the node's type, so those
 /// checks and references hold there too.
 ///
@@ -65,13 +65,14 @@ enum ResponseSchemaRewrite {
         "json-schema.org/draft/2019-09/schema", "json-schema.org/draft/2020-12/schema",
     ]
 
-    static func subset(_ schema: MLXLMCommon.JSONValue, relaxingAssertions: Bool = false) -> MLXLMCommon.JSONValue? {
+    static func subset(_ schema: MLXLMCommon.JSONValue, relaxingAssertions: Bool = false,
+                       propertyNames: ToolConstraintSchemaCompiler.PropertyNames = .identifiers) -> MLXLMCommon.JSONValue? {
         guard case .object(var root) = schema else { return nil }
         if let metaSchema = root.removeValue(forKey: "$schema") {
             guard case .string(let uri) = metaSchema, readsAsTheSubset(uri) else { return nil }
         }
         root.removeValue(forKey: "$id")
-        var walk = Walk(relaxing: relaxingAssertions)
+        var walk = Walk(relaxing: relaxingAssertions, propertyNames: propertyNames)
         for container in ["$defs", "definitions"] {
             guard let value = root.removeValue(forKey: container) else { continue }
             guard case .object(let entries) = value else { return nil }
@@ -95,6 +96,7 @@ enum ResponseSchemaRewrite {
 
     private struct Walk {
         let relaxing: Bool
+        let propertyNames: ToolConstraintSchemaCompiler.PropertyNames
         var definitions: [String: MLXLMCommon.JSONValue] = [:]
         var budget = maximumWork
         /// The references being inlined on the current path.
@@ -169,8 +171,8 @@ enum ResponseSchemaRewrite {
         /// The compiler reads `type` and `required` on every copy of a node,
         /// so each is bounded to what the compiler takes where it reads it: a
         /// type name (lowercased; `boolean` and `integer`, 7 bytes, are the
-        /// longest), and at most 128 required property names of at most 64
-        /// bytes. Arrays are paid per member.
+        /// longest), and at most 128 required names within the property-name
+        /// byte limit. Arrays are paid per member.
         private mutating func readsBounded(_ object: [String: MLXLMCommon.JSONValue]) -> Bool {
             func names(_ value: MLXLMCommon.JSONValue, longest: Int) -> Bool {
                 guard case .string(let name) = value else { return false }
@@ -186,7 +188,7 @@ enum ResponseSchemaRewrite {
             }
             if case .array(let required)? = object["required"] {
                 guard required.count <= ToolConstraintSchemaCompiler.maxProperties, spend(required.count),
-                      required.allSatisfy({ names($0, longest: 64) }) else { return false }
+                      required.allSatisfy({ names($0, longest: propertyNames.maxBytes) }) else { return false }
             }
             return true
         }

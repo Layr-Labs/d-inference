@@ -295,7 +295,7 @@ struct FlintResponseFormatPolicyTests {
             #"{"type":"array","items":{"type":"string"},"maxItems":64}"#,
             #"{"type":"object","properties":{"a":{"nullable":true}}}"#,
             #"{"type":"string","enum":["<think>"]}"#,
-            #"{"type":"object","properties":{"bad key":{"type":"string"}}}"#,
+            #"{"type":"object","properties":{"":{"type":"string"}}}"#,
             #"{"type":"object","properties":{"a":{"type":"string","x-darkbloom-original-boolean-schema":true}}}"#,
         ]
         for format in schemas.map(F.schemaFormat) + [#"{"type":"json_schema"}"#] {
@@ -309,6 +309,36 @@ struct FlintResponseFormatPolicyTests {
                 }
                 #expect(message.hasPrefix("Flint response_format is"))
                 #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+            }
+        }
+    }
+
+    @Test func localSchemaFailureLogOmitsCallerTextEvenInDebugMode() throws {
+        let prop = "weatherStationFixture", keyword = "weatherKeywordFixture", type = "weathertypefixture"
+        for (child, expected) in [
+            (#"{"type":"string","weatherKeywordFixture":1}"#, keyword),
+            (#"{"type":"weathertypefixture"}"#, type)
+        ] {
+            let request = try F.request(format: F.schemaFormat(
+                #"{"type":"object","properties":{"\#(prop)":\#(child)}}"#))
+            do {
+                _ = try FlintResponseFormat.resolve(request, modelType: "flint")
+                Issue.record("invalid schema accepted")
+            } catch MultiModelBatchSchedulerEngineError.invalidToolPayload(let detail, let refusal) {
+                // Positive control: the actual compiler error would expose the
+                // fixture through an accidental rich-error debug write.
+                #expect(detail.contains(prop) && detail.contains(expected))
+                let error = MultiModelBatchSchedulerEngineError.invalidToolPayload(detail, refusal: refusal)
+                let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .generation)
+                for debug in [false, true] {
+                    let pipe = Pipe()
+                    failure.writeLocalDiagnostic(to: pipe.fileHandleForWriting, debug: debug)
+                    try pipe.fileHandleForWriting.close()
+                    let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                    #expect(output.contains(failure.code.rawValue))
+                    #expect(output.contains("HTTP 400") == debug)
+                    for text in [prop, keyword, type] { #expect(!output.contains(text)) }
+                }
             }
         }
     }

@@ -4486,6 +4486,14 @@ for a `json_object` without a JSON-shaped prompt may put its prose in a key.
 These rows have no loop guard; a long one ends at `max_tokens` as a `length`
 finish with its answer as generated (unchecked).
 
+**Declared response property names.** With `DARKBLOOM_JSON_RESPONSE_PROPERTY_NAMES=1`, the JSON answer grammar spells each
+declared key literally in UTF-8 (1–256 bytes before escaping). Quote and
+backslash are escaped; control bytes below `0x20` use lowercase `\u00xx`.
+Only that spelling selects the property; a second spelling or a repeated key
+is not admitted. A key containing the family's reserved markup cannot enter
+this grammar. Unset, `off`, and unrecognized values keep the default identifier-only rule. This setting applies to response formats, not tool
+declarations or tool arguments.
+
 **Client schemas outside the subset (Qwen).** On the Qwen profile a
 `json_schema` the subset refuses is widened before it is declined
 (`QwenJSONSchemaRewrite`; `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`, on by default,

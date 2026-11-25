@@ -314,8 +314,9 @@ enum ToolConstraintValidation {
     }
 
     /// Response-format post-validation over the same compiled subset.
-    static func satisfies(_ value: MLXLMCommon.JSONValue, schema: ToolValueSchema) -> Bool {
-        validate(value, against: schema)
+    static func satisfies(_ value: MLXLMCommon.JSONValue, schema: ToolValueSchema,
+                          propertyNames: ToolConstraintSchemaCompiler.PropertyNames = .response) -> Bool {
+        validate(value, against: schema, exactKeys: propertyNames == .json)
     }
 
     /// Response-format post-validation against a caller's JSON Schema that the
@@ -327,24 +328,24 @@ enum ToolConstraintValidation {
 
     private static func validate(
         _ value: ToolArgumentJSONValue,
-        against schema: ToolValueSchema
+        against schema: ToolValueSchema,
+        exactKeys: Bool = false
     ) -> Bool {
         if value == .null { return schema.nullable }
         switch (schema, value) {
         case (.object(let properties, let allowsAdditional, _), .object(let object)):
             let byName = Dictionary(
                 uniqueKeysWithValues: properties.map { ($0.name, $0) })
-            for property in properties where property.required && object[property.name] == nil {
-                return false
-            }
+            var missing = properties.count(where: \.required)
             for (name, value) in object {
-                guard let property = byName[name] else {
+                guard let property = byName[name], !exactKeys || property.name.utf8.elementsEqual(name.utf8) else {
                     if !allowsAdditional { return false }
                     continue
                 }
-                if !validate(value, against: property.schema) { return false }
+                if property.required { missing -= 1 }
+                if !validate(value, against: property.schema, exactKeys: exactKeys) { return false }
             }
-            return true
+            return missing == 0
         case (
             .array(let items, let minItems, let maxItems, _),
             .array(let values)
@@ -352,7 +353,7 @@ enum ToolConstraintValidation {
             guard values.count >= minItems,
                 maxItems.map({ values.count <= $0 }) ?? true
             else { return false }
-            return values.allSatisfy { validate($0, against: items) }
+            return values.allSatisfy { validate($0, against: items, exactKeys: exactKeys) }
         case (.string(let allowed, _), .string(let value)):
             return allowed?.contains(value) ?? true
         case (.boolean(let allowed, _), .bool(let value)):

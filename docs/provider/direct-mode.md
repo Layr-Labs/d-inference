@@ -640,6 +640,11 @@ earlier typing); it reaches an installed service on `darkbloom start`, not
 
 ### Refused request shapes
 
+For local engine and media failures the diagnostic on standard error contains
+the failure code and bounded reason. `DARKBLOOM_DEBUG_LOCAL_ERRORS=1` adds the
+HTTP status; it does not print the engine error description. This also applies
+when a response schema fails to compile.
+
 The chat routes and Responses input answer these shapes with an OpenAI error
 envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 

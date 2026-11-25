@@ -216,16 +216,8 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
         {
             let failure = ProviderLoop.sanitizedInferenceFailure(
                 from: error, phase: .generation)
-            // The closed vocabulary only (the error's case name and bounded reason, never its text), so a failing
-            // local request leaves a line in this Mac's log (a cluster's 500 left nothing to read, 2026-10-16).
-            // The engine's own error enum names its case; anything else only its type (no description text).
-            let kind = error is MultiModelBatchSchedulerEngineError
-                ? String(String(describing: error).prefix { $0 != "(" }.prefix(64)) : String(describing: type(of: error))
-            FileHandle.standardError.write(Data(("local API: request failed: \(failure.code.rawValue) (\(kind)"
-                + (failure.errorReason.map { ", \($0.rawValue)" } ?? "") + ")\n").utf8))
-            if ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1" {
-                FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
-            }
+            failure.writeLocalDiagnostic(to: .standardError,
+                debug: ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1")
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
             // A request beyond what this Mac's memory holds now, or one an
             // advertised context's own guard refuses (with the output cut to
@@ -360,4 +352,14 @@ private struct OpenAIErrorEnvelope: Encodable {
         var code: String? = nil
     }
     let error: ErrorObject
+}
+
+// Taking only the sanitized failure keeps raw schema diagnostics out of stderr,
+// including when the local debug switch is set.
+extension InferenceFailure {
+    func writeLocalDiagnostic(to sink: FileHandle, debug: Bool) {
+        let reason = errorReason.map { ", \($0.rawValue)" } ?? ""
+        let status = debug ? ", HTTP \(statusCode)" : ""
+        sink.write(Data("local API: request failed: \(code.rawValue)\(reason)\(status)\n".utf8))
+    }
 }

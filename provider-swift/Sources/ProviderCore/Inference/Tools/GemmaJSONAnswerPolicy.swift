@@ -92,7 +92,7 @@ enum GemmaJSONAnswerPolicy {
         if let exact = compiled(format) { return (exact, false) }
         guard format.type == .jsonSchema, var payload = format.jsonSchema else { return nil }
         let schema = payload.schema
-        if let rewritten = ResponseSchemaRewrite.subset(schema) {
+        if let rewritten = ResponseSchemaRewrite.subset(schema, propertyNames: .response) {
             payload.schema = rewritten
             if let exact = compiled(.jsonSchema(payload)) { return (exact, false) }
         }

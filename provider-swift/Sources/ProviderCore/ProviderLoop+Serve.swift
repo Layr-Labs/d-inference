@@ -224,7 +224,8 @@ extension ProviderLoop {
             // the claim is derived from that control's own policy bytes.
             clusterMembership: try nativePairMemberControl?.installation.membership,
             pairServingGrantedModelIDs: loopConfig.pairServingGrantedModelIDs,
-            memberNegotiationWindow: clusterMemberNegotiationWindow
+            memberNegotiationWindow: clusterMemberNegotiationWindow,
+            blindRequests: blindRequestRegistration()
         )
 
         // A termination received during the APNs/startup awaits can already
@@ -383,7 +384,7 @@ extension ProviderLoop {
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
                     let profile, let serviceReservationID, let promptWork,
-                    let gemmaPromptContract, let frameCachePolicy
+                    let gemmaPromptContract, let frameCachePolicy, let blind
                 ):
                     await admitInWorkFIFO(requestId: requestId, queuedBytes: ciphertext.count) { gate in
                         await self.handleInferenceRequest(
@@ -403,6 +404,7 @@ extension ProviderLoop {
                             promptWork: promptWork,
                             gemmaPromptContract: gemmaPromptContract,
                             frameCachePolicy: frameCachePolicy,
+                            blind: blind,
                             send: send,
                             workFIFOGate: gate
                         )
@@ -479,7 +481,7 @@ extension ProviderLoop {
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
                 case .inferenceRequest(
-                    let requestId, let ciphertext, _, _, _, _, _, _, _, _, _, let profile, let serviceReservationID, _, _, _
+                    let requestId, let ciphertext, _, _, _, _, _, _, _, _, _, let profile, let serviceReservationID, _, _, _, _
                 ):
                     // Here, not in the work reader: on arrival, in order with
                     // the trust statuses `ServingReadiness` compares it to.

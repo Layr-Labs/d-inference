@@ -187,12 +187,14 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case inferenceFailureEncryption = "Inference failure: encryption"
     case inferenceFailureGeneration = "Inference failure: generation"
     case inferenceFailureInternal = "Inference failure: internal"
+    case inferenceFailureBlindRefused = "Inference failure: blind request refused"
 
     // Closed reasons for client refusals before the inference task or while
     // the prompt is prepared (`InferenceRefusalReason`).
     case refusalMissingSenderKey = "Inference failure: invalid request (missing sender key)"
     case refusalUndecryptableRequest = "Inference failure: invalid request (undecryptable request)"
     case refusalReservedToolSchemaMetadata = "Inference failure: invalid request (reserved tool schema metadata)"
+    case refusalSealedForBlindRequest = "Inference failure: invalid request (sealed for a blind request)"
     case refusalMalformedBody = "Inference failure: invalid request (malformed body)"
     case refusalInvalidMessages = "Inference failure: invalid request (invalid messages)"
     case refusalUnsupportedMessageRole = "Inference failure: invalid request (unsupported message role)"

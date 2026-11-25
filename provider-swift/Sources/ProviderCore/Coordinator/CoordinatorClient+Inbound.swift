@@ -56,6 +56,22 @@ extension CoordinatorClient {
         }
     }
 
+    /// Whether `request` repeats a blind request whose signature verified when
+    /// it was first received; the first copy is recorded until its signature's
+    /// window ends. The handler runs every check of the request in full.
+    private func isRepeatOfBlindRequest(_ request: CoordinatorMessage.InferenceRequest,
+        senderPublicKey: Data, ciphertext: Data) -> Bool {
+        guard let blind = request.blind, let pins = config.blindRequests?.pins,
+              let ownKey = config.publicKey.flatMap({ Data(base64Encoded: $0) }) else { return false }
+        let now = Date()
+        guard case .success(let signature) = CoordinatorRequestJWS.verify(
+            blind.signedRequest, pins: pins, requestID: request.requestId,
+            serviceReservationID: request.serviceReservationID, recipientPublicKey: ownKey,
+            senderPublicKey: senderPublicKey, ciphertext: ciphertext, now: now)
+        else { return false }
+        return !servedBlindRequests.admitBlindSignature(signature, now: now)
+    }
+
     internal func handleIncomingFrame(
         _ data: Data,
         receivedAt: ContinuousClock.Instant,
@@ -176,7 +192,9 @@ extension CoordinatorClient {
                     serviceReservationID: request.serviceReservationID)
                 return
             }
-            if config.requestVerifier.checksRequests, let refusal = config.requestVerifier.check(
+            // A blind frame is verified by its own signature (`signed_request`)
+            // in the handler; `coordinator_signature` is not read for it.
+            if request.blind == nil, config.requestVerifier.checksRequests, let refusal = config.requestVerifier.check(
                 request, senderPublicKey: senderKeyBytes, ciphertext: cipherBytes,
                 recipientPublicKey: config.publicKey.flatMap { Data(base64Encoded: $0) },
                 now: Date(), served: &servedSignedRequests) {
@@ -188,6 +206,13 @@ extension CoordinatorClient {
                         failure: InferenceFailure(code: .encryptionFailure, statusCode: 502),
                         profile: profile.wireObject(), serviceReservationID: request.serviceReservationID)
                 }
+                return
+            }
+
+            // A repeat of a blind request already received gets no answer: an
+            // answer would end the copy being served.
+            if isRepeatOfBlindRequest(request, senderPublicKey: senderKeyBytes, ciphertext: cipherBytes) {
+                logger.error("Ignoring a repeat of blind request \(requestId)")
                 return
             }
 
@@ -207,7 +232,8 @@ extension CoordinatorClient {
                 serviceReservationID: request.serviceReservationID,
                 promptWork: request.promptWork,
                 gemmaPromptContract: request.gemmaPromptContract,
-                frameCachePolicy: request.frameCachePolicy
+                frameCachePolicy: request.frameCachePolicy,
+                blind: request.blind
             ))
 
         case .cancel(let cancel):

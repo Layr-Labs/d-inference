@@ -52,7 +52,11 @@ public struct CapturedMessages: Sendable {
     public var serviceReservationReleases: [String] = []
     public var inferenceChunks: [ProviderMessage.InferenceResponseChunk] = []
     public var inferenceComplete: [ProviderMessage.InferenceComplete] = []
+    /// The exact bytes of each `inference_complete` frame, in arrival order.
+    public var inferenceCompleteFrames: [Data] = []
     public var inferenceErrors: [ProviderMessage.InferenceError] = []
+    /// The exact bytes of each `inference_error` frame, in arrival order.
+    public var inferenceErrorFrames: [Data] = []
     public var loadModelStatuses: [ProviderMessage.LoadModelStatus] = []
     public var prefetchModelStatuses: [ProviderMessage.PrefetchModelStatus] = []
     public var modelsUpdates: [ProviderMessage.ModelsUpdate] = []
@@ -430,6 +434,19 @@ public final class MockCoordinator: @unchecked Sendable {
         try await sendCoordinatorMessage(msg)
     }
 
+    /// Pushes an `inference_request` the test built itself.
+    public func pushInferenceRequest(_ request: CoordinatorMessage.InferenceRequest) async throws {
+        try await sendCoordinatorMessage(.inferenceRequest(request))
+    }
+
+    /// Pushes one coordinator frame as raw JSON, whatever members it has.
+    public func pushRawFrame(_ object: [String: Any]) async throws {
+        let outbound: WebSocketOutboundWriter? = lock.withLock { activeOutbound }
+        guard let outbound else { throw MockCoordinatorError.noActiveWebSocket }
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        try await outbound.write(.text(json))
+    }
+
     public func pushCancel(requestId: String) async throws {
         let msg = CoordinatorMessage.cancel(.init(requestId: requestId))
         try await sendCoordinatorMessage(msg)
@@ -715,8 +732,12 @@ public final class MockCoordinator: @unchecked Sendable {
             case .inferenceAccepted(let a):   captured.inferenceAccepted.append(a)
             case .serviceReservationReleased(let id): captured.serviceReservationReleases.append(id)
             case .inferenceResponseChunk(let c): captured.inferenceChunks.append(c)
-            case .inferenceComplete(let c):   captured.inferenceComplete.append(c)
-            case .inferenceError(let e):      captured.inferenceErrors.append(e)
+            case .inferenceComplete(let c):
+                captured.inferenceComplete.append(c)
+                captured.inferenceCompleteFrames.append(data)
+            case .inferenceError(let e):
+                captured.inferenceErrors.append(e)
+                captured.inferenceErrorFrames.append(data)
             case .modelAutopilotStatus: break // Observable through providerMessage event stream.
             case .loadModelStatus(let s):    captured.loadModelStatuses.append(s)
             case .prefetchModelStatus(let s): captured.prefetchModelStatuses.append(s)

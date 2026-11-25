@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 
@@ -16,35 +17,64 @@ final class ResponseFrameSealer: Sendable {
     private let keyPair: NodeKeyPair
     private let sharedKey: Data
     let prefix: [UInt8]
-    /// Frames sealed so far, which is also the next frame's number. Held
-    /// across each seal so that a number goes to exactly one box.
-    private let sealedFrames = os.OSAllocatedUnfairLock<UInt64>(initialState: 0)
 
-    init(keyPair: NodeKeyPair, sharedKey: Data, prefix: [UInt8] = ResponseFrameSealer.randomPrefix()) {
+    private struct Sealed {
+        /// Frames sealed so far, which is also the next frame's number.
+        var count: UInt64 = 0
+        /// SHA-256 over the raw `nonce ‖ box` of every frame sealed so far,
+        /// for a sealer that digests its frames.
+        var digest: SHA256?
+    }
+
+    /// Held across each seal so that a number goes to exactly one box.
+    private let sealed: os.OSAllocatedUnfairLock<Sealed>
+
+    /// `digestsFrames`: keep `framesSHA256`, which a blind request's signed
+    /// usage names.
+    init(keyPair: NodeKeyPair, sharedKey: Data, prefix: [UInt8] = ResponseFrameSealer.randomPrefix(),
+         digestsFrames: Bool = false) {
         precondition(prefix.count == Self.prefixLength)
         self.keyPair = keyPair
         self.sharedKey = sharedKey
         self.prefix = prefix
+        sealed = os.OSAllocatedUnfairLock(initialState: Sealed(digest: digestsFrames ? SHA256() : nil))
     }
 
     /// Seals the next frame of the response.
     func sealFrame(_ plaintext: some Collection<UInt8>) throws -> EncryptedPayload {
-        try sealedFrames.withLockUnchecked { count in
+        try sealed.withLockUnchecked { state in
             let payload = try keyPair.encryptPayloadFast(
-                sharedKey: sharedKey, plaintext: plaintext, nonce: nonce(count))
-            count += 1
+                sharedKey: sharedKey, plaintext: plaintext, nonce: nonce(state.count))
+            if state.digest != nil {
+                guard let raw = Data(base64Encoded: payload.ciphertext) else { throw CryptoError.encryptionFailed }
+                state.digest?.update(data: raw)
+            }
+            state.count += 1
             return payload
         }
     }
 
-    /// Seals the request's usage and frame count under the number after the
-    /// last frame. Sealing it ends the sequence: call it once, after the last
-    /// frame.
-    func sealUsage(_ usage: UsageInfo) throws -> EncryptedPayload {
-        try sealedFrames.withLockUnchecked { count in
-            let body = try Self.usageEncoder.encode(SealedResponseUsage(frameCount: count, usage: usage))
-            let payload = try keyPair.encryptPayloadFast(sharedKey: sharedKey, plaintext: body, nonce: nonce(count))
-            count += 1
+    /// Frames sealed so far: read before `sealUsage`, the count it seals.
+    var framesSealed: UInt64 {
+        sealed.withLock { $0.count }
+    }
+
+    /// SHA-256 over the raw `nonce ‖ box` of every frame sealed so far, in
+    /// order; nil for a sealer that does not digest its frames.
+    var framesSHA256: Data? {
+        sealed.withLock { state in state.digest.map { Data($0.finalize()) } }
+    }
+
+    /// Seals the request's usage and frame count, and `terminal` when given,
+    /// under the number after the last frame. Sealing it ends the sequence:
+    /// call it once, after the last frame.
+    func sealUsage(_ usage: UsageInfo, terminal: SealedTerminalFields? = nil) throws -> EncryptedPayload {
+        try sealed.withLockUnchecked { state in
+            let body = try Self.usageEncoder.encode(
+                SealedResponseUsage(frameCount: state.count, usage: usage, terminal: terminal))
+            let payload = try keyPair.encryptPayloadFast(
+                sharedKey: sharedKey, plaintext: body, nonce: nonce(state.count))
+            state.count += 1
             return payload
         }
     }
@@ -68,14 +98,66 @@ final class ResponseFrameSealer: Sendable {
     }
 }
 
-/// The plaintext of `inference_complete.encrypted_usage`.
+/// The plaintext of `inference_complete.encrypted_usage`. The inference
+/// handler always seals the terminal fields with it (`SealedTerminalFields`).
+/// A usage sealed without them encodes only the frame count and usage, so its
+/// bytes match the vector shared with the coordinator's tests.
 struct SealedResponseUsage: Codable, Equatable {
     /// Response frames sealed before the usage.
     var frameCount: UInt64
     var usage: UsageInfo
+    var finishReason: SealedTerminalFields.FinishReason?
+    var stopSequence: String?
+    var responseHash: String?
+    var seSignature: String?
 
     enum CodingKeys: String, CodingKey {
         case frameCount = "chunk_count"
         case usage
+        case finishReason = "finish_reason"
+        case stopSequence = "stop_sequence"
+        case responseHash = "response_hash"
+        case seSignature = "se_signature"
+    }
+
+    init(frameCount: UInt64, usage: UsageInfo, terminal: SealedTerminalFields? = nil) {
+        self.frameCount = frameCount
+        self.usage = usage
+        finishReason = terminal?.finishReason
+        stopSequence = terminal?.stopSequence
+        responseHash = terminal?.responseHash
+        seSignature = terminal?.seSignature
+    }
+}
+
+/// The fields that end a response, sealed inside its usage in place of the
+/// clear `stop_sequence`, `response_hash` and `se_signature` of
+/// `inference_complete`, which the provider never sends: on the wire, only the
+/// holder of the attempt's session key reads them.
+struct SealedTerminalFields: Equatable, Sendable {
+    /// `register.terminal_fields_sealed`: this provider seals them on every connection.
+    static let protocolVersion = 1
+
+    enum FinishReason: String, Codable, Sendable {
+        case stop
+        case length
+        case toolCalls = "tool_calls"
+        case cancelled
+    }
+
+    var finishReason: FinishReason
+    /// The caller's stop string that ended the response, if one did.
+    var stopSequence: String?
+    var responseHash: String
+    var seSignature: String?
+
+    /// The finish reason of a response whose last streamed frame named
+    /// `streamed`: a stream the coordinator cancelled is `cancelled`, a
+    /// reason outside the closed set is `stop`.
+    static func finishReason(streamed: String?, cancelled: Bool) -> FinishReason {
+        guard !cancelled else { return .cancelled }
+        guard let streamed, let reason = FinishReason(rawValue: streamed), [.length, .toolCalls].contains(reason)
+        else { return .stop }
+        return reason
     }
 }

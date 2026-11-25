@@ -10,10 +10,15 @@ import MLXNN
 /// scripted CBv2 engine through the real bridge, scheduler engine, SDK framing
 /// and frames loop. Scripted engine output is not a model-quality assertion.
 enum ScriptedCoordinatorRelay {
-    /// The request's decrypted SSE chunks, in order, and its terminal messages.
+    /// The request's decrypted SSE chunks, in order, its terminal messages,
+    /// and the opened sealed usage of its `inference_complete`.
     struct Output {
         var frames: [String] = []
         var terminals: [OutboundMessage] = []
+        var sealedUsage: [String: Any]?
+
+        /// The response hash, which travels only inside the sealed usage.
+        var sealedResponseHash: String? { sealedUsage?["response_hash"] as? String }
     }
 
     /// Lets a script wait for the chunks its earlier deltas produced.
@@ -86,7 +91,11 @@ enum ScriptedCoordinatorRelay {
         }
         await bridge.shutdown()
         _ = await runtime.unregister(modelId: modelID)
-        return Output(frames: try frames(), terminals: recorder.terminals)
+        var sealedUsage: [String: Any]?
+        for case .inferenceComplete(_, _, _, let sealed?, _) in recorder.terminals {
+            sealedUsage = try JSONSerialization.jsonObject(with: sender.decryptPayload(sealed)) as? [String: Any]
+        }
+        return Output(frames: try frames(), terminals: recorder.terminals, sealedUsage: sealedUsage)
     }
 }
 

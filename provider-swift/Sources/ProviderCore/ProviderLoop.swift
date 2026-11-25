@@ -54,7 +54,7 @@ public final class SendHandle: @unchecked Sendable {
     /// terminal that overtook a chunk would make it drop the chunk's tail.
     public func send(_ message: OutboundMessage) {
         switch message {
-        case .inferenceComplete(_, _, _, _, _, let profile, _),
+        case .inferenceComplete(_, _, let profile, _, _),
             .inferenceError(_, _, let profile):
             if let profile {
                 let flushStart = SuspendingClock.now
@@ -71,6 +71,13 @@ public final class SendHandle: @unchecked Sendable {
             break
         }
         fn(message)
+    }
+
+    /// This handle, with `transform` applied to every message it sends on the
+    /// control path; chunks keep the direct path.
+    func mappingControlMessages(_ transform: @escaping @Sendable (OutboundMessage) -> OutboundMessage) -> SendHandle {
+        let fn = self.fn
+        return SendHandle({ fn(transform($0)) }, chunkSender: chunkSender)
     }
 
     /// Inference-chunk hot path. Encodes + writes the frame directly to the live
@@ -549,6 +556,14 @@ public actor ProviderLoop {
     /// terminal read of MLX's allocator (active and peak bytes), for the same
     /// reason.
     internal var terminalMemoryForTesting: (@Sendable () -> (active: Int64, peak: Int64))?
+    #if DEBUG
+    /// Test seam, false in production: every later coordinator request's usage
+    /// seal fails, as a failed seal would.
+    internal var usageSealFailsForTesting = false
+    /// Test seam, false in production: every later blind request's usage
+    /// signature fails, as a failed signer would.
+    internal var blindUsageSigningFailsForTesting = false
+    #endif
     /// Test seam, nil in production: awaited by a coordinator request's
     /// handler right after its cancellation token is registered, so a test
     /// can give way at that point and check the handler's exits.
@@ -939,6 +954,12 @@ public actor ProviderLoop {
 
     /// Cached security posture from startup verification.
     internal var securityPosture: SecurityPosture?
+
+    /// The coordinator request-signing keys blind requests are verified
+    /// against (`BlindRequestRegistration.pinnedKeys`).
+    internal var blindRequestPins = BlindRequestRegistration.pinnedKeys(for: .current)
+    /// Client nonces of blind requests already served (`checkBlindBody`).
+    internal var servedBlindClientNonces = CoordinatorServedRequests()
 
     #if DEBUG
     /// Stand-ins for the boot-settings reading (its command results and the kernel

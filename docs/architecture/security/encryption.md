@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-25
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -79,6 +79,22 @@ the numbers whether it received every chunk once and in order, and settle
 from the sealed usage. The plaintext `usage` stays for coordinators that read
 only it, and every chunk is still an ordinary NaCl box
 (`provider-swift/Sources/ProviderCore/Crypto/ResponseFrameSealer.swift`).
+
+The sealed usage also carries the response's terminal fields: the finish
+reason, the caller's stop string that ended it, the response hash and its
+Secure Enclave signature. `inference_complete` never carries their clear
+copies, on any connection, so on the wire only the holder of the attempt's
+session key reads them; a usage that cannot be sealed ends the request with
+`encryption_failure`. The clear usage counts and the profile's counts, timings
+and closed-set categories stay readable for routing and billing
+(`SealedTerminalFields`; [protocol messages](../../reference/protocol-messages.md#inference_complete)).
+
+For a [blind request](../../reference/protocol-messages.md#blind-requests)
+the sealer also keeps SHA-256 over the raw `nonce ‖ box` of each frame it
+seals, in order (`ResponseFrameSealer.framesSHA256`). The Mac signs that
+digest, the sealed usage's digest and the usage in the request's
+`blind_usage`, so a client can check that the frames it received are the ones
+the Mac sent.
 
 Provider cryptography is implemented by
 `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` and the provider loop.

@@ -28,7 +28,7 @@ final class OwnerPauseOutbound: @unchecked Sendable {
     func messages(for requestID: String) -> [OutboundMessage] {
         lock.withLock { messages }.filter {
             switch $0 {
-            case .inferenceAccepted(let id), .inferenceError(let id, _, _), .inferenceComplete(let id, _, _, _, _, _, _),
+            case .inferenceAccepted(let id), .inferenceError(let id, _, _), .inferenceComplete(let id, _, _, _, _),
                  .inferenceChunk(let id, _, _): return id == requestID
             default: return false
             }

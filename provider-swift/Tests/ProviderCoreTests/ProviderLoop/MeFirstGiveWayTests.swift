@@ -339,7 +339,7 @@ final class GiveWayOutbound: @unchecked Sendable {
     private func messages(for id: String) -> [OutboundMessage] {
         lock.withLock { messages }.filter {
             switch $0 {
-            case .inferenceError(let request, _, _), .inferenceComplete(let request, _, _, _, _, _, _),
+            case .inferenceError(let request, _, _), .inferenceComplete(let request, _, _, _, _),
                  .inferenceChunk(let request, _, _): return request == id
             default: return false
             }

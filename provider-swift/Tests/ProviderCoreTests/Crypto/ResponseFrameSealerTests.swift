@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 
@@ -30,11 +31,14 @@ func responseFrameNumber(_ payload: EncryptedPayload) throws -> (prefix: [UInt8]
 }
 
 /// A sealer for a fresh provider key, sealing to a fresh consumer key.
-private func makeSealer() throws -> (ResponseFrameSealer, provider: NodeKeyPair, consumer: NodeKeyPair) {
+private func makeSealer(
+    digestsFrames: Bool = false
+) throws -> (ResponseFrameSealer, provider: NodeKeyPair, consumer: NodeKeyPair) {
     let provider = NodeKeyPair.generate()
     let consumer = NodeKeyPair.generate()
     let sealer = ResponseFrameSealer(
-        keyPair: provider, sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes))
+        keyPair: provider, sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes),
+        digestsFrames: digestsFrames)
     return (sealer, provider, consumer)
 }
 
@@ -68,6 +72,68 @@ struct ResponseFrameSealerTests {
         #expect(opened == SealedResponseUsage(frameCount: 3, usage: usage))
     }
 
+    @Test("a sealer that digests its frames keeps SHA-256 over their raw nonce and box, in order")
+    func framesDigest() throws {
+        let (sealer, _, _) = try makeSealer(digestsFrames: true)
+        #expect(sealer.framesSHA256 == Data(SHA256.hash(data: Data())))
+        var expected = SHA256()
+        for text in ["a", "bc", "def"] {
+            let payload = try sealer.sealFrame(Data(text.utf8))
+            expected.update(data: try #require(Data(base64Encoded: payload.ciphertext)))
+        }
+        #expect(sealer.framesSealed == 3)
+        #expect(sealer.framesSHA256 == Data(expected.finalize()))
+        _ = try sealer.sealUsage(UsageInfo(promptTokens: 1, completionTokens: 3))
+        #expect(sealer.framesSHA256 == Data(expected.finalize()), "the usage is not a frame")
+
+        let (plain, _, _) = try makeSealer()
+        _ = try plain.sealFrame(Data("a".utf8))
+        #expect(plain.framesSHA256 == nil)
+    }
+
+    @Test("terminal fields given to the usage are sealed beside it")
+    func terminalFieldsAreSealedWithTheUsage() throws {
+        let (sealer, _, consumer) = try makeSealer()
+        _ = try sealer.sealFrame(Data("x".utf8))
+        let usage = UsageInfo(promptTokens: 10, completionTokens: 3)
+        let terminal = SealedTerminalFields(
+            finishReason: .stop, stopSequence: "</answer>", responseHash: String(repeating: "c", count: 64),
+            seSignature: "c2ln")
+        let payload = try sealer.sealUsage(usage, terminal: terminal)
+        #expect(try responseFrameNumber(payload).number == 1)
+        let plaintext = try consumer.decryptPayload(payload)
+        let opened = try JSONDecoder().decode(SealedResponseUsage.self, from: plaintext)
+        #expect(opened == SealedResponseUsage(frameCount: 1, usage: usage, terminal: terminal))
+        let object = try #require(try JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        #expect(Set(object.keys) == [
+            "chunk_count", "usage", "finish_reason", "stop_sequence", "response_hash", "se_signature"])
+    }
+
+    @Test("a response without a stop sequence or signature leaves them out of the sealed usage")
+    func absentTerminalFieldsAreOmitted() throws {
+        let (sealer, _, consumer) = try makeSealer()
+        let terminal = SealedTerminalFields(
+            finishReason: .length, stopSequence: nil, responseHash: String(repeating: "d", count: 64), seSignature: nil)
+        let payload = try sealer.sealUsage(UsageInfo(promptTokens: 1, completionTokens: 1), terminal: terminal)
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: consumer.decryptPayload(payload)) as? [String: Any])
+        #expect(Set(object.keys) == ["chunk_count", "usage", "finish_reason", "response_hash"])
+        #expect(object["finish_reason"] as? String == "length")
+    }
+
+    @Test("the finish reason is one of a closed set")
+    func finishReasonMapping() {
+        #expect(SealedTerminalFields.finishReason(streamed: "stop", cancelled: false) == .stop)
+        #expect(SealedTerminalFields.finishReason(streamed: "length", cancelled: false) == .length)
+        #expect(SealedTerminalFields.finishReason(streamed: "tool_calls", cancelled: false) == .toolCalls)
+        #expect(SealedTerminalFields.finishReason(streamed: nil, cancelled: false) == .stop)
+        #expect(SealedTerminalFields.finishReason(streamed: "content_filter", cancelled: false) == .stop)
+        #expect(SealedTerminalFields.finishReason(streamed: "cancelled", cancelled: false) == .stop)
+        #expect(SealedTerminalFields.finishReason(streamed: "length", cancelled: true) == .cancelled)
+        let wireValues: [SealedTerminalFields.FinishReason] = [.stop, .length, .toolCalls, .cancelled]
+        #expect(wireValues.map(\.rawValue) == ["stop", "length", "tool_calls", "cancelled"])
+    }
+
     @Test("a request with no frames seals its usage as number 0")
     func usageOfAnEmptyResponse() throws {
         let (sealer, _, consumer) = try makeSealer()
@@ -87,14 +153,15 @@ struct ResponseFrameSealerTests {
         #expect(first.prefix != second.prefix)
     }
 
-    @Test("a frame and the usage match the bytes the coordinator's tests open")
-    func sharedVector() throws {
+    @Test("a frame and the usage match the bytes the coordinator's tests open, whether or not the sealer digests",
+          arguments: [false, true])
+    func sharedVector(digestsFrames: Bool) throws {
         let provider = try NodeKeyPair(rawSecret: Data(hexString: SharedResponseVector.providerSecretHex))
         let consumer = try NodeKeyPair(rawSecret: Data(hexString: SharedResponseVector.consumerSecretHex))
         let sealer = ResponseFrameSealer(
             keyPair: provider,
             sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes),
-            prefix: SharedResponseVector.prefix)
+            prefix: SharedResponseVector.prefix, digestsFrames: digestsFrames)
 
         _ = try sealer.sealFrame(Data("frame 0".utf8))
         _ = try sealer.sealFrame(Data("frame 1".utf8))

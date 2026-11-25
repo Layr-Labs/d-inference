@@ -264,6 +264,16 @@ public enum ProviderMessage: Sendable, Equatable {
         /// is excluded from routing before its first heartbeat. Omitted
         /// otherwise; older coordinators ignore it.
         public var busy: ProviderBusy?
+        /// This provider seals a response's terminal fields inside its usage
+        /// on every connection (`SealedTerminalFields`); omitted by older
+        /// providers.
+        public var terminalFieldsSealed: Int?
+        /// The blind-request protocol this provider serves (`BlindSignedTerms`);
+        /// omitted by a provider that serves none.
+        public var blindProtocol: Int?
+        /// The coordinator request-signing keys this build pins; omitted when
+        /// it pins none.
+        public var requestSigning: ProviderRequestSigning?
 
         public init(
             hardware: HardwareInfo,
@@ -299,9 +309,15 @@ public enum ProviderMessage: Sendable, Equatable {
             clusterModels: [ModelInfo]? = nil,
             clusterMembership: ClusterMembership? = nil,
             busy: ProviderBusy? = nil,
-            gemmaPromptContract: Int? = nil
+            gemmaPromptContract: Int? = nil,
+            terminalFieldsSealed: Int? = nil,
+            blindProtocol: Int? = nil,
+            requestSigning: ProviderRequestSigning? = nil
         ) {
             self.gemmaPromptContract = gemmaPromptContract
+            self.terminalFieldsSealed = terminalFieldsSealed
+            self.blindProtocol = blindProtocol
+            self.requestSigning = requestSigning
             self.executionRole = executionRole
             self.memberRegistrationNonce = memberRegistrationNonce
             self.clusterModels = clusterModels
@@ -441,14 +457,21 @@ public enum ProviderMessage: Sendable, Equatable {
     public struct InferenceComplete: Sendable, Equatable {
         public var requestId: String
         public var usage: UsageInfo
-        /// `usage` and the response's frame count, sealed after the last
-        /// response frame in the same sequence (`ResponseFrameSealer`).
-        /// `usage` stays for coordinators that read only the plaintext copy.
-        /// Omitted on the wire when nil.
+        /// `usage`, the response's frame count and its terminal fields
+        /// (`SealedTerminalFields`), sealed after the last response frame in
+        /// the same sequence (`ResponseFrameSealer`). `usage` stays for
+        /// coordinators that read only the plaintext copy. Omitted on the
+        /// wire when nil.
         public var encryptedUsage: EncryptedPayload?
-        public var stopSequence: String?
-        public var seSignature: String?
-        public var responseHash: String?
+        /// Clear terminal fields of a frame from an older provider: decoded,
+        /// never encoded or set here. This provider sends them only inside
+        /// `encryptedUsage`.
+        public fileprivate(set) var stopSequence: String?
+        public fileprivate(set) var seSignature: String?
+        public fileprivate(set) var responseHash: String?
+        /// A blind request's usage statement, signed by the Mac's Secure
+        /// Enclave key (`BlindStatement.usage`). Omitted on the wire when nil.
+        public var blindUsage: SignedBlindStatement?
         /// Profiler per-attempt profile (slice 2). OBSERVABILITY ONLY — the
         /// coordinator decodes it after the terminal has been fully processed
         /// and it never influences routing, billing, or client bytes. Omitted
@@ -459,17 +482,13 @@ public enum ProviderMessage: Sendable, Equatable {
             requestId: String,
             usage: UsageInfo,
             encryptedUsage: EncryptedPayload? = nil,
-            stopSequence: String? = nil,
-            seSignature: String? = nil,
-            responseHash: String? = nil,
+            blindUsage: SignedBlindStatement? = nil,
             profile: InferenceProfile? = nil
         ) {
             self.requestId = requestId
             self.usage = usage
             self.encryptedUsage = encryptedUsage
-            self.stopSequence = stopSequence
-            self.seSignature = seSignature
-            self.responseHash = responseHash
+            self.blindUsage = blindUsage
             self.profile = profile
         }
     }
@@ -533,6 +552,9 @@ public enum ProviderMessage: Sendable, Equatable {
         /// the wire when nil, so every other frame keeps its legacy bytes; the
         /// legacy `error` text is unchanged either way.
         public let refusalReason: InferenceRefusalReason?
+        /// The signed refusal of a blind request (`blind_refused`). Omitted on
+        /// the wire when nil.
+        public let blindRefusal: SignedBlindStatement?
 
         public init(
             requestId: String,
@@ -552,6 +574,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.profile = profile
             self.toolCheck = failure.toolCheck
             self.refusalReason = failure.refusal
+            self.blindRefusal = failure.blindRefusal
         }
 
         /// Decoder-only compatibility path. Discards the legacy free-form
@@ -570,7 +593,8 @@ public enum ProviderMessage: Sendable, Equatable {
             capacitySeq: UInt64?,
             profile: InferenceProfile?,
             toolCheck: ToolNoncomplianceCheck?,
-            refusalReason: InferenceRefusalReason?
+            refusalReason: InferenceRefusalReason?,
+            blindRefusal: SignedBlindStatement?
         ) {
             self.requestId = decodedRequestId
             self.failureCode = failureCode
@@ -585,6 +609,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.profile = profile
             self.toolCheck = toolCheck
             self.refusalReason = refusalReason
+            self.blindRefusal = blindRefusal
         }
     }
 
@@ -1001,6 +1026,9 @@ extension ProviderMessage: Codable {
         case toolConstraintProtocol = "tool_constraint_protocol"
         case toolConstraintModels = "tool_constraint_models"
         case gemmaPromptContract = "gemma_prompt_contract"
+        case terminalFieldsSealed = "terminal_fields_sealed"
+        case blindProtocol = "blind_protocol"
+        case requestSigning = "request_signing"
         case modelAutopilot = "model_autopilot"
         case autopilotInventory = "autopilot_inventory"
         // Heartbeat
@@ -1025,6 +1053,7 @@ extension ProviderMessage: Codable {
         // InferenceComplete
         case usage
         case encryptedUsage = "encrypted_usage"
+        case blindUsage = "blind_usage"
         case stopSequence = "stop_sequence"
         case seSignature = "se_signature"
         case responseHash = "response_hash"
@@ -1042,6 +1071,7 @@ extension ProviderMessage: Codable {
         case capacitySeq = "capacity_seq"
         case toolCheck = "tool_check"
         case refusalReason = "refusal_reason"
+        case blindRefusal = "blind_refusal"
         case refusalMessage = "refusal_message"
         // CapacityQuote
         case quoteId = "quote_id"
@@ -1148,6 +1178,9 @@ extension ProviderMessage: Codable {
             if let version = r.gemmaPromptContract, version > 1 {
                 try container.encode(version, forKey: .gemmaPromptContract)
             }
+            try container.encodeIfPresent(r.terminalFieldsSealed, forKey: .terminalFieldsSealed)
+            try container.encodeIfPresent(r.blindProtocol, forKey: .blindProtocol)
+            try container.encodeIfPresent(r.requestSigning, forKey: .requestSigning)
             try Self.encodeBusy(r.busy, into: &container)
 
         case .heartbeat(let h):
@@ -1200,9 +1233,9 @@ extension ProviderMessage: Codable {
             try container.encode(c.requestId, forKey: .requestId)
             try container.encode(c.usage, forKey: .usage)
             try container.encodeIfPresent(c.encryptedUsage, forKey: .encryptedUsage)
-            try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
-            try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
-            try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
+            try container.encodeIfPresent(c.blindUsage, forKey: .blindUsage)
+            // `stop_sequence`, `se_signature` and `response_hash` are never
+            // written: they travel only inside `encrypted_usage`.
             // Saturated at the canonical wire boundary so EVERY producer path
             // (builder, early rejects, tests) stays inside the coordinator's
             // accepted ranges; idempotent over an already-saturated profile.
@@ -1240,6 +1273,7 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(e.toolCheck?.rawValue, forKey: .toolCheck)
             try container.encodeIfPresent(e.refusalReason?.rawValue, forKey: .refusalReason)
             try container.encodeIfPresent(e.refusalReason?.clientMessage, forKey: .refusalMessage)
+            try container.encodeIfPresent(e.blindRefusal, forKey: .blindRefusal)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1435,7 +1469,10 @@ extension ProviderMessage: Codable {
                 clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels),
                 clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership),
                 busy: try Self.decodeBusy(from: container),
-                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract)
+                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract),
+                terminalFieldsSealed: try container.decodeIfPresent(Int.self, forKey: .terminalFieldsSealed),
+                blindProtocol: try container.decodeIfPresent(Int.self, forKey: .blindProtocol),
+                requestSigning: try container.decodeIfPresent(ProviderRequestSigning.self, forKey: .requestSigning)
             ))
 
         case .heartbeat:
@@ -1483,15 +1520,18 @@ extension ProviderMessage: Codable {
             ))
 
         case .inferenceComplete:
-            self = .inferenceComplete(InferenceComplete(
+            var complete = InferenceComplete(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
                 encryptedUsage: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedUsage),
-                stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
-                seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
-                responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash),
+                blindUsage: (try? container.decodeIfPresent(SignedBlindStatement.self, forKey: .blindUsage))
+                    .flatMap { $0 },
                 profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
-            ))
+            )
+            complete.stopSequence = try container.decodeIfPresent(String.self, forKey: .stopSequence)
+            complete.seSignature = try container.decodeIfPresent(String.self, forKey: .seSignature)
+            complete.responseHash = try container.decodeIfPresent(String.self, forKey: .responseHash)
+            self = .inferenceComplete(complete)
 
         case .inferenceError:
             // The legacy free-form `error` key is deliberately decoded and
@@ -1530,7 +1570,9 @@ extension ProviderMessage: Codable {
                 // Unknown values decode to nil; `refusal_message` is derived
                 // from the reason, never decoded.
                 refusalReason: (try container.decodeIfPresent(String.self, forKey: .refusalReason))
-                    .flatMap(InferenceRefusalReason.init(rawValue:))
+                    .flatMap(InferenceRefusalReason.init(rawValue:)),
+                blindRefusal: (try? container.decodeIfPresent(SignedBlindStatement.self, forKey: .blindRefusal))
+                    .flatMap { $0 }
             ))
 
         case .attestationResponse:
@@ -1749,6 +1791,11 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// one (the policy is sealed in `_darkbloom_cache`); when present it
         /// can only narrow the sealed policy (`RequestCachePolicy.narrowed`).
         public var frameCachePolicy: RequestCachePolicy
+        /// The `blind` member and the coordinator's `signed_request` of a blind
+        /// request: a body the client sealed to this Mac, which the coordinator
+        /// relays unopened. Nil for every other request, whose `signed_request`
+        /// is not read.
+        public var blind: BlindFrame?
 
         public init(
             requestId: String,
@@ -1764,8 +1811,10 @@ public enum CoordinatorMessage: Sendable, Equatable {
             promptWork: PromptWork? = nil,
             gemmaPromptContract: Int? = nil,
             coordinatorSignature: CoordinatorRequestSignature? = nil,
-            frameCachePolicy: RequestCachePolicy = .default
+            frameCachePolicy: RequestCachePolicy = .default,
+            blind: BlindFrame? = nil
         ) {
+            self.blind = blind
             self.gemmaPromptContract = gemmaPromptContract
             self.coordinatorSignature = coordinatorSignature
             self.frameCachePolicy = frameCachePolicy
@@ -1983,6 +2032,8 @@ extension CoordinatorMessage: Codable {
         case gemmaPromptContract = "gemma_prompt_contract"
         case coordinatorSignature = "coordinator_signature"
         case cachePolicy = "cache_policy"
+        case blind
+        case signedRequest = "signed_request"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload
@@ -2043,6 +2094,8 @@ extension CoordinatorMessage: Codable {
             if r.frameCachePolicy != .default {
                 try container.encode(r.frameCachePolicy.rawValue, forKey: .cachePolicy)
             }
+            try container.encodeIfPresent(r.blind?.member, forKey: .blind)
+            try container.encodeIfPresent(r.blind?.signedRequest, forKey: .signedRequest)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -2175,7 +2228,14 @@ extension CoordinatorMessage: Codable {
                 // The policy belongs in the sealed body only. A plaintext key,
                 // which no signature covers, may only narrow the request: any
                 // value but "default", a malformed one included, is memory_only.
-                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy)
+                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy),
+                // A `blind` member makes the frame a blind request whatever it
+                // holds: a malformed one is refused, never served as an
+                // ordinary request.
+                blind: container.contains(.blind) ? BlindFrame(
+                    member: (try? container.decode(BlindFrameMember.Wire.self, forKey: .blind))
+                        .map(BlindFrameMember.init(wire:)) ?? .malformed,
+                    signedRequest: try? container.decodeIfPresent(String.self, forKey: .signedRequest)) : nil
             ))
 
         case .cancel:

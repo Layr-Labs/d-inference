@@ -29,7 +29,7 @@ struct NemotronSuperManagedSlotTests {
         func terminal(_ id: String) -> OutboundMessage? {
             snapshot.first {
                 switch $0 {
-                case .inferenceComplete(let request, _, _, _, _, _, _), .inferenceError(let request, _, _):
+                case .inferenceComplete(let request, _, _, _, _), .inferenceError(let request, _, _):
                     request == id
                 default: false
                 }
@@ -79,13 +79,15 @@ struct NemotronSuperManagedSlotTests {
     /// `checkpointQuantizationByModel` is the `[backend]` per-model checkpoint
     /// precision table. `tokenizer` replaces the scripted three-token prompt tokenizer.
     /// `engineShutdownTimeout` replaces the engine's shutdown bound (nil keeps the default).
+    /// `signer` is the loop's attestation signer (nil: none).
     static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, physicalGiB: UInt64? = nil,
                         memory: ReturningMemory? = nil, probe: InstallationProbe? = nil,
                         decodeGate: DecodeGate? = nil,
                         environment: [String: String] = [:],
                         checkpointQuantizationByModel: [String: String] = [:],
                         tokenizer makeTokenizer: ((SuperOutputScript) -> any MLXLMCommon.Tokenizer)? = nil,
-                        engineShutdownTimeout: TimeInterval? = nil)
+                        engineShutdownTimeout: TimeInterval? = nil,
+                        signer: (any AttestationSigner)? = nil)
         async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: totalGiB << 30, active: 0, cache: 0,
@@ -101,7 +103,7 @@ struct NemotronSuperManagedSlotTests {
         let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
             hardware: hardware, models: [model], config: .init(provider: .init(name: "super-managed"),
                 backend: backend, coordinator: .init(heartbeatIntervalSecs: 60))),
-            attestationSigner: nil, kvBudgetForTesting: budget)
+            attestationSigner: signer, kvBudgetForTesting: budget)
         let script = SuperOutputScript()
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
@@ -224,7 +226,7 @@ struct NemotronSuperManagedSlotTests {
     }
 
     static func usage(_ terminal: OutboundMessage) -> UsageInfo? {
-        if case .inferenceComplete(_, let usage, _, _, _, _, _) = terminal { return usage }
+        if case .inferenceComplete(_, let usage, _, _, _) = terminal { return usage }
         return nil
     }
 

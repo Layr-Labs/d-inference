@@ -1306,10 +1306,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     promptTokens: promptTokens,
                     // Sampling/stop/max-token translation reuses the OpenAI →
                     // internal request mapping (`EngineV2Translation` reads the
-                    // internal shape). `logprobs`/`top_logprobs` and
-                    // Sealed-body sampling controls arrive through
-                    // `engineV2Sampling` and override the decoded upstream
-                    // fields. Standalone requests use the upstream fields.
+                    // internal shape). `logprobs`/`top_logprobs` arrive through
+                    // `engineV2Logprobs`. Sealed-body sampling controls
+                    // (`engineV2Sampling`) override the decoded upstream fields;
+                    // standalone requests use the upstream fields.
+                    // `requestSampling` adds Inkling 2's thought ban to either.
                     request: Self.translate(
                         openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
                         logprobs: engineV2Logprobs != nil ? true : nil,

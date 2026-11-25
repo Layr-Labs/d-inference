@@ -70,9 +70,12 @@ struct Inkling2ThinkingOffPolicyTests {
             == EngineV2SamplingOverrides(logitBias: ["7": 2.5, "200010": -100], seed: 42))
     }
 
-    /// A caller bias on the opener under another spelling of its id is
-    /// dropped too, so it cannot outlast the ban.
+    /// A caller bias on the opener under another spelling of its id, one the
+    /// engine reads as that id, is dropped too, so it cannot outlast the ban.
     @Test func theBanReplacesEverySpellingOfTheOpenersId() {
+        for spelling in [" 200010", "+200010", "0200010"] {
+            #expect(EngineV2Translation.parseLogitBias([spelling: 1]) == [200_010: 1], "\(spelling)")
+        }
         let caller = EngineV2SamplingOverrides(logitBias: [" 200010": 5, "+200010": 6, "0200010": 7, "7": 2.5],
                                                seed: nil)
         #expect(Inkling2ThinkingOffPolicy.samplingOverrides(caller, bansThought: true, tokenToId: { Self.ids[$0] })
@@ -81,7 +84,8 @@ struct Inkling2ThinkingOffPolicyTests {
 
     /// Without a sealed-body overlay (the local API) the ban joins the
     /// request's own `logit_bias` and `seed`; an overlay is the base when
-    /// present; without a ban the overlay passes unchanged.
+    /// present. Without a ban the overlay passes unchanged, nil included, and
+    /// the vocabulary is not consulted.
     @Test func requestSamplingStartsFromTheOverlayOrTheRequest() throws {
         let (request, _) = try Self.request(#","logit_bias":{"7":2.5},"seed":9"#)
         #expect(Inkling2ThinkingOffPolicy.requestSampling(overlay: nil, request: request, bansThought: true,
@@ -91,8 +95,11 @@ struct Inkling2ThinkingOffPolicyTests {
             tokenToId: { Self.ids[$0] }) == EngineV2SamplingOverrides(logitBias: ["8": 1, "200010": -100], seed: 42))
         #expect(Inkling2ThinkingOffPolicy.requestSampling(overlay: overlay, request: request, bansThought: false,
             tokenToId: { Self.ids[$0] }) == overlay)
-        #expect(Inkling2ThinkingOffPolicy.requestSampling(overlay: nil, request: request, bansThought: false,
-            tokenToId: { Self.ids[$0] }) == nil)
+        var asked = false
+        let unbanned = Inkling2ThinkingOffPolicy.requestSampling(overlay: nil, request: request, bansThought: false,
+            tokenToId: { asked = true; return Self.ids[$0] })
+        #expect(unbanned == nil)
+        #expect(!asked, "the tokenizer is not consulted without a ban")
     }
 
     @Test func withoutTheBanOrAnOpenerNothingChanges() {

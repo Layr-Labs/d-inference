@@ -66,10 +66,12 @@ enum Inkling2ThinkingOffPolicy {
         return EngineV2SamplingOverrides(logitBias: bias, seed: overrides?.seed)
     }
 
-    /// The sampling a request submits with: `overlay` (the coordinator path's
-    /// sealed-body controls) or, without one, the request's own `logit_bias`
-    /// and `seed`, with the thought opener banned when the request
-    /// `bansThought`; without a ban, `overlay` unchanged.
+    /// The sampling a request submits with. With `bansThought`, the thought
+    /// opener is banned on `overlay` (the coordinator path's sealed-body
+    /// controls) or, without one, on the request's own `logit_bias` and
+    /// `seed`. Without a ban, `overlay` unchanged (nil on the local API, where
+    /// `translate` falls back to the request's own fields), and `tokenToId` is
+    /// not consulted.
     static func requestSampling(
         overlay: EngineV2SamplingOverrides?, request: OpenAIChatCompletionRequest, bansThought: Bool,
         tokenToId: (String) -> Int?

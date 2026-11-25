@@ -857,7 +857,7 @@ enum ToolConstraintValidation {
         return true
     }
 
-    static let renderOnlyAnnotationKeys: Set<String> = [
+    private static let renderOnlyAnnotationKeys: Set<String> = [
         "$anchor", "$comment", "$id", "$schema", "default", "deprecated",
         "description", "examples", "readOnly", "title", "writeOnly",
     ]

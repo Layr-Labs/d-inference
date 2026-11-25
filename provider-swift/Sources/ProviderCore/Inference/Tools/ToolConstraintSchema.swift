@@ -272,16 +272,11 @@ enum ToolConstraintSchemaCompiler {
         // stays unsupported so compilation falls back to raw validation,
         // which restores the exact allow-all semantics — a compiled string
         // grammar would wrongly reject schema-valid non-string values.
-        // Annotations beside the marker (the coordinator keeps a `{}`'s
-        // `description`) assert nothing and compile the same way.
         if let marker = object[ToolSchemaNormalization.originalBooleanSchemaKey] {
             guard allowRenderMetadata,
                 marker == .bool(true),
-                object["type"] == .string("string"),
-                object.keys.allSatisfy({
-                    $0 == "type" || $0 == ToolSchemaNormalization.originalBooleanSchemaKey
-                        || ToolConstraintValidation.renderOnlyAnnotationKeys.contains($0)
-                })
+                object.count == 2,
+                object["type"] == .string("string")
             else {
                 throw ToolConstraintSchemaError.unsupported(
                     "\(path) uses reserved schema metadata")

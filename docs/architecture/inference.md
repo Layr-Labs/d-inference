@@ -3595,6 +3595,13 @@ Inkling 2 Mini replaces the generic depth with its drafter's own profile
 sampled rows under exact acceptance propose their verify draw's keyed race;
 tokens are unchanged); the acceptance setting still applies (`Inkling2MTPProfilePolicy` in
 `provider-swift/Sources/ProviderCore/Inference/MTP/Inkling2MTPProfilePolicy.swift`).
+An Inkling 2 request that turns thinking off renders effort 0, at which the model
+may still think; the router withholds that thought. With
+`DARKBLOOM_INKLING_THINKING_OFF_SKIPS_THOUGHT` on (off by default), such a request
+also carries a −100 logit bias on `<|content_thinking|>`, so no thought starts and
+the reply begins with its answer or call (`Inkling2ThinkingOffPolicy` in
+`provider-swift/Sources/ProviderCore/Inference/Prompting/Inkling2ThinkingOffPolicy.swift`).
+A logit-bias row is target-only, so that reply decodes without drafts.
 Under typical acceptance a draft is kept when the sampler-filtered target row
 gives it probability above `min(1, 0.2 * exp(-H))`, `H` the row's entropy in
 nats; the first rejected position and the bonus position still commit the keyed

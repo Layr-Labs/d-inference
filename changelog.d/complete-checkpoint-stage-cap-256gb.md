@@ -1,0 +1,3 @@
+### Long repeated prompts restore in full on Macs with 256 GB or more
+
+On Macs with at least 256 GB of memory, a cached prompt checkpoint may now hold up to 12 GiB instead of 7 GiB, so long repeated Inkling 2 Mini prompts restore almost in full. A repeated 262,079-token prompt restored 260,096 tokens instead of 198,656, and its first token came in 5.9 s instead of 58.4 s. Other long-context models restore deeper too. The first, uncached request of a prompt longer than about 198K tokens takes longer (243 s instead of 199 s for that prompt), because its deeper checkpoints are saved as it is read. `DARKBLOOM_PREFIX_CACHE_SSD_CHECKPOINT_MAX_STAGE_MB=7168` keeps the previous depth without changing any other cache setting, and an installed provider receives it.

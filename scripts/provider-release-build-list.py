@@ -252,7 +252,6 @@ def check(args, openssl, now):
         except ValueError as error:
             state, message = 'escalate', f'The published provider build list does not verify: {error}'
     write_output('state', state)
-    write_output('message', message)
     annotate({'ok': 'notice', 'due': 'notice', 'escalate': 'error'}[state], message)
     return 1 if state == 'escalate' else 0
 

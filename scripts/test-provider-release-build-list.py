@@ -709,10 +709,12 @@ class Workflows(unittest.TestCase):
         self.assertIn('needs.prepare.outputs.artifact_id', workflow_jobs['publish'])
         self.assertIn('needs.prepare.outputs.artifact_digest', workflow_jobs['publish'])
         self.assertIn('needs.prepare.outputs.document_sha256', workflow_jobs['publish'])
-        # The escalation opens one issue; its text is the check's neutral message.
+        # The escalation opens one issue with fixed text; the reason stays in the run log.
         self.assertIn('issues: write', workflow_jobs['check'])
         self.assertIn("if: ${{ failure() && steps.state.outputs.state == 'escalate' }}", workflow_jobs['check'])
-        self.assertIn('MESSAGE: ${{ steps.state.outputs.message }}', workflow_jobs['check'])
+        self.assertIn("title='The published provider build list needs re-publishing'", workflow_jobs['check'])
+        self.assertIn('--title "$title" --body "$title. Check run: $RUN_URL"', workflow_jobs['check'])
+        self.assertNotIn('steps.state.outputs.message', text)
         self.assertNotIn('issues: write', workflow_jobs['prepare'] + workflow_jobs['publish'])
 
 

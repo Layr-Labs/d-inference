@@ -85,19 +85,19 @@ jobs:
           path: ${{ runner.temp }}/prepared
           if-no-files-found: error
           retention-days: 7
-      - name: Open an issue for the expiring list
+      # The issue's title and body are fixed; the reason is in this run's log.
+      - name: Open an issue for the list that needs re-publishing
         if: ${{ failure() && steps.state.outputs.state == 'escalate' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          MESSAGE: ${{ steps.state.outputs.message }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          title='The published provider build list expires soon'
+          title='The published provider build list needs re-publishing'
           open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" \
             --json number --jq length)
           if [ "$open" = 0 ]; then
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$MESSAGE. Check run: $RUN_URL"
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$title. Check run: $RUN_URL"
           fi
 
   prepare:

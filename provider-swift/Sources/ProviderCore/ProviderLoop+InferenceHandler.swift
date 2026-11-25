@@ -202,9 +202,15 @@ extension ProviderLoop {
         gemmaPromptContract: Int? = nil,
         frameCachePolicy: RequestCachePolicy = .default,
         blind: BlindFrame? = nil,
-        send: SendHandle,
+        send coordinatorSend: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
     ) async {
+        // A blind request's refusals that follow from its opened body leave as
+        // one signed closed reason, from every site below (`BlindContentRefusal`).
+        let blindContentRefusal = blind.map { _ in BlindContentRefusal(requestId: requestId, signer: signer) }
+        let send = blindContentRefusal.map { refusal in
+            coordinatorSend.mappingControlMessages { refusal.map($0) }
+        } ?? coordinatorSend
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
         }
@@ -270,8 +276,9 @@ extension ProviderLoop {
             let failure = Self.blindRefusalFailure(refusal, requestId: requestId, signer: blindSigner)
             InferenceFailureLogger(logger: blindLog).record(requestId: requestId, failure: failure)
             blindLog.info("[\(requestId)] blind request refused: \(refusal.reason.rawValue)")
+            // The reason alone: no profile beside it.
             lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(requestId: requestId, failure: failure, profile: profile),
+                .inferenceError(requestId: requestId, failure: failure, profile: nil),
                 fallbackFailure: .policy,
                 send: send)
         }
@@ -356,7 +363,9 @@ extension ProviderLoop {
         if let blind {
             switch admitBlindFrame(blind, requestId: requestId, serviceReservationID: serviceReservationID,
                                    senderPublicKey: senderKey, ciphertext: ciphertext) {
-            case .success(let verified): blindFrame = verified
+            case .success(let verified):
+                blindFrame = verified
+                blindContentRefusal?.arm(verified)
             case .failure(let refusal):
                 refuseBlind(refusal)
                 return
@@ -412,7 +421,7 @@ extension ProviderLoop {
         if servedToolSchemaMetadataProtocol != ToolSchemaNormalization.metadataProtocolVersion,
             ToolSchemaNormalization.containsReservedMetadata(in: decryptedData)
         {
-            rejectInvalidBody(.reservedToolSchemaMetadata, blind: .bindingMissing)
+            rejectInvalidBody(.reservedToolSchemaMetadata, blind: .contentUnsupported)
             return
         }
 

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import MLXLMServer
 
 // Blind requests: the client sealed the request body to this Mac's X25519 key
@@ -72,5 +73,34 @@ extension ProviderLoop {
             issuedAtMs: Int64((Date().timeIntervalSince1970 * 1000).rounded(.down)))
         failure.blindRefusal = signer.flatMap { try? statement.signed(by: $0) }
         return failure
+    }
+}
+
+/// Turns every refusal of a blind request that follows from its opened body
+/// into one signed closed reason, `content_unsupported`: the clear frame says
+/// no more than that, never which part, control or length. Armed once the
+/// request's frame verified; refusals before that pass unchanged.
+final class BlindContentRefusal: Sendable {
+    private let requestId: String
+    private let signer: (any AttestationSigner)?
+    private let frame = os.OSAllocatedUnfairLock<VerifiedBlindFrame?>(initialState: nil)
+
+    init(requestId: String, signer: (any AttestationSigner)?) {
+        self.requestId = requestId
+        self.signer = signer
+    }
+
+    func arm(_ verified: VerifiedBlindFrame) {
+        frame.withLock { $0 = verified }
+    }
+
+    func map(_ message: OutboundMessage) -> OutboundMessage {
+        guard case .inferenceError(let id, let failure, _) = message, id == requestId,
+              failure.followsFromRequestContent, let verified = frame.withLock({ $0 })
+        else { return message }
+        return .inferenceError(
+            requestId: id,
+            failure: ProviderLoop.blindRefusalFailure(verified.refusal(.contentUnsupported), requestId: id, signer: signer),
+            profile: nil)
     }
 }

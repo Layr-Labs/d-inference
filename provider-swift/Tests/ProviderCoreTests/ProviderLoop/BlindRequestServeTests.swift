@@ -180,6 +180,43 @@ struct BlindRequestServeTests {
         #expect(await fixture.stop(task))
     }
 
+    @Test("a refusal that follows from the opened body names only content_unsupported in clear")
+    func contentRefusalsNameOnlyTheReason() async throws {
+        let (fixture, task) = try await Self.serving()
+        let recipient = await fixture.loop.keyPair.publicKeyBytes
+        let parts = [
+            #"{"type":"input_file","file_id":"file-fixture"}"#,
+            #"{"type":"input_audio","input_audio":{"data":"UklGRiQAAABXQVZF","format":"wav"}}"#,
+        ]
+        for part in parts {
+            var request = BlindRequestFixture()
+            request.vision = true
+            request.messages = #"[{"role":"user","content":[{"type":"text","text":"x"},\#(part)]}]"#
+            let frame = try request.frame(recipient: recipient)
+            let error = try await Self.terminalError(fixture, frame)
+            let refusal = try #require(error.blindRefusal, "\(part)")
+            #expect(error.failureCode == .blindRefused && error.statusCode == 400, "\(part)")
+            #expect(refusal.statement["reason"] == .text("content_unsupported"), "\(part)")
+            #expect(try BlindRequestFixture.refusalVerifies(refusal, publicKeyBase64: fixture.signer.publicKeyBase64))
+            // The clear frame: the reason in the signed statement and fixed
+            // text, nothing about the part, a count or a limit.
+            let requestID = request.requestID
+            let raw = try #require(fixture.mock.snapshot().inferenceErrorFrames.first { data in
+                (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["request_id"] as? String == requestID
+            })
+            let object = try #require(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
+            #expect(Set(object.keys) == ["type", "request_id", "error", "status_code", "failure_code", "blind_refusal"],
+                    "\(part)")
+            #expect(object["error"] as? String == InferenceFailureCode.blindRefused.message)
+            let signed = try #require(object["blind_refusal"] as? [String: Any])
+            #expect(Set(signed.keys) == ["statement", "signature"])
+            let statement = try #require(signed["statement"] as? [String: Any])
+            #expect(Set(statement.keys) == ["request_id", "signed_request_sha256", "reason", "issued_at_ms"])
+        }
+        #expect(fixture.engine.ordinarySubmissionCount == 0)
+        #expect(await fixture.stop(task))
+    }
+
     @Test("the engine gets the signed scope narrowed by the client's salt, never the frame's clear scope")
     func signedScopeReachesTheEngine() async throws {
         let (fixture, task) = try await Self.serving()

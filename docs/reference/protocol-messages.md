@@ -1586,6 +1586,7 @@ The provider checks, in this order, refusing at the first that fails
 | the body's `max_tokens` and `max_completion_tokens` are at most the terms' `max_tokens` | `bound_exceeded` |
 | declared tools need `traits.tools`; any media part needs `traits.vision` | `traits_mismatch` |
 | the tokenized prompt has at most `prompt_token_bound` tokens | `prompt_bound_exceeded` |
+| every engine here serves what the body asks for (below) | `content_unsupported` |
 
 The posture is checked before the body is opened, so a Mac that cannot serve
 blind requests never opens one. A cluster member or pair refuses every blind
@@ -1605,11 +1606,20 @@ prefix-cache scope is
 the payload's `cache_scope` (none: no cache), narrowed by the client's
 `cache_salt` as `<scope>|s:<first 22 characters of unpadded base64url
 SHA-256("darkbloom-blind-cache-salt-v1" ‖ 0x00 ‖ salt)>`, and the body's
-`_darkbloom_cache` is not read. A request whose content no engine serves (an
-unsupported content part type or audio, template controls the model does not
-take) gets the same `invalid_request` an ordinary request does, as do
-capacity, load and generation failures; a frame without a decodable sealed
-body is refused before the handler, as any other.
+`_darkbloom_cache` is not read.
+
+Every other refusal that follows from the opened body (a content part type
+or audio no engine here serves, template controls the model does not take, a
+prompt or output too long for the model or this Mac, tool-schema metadata the
+body may not carry, or any other client error) is the signed refusal
+`content_unsupported`, 400, whichever check made it: the clear frame names
+only that reason, never the part, the control, a count or a limit
+(`BlindContentRefusal`,
+`provider-swift/Sources/ProviderCore/ProviderLoop+BlindRequest.swift`, which
+maps every such `inference_error` of the request once its frame verified). A
+blind refusal carries no `profile`. Capacity, load and transport failures
+keep their ordinary errors, and so does a generation failure; a frame without
+a decodable sealed body is refused before the handler, as any other.
 
 A refusal is an `inference_error` with `failure_code` `blind_refused`,
 `status_code` 502 for `signature_invalid` and `posture` and 400 for every

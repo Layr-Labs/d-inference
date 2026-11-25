@@ -15,6 +15,10 @@ public enum BlindRefusalReason: String, Error, Sendable, Equatable, CaseIterable
     case boundExceeded = "bound_exceeded"
     case traitsMismatch = "traits_mismatch"
     case promptBoundExceeded = "prompt_bound_exceeded"
+    /// The opened body asks for something no engine here serves: a content
+    /// part, audio, template controls or a prompt length. Only this reason
+    /// leaves in clear, never which.
+    case contentUnsupported = "content_unsupported"
     case posture
 
     /// 502 when the request could not be checked or this Mac cannot serve it

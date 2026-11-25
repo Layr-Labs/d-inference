@@ -3599,8 +3599,9 @@ An Inkling 2 request that turns thinking off renders effort 0, at which the mode
 may still think; the router withholds that thought. With
 `DARKBLOOM_INKLING_THINKING_OFF_SKIPS_THOUGHT` on (off by default), such a request
 also carries a −100 logit bias on `<|content_thinking|>`, applied where the
-scheduler prepares the request (coordinator path and local API), so no thought
-starts and the reply begins with its answer or call (`Inkling2ThinkingOffPolicy` in
+scheduler prepares the request (coordinator path and local API), so the model is
+kept from opening a thought with that marker and the reply begins with its answer
+or call (a thought that still starts another way is withheld as before) (`Inkling2ThinkingOffPolicy` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/Inkling2ThinkingOffPolicy.swift`).
 A logit-bias row is target-only, so that reply decodes without drafts.
 Under typical acceptance a draft is kept when the sampler-filtered target row

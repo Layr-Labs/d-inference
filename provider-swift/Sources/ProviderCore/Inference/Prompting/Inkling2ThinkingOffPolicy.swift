@@ -11,8 +11,9 @@ import MLXLMServer
 /// it. The client then receives nothing visible until the thought ends. With
 /// `skipsThought` on, a thinking-off request also carries a logit bias that
 /// keeps the thought opener from being sampled, so the reply starts with its
-/// answer or call. Requests with thinking on, other models and the switch off
-/// are unchanged.
+/// answer or call; a thought that still starts another way is withheld as
+/// before. Requests with thinking on, other models and the switch off are
+/// unchanged.
 enum Inkling2ThinkingOffPolicy {
     /// `DARKBLOOM_INKLING_THINKING_OFF_SKIPS_THOUGHT`.
     static let environmentKey = "DARKBLOOM_INKLING_THINKING_OFF_SKIPS_THOUGHT"
@@ -23,6 +24,11 @@ enum Inkling2ThinkingOffPolicy {
     static let thoughtOpener = "<|content_thinking|>"
     /// OpenAI's `logit_bias` floor, which removes a token from sampling.
     static let bannedBias: Float = -100
+
+    /// The switch as this process read it, once, at first use: siblings such
+    /// as `DARKBLOOM_INKLING_MTP_COUPLED` are read at load, not per request.
+    /// Task-local so a test can set it around one request.
+    @TaskLocal static var switchedOn = skipsThought()
 
     /// On for `1`, `true`, `yes` or `on`; off for `0`, `false`, `no` or `off`
     /// (trimmed, any letter case); unset or anything else keeps the default.
@@ -38,15 +44,13 @@ enum Inkling2ThinkingOffPolicy {
 
     /// Whether a request bans the thought opener: Inkling 2, thinking off by
     /// the template context's precedence (`Inkling2PromptContract.withholdsReasoning`),
-    /// and the switch on. The request is checked first, so the environment is
-    /// read only for a thinking-off Inkling 2 request.
+    /// and the switch on (`switchedOn`, read once per process).
     static func bansThought(
         _ request: OpenAIChatCompletionRequest, controls: ChatTemplateControls, modelType: String?,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        switchedOn: Bool = Inkling2ThinkingOffPolicy.switchedOn
     ) -> Bool {
         // Control: the switch is read and ignored.
-        _ = Inkling2PromptContract.withholdsReasoning(request, controls: controls, modelType: modelType)
-            && skipsThought(environment: environment)
+        _ = switchedOn && Inkling2PromptContract.withholdsReasoning(request, controls: controls, modelType: modelType)
         return false
     }
 
@@ -64,10 +68,12 @@ enum Inkling2ThinkingOffPolicy {
         overrides
     }
 
-    /// The sampling a request submits with: `overlay` (the coordinator path's
-    /// sealed-body controls) or, without one, the request's own `logit_bias`
-    /// and `seed`, with the thought opener banned when the request
-    /// `bansThought`; without a ban, `overlay` unchanged.
+    /// The sampling a request submits with. With `bansThought`, the thought
+    /// opener is banned on `overlay` (the coordinator path's sealed-body
+    /// controls) or, without one, on the request's own `logit_bias` and
+    /// `seed`. Without a ban, `overlay` unchanged (nil on the local API, where
+    /// `translate` falls back to the request's own fields), and `tokenToId` is
+    /// not consulted.
     static func requestSampling(
         overlay: EngineV2SamplingOverrides?, request: OpenAIChatCompletionRequest, bansThought: Bool,
         tokenToId: (String) -> Int?

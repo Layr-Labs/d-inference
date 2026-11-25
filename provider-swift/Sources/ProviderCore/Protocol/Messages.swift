@@ -447,14 +447,18 @@ public enum ProviderMessage: Sendable, Equatable {
     public struct InferenceComplete: Sendable, Equatable {
         public var requestId: String
         public var usage: UsageInfo
-        /// `usage` and the response's frame count, sealed after the last
-        /// response frame in the same sequence (`ResponseFrameSealer`).
-        /// `usage` stays for coordinators that read only the plaintext copy.
-        /// Omitted on the wire when nil.
+        /// `usage`, the response's frame count and its terminal fields
+        /// (`SealedTerminalFields`), sealed after the last response frame in
+        /// the same sequence (`ResponseFrameSealer`). `usage` stays for
+        /// coordinators that read only the plaintext copy. Omitted on the
+        /// wire when nil.
         public var encryptedUsage: EncryptedPayload?
-        public var stopSequence: String?
-        public var seSignature: String?
-        public var responseHash: String?
+        /// Clear terminal fields of a frame from an older provider: decoded,
+        /// never encoded or set here. This provider sends them only inside
+        /// `encryptedUsage`.
+        public fileprivate(set) var stopSequence: String?
+        public fileprivate(set) var seSignature: String?
+        public fileprivate(set) var responseHash: String?
         /// Profiler per-attempt profile (slice 2). OBSERVABILITY ONLY — the
         /// coordinator decodes it after the terminal has been fully processed
         /// and it never influences routing, billing, or client bytes. Omitted
@@ -465,17 +469,11 @@ public enum ProviderMessage: Sendable, Equatable {
             requestId: String,
             usage: UsageInfo,
             encryptedUsage: EncryptedPayload? = nil,
-            stopSequence: String? = nil,
-            seSignature: String? = nil,
-            responseHash: String? = nil,
             profile: InferenceProfile? = nil
         ) {
             self.requestId = requestId
             self.usage = usage
             self.encryptedUsage = encryptedUsage
-            self.stopSequence = stopSequence
-            self.seSignature = seSignature
-            self.responseHash = responseHash
             self.profile = profile
         }
     }
@@ -1208,9 +1206,8 @@ extension ProviderMessage: Codable {
             try container.encode(c.requestId, forKey: .requestId)
             try container.encode(c.usage, forKey: .usage)
             try container.encodeIfPresent(c.encryptedUsage, forKey: .encryptedUsage)
-            try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
-            try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
-            try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
+            // `stop_sequence`, `se_signature` and `response_hash` are never
+            // written: they travel only inside `encrypted_usage`.
             // Saturated at the canonical wire boundary so EVERY producer path
             // (builder, early rejects, tests) stays inside the coordinator's
             // accepted ranges; idempotent over an already-saturated profile.
@@ -1492,15 +1489,16 @@ extension ProviderMessage: Codable {
             ))
 
         case .inferenceComplete:
-            self = .inferenceComplete(InferenceComplete(
+            var complete = InferenceComplete(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
                 encryptedUsage: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedUsage),
-                stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
-                seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
-                responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash),
                 profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
-            ))
+            )
+            complete.stopSequence = try container.decodeIfPresent(String.self, forKey: .stopSequence)
+            complete.seSignature = try container.decodeIfPresent(String.self, forKey: .seSignature)
+            complete.responseHash = try container.decodeIfPresent(String.self, forKey: .responseHash)
+            self = .inferenceComplete(complete)
 
         case .inferenceError:
             // The legacy free-form `error` key is deliberately decoded and

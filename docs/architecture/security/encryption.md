@@ -83,8 +83,8 @@ only it, and every chunk is still an ordinary NaCl box
 The sealed usage also carries the response's terminal fields: the finish
 reason, the caller's stop string that ended it, the response hash and its
 Secure Enclave signature. `inference_complete` never carries their clear
-copies, on any connection, so only the holder of the attempt's session key
-reads them; a usage that cannot be sealed ends the request with
+copies, on any connection, so on the wire only the holder of the attempt's
+session key reads them; a usage that cannot be sealed ends the request with
 `encryption_failure`. The clear usage counts and the profile's counts, timings
 and closed-set categories stay readable for routing and billing
 (`SealedTerminalFields`; [protocol messages](../../reference/protocol-messages.md#inference_complete)).

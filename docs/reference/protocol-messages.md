@@ -965,22 +965,24 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 | `request_id` | `string` | `String` | req | |
 | `usage` | `UsageInfo` | `UsageInfo` | req | [`UsageInfo`](#usageinfo) |
 | `encrypted_usage` | `*EncryptedPayload` | `EncryptedPayload?` | opt | `{"chunk_count":N,"usage":{…}}`, and from a provider that registers `terminal_fields_sealed` also the terminal fields (`finish_reason`: `stop`, `length`, `tool_calls` or `cancelled`; `stop_sequence` and `se_signature` when present; `response_hash`), sealed like a response chunk under the nonce `prefix ‖ UInt64 big-endian N`: the request's response chunk *i* is sealed under `prefix ‖ i`, with `prefix` 16 random bytes fixed for the request, so this follows the last chunk (`ResponseFrameSealer`, `SealedResponseUsage`). `usage` stays for coordinators that read only the plaintext copy |
-| `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched; only from providers that do not register `terminal_fields_sealed` |
-| `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash`; only from providers that do not register `terminal_fields_sealed` |
-| `response_hash` | `string` | `String?` | opt | SHA-256 of the response data; only from providers that do not register `terminal_fields_sealed` |
+| `stop_sequence` | `string` | `String?` (decoded only) | opt | exact caller stop string matched; only from providers that do not register `terminal_fields_sealed` |
+| `se_signature` | `string` | `String?` (decoded only) | opt | Secure Enclave signature over `response_hash`; only from providers that do not register `terminal_fields_sealed` |
+| `response_hash` | `string` | `String?` (decoded only) | opt | SHA-256 of the response data; only from providers that do not register `terminal_fields_sealed` |
+| `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker ([coordinator/internal/observation/profile/profiler_provider.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/observation/profile/profiler_provider.go)). Observability only. Field list and validation: [../architecture/system-profiler.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/system-profiler.md) |
 
 A provider that registers `terminal_fields_sealed` sends `stop_sequence`,
 `response_hash` and `se_signature` only inside `encrypted_usage`, on every
 connection: a coordinator opens it with the attempt's session key. Its outbound
 terminal has no field for the clear copies (`OutboundMessage.inferenceComplete`,
-`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`).
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`),
+and Swift's `InferenceComplete` decodes them but never encodes them
+(`provider-swift/Sources/ProviderCore/Protocol/Messages.swift`).
 If the usage cannot be sealed, the request ends with `inference_error`
 `encryption_failure` (502), as a frame that cannot be sealed does
 (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`,
 `handleInferenceRequest`). Its clear `profile` names a stop string's finish,
 and any engine finish reason outside `stop`, `length`, `cancelled` and `error`,
 as `stop` (`EngineFinishReason.clearWireValue`).
-| `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker ([coordinator/internal/observation/profile/profiler_provider.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/observation/profile/profiler_provider.go)). Observability only. Field list and validation: [../architecture/system-profiler.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/system-profiler.md) |
 
 ### `inference_error`
 

@@ -26,6 +26,7 @@ struct SealedTerminalFieldsTests {
           arguments: [nil, [], ["unrelated_feature"], ["terminal_fields_sealed"]] as [[String]?])
     func sealedWhateverTheCoordinatorAdvertises(features: [String]?) async throws {
         let run = try await serve(coordinatorFeatures: features)
+        // Decoded from the frame the mock coordinator received: no clear copy.
         #expect(run.complete.stopSequence == nil)
         #expect(run.complete.responseHash == nil)
         #expect(run.complete.seSignature == nil)

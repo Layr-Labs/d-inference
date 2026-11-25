@@ -558,9 +558,7 @@ private func isSetRegisterValue(_ value: Any) -> Bool {
         .inferenceComplete(ProviderMessage.InferenceComplete(
             requestId: "req-complete",
             usage: UsageInfo(promptTokens: 12, completionTokens: 34),
-            stopSequence: "<END>",
-            seSignature: "c2ln",
-            responseHash: "aGFzaA=="
+            encryptedUsage: EncryptedPayload(ephemeralPublicKey: "ZXBoZW1lcmFs", ciphertext: "dXNhZ2U=")
         )),
         .inferenceError(ProviderMessage.InferenceError(
             requestId: "req-error",
@@ -1739,6 +1737,19 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(try ProviderProtocolCodec.decodeProviderMessage(from: withoutData) == without)
 }
 
+@Test func inferenceCompleteDecodesButNeverEncodesClearTerminalFields() throws {
+    // An older provider's clear copies decode; re-encoding never writes them,
+    // because they travel only inside `encrypted_usage`.
+    let json = #"{"type":"inference_complete","request_id":"r","usage":{"prompt_tokens":1,"completion_tokens":1},"stop_sequence":"<END>","se_signature":"c2ln","response_hash":"aGFzaA=="}"#
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: json)
+    guard case .inferenceComplete(let c) = decoded else { throw TestFailure.unexpectedMessage }
+    #expect(c.stopSequence == "<END>")
+    #expect(c.seSignature == "c2ln")
+    #expect(c.responseHash == "aGFzaA==")
+    let reencoded = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(decoded))
+    #expect(Set(reencoded.keys) == ["type", "request_id", "usage"])
+}
+
 @Test func profilerInferenceErrorEncodesProfileOnlyWhenPresent() throws {
     var profile = InferenceProfile(schema: 1, wallMs: 1_788_307_200_123)
     profile.dequeuedUs = 95
@@ -1829,8 +1840,6 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
         .inferenceComplete(ProviderMessage.InferenceComplete(
             requestId: "0f3c2b8e-6b1a-4c8f-9d2e-7a5b3c1d9e0f",
             usage: UsageInfo(promptTokens: 812, completionTokens: 147, reasoningTokens: 12),
-            stopSequence: "<END>", seSignature: String(repeating: "s", count: 96),
-            responseHash: String(repeating: "h", count: 64),
             profile: fullInferenceProfile())))
     #expect(frame.count <= 4096 + 512)
 }

@@ -821,7 +821,9 @@ extension ProviderLoop {
         // chunk back from its JSON delta.
         let me = self
         let terminalMemory = terminalMemoryForTesting
+        #if DEBUG
         let usageSealFails = usageSealFailsForTesting
+        #endif
         receiptTransferredToTask = true
         profile.mark(.taskSpawned)
         let task = Task.detached {
@@ -933,8 +935,7 @@ extension ProviderLoop {
                 return
             }
             if rejectExpiredDeadline() { return }
-            let responseSealer = ResponseFrameSealer(
-                keyPair: kp, sharedKey: sharedKey, failsUsageSeal: usageSealFails)
+            let responseSealer = ResponseFrameSealer(keyPair: kp, sharedKey: sharedKey)
 
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
@@ -1705,17 +1706,20 @@ extension ProviderLoop {
                 }
             }
             // The terminal fields leave only inside the sealed usage.
-            let terminal = SealedTerminalFields(
+            let terminalFields = SealedTerminalFields(
                 finishReason: SealedTerminalFields.finishReason(
                     streamed: streamedFinishReason, cancelled: cancelledMidStream),
                 stopSequence: v2UsageSignal.matchedStopSequence,
                 responseHash: attestation.hash, seSignature: attestation.signature)
             let encryptedUsage: EncryptedPayload
             do {
-                encryptedUsage = try responseSealer.sealUsage(usageInfo, terminal: terminal)
+                #if DEBUG
+                if usageSealFails { throw CryptoError.encryptionFailed }
+                #endif
+                encryptedUsage = try responseSealer.sealUsage(usageInfo, terminal: terminalFields)
             } catch {
-                // Never the clear copies: the request fails as one whose frame
-                // cannot be sealed does.
+                // No clear copy goes out instead: the request ends as one whose
+                // frame cannot be sealed does.
                 log.error("[\(requestId)] usage encryption failed")
                 providerStats.incrementChunkEncryptionErrors()
                 finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)

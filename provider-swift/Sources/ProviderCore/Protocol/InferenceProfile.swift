@@ -347,9 +347,11 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
     public static let maxWireBytes: Int64 = 1 << 48
 
     /// Every numeric pinned into the validator's accepted range (negatives to
-    /// 0, overflows to the ceiling). Producers call this at the wire boundary
-    /// so a lifetime counter (engine `steps_executed`) or an absurd duration
-    /// degrades one field instead of invalidating the whole record.
+    /// 0, overflows to the ceiling), and the engine finish reason narrowed to
+    /// its clear value (`EngineFinishReason.clearWireValue`). Producers call
+    /// this at the wire boundary so a lifetime counter (engine
+    /// `steps_executed`) or an absurd duration degrades one field instead of
+    /// invalidating the whole record.
     public func saturatedToWireRanges() -> InferenceProfile {
         @inline(__always) func us(_ v: Int64?) -> Int64? { v.map { min(max(0, $0), Self.maxWireMicros) } }
         @inline(__always) func n(_ v: Int64?) -> Int64? { v.map { min(max(0, $0), Self.maxWireCount) } }
@@ -409,8 +411,8 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
 }
 
 extension EngineProfile {
-    /// `_ns` ≤ 3.6e12, counts ≤ 1e9, negatives to 0 (see
-    /// `InferenceProfile.saturatedToWireRanges`).
+    /// `_ns` ≤ 3.6e12, counts ≤ 1e9, negatives to 0, and the finish reason
+    /// to its clear value (see `InferenceProfile.saturatedToWireRanges`).
     public func saturatedToWireRanges() -> EngineProfile {
         @inline(__always) func ns(_ v: Int64?) -> Int64? { v.map { min(max(0, $0), InferenceProfile.maxWireNanos) } }
         @inline(__always) func n(_ v: Int64?) -> Int64? { v.map { min(max(0, $0), InferenceProfile.maxWireCount) } }

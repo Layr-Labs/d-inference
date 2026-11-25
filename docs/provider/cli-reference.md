@@ -4450,7 +4450,8 @@ Set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before `darkbloom start`, or before inst
 |---|---|---|
 | Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift` (`CoordinatorReconnectPolicy`) |
 | Backoff reset after a stable session | `stableSessionDuration = .seconds(60)`, counted from the `register` frame | same |
-| Reconnect wait after close code `1001` (going away) or `1012` (service restart) | `fleetCloseDelayRange = 0...15` s, drawn at random; the backoff does not grow. The server side sends these codes to every provider at once, so the wait spreads the fleet's reconnects | same |
+| Reconnect wait after the coordinator's planned close (code `1012`, reason `planned move`) | `plannedCloseRange = 0...0` s: none; the backoff does not grow. The coordinator paces these closes itself | same |
+| Reconnect wait after any other close code `1001` (going away) or `1012` (service restart) | `fleetCloseDelayRange = 0...15` s, drawn at random; the backoff does not grow. The server side sends these codes to every provider at once, so the wait spreads the fleet's reconnects | same |
 | First reconnect wait after a stable session (any other end) | `stableSessionRetryRange = 0...0.25` s, drawn at random; the backoff does not grow | same |
 | WebSocket ping interval / dead-link bound | `pingInterval = .seconds(2)` / `deadAfter = .seconds(6)`: no inbound frame (pong, ping or message) for more than 6 s declares the link dead, checked at each ping | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorLinkLiveness.swift` (`CoordinatorLinkLiveness`) |
 | Suspension gap | `suspensionGap = .seconds(30)`: a ping tick this late (sleep) reconnects once; a shorter late tick restarts the silence window | same |

@@ -12,6 +12,10 @@ struct CoordinatorSessionEnd: Equatable, Sendable {
     /// when the connection ended without one: a transport close, a pong
     /// timeout, a detected suspension or a close that the provider started.
     var closeCode: UInt16?
+    /// Reason of that close frame, when the provider read it from the frame's
+    /// payload (`NWProtocolWebSocket.Metadata.sentCloseReason`). Nil when there
+    /// is no close frame, no reason, or a code that Network.framework named.
+    var closeReason: String? = nil
 }
 
 /// Chooses the range that the wait before the next coordinator connection
@@ -21,7 +25,13 @@ struct CoordinatorSessionEnd: Equatable, Sendable {
 /// - A session that stayed open for `stableSessionDuration` or more resets the
 ///   backoff first. A long session that drops starts again from the shortest
 ///   wait, independent of the drops before it.
-/// - A close frame with code 1001 (going away) or 1012 (service restart) gives
+/// - A close frame with code 1012 and the reason `planned move` gives 0 s and
+///   does not grow the backoff. Only the coordinator's close pacer sends it: it
+///   closes the sockets of a planned event (an edge restart, a coordinator stop,
+///   a move of a pair to its home) at a bounded rate, pair members first, so the
+///   provider reconnects at once and the coordinator still registers the fleet
+///   at its own pace.
+/// - Any other close frame with code 1001 (going away) or 1012 (service restart) gives
 ///   0 to 15 s and does not grow the backoff. The server side sends these codes
 ///   to every provider at once (a proxy that reloads, a coordinator that stops
 ///   or restarts), so the next attempt can succeed, but a fleet that reconnects
@@ -39,6 +49,11 @@ struct CoordinatorSessionEnd: Equatable, Sendable {
 public struct CoordinatorReconnectPolicy: Sendable {
     /// 1001 (going away) and 1012 (service restart).
     static let fleetCloseCodes: Set<UInt16> = [1001, 1012]
+    /// The close frame of a planned close that the coordinator paces: code 1012
+    /// with this exact reason. The provider reconnects without a wait.
+    static let plannedCloseCode: UInt16 = 1012
+    static let plannedCloseReason = "planned move"
+    static let plannedCloseRange: ClosedRange<TimeInterval> = 0...0
     static let stableSessionRetryRange: ClosedRange<TimeInterval> = 0...0.25
 
     let stableSessionDuration: Duration
@@ -58,6 +73,9 @@ public struct CoordinatorReconnectPolicy: Sendable {
     mutating func nextDelayRange(after end: CoordinatorSessionEnd) -> ClosedRange<TimeInterval> {
         let stable = end.openDuration.map { $0 >= stableSessionDuration } ?? false
         if stable { backoff.reset() }
+        if end.closeCode == Self.plannedCloseCode, end.closeReason == Self.plannedCloseReason {
+            return Self.plannedCloseRange
+        }
         if let code = end.closeCode, Self.fleetCloseCodes.contains(code) {
             return fleetCloseDelayRange
         }

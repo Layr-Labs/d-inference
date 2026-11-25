@@ -44,8 +44,9 @@ extension CoordinatorClient {
                 eventContinuation?.yield(.disconnected)
                 let reachable = reachability.isReachable
                 let closeCode = end.closeCode.map { "\($0)" } ?? "none"
+                let closeReason = end.closeReason.map { " close_reason=\($0)." } ?? ""
                 logger.warning(.coordinatorConnectionFailed)
-                logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). close_code=\(closeCode). Reconnecting in \(delay)s")
+                logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). close_code=\(closeCode).\(closeReason) Reconnecting in \(delay)s")
 
                 reconnectCount += 1
                 if shouldEmitReconnectTelemetry(count: reconnectCount) {
@@ -451,13 +452,15 @@ extension CoordinatorClient {
                             let wsMeta = context?.protocolMetadata(
                                 definition: NWProtocolWebSocket.definition
                             ) as? NWProtocolWebSocket.Metadata
-                            // Record a close frame's code here, on connectionQueue,
-                            // also when the receive ends with an error: the transport
-                            // state change that follows the frame can end the session
-                            // before this task reads the frame.
+                            // Record a close frame's code and reason here, on
+                            // connectionQueue, also when the receive ends with an
+                            // error: the transport state change that follows the
+                            // frame can end the session before this task reads the
+                            // frame.
                             if let wsMeta, wsMeta.opcode == .close,
                                let closeCode = wsMeta.sentCloseCode(content: data) {
-                                session.recordCloseCode(closeCode)
+                                session.recordClose(
+                                    code: closeCode, reason: wsMeta.sentCloseReason(content: data))
                             }
                             if let error {
                                 cont.resume(throwing: CoordinatorError.connectionClosed(error))
@@ -560,13 +563,29 @@ extension NWProtocolWebSocket.Metadata {
     /// with the code in network byte order (RFC 6455, section 5.5.1), so the code
     /// is read from the content in that case.
     func sentCloseCode(content: Data?) -> UInt16? {
+        guard let payload = closePayload(content: content) else { return closeCode.wireValue }
+        let high = payload[payload.startIndex]
+        let low = payload[payload.index(after: payload.startIndex)]
+        return UInt16(high) << 8 | UInt16(low)
+    }
+
+    /// The reason of this close frame as the peer sent it: the UTF-8 text after
+    /// the code in the frame's payload (RFC 6455, section 5.5.1). Nil when the
+    /// code did not come from the payload (Network.framework named it), when
+    /// the payload holds no reason, or when the reason is not UTF-8. The
+    /// coordinator's planned close (1012 `planned move`) is read this way.
+    func sentCloseReason(content: Data?) -> String? {
+        guard let payload = closePayload(content: content), payload.count > 2 else { return nil }
+        return String(data: payload.dropFirst(2), encoding: .utf8)
+    }
+
+    /// The content as the frame's payload: only when Network.framework did not
+    /// name the code (`noStatusReceived`, or a case without a number) and the
+    /// content holds at least the two bytes of a code.
+    private func closePayload(content: Data?) -> Data? {
         let reported = closeCode.wireValue
         let noStatus = NWProtocolWebSocket.CloseCode.Defined.noStatusReceived.rawValue
-        guard reported == nil || reported == noStatus, let content, content.count >= 2 else {
-            return reported
-        }
-        let high = content[content.startIndex]
-        let low = content[content.index(after: content.startIndex)]
-        return UInt16(high) << 8 | UInt16(low)
+        guard reported == nil || reported == noStatus, let content, content.count >= 2 else { return nil }
+        return content
     }
 }

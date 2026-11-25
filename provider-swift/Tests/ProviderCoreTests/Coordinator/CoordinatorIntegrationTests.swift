@@ -433,6 +433,39 @@ struct CoordinatorIntegrationTests {
         }
     }
 
+    // MARK: 3e. A planned close (1012 "planned move") reconnects at once
+
+    /// Fault injected at the socket seam: the stand-in coordinator closes the
+    /// live provider socket with 1012 and a reason. The policy here draws the
+    /// wait after any other 1001/1012 close from exactly 3 s, so a provider that
+    /// handled the planned close like any other 1012 close cannot register
+    /// again within the bound. The coordinator's close pacer sends the planned
+    /// close at a bounded rate, so the provider waits nothing.
+    @Test("a 1012 planned move close reconnects at once, not after the fleet-close wait")
+    func plannedCloseReconnectsAtOnce() async throws {
+        let policy = CoordinatorReconnectPolicy(fleetCloseDelayRange: 3...3)
+        try await withGrownReconnectBackoff(reconnectPolicy: policy) { mock in
+            let planned = try await reregistrationTime(after: mock, closeCode: 1012, reason: "planned move")
+            let elapsed = try #require(planned, "no registration after the planned close")
+            // No wait, plus a loopback reconnect. The fleet-close wait is 3 s.
+            #expect(elapsed < .milliseconds(1500), "registered again \(elapsed) after the planned close")
+        }
+    }
+
+    /// The control of the row above: a 1012 close with another reason keeps
+    /// the fleet-close wait, so the storm protection stays for every close
+    /// that the coordinator does not pace.
+    @Test("a 1012 close with another reason keeps the fleet-close wait",
+          arguments: ["edge restart", "conductor failover", "planned move now", ""])
+    func otherServiceRestartCloseKeepsTheWait(reason: String) async throws {
+        let policy = CoordinatorReconnectPolicy(fleetCloseDelayRange: 3...3)
+        try await withGrownReconnectBackoff(reconnectPolicy: policy) { mock in
+            let restart = try await reregistrationTime(after: mock, closeCode: 1012, reason: reason)
+            let elapsed = try #require(restart, "no registration after the 1012 close")
+            #expect(elapsed >= .seconds(3), "registered again \(elapsed) after the 1012 \(reason) close")
+        }
+    }
+
     // MARK: 3d. A stable session retries at once and resets the reconnect backoff
 
     /// The policy here counts a session of 1 s as stable instead of 60 s.

@@ -41,6 +41,26 @@ struct NetworkFrameworkCloseCodeTests {
         #expect(named.sentCloseCode(content: payload) == 1001)
     }
 
+    @Test("the reason of a close frame comes from the payload after the code")
+    func sentCloseReasonReadsThePayloadAfterTheCode() {
+        let unnamed = NWProtocolWebSocket.Metadata(opcode: .close)
+        unnamed.closeCode = .protocolCode(.noStatusReceived)
+        #expect(unnamed.sentCloseReason(content: Data([0x03, 0xF4]) + Data("planned move".utf8)) == "planned move")
+        // The content can be a slice that does not start at index 0.
+        let slice = (Data([0xFF, 0x03, 0xF4]) + Data("edge restart".utf8)).dropFirst()
+        #expect(unnamed.sentCloseReason(content: slice) == "edge restart")
+        // A payload with only a code, no payload, or a reason that is not UTF-8 has no reason.
+        #expect(unnamed.sentCloseReason(content: Data([0x03, 0xF4])) == nil)
+        #expect(unnamed.sentCloseReason(content: nil) == nil)
+        #expect(unnamed.sentCloseReason(content: Data([0x03])) == nil)
+        #expect(unnamed.sentCloseReason(content: Data([0x03, 0xF4, 0xC3, 0x28])) == nil)
+
+        // A code that Network.framework names does not come with its payload as content.
+        let named = NWProtocolWebSocket.Metadata(opcode: .close)
+        named.closeCode = .protocolCode(.goingAway)
+        #expect(named.sentCloseReason(content: Data([0x03, 0xE9]) + Data("planned move".utf8)) == nil)
+    }
+
     /// The codes that the coordinator side sends: 1000, 1008 and 1013 from the
     /// coordinator's session code (1000 also from `MockCoordinator`'s ordinary
     /// drops), 1001 from a proxy that reloads, and 1012 from the edge on a
@@ -64,9 +84,14 @@ struct NetworkFrameworkCloseCodeTests {
         }
 
         let received = Task { await receiveUntilCloseOrError(connection) }
-        await mock.dropActiveWebSocket(closeCode: code, reason: "conductor failover")
+        await mock.dropActiveWebSocket(closeCode: code, reason: "planned move")
         let end = await received.value
         #expect(end.sentCloseCode == code, "Network.framework reported \(end)")
+        // The planned close of the coordinator's close pacer is 1012 with this
+        // reason; the provider must read it whole.
+        if code == 1012 {
+            #expect(end.sentCloseReason == "planned move", "Network.framework reported \(end)")
+        }
     }
 }
 
@@ -110,6 +135,7 @@ private struct ReceivedEnd: Sendable, CustomStringConvertible {
     var opcode: NWProtocolWebSocket.Opcode?
     var closeCodeCase: String?
     var sentCloseCode: UInt16?
+    var sentCloseReason: String?
     var isComplete: Bool
     var contentPrefix: String?
 
@@ -133,6 +159,7 @@ private func receiveUntilCloseOrError(_ connection: NWConnection) async -> Recei
                     opcode: metadata?.opcode,
                     closeCodeCase: close.map { "\($0.closeCode)" },
                     sentCloseCode: close?.sentCloseCode(content: data),
+                    sentCloseReason: close?.sentCloseReason(content: data),
                     isComplete: isComplete,
                     contentPrefix: data.map { $0.prefix(4).map { String(format: "%02x", $0) }.joined() }))
             }

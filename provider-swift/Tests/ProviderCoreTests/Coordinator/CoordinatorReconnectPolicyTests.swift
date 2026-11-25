@@ -1,6 +1,8 @@
 /// Reconnect policy rows: the backoff reset and the 0-0.25 s first retry after a
-/// session of 60 s or more, the 0-15 s wait without growth for close codes 1001
-/// and 1012, and the unchanged backoff for every other end of a shorter session.
+/// session of 60 s or more, no wait for the coordinator's planned close (1012
+/// `planned move`), the 0-15 s wait without growth for every other close with
+/// code 1001 or 1012, and the unchanged backoff for every other end of a
+/// shorter session.
 /// The policy returns the range that `runLoop` draws the wait from, so each row
 /// checks exact ranges.
 
@@ -76,6 +78,44 @@ struct CoordinatorReconnectPolicyTests {
         // The next other end continues from the backoff that the two sessions grew.
         let next = policy.nextDelayRange(after: Self.shortTransportClose)
         #expect(next == (2.0...4.0))
+    }
+
+    /// Only the coordinator's close pacer sends 1012 with the reason `planned
+    /// move`, at a bounded rate, so the provider reconnects without a wait.
+    @Test("a 1012 planned move close gives no wait and does not grow the backoff",
+          arguments: [Duration.seconds(1), .seconds(3_600)])
+    func plannedCloseGivesNoWait(openDuration: Duration) {
+        var policy = Self.policy(afterShortSessions: 2)
+        let planned = CoordinatorSessionEnd(openDuration: openDuration, closeCode: 1012, closeReason: "planned move")
+        for _ in 0..<3 {
+            #expect(policy.nextDelayRange(after: planned) == (0.0...0.0))
+        }
+        // A short session leaves the grown backoff as it was; a stable one resets it.
+        let next = policy.nextDelayRange(after: Self.shortTransportClose)
+        #expect(next == (openDuration >= .seconds(60) ? (0.5...1.0) : (2.0...4.0)))
+    }
+
+    @Test("a 1001 or 1012 close with any other reason keeps the 0 to 15 s wait",
+          arguments: [
+              CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1012, closeReason: "edge restart"),
+              CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1012, closeReason: "conductor failover"),
+              CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1012, closeReason: "Planned Move"),
+              CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1012, closeReason: "planned move "),
+              CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1012, closeReason: ""),
+              CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1012, closeReason: nil),
+              CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: 1001, closeReason: "planned move"),
+          ])
+    func otherFleetClosesKeepTheSpread(end: CoordinatorSessionEnd) {
+        var policy = CoordinatorReconnectPolicy()
+        #expect(policy.nextDelayRange(after: end) == (0.0...15.0))
+    }
+
+    @Test("the planned move reason on another close code is not a planned close",
+          arguments: [UInt16(1000), 1008, 1011, 1013])
+    func plannedReasonOnAnotherCodeKeepsTheBackoff(closeCode: UInt16) {
+        var policy = Self.policy(afterShortSessions: 3)
+        let end = CoordinatorSessionEnd(openDuration: .seconds(1), closeCode: closeCode, closeReason: "planned move")
+        #expect(policy.nextDelayRange(after: end) == (4.0...8.0))
     }
 
     @Test("close codes 1001 and 1012 after a session open for 60 s also reset the backoff",

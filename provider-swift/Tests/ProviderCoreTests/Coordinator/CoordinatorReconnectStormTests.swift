@@ -16,10 +16,16 @@ import Testing
 /// absorbs at that rate (30 s at 95 per second), so that row also needs the
 /// spread of the waits. A storm whose reconnects arrive faster than the
 /// coordinator registers them never drains, so the play stops at `horizon`.
+/// The planned rows play the coordinator's close pacer instead: it closes one
+/// socket each 1/90 s with 1012 `planned move`, and each provider reconnects at
+/// once.
 @Suite("Coordinator reconnect storm")
 struct CoordinatorReconnectStormTests {
     static let registrationsPerSecond = 95.0
     static let horizon = 600.0
+    /// The rate of the coordinator's close pacer (`linkconfig.PlannedCloseRate`
+    /// of the coordinator: 9/10 of its open pace of 100 per second).
+    static let plannedCloseRate = 90.0
 
     @Test("a fleet whose sockets close together reconnects without a single re-drop",
           arguments: [1_000, 2_500, 4_000])
@@ -34,6 +40,19 @@ struct CoordinatorReconnectStormTests {
         #expect(storm.lastAnsweredAt <= max(workThrough, 15) + 1, "last answer at \(storm.lastAnsweredAt) s")
     }
 
+    @Test("a fleet whose planned closes the coordinator paces reconnects at once without a single re-drop",
+          arguments: [1_000, 4_000])
+    func pacedPlannedClosesReconnectWithoutReDrops(providers: Int) {
+        let storm = Self.play(providers: providers, seed: 0x5EED_2026, plannedCloseRate: Self.plannedCloseRate)
+        #expect(storm.reDrops == 0,
+                "\(storm.reDrops) connections closed again before the coordinator answered them")
+        #expect(storm.unanswered == 0, "\(storm.unanswered) providers still waited at \(Self.horizon) s")
+        // Each provider reconnects as its close comes, so the last answer comes
+        // just after the last close.
+        let lastClose = Double(providers - 1) / Self.plannedCloseRate
+        #expect(storm.lastAnsweredAt <= lastClose + 1, "last answer at \(storm.lastAnsweredAt) s")
+    }
+
     struct Storm {
         var reDrops = 0
         var lastAnsweredAt = 0.0
@@ -41,7 +60,10 @@ struct CoordinatorReconnectStormTests {
         var unanswered = 0
     }
 
-    static func play(providers: Int, seed: UInt64) -> Storm {
+    /// Plays the storm. Without `plannedCloseRate` every socket closes at 0 s
+    /// with 1001; with it, socket `i` closes at `i / plannedCloseRate` with the
+    /// planned close.
+    static func play(providers: Int, seed: UInt64, plannedCloseRate: Double? = nil) -> Storm {
         var random = SplitMix64(seed: seed)
         let liveness = CoordinatorLinkLiveness()
         let ping = liveness.pingInterval / .seconds(1)
@@ -53,10 +75,15 @@ struct CoordinatorReconnectStormTests {
 
         var policies = Array(repeating: CoordinatorReconnectPolicy(), count: providers)
         var connects = ConnectQueue()
-        let closed = CoordinatorSessionEnd(openDuration: .seconds(3_600), closeCode: 1001)
+        let fleetClose = CoordinatorSessionEnd(openDuration: .seconds(3_600), closeCode: 1001)
+        let plannedClose = CoordinatorSessionEnd(
+            openDuration: .seconds(3_600), closeCode: CoordinatorReconnectPolicy.plannedCloseCode,
+            closeReason: CoordinatorReconnectPolicy.plannedCloseReason)
         for provider in 0..<providers {
+            let closedAt = plannedCloseRate.map { Double(provider) / $0 } ?? 0
+            let closed = plannedCloseRate == nil ? fleetClose : plannedClose
             let wait = TimeInterval.random(in: policies[provider].nextDelayRange(after: closed), using: &random)
-            connects.push(at: wait, provider: provider)
+            connects.push(at: closedAt + wait, provider: provider)
         }
 
         var storm = Storm()

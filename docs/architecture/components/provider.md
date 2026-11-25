@@ -162,7 +162,11 @@ attempt ended, and `runLoop` draws the wait at random from that range.
 `register` frame. It also records the code of a close frame from the coordinator
 side. A session that stayed open for `stableSessionDuration` or more resets the
 backoff. A drop after a long session then does not pay the waits that earlier
-drops grew. A close frame with code `1001` (going away) or `1012` (service
+drops grew. A close frame with code `1012` and the reason `planned move` gives
+`plannedCloseRange`, no wait, and the backoff does not grow: only the
+coordinator's close pacer sends it, at a bounded rate, the members of a pair
+first, so the provider reconnects at once. Any other close frame with code
+`1001` (going away) or `1012` (service
 restart) gives `fleetCloseDelayRange`, and the backoff does not grow: the server
 side sends these codes to every provider at once, for example when a proxy
 reloads or a coordinator stops, and the spread keeps the reconnects of a fleet
@@ -176,7 +180,8 @@ records the close code on the connection queue, because the transport state
 change that follows the frame can end the session first. Network.framework
 reports a code that it does not name, such as `1012`, as `noStatusReceived`;
 the callback then reads the code from the first two bytes of the frame's
-payload (`sentCloseCode`). The
+payload (`sentCloseCode`) and the reason from the bytes after them
+(`sentCloseReason`). The
 [close codes](../../reference/protocol-messages.md#close-codes-and-the-reconnect-wait)
 and the [runtime constants](../../provider/cli-reference.md#runtime-constants)
 give the codes and the values. Sources:

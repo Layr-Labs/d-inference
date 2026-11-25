@@ -14,7 +14,8 @@ import Foundation
 ///
 /// The worker has no fixed lifetime. It is launched with a first rank-lease
 /// grant (S03) and this endpoint, its owner, renews the lease every five
-/// seconds on the worker's input for as long as it keeps the worker. A driver
+/// seconds on the worker's input for as long as it keeps the worker
+/// (`ClusterWorkerLease`; a driver test shortens both). A driver
 /// that dies stops the renewals with it; `stopRenewalsAfterNanoseconds` stops
 /// them on purpose, to show that the worker then ends within the time to live. The library's own
 /// `ClusterWorkerProcess` terminates and then kills its child two seconds
@@ -32,6 +33,9 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     /// Qualification only: stop renewing the rank lease this long after the
     /// launch, with the input still open.
     private let stopRenewalsAfterNanoseconds: UInt64?
+    /// The time to live each grant gives and the interval between renewals.
+    private let leaseTTLNanoseconds: UInt64
+    private let leaseRenewNanoseconds: UInt64
     private var leaseDeadline: UInt64 = 0
     private var renewalsValue: UInt64 = 0
     private var lastRenewalAt: UInt64?
@@ -77,16 +81,24 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     public var dataPlane: ClusterWorkerDataPlane? { lock.withLock { dataPlaneAtReady } }
 
     public init(command: [String], expectedIdentity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
-                executionPlanSHA256: String, stopRenewalsAfterNanoseconds: UInt64? = nil, initialLine: Data? = nil) throws {
+                executionPlanSHA256: String, stopRenewalsAfterNanoseconds: UInt64? = nil,
+                leaseTTLNanoseconds: UInt64 = ClusterWorkerLease.ttlNanoseconds,
+                leaseRenewNanoseconds: UInt64 = ClusterWorkerLease.renewNanoseconds, initialLine: Data? = nil) throws {
         // Validates the identity, rank, profile and plan the way a worker does.
         _ = try ClusterWorkerSession(identity: expectedIdentity, rank: rank, profile: profile,
                                      executionPlanSHA256: executionPlanSHA256)
         guard let executable = command.first, executable.hasPrefix("/") else {
             throw ClusterWorkerOwnerError.invalid("Invalid pair worker launch")
         }
+        // A grant must outlast the next renewal and stay within what one renewal may grant.
+        guard leaseRenewNanoseconds > 0, leaseRenewNanoseconds < leaseTTLNanoseconds,
+              leaseTTLNanoseconds <= ClusterWorkerLease.maximumNanoseconds else {
+            throw ClusterWorkerOwnerError.invalid("Invalid pair worker lease")
+        }
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
         self.executionPlanSHA256 = executionPlanSHA256
         self.stopRenewalsAfterNanoseconds = stopRenewalsAfterNanoseconds
+        self.leaseTTLNanoseconds = leaseTTLNanoseconds; self.leaseRenewNanoseconds = leaseRenewNanoseconds
         self.initialLine = initialLine
         writer = DispatchQueue(label: "darkbloom.pair-check.writer.\(rank)")
         process.executableURL = URL(fileURLWithPath: executable)
@@ -159,7 +171,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
                 throw error
             }
             launchedAt = started
-            leaseDeadline = started + ClusterWorkerLease.ttlNanoseconds
+            leaseDeadline = started + leaseTTLNanoseconds
             // First on the input, before any renewal or command is queued.
             if let line = initialLine {
                 initialLine = nil
@@ -180,7 +192,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     /// exits or the qualification fault says to stop.
     private func renewLease() {
         // The launch deadline is the first grant; renewals follow one interval on.
-        Thread.sleep(forTimeInterval: Double(ClusterWorkerLease.renewNanoseconds) / 1e9)
+        Thread.sleep(forTimeInterval: Double(leaseRenewNanoseconds) / 1e9)
         while true {
             let now = DispatchTime.now().uptimeNanoseconds
             let state = lock.withLock { () -> (stop: Bool, renewal: UInt64, started: UInt64) in
@@ -188,16 +200,17 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
             }
             if state.stop { return }
             if let limit = stopRenewalsAfterNanoseconds, now - state.started >= limit { return }
-            if let value = try? ClusterWorkerLeaseRenewal(membershipEpoch: expectedIdentity.membershipEpoch, renewal: state.renewal),
+            if let value = try? ClusterWorkerLeaseRenewal(membershipEpoch: expectedIdentity.membershipEpoch, renewal: state.renewal,
+                                                          ttlNanoseconds: leaseTTLNanoseconds),
                let bytes = try? ClusterWorkerCodec.encode(value) {
                 lock.withLock {
                     guard !inputClosed else { return }
                     renewalsValue = state.renewal; lastRenewalAt = now
-                    leaseDeadline = max(leaseDeadline, now + ClusterWorkerLease.ttlNanoseconds)
+                    leaseDeadline = max(leaseDeadline, now + leaseTTLNanoseconds)
                     writer.async { [self] in try? input.fileHandleForWriting.write(contentsOf: bytes) }
                 }
             }
-            Thread.sleep(forTimeInterval: Double(ClusterWorkerLease.renewNanoseconds) / 1e9)
+            Thread.sleep(forTimeInterval: Double(leaseRenewNanoseconds) / 1e9)
         }
     }
 
@@ -341,7 +354,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     /// later than the worker's own deadline, which counts from when it read
     /// the launch or the renewal. It moves while the endpoint keeps the worker.
     public var localLifetimeDeadlineUptimeNanoseconds: UInt64 {
-        lock.withLock { launchedAt == nil ? DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.ttlNanoseconds : leaseDeadline }
+        lock.withLock { launchedAt == nil ? DispatchTime.now().uptimeNanoseconds + leaseTTLNanoseconds : leaseDeadline }
     }
 
     public func setInvalidationHandler(_ value: @escaping @Sendable () -> Void) {

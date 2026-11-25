@@ -1,6 +1,7 @@
 import DarkbloomFanCore
 import DarkbloomFanProtocol
 import DarkbloomFanService
+import DarkbloomSigningIdentity
 import Foundation
 import Testing
 
@@ -56,24 +57,23 @@ struct FanServiceTests {
         #expect(first == second)
     }
 
-    @Test("production code requirements pin identifiers and Team ID")
+    @Test("production code requirements pin identifiers, Team ID and signing certificate")
     func exactRequirements() {
         #expect(
-            FanCodeRequirements.requirement(
-                identifier: FanIPC.helperIdentifier,
-                teamID: FanIPC.teamID
-            )
+            FanCodeRequirements.helperRequirement()
                 == "anchor apple generic and identifier \"io.darkbloom.fan-helper\" "
-                    + "and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\""
+                    + "and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\" "
+                    + "and certificate leaf = H\"95b67556e04653f56ba5411d20d33dd263ef6e2a\""
         )
         #expect(
-            FanCodeRequirements.requirement(
-                identifier: FanIPC.providerIdentifier,
-                teamID: nil
-            ) == "identifier \"io.darkbloom.provider\""
+            FanCodeRequirements.providerRequirement()
+                == "anchor apple generic and identifier \"io.darkbloom.provider\" "
+                    + "and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\" "
+                    + "and certificate leaf = H\"95b67556e04653f56ba5411d20d33dd263ef6e2a\""
         )
-        #expect(FanCodeRequirements.providerRequirement().contains("SLDQ2GJ6TL"))
-        #expect(FanCodeRequirements.helperRequirement().contains("SLDQ2GJ6TL"))
+        // The helper compares its own team with FanIPC.teamID and its peers
+        // with the shared requirement; the two must name one team.
+        #expect(FanIPC.teamID == DarkbloomSigningIdentity.teamID)
     }
 
     @Test("root configuration rejects a policy outside safety bounds")

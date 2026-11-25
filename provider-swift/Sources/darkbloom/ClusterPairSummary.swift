@@ -121,7 +121,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     var pairingUnreadable: Bool { state == .pairingUnreadable }
 
     /// The command this build answers to (`BuildEnvironment.current.cliName`: `darkbloom-dev` in the DevNet app), in every
-    /// command the summary prints (the candidate on pair-2, c3 B13). ProviderCore's texts and live operations read the same
+    /// command the summary prints (seen on a DevNet pair). ProviderCore's texts and live operations read the same
     /// `ClusterOnboardingCommand.name`, so all of them say one name.
     static var cli: String { ClusterOnboardingCommand.name }
 
@@ -216,7 +216,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// The line `darkbloom start` says in a terminal before the pair's screen, in words for what that screen does: on the
     /// leading Mac of a stopped pair, Enter starts the model last used (before one is chosen, the choice); otherwise the
     /// screen shows the pair as it is, and the Mac that follows starts nothing there. Never "starting": nothing starts
-    /// before a choice (journey 2a on pair-2, J2-d). Enter is named only while the other Mac answers: otherwise the
+    /// before a choice (seen on a DevNet pair). Enter is named only while the other Mac answers: otherwise the
     /// screen first offers Try again, Start over or Quit (#1908's review).
     var screenLine: String {
         guard role == .leader, !started, otherMacReachable else { return actingLine("opening the pair's screen") }
@@ -651,7 +651,7 @@ extension ClusterPairSummary {
                 return "Leave both Macs running: Darkbloom retries by itself. Or serve locally only: `\(Self.cli) cluster local` "
                     + "on \(leadingMac)."
             }
-            if reason.contains("lacks free memory") {
+            if ClusterOnboardingNotServing.isMemoryShort(reason) {
                 return "Quit apps on that Mac; the cluster starts again by itself. Or choose a smaller model: "
                     + "`\(Self.cli) cluster` on \(leadingMac)."
             }
@@ -735,9 +735,12 @@ extension ClusterPairSummary {
         return out
     }
 
-    /// The pair is started but doesn't run here (its cluster service said why): the one line `status` gives.
+    /// The pair is started but doesn't run here (its cluster service said why): the one line `status` gives. Not for two
+    /// Macs on different versions: that never clears by itself, and its reason and `next` name the Mac to update, which
+    /// the 15-min line ("The pair hasn't served for 15 min …") replaced (a DevNet pair, 2026-11-17).
     var startedButNotRunningLine: String? {
-        guard paired, !pairingUnreadable, started, pairRunning == false else { return nil }
+        guard paired, !pairingUnreadable, started, pairRunning == false,
+              reason?.contains(ClusterOnboardingVersionSplit.reasonMarker) != true else { return nil }
         return pairNotRunning ?? "The pair isn't running on this Mac (\(otherMac) isn't taking part)."
     }
 

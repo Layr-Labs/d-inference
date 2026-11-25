@@ -466,10 +466,28 @@ public struct EncryptedPayload: Codable, Sendable, Equatable {
 public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var textBackendInprocess: Bool
     public var textProxyDisabled: Bool
+    /// True only for Apple's default SIP configuration.
     public var sipEnabled: Bool
     public var antiDebugEnabled: Bool
     public var coreDumpsDisabled: Bool
     public var envScrubbed: Bool
+    /// The exact `csr_get_active_config` value (0 = default); omitted when unread.
+    public var sipConfiguration: UInt32?
+    /// `SecureBootPolicy.rawValue`, `unknown` when the report could not be read.
+    public var secureBoot: String?
+    /// Why `secureBoot` is `unknown` (`SecureBootReadFailure.rawValue`); omitted
+    /// otherwise.
+    public var secureBootReadFailure: String?
+    /// How many reads were attempted for that unknown reading; only with
+    /// `secureBootReadFailure`.
+    public var secureBootReadAttempts: Int?
+    /// Whether authenticated root (the signed system volume check) is enabled;
+    /// omitted when unread.
+    public var authenticatedRoot: Bool?
+    /// Where the provider runs from (`ServingVolumeCheck.Verdict.reportedClass`):
+    /// `internal`, `network`, `disk_image`, `removable`, `external` or `unknown`;
+    /// omitted when unread.
+    public var servingVolume: String?
 
     enum CodingKeys: String, CodingKey {
         case textBackendInprocess = "text_backend_inprocess"
@@ -478,6 +496,12 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         case antiDebugEnabled = "anti_debug_enabled"
         case coreDumpsDisabled = "core_dumps_disabled"
         case envScrubbed = "env_scrubbed"
+        case sipConfiguration = "sip_configuration"
+        case secureBoot = "secure_boot"
+        case secureBootReadFailure = "secure_boot_read_failure"
+        case secureBootReadAttempts = "secure_boot_read_attempts"
+        case authenticatedRoot = "authenticated_root"
+        case servingVolume = "serving_volume"
     }
 
     public init(
@@ -486,7 +510,13 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         sipEnabled: Bool,
         antiDebugEnabled: Bool,
         coreDumpsDisabled: Bool,
-        envScrubbed: Bool
+        envScrubbed: Bool,
+        sipConfiguration: UInt32? = nil,
+        secureBoot: String? = nil,
+        secureBootReadFailure: String? = nil,
+        secureBootReadAttempts: Int? = nil,
+        authenticatedRoot: Bool? = nil,
+        servingVolume: String? = nil
     ) {
         self.textBackendInprocess = textBackendInprocess
         self.textProxyDisabled = textProxyDisabled
@@ -494,6 +524,27 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         self.antiDebugEnabled = antiDebugEnabled
         self.coreDumpsDisabled = coreDumpsDisabled
         self.envScrubbed = envScrubbed
+        self.sipConfiguration = sipConfiguration
+        self.secureBoot = secureBoot
+        self.secureBootReadFailure = secureBootReadFailure
+        self.secureBootReadAttempts = secureBootReadAttempts
+        self.authenticatedRoot = authenticatedRoot
+        self.servingVolume = servingVolume
+    }
+
+    /// The boot-security report fields: the exact SIP configuration and the
+    /// Secure Boot policy, `unknown` when its report could not be read (only
+    /// `full` is at Apple's default), with why and after how many reads when
+    /// the reading said.
+    public func reportingBootSecurity(_ bootSecurity: BootSecuritySnapshot) -> PrivacyCapabilities {
+        var copy = self
+        copy.sipConfiguration = bootSecurity.sipConfiguration?.rawValue
+        copy.secureBoot = bootSecurity.secureBoot.rawValue
+        let failure = bootSecurity.secureBoot == .unknown ? bootSecurity.secureBootReadFailure : nil
+        copy.secureBootReadFailure = failure?.rawValue
+        copy.secureBootReadAttempts = failure == nil ? nil : bootSecurity.secureBootReadAttempts
+        copy.authenticatedRoot = bootSecurity.authenticatedRoot
+        return copy
     }
 }
 
@@ -517,6 +568,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var activeTokens: Int64
     public var maxTokensPotential: Int64
     public var observedDecodeTps: Double
+    /// Milliseconds since the newest sample that moved `observedDecodeTps`
+    /// (a reply of at least 32 tokens, or a calibration cell). Sent only with
+    /// a published rate; nil ⇒ omitted. Informational: the provider's rate
+    /// itself is unchanged, and a coordinator that doesn't read it ignores it.
+    public var observedDecodeTpsAgeMs: Int64?
     public var observedPrefillTps: Double
     public var activeTokenBudgetUsed: Int64
     public var activeTokenBudgetMax: Int64
@@ -634,6 +690,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case activeTokens = "active_tokens"
         case maxTokensPotential = "max_tokens_potential"
         case observedDecodeTps = "observed_decode_tps"
+        case observedDecodeTpsAgeMs = "observed_decode_tps_age_ms"
         case observedPrefillTps = "observed_prefill_tps"
         case activeTokenBudgetUsed = "active_token_budget_used"
         case activeTokenBudgetMax = "active_token_budget_max"
@@ -671,6 +728,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         maxTokensPotential: Int64,
         maxConcurrency: UInt32 = 0,
         observedDecodeTps: Double = 0,
+        observedDecodeTpsAgeMs: Int64? = nil,
         observedPrefillTps: Double = 0,
         activeTokenBudgetUsed: Int64 = 0,
         activeTokenBudgetMax: Int64 = 0,
@@ -705,6 +763,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.maxTokensPotential = maxTokensPotential
         self.maxConcurrency = maxConcurrency
         self.observedDecodeTps = observedDecodeTps
+        self.observedDecodeTpsAgeMs = observedDecodeTpsAgeMs
         self.observedPrefillTps = observedPrefillTps
         self.activeTokenBudgetUsed = activeTokenBudgetUsed
         self.activeTokenBudgetMax = activeTokenBudgetMax
@@ -742,6 +801,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         maxTokensPotential = try container.decodeIfPresent(Int64.self, forKey: .maxTokensPotential) ?? 0
         maxConcurrency = try container.decodeIfPresent(UInt32.self, forKey: .maxConcurrency) ?? 0
         observedDecodeTps = try container.decodeIfPresent(Double.self, forKey: .observedDecodeTps) ?? 0
+        observedDecodeTpsAgeMs = try container.decodeIfPresent(Int64.self, forKey: .observedDecodeTpsAgeMs)
         observedPrefillTps = try container.decodeIfPresent(Double.self, forKey: .observedPrefillTps) ?? 0
         activeTokenBudgetUsed = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetUsed) ?? 0
         activeTokenBudgetMax = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetMax) ?? 0
@@ -793,6 +853,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try container.encode(maxTokensPotential, forKey: .maxTokensPotential)
         try encodeIfNonZero(maxConcurrency, forKey: .maxConcurrency, into: &container)
         try encodeIfNonZero(observedDecodeTps, forKey: .observedDecodeTps, into: &container)
+        try container.encodeIfPresent(observedDecodeTpsAgeMs, forKey: .observedDecodeTpsAgeMs)
         try encodeIfNonZero(observedPrefillTps, forKey: .observedPrefillTps, into: &container)
         try encodeIfNonZero(activeTokenBudgetUsed, forKey: .activeTokenBudgetUsed, into: &container)
         try encodeIfNonZero(activeTokenBudgetMax, forKey: .activeTokenBudgetMax, into: &container)

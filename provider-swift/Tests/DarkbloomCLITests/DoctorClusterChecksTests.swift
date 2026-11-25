@@ -25,4 +25,13 @@ struct DoctorClusterChecksTests {
         #expect(checks[1].detail == "the pairing's link key is missing (details: `darkbloom cluster doctor`)")
         #expect(checks.contains { $0.status.isFailure(strict: false) })
     }
+
+    @Test("a warning is a doctor WARN, not a failure: a pair set up before this Mac updated")
+    func warningBecomesWarn() {
+        let checks = clusterDoctorChecks([("localInstalledMetadata", .warning, "names the worker of Darkbloom 0.10.17")])
+        #expect(checks.map(\.name) == ["cluster localInstalledMetadata"])
+        #expect(checks.map(\.status) == [.warn])
+        #expect(checks[0].detail == "names the worker of Darkbloom 0.10.17")
+        #expect(!checks.contains { $0.status.isFailure(strict: false) })
+    }
 }

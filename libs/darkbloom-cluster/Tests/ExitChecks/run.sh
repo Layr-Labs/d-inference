@@ -7,10 +7,13 @@
 set -euo pipefail
 task_root="$(cd "$(dirname "$0")/../.." && pwd)"
 support="$task_root/Sources/DarkbloomClusterRuntime/Support"
-task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-exit-checks.XXXXXX")"
-trap 'rm -rf "$task_build"' EXIT
-xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" -parse-as-library \
-  "$task_root/Sources/DarkbloomClusterProtocol/ClusterForcedExitBounds.swift" \
-  "$support/ProcessForcedExit.swift" "$support/ProcessDeadline.swift" "$support/ClusterLeaseDeadline.swift" "$support/ClusterRuntimeError.swift" \
-  "$task_root/Tests/ExitChecks/ExitCheck.swift" -o "$task_build/exit-check"
+source "$task_root/Tests/Support/check-phases.sh"
+check_build_directory task_build "${TMPDIR:-/tmp}/cluster-exit-checks.XXXXXX"
+compile_checks() {
+  xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" -parse-as-library \
+    "$task_root/Sources/DarkbloomClusterProtocol/ClusterForcedExitBounds.swift" \
+    "$support/ProcessForcedExit.swift" "$support/ProcessDeadline.swift" "$support/ClusterLeaseDeadline.swift" "$support/ClusterRuntimeError.swift" \
+    "$task_root/Tests/ExitChecks/ExitCheck.swift" -o "$task_build/exit-check"
+}
+check_phases compile_checks
 "$task_build/exit-check"

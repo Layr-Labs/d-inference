@@ -3,7 +3,7 @@ import Foundation
 /// A pair that serves only on the leading Mac's local API (`darkbloom cluster local`), updated by hand. Its parts never
 /// answer the pair's drain, so the coordinated update (`ClusterPairUpdateCycle`) gave up on it, and both Macs' cluster
 /// services kept running the earlier release: the pair stayed down until `darkbloom cluster stop --local-only --service`
-/// and `darkbloom start` on each Mac (W1, DevNet pair-2, 0.10.13 `.181` → `.187` and `.187` → `.188`). Now
+/// and `darkbloom start` on each Mac (on a DevNet pair, 0.10.13 `.181` → `.187` and `.187` → `.188`). Now
 /// `darkbloom update` on such a Mac restarts that Mac's cluster service into the release it installed at once, and a
 /// cluster service ended in the middle of setting the pair up again after an update puts the pair's start back when it
 /// runs again (`ClusterSetupRecord.updateReplan`), so the pair sets itself up again once both Macs run the release.

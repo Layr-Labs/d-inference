@@ -81,8 +81,8 @@ struct ClusterLinkKeyKeychainTests {
         #expect(ClusterKeychainEdgeSecretVault.install(pairingDirectory: URL(fileURLWithPath: directory.path + "/"), environment: .prod,
             processEnvironment: [:]).service == production.service, "the same store, however its path is spelled")
         #expect(ClusterKeychainEdgeSecretVault.install(pairingDirectory: directory, environment: .prod,
-            processEnvironment: ["DARKBLOOM_KEYCHAIN_ACCESS_GROUP": "TEAM.io.example"]).accessGroup == "TEAM.io.example",
-            "the SE key's override applies to the link keys too")
+            processEnvironment: ["DARKBLOOM_KEYCHAIN_ACCESS_GROUP": "TEAM.io.example"], readsEnvironment: true).accessGroup
+            == "TEAM.io.example", "the SE key's override (debug builds) applies to the link keys too")
         let store = ClusterPairingStore.default(home: home, environment: .dev)
         let devnetDirectory = ClusterUserPaths.pairingDirectory(home: home, environment: .dev)
         #expect(store.directory == devnetDirectory)
@@ -261,34 +261,27 @@ struct ClusterLinkKeyKeychainTests {
         func set(_ value: Bool) { lock.withLock { if keyFileBeforeSwap == nil { keyFileBeforeSwap = value } } }
     }
 
-    @Test func aRollbackTo0_10_12WritesTheKeyBackBeforeAndAfterTheSwap() async throws {
+    /// A release before 0.10.13 links with the older handshake: a rollback to it restores the release but writes it no
+    /// link key, before the swap or after it. The item stays in the Keychain for the next update, and the updater's
+    /// lines say where each pairing's key stays.
+    @Test func aRollbackBelow0_10_13WritesNoLinkKeyBeforeOrAfterTheSwap() async throws {
         let rollback = try await Rollback.make(old: "0.10.12", new: "0.10.13")
         defer { Task { await rollback.shutdown() } }
         #expect(!FileManager.default.fileExists(atPath: rollback.keyFile))
         let seen = Seen()
         let keyFile = rollback.keyFile
         let store = rollback.store(faults: { point in
-            switch point {
-            case .transactionPersisted:
-                // Before the swap: the key is there for 0.10.12 already.
-                seen.set(FileManager.default.fileExists(atPath: keyFile))
-            case .liveLayoutReplaced:
-                // A process of the rolled-back release started between the two writes removes the first one.
-                unlink(keyFile)
-            default: break
-            }
+            if point == .transactionPersisted { seen.set(FileManager.default.fileExists(atPath: keyFile)) }
         })
         #expect(try rollback.rollBack(store) == "0.10.12")
         #expect(try rollback.live() == "0.10.12")
-        #expect(seen.keyFileBeforeSwap == true, "the key was written back before the swap")
-        #expect(FileManager.default.contents(atPath: keyFile) == Self.hexLine(rollback.secret),
-                "and written again after it, in 0.10.12's format")
-        var info = stat()
-        let found = lstat(keyFile, &info) == 0
-        #expect(found && info.st_mode & 0o777 == 0o600, "owner-only")
-        let fileMode = ClusterPairingStore(directory: URL(fileURLWithPath: keyFile).deletingLastPathComponent())
-        #expect(try fileMode.edgeSecret(for: rollback.record) == rollback.secret, "0.10.12's way of reading gets the key")
+        #expect(seen.keyFileBeforeSwap == false, "no key file before the swap")
+        #expect(!FileManager.default.fileExists(atPath: keyFile), "nor after it")
         #expect(rollback.vault.item(rollback.record.peerPin)?.secret == rollback.secret, "the item stays for the next update")
+        let lines = ClusterLinkKeyRollback.keep(installRoot: rollback.fixture.installRoot, restoring: "0.10.12", vault: rollback.vault)
+        #expect(lines.count == 1 && lines[0].contains("stays in this Mac's Keychain") && lines[0].contains("no key file is written"),
+                "\(lines)")
+        #expect(!FileManager.default.fileExists(atPath: keyFile))
     }
 
     @Test func aRollbackToAReleaseThatKeepsKeysInTheKeychainWritesNoFile() async throws {
@@ -303,29 +296,10 @@ struct ClusterLinkKeyKeychainTests {
         #expect(ClusterLinkKeyRollback.restoresFileRelease("not a version"), "unreadable: write (harmless)")
     }
 
-    @Test func aRollbacksSecondWriteIsANewFile() async throws {
-        let rollback = try await Rollback.make(old: "0.10.12", new: "0.10.13")
-        defer { Task { await rollback.shutdown() } }
-        let keyFile = rollback.keyFile
-        final class Inode: @unchecked Sendable { var value: ino_t = 0 }
-        let first = Inode()
-        let store = rollback.store(faults: { point in
-            guard point == .transactionPersisted else { return }
-            var info = stat()
-            if lstat(keyFile, &info) == 0 { first.value = info.st_ino }
-        })
-        #expect(try rollback.rollBack(store) == "0.10.12")
-        var after = stat()
-        let found = lstat(keyFile, &after) == 0
-        #expect(found && first.value != 0 && after.st_ino != first.value,
-                "the write after the swap is a new file, newer than every process running then")
-        #expect(FileManager.default.contents(atPath: keyFile) == Self.hexLine(rollback.secret))
-    }
-
     /// Each way `recoverInterruptedTransaction` finishes a rollback that died: the staged predecessor installed, the
-    /// swap already done, or the predecessor restored from its kept copy (no staging left). Each writes the key back.
+    /// swap already done, or the predecessor restored from its kept copy (no staging left). None writes a link key.
     @Test(arguments: ["replays the staging", "finds the swap done", "restores the kept copy"])
-    func aRollbackInterruptedIsFinishedWithTheKey(_ path: String) async throws {
+    func aRollbackInterruptedIsFinishedWithoutALinkKey(_ path: String) async throws {
         enum ProcessDeath: Error { case injected }
         let rollback = try await Rollback.make(old: "0.10.12", new: "0.10.13")
         defer { Task { await rollback.shutdown() } }
@@ -333,7 +307,7 @@ struct ClusterLinkKeyKeychainTests {
         let point: UpdateRecoveryStore.FaultPoint = path == "finds the swap done" ? .liveLayoutExchanged : .transactionPersisted
         let dying = rollback.store(faults: { reached in
             guard reached == point else { return }
-            unlink(keyFile)   // a process of the rolled-back release removed the first write; then the rollback died
+            unlink(keyFile)   // nothing to remove: no key file is written; then the rollback died
             if path == "restores the kept copy" {
                 for name in (try? FileManager.default.contentsOfDirectory(atPath: installRoot.path)) ?? [] where name.hasPrefix(".rollback-staging-") {
                     try? FileManager.default.removeItem(at: installRoot.appendingPathComponent(name))
@@ -346,12 +320,13 @@ struct ClusterLinkKeyKeychainTests {
         let staging = ((try? FileManager.default.contentsOfDirectory(atPath: installRoot.path)) ?? []).filter { $0.hasPrefix(".rollback-staging-") }
         #expect(path == "restores the kept copy" ? staging.isEmpty : !staging.isEmpty || path == "finds the swap done",
                 "\(path): the recovery has the staging it names (\(staging))")
-        // The next lease holder of the rolled-back release (a watchdog tick) finishes the rollback, and the key with it.
+        // The next lease holder of the rolled-back release (a watchdog tick) finishes the rollback, without a key file.
         let next = rollback.store()
         let lock = try UpdateProcessLock.acquire(at: next.lockPath, operation: "next-tick")
         try next.recoverInterruptedTransaction(now: 501)
         lock.release()
         #expect(try rollback.live() == "0.10.12", "\(path)")
-        #expect(FileManager.default.contents(atPath: keyFile) == Self.hexLine(rollback.secret), "\(path): recovery wrote the key back")
+        #expect(!FileManager.default.fileExists(atPath: keyFile), "\(path): recovery wrote no key file")
+        #expect(rollback.vault.item(rollback.record.peerPin)?.secret == rollback.secret, "\(path): the item stays")
     }
 }

@@ -1,9 +1,7 @@
+# PAUSED: All Bedrock workflows are paused to cut spend. Set BEDROCK_SCAN_ENABLED=true (and restore PR trigger if desired) to resume.
 name: Threat Model Review (advisory)
 
 on:
-  pull_request_target:
-    branches: [master, main]
-    types: [opened, synchronize, reopened, ready_for_review, edited]
   workflow_dispatch:
     inputs:
       preflight:
@@ -18,8 +16,8 @@ permissions:
 jobs:
   preflight:
     name: Threat review activation preflight
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && github.event_name == 'workflow_dispatch' && inputs.preflight }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
@@ -51,10 +49,11 @@ jobs:
         run: python3 .github/scripts/threat-review-preflight.py
   review:
     name: Threat Model Review (advisory)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: write
+      issues: write
       pull-requests: write
       id-token: write
     env:
@@ -64,11 +63,11 @@ jobs:
       BEDROCK_SCAN_ENABLED: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && (github.event.pull_request.head.repo.full_name == github.repository || vars.BEDROCK_SCAN_ALLOW_FORKS == 'true') && 'true' || 'false' }}
     # Conditional clearance is activated only after its exact workflow rule is installed.
     continue-on-error: ${{ vars.THREAT_REVIEW_REQUIRE_CLEARANCE != 'true' }}
-    if: >-
-      ${{ github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
-          (github.event.action != 'edited' || github.event.changes.base.ref.from != '' || vars.THREAT_REVIEW_REQUIRE_CLEARANCE == 'true') }}
-    # In clearance mode an edited PR must not replace a failed required run with
-    # a skipped success. Advisory mode still ignores ordinary title/body edits.
+    # PAUSED: pull_request_target trigger is removed and BEDROCK_SCAN_ENABLED
+    # gates this job so neither Bedrock nor its OpenRouter fallback can run
+    # while paused. Restore pull_request_target and set BEDROCK_SCAN_ENABLED=true
+    # to resume.
+    if: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && github.event_name == 'pull_request_target' }}
     concurrency:
       group: threat-model-advisory-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -88,9 +87,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/threat-review-gate.py before
-      - name: Coalesce follow-up pushes
-        if: ${{ github.event.action == 'synchronize' }}
-        run: sleep 75
       - name: Create a short-lived state-writer token
         if: ${{ steps.merge-policy.outputs.overridden != 'true' && vars.THREAT_REVIEW_APP_ID != '' }}
         id: state-token

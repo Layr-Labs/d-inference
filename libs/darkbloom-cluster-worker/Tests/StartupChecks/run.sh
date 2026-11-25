@@ -47,6 +47,20 @@ transport=DARKBLOOM_CLUSTER_TRANSPORT; fault=DARKBLOOM_CLUSTER_QUALIFICATION_FAU
 gate=DARKBLOOM_CLUSTER_QUALIFICATION_MEMORY_GATE; mimoresidency=DARKBLOOM_CLUSTER_MIMO_STAGE_RESIDENCY
 steps=DARKBLOOM_CLUSTER_MIMO_STEP_EVIDENCE
 residency=DARKBLOOM_CLUSTER_STAGE_RESIDENCY
+# First of all, the worker applied its start-up hardening (its own record).
+hardening="$("$worker" --report-startup-hardening)"
+case "$hardening" in
+  *'"applied":true,"clean":true'*'"remaining_task":0,"remaining_thread":0'*)
+    passed=$((passed + 1)); printf 'ok %-58s %s\n' startup-hardening-applied "$hardening" ;;
+  *) echo "FAILED startup-hardening-applied: $hardening" >&2; exit 1 ;;
+esac
+# An abort right after startup reaches no handler of the process that started the worker.
+xcrun clang -O2 -o "$work/abort-after-startup" "$(dirname "$0")/abort-after-startup.c"
+if ending="$("$work/abort-after-startup" "$worker")"; then
+  passed=$((passed + 1)); printf 'ok %-58s %s\n' startup-abort-reaches-no-launcher-handler "$(printf '%s' "$ending" | tr '\n' ' ')"
+else
+  echo "FAILED startup-abort-reaches-no-launcher-handler: $ending" >&2; exit 1
+fi
 # With no switch the worker gets as far as the missing model: the baseline every refusal is told apart from.
 check baseline-stops-at-the-missing-model 1 "" "qualification switch" --
 check transport-switch-refused-without-the-flag 1 "$transport is a qualification switch" "" "$transport=local-socket-test" --

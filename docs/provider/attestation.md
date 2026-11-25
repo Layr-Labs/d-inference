@@ -1,10 +1,10 @@
 # Provider verification with App Attest
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 How to check provider verification. Darkbloom verifies Macs with App Attest
-only, which needs macOS 27 or later; Darkbloom MDM and the legacy `hardware`
-path it fed are retired, and a `hardware` label is not required to serve. For
+only, which needs macOS 27 or later; a `hardware` label is not required to
+serve. For
 operators; the mechanism — what each layer proves, the grant and loss
 conditions, the routing gate, and the code map — is in
 [`../architecture/security/attestation.md`](../architecture/security/attestation.md)
@@ -64,7 +64,7 @@ credential identifiers. See [consumer verification](https://github.com/Layr-Labs
 and the [wire contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#verification-presentation-contract).
 
 
-## App Attest without Darkbloom MDM
+## App Attest setup and recovery
 
 A failed initial enrollment can leave an Apple key unusable even when its identifier is still in Keychain. Darkbloom replaces that identifier after non-service-unavailable failures, or after an attempt whose answer was lost because the provider ended during the Apple call, subject to the persisted one-hour replacement cooldown and shared hourly generation budget. A crash or forced kill can lose that answer; a disconnect, `darkbloom stop` or a cluster restart lets Apple answer first. Service-unavailable failures keep the same key, and already saved enrollment proofs are retained for retry. Do not delete account, machine, Keychain or employer-management state to force retries. This recovery is not proof that the Mac is authorized; check the coordinator verdict. See the [key lifecycle](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
 
@@ -173,9 +173,8 @@ measurement must match the registered official signed build; registration alone
 cannot supply missing evidence or repair a mismatch. Do not delete a working
 credential to bypass that check.
 
-Darkbloom verifies Macs with App Attest only, on macOS 27 or later. Darkbloom
-MDM is removed: the installer and `darkbloom enroll` download no profile, and no
-MDM check grants or keeps serving. Start the signed provider and check
+Darkbloom verifies Macs with App Attest only, on macOS 27 or later. The
+installer and `darkbloom enroll` download no profile. Start the signed provider and check
 `darkbloom status` / `darkbloom doctor` for current App Attest authorization.
 Company-managed Macs keep their employer profile; it never affects this path.
 
@@ -191,11 +190,10 @@ attempts token revocation. If remote revocation is unconfirmed, its output says
 so; local deletion is not proof that remote copies were invalidated. See
 [logout flags and failure behavior](cli-reference.md#darkbloom-login--darkbloom-logout).
 
-## Macs that used Darkbloom MDM
+## Macs on macOS 26 or earlier
 
-Darkbloom MDM is retired (production runs it off from a planned coordinator restart). A Mac on
-macOS 26 or earlier cannot use App Attest, so it cannot serve until macOS is
-updated to 27 or later; there is no legacy MDM path or cohort. Every command in the CLI warns on stderr when the local OS is below 27
+A Mac on macOS 26 or earlier cannot use App Attest, so it cannot serve until
+macOS is updated to 27 or later. Every command in the CLI warns on stderr when the local OS is below 27
 (`provider-swift/Sources/darkbloom/MacOSUpgradeNotice.swift`). After updating
 macOS, run `darkbloom update` and `darkbloom restart`, then check
 `darkbloom status`. App Attest sets itself up; your account, earnings history
@@ -240,8 +238,26 @@ identity cleanup. Options are in
   GUI session; `darkbloom doctor` reports `console session`, `automatic login`,
   `auto-logout on idle` and `sleep prevention`
   ([`troubleshooting.md#doctor-checks`](./troubleshooting.md#doctor-checks)).
-- **Keep SIP on and Secure Boot at Full Security.** Both are changed only in
-  Recovery, and App Attest's Mac access policy checks them.
+- **Keep the default boot settings and leave authenticated root enabled.** All are changed only in
+  Recovery, and App Attest's Mac access policy checks them. The provider also
+  checks them itself: it serves Darkbloom requests only when SIP is at Apple's
+  default configuration (no `csrutil enable --without …` exception; the exact
+  value is read from the kernel and reported at registration), when
+  `Startup Security Utility` doesn't report `Reduced Security` or
+  `Permissive Security`, and when authenticated root (the signed system volume
+  check) isn't explicitly disabled. An unreadable Secure Boot report only warns
+  on the Mac. The service reads it again for up to a minute at startup and,
+  on a Mac that serves alone, once more before each connection while it stays
+  unread; only then is it reported as `unknown`, with why
+  (`secure_boot_read_failure`) and after how many reads
+  (`secure_boot_read_attempts`). An unreadable authenticated root
+  setting only warns, and is left out of the registration. The provider also
+  refuses to serve from inside a macOS sandbox it didn't set up, since it can't
+  verify the boot settings there. If one of these keeps Darkbloom serving off, a
+  `darkbloom start` that would install the Darkbloom service stops with the fix,
+  a running service stays up without connecting to Darkbloom, and
+  `darkbloom doctor` names each protection that is off. Only me (`darkbloom start --local`) still serves
+  your own requests.
 - **Keep the same identity.** The Secure Enclave signing key is persistent in
   the keychain, so your SE public key survives restarts
   ([`../architecture/security/identity-binding.md`](../architecture/security/identity-binding.md)).
@@ -258,22 +274,19 @@ identity cleanup. Options are in
 `Authorization: App Attest authorizes this connection.` when this connection is
 authorized (`StatusCommand.swift`). Without a current decision it prints the last
 `trust_status` as `Trust: <level> / <status>` with advice from
-`provider-swift/Sources/ProviderCore/Diagnostics/TrustReasonCatalog.swift`. The
-coordinator may still send the MDM-era reason `SE attestation verified, awaiting MDM
-verification` at registration; it means only that the Secure Enclave check passed,
-and serving waits for App Attest. The reason strings are listed in
+`provider-swift/Sources/ProviderCore/Diagnostics/TrustReasonCatalog.swift`. At
+registration the coordinator sends `SE attestation verified`: the Secure Enclave
+check passed, and serving waits for App Attest. The reason strings are listed in
 [trust status messages](../architecture/security/attestation.md#trust-status-messages-to-providers).
 
 `darkbloom doctor` shows the local side: App Attest state, SIP, the
 console-session checks above, an informational line if the retired Darkbloom
-profile is still installed, and (with `--support`) the coordinator URL and MDM
-enrollment state ([`troubleshooting.md#doctor-checks`](./troubleshooting.md#doctor-checks)).
+profile is still installed, and (with `--support`) the coordinator URL ([`troubleshooting.md#doctor-checks`](./troubleshooting.md#doctor-checks)).
 
 Anyone can read your public verdict, which includes `app_attest_authorized` and
 the verified posture fields but never your serial, UDID, APNs token or
 `code_attested`, from `GET /v1/providers/attestation`. The fields are explained in
 [../consumer/verification.md#public-attestation-endpoint](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/verification.md#public-attestation-endpoint).
-`mdm_verified` and `mda_verified` are historical MDM fields.
 
 Single-node inference is the supported security boundary: multi-node RDMA over
 Thunderbolt bypasses the in-process memory protections and is not trusted. The
@@ -296,9 +309,9 @@ format and failure policy are in [Layer 2](../architecture/security/attestation.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| No `Authorization: App Attest authorizes this connection.` line | App Attest pending, unqualified, or the Mac runs macOS 26 or earlier | On macOS 26 or earlier, update to macOS 27; otherwise follow `darkbloom doctor`'s `APP ATTEST` and traffic lines. No MDM profile helps |
+| No `Authorization: App Attest authorizes this connection.` line | App Attest pending, unqualified, or the Mac runs macOS 26 or earlier | On macOS 26 or earlier, update to macOS 27; otherwise follow `darkbloom doctor`'s `APP ATTEST` and traffic lines |
 | `trust_level: self_signed` | The legacy level; App Attest serving does not raise it | Informational; check the `Authorization:` line instead |
-| `mdm_verified: false`, `mda_verified: false` | Historical MDM fields | Informational; routing does not use them |
+| `mdm_verified: false`, `mda_verified: false` | Retired fields the coordinator still sends for older CLIs ([kept until](../operations/retired-mdm-remnants.md)) | Informational; routing does not use them |
 | `code_attested` never passes | No Aqua session / no APNs token / pushes throttled | Log in at the console, enable automatic login, disable auto-logout; check `darkbloom doctor`; a reconnect soon after a proof uses the resume path instead of a push ([Flag — APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)) |
 | Derouted after missed challenges | Sleep or network blip | Recovers on the next passing challenge; prevent sleep |
 | `status signature verification failed` while the plain challenge signature passes | Invalid status signature or a mismatch between provider and coordinator canonical bytes | Run `darkbloom update` and `darkbloom restart`; if it persists, use the diagnostics below. The coordinator continues to reject mismatching signatures |

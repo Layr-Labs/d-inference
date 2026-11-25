@@ -13,7 +13,7 @@ private struct MediaRefusingResponder: HTTPResponder {
     }
 }
 
-/// Journey 3 on pair-2 (D5): an image sent to Gemma 4 on a pair, which serves it text only, was refused 400 "Media
+/// On a DevNet pair: an image sent to Gemma 4 on a pair, which serves it text only, was refused 400 "Media
 /// input is not supported." with no `code`. Every local API (one Mac's and a pair's answer through this one responder)
 /// gives that refusal the typed code this Mac's provider gives the coordinator for it
 /// (`InferenceFailureCode.unsupportedMedia`), so a client can tell it from any other 400.

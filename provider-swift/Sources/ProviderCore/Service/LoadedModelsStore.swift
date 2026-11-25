@@ -33,11 +33,9 @@ public enum LoadedModelsStore {
         }
     }
 
-    /// `~/.darkbloom/loaded-models.json`, overridable with
-    /// `DARKBLOOM_LOADED_MODELS_FILE` (mirrors `DARKBLOOM_STATE_FILE`).
+    /// `~/.darkbloom/loaded-models.json` (`LocationOverride.loadedModelsFile` moves it).
     public static func path() -> URL {
-        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_LOADED_MODELS_FILE"],
-            !override.isEmpty {
+        if let override = LocationOverride.loadedModelsFile.value() {
             return URL(fileURLWithPath: override)
         }
         return BuildEnvironment.current.installDirectory()

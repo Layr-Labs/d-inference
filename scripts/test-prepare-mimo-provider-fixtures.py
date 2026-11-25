@@ -110,14 +110,21 @@ class ProviderFixtureTests(unittest.TestCase):
         self.assertEqual(env_file.read_text(), expected)
 
     def test_provider_job_provisions_prompt_and_tiny_inputs_before_tests(self):
-        workflow = (ROOT / ".github/workflows/provider-tests.yml").read_text().split("  test-provider:", 1)[1]
-        workflow = workflow.split("  test-cluster:", 1)[0]
+        text = (ROOT / ".github/workflows/provider-tests.yml").read_text()
+        # The shards (test-provider), then Provider Gates (test-provider-gates),
+        # which runs the native gates once beside them.
+        workflow = text.split("  test-provider:", 1)[1].split("  test-provider-gates:", 1)[0]
+        gates = text.split("  test-provider-gates:", 1)[1].split("  test-cluster:", 1)[0]
         run = workflow.index("-- ../scripts/run-provider-tests.sh")
+        first_gate = gates.index("../scripts/run-nested-suite.sh")
         for command in ("scripts/prepare-mimo-prompt-fixtures.py", "scripts/prepare-mimo-provider-fixtures.py"):
             self.assertLess(workflow.index(command), run)
+            self.assertLess(gates.index(command), first_gate)
         self.assertIn("--asymmetric", workflow)
+        self.assertIn("--asymmetric", gates)
+        self.assertNotIn("Run isolated native MiMo", workflow)
         for name in ("startup", "complete-prefix", "retained-fault"):
-            step = workflow.split(f"      - name: Run isolated native MiMo {name} gate", 1)[1]
+            step = gates.split(f"      - name: Run isolated native MiMo {name} gate", 1)[1]
             step = step.split("      - name:", 1)[0]
             self.assertIn("!cancelled()", step)
             self.assertIn("steps.mimo-fixtures.outcome == 'success'", step)
@@ -127,10 +134,11 @@ class ProviderFixtureTests(unittest.TestCase):
             self.assertNotIn("continue-on-error", step)
         general = workflow.split("      - name: Run Swift tests", 1)[1].split("      - name:", 1)[0]
         self.assertNotIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS:", general)
-        audio = workflow.split("      - name: Run isolated native MiMo audio gate", 1)[1].split("      - name:", 1)[0]
+        audio = gates.split("      - name: Run isolated native MiMo audio gate", 1)[1].split("      - name:", 1)[0]
         self.assertIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'", audio)
-        self.assertNotIn("MIMO_CONSUMER_DIVERGENCE_TESTS:", workflow)
-        self.assertNotIn("MIMO_V26_INGRESS_AUDIO_VIDEO_TESTS:", workflow)
+        for job in (workflow, gates):
+            self.assertNotIn("MIMO_CONSUMER_DIVERGENCE_TESTS:", job)
+            self.assertNotIn("MIMO_V26_INGRESS_AUDIO_VIDEO_TESTS:", job)
 
     def test_sdk_qualification_provisions_the_same_routine_inputs(self):
         action = (ROOT / ".github/actions/provider-release-build/action.yml").read_text()

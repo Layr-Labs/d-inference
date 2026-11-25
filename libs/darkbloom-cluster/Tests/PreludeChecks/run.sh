@@ -6,22 +6,24 @@
 # model. This does not qualify cross-host execution.
 set -euo pipefail
 task_root="$(cd "$(dirname "$0")/../.." && pwd)"
-task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-prelude.XXXXXX")"
-trap 'rm -rf "$task_build"' EXIT
+source "$task_root/Tests/Support/check-phases.sh"
+check_build_directory task_build "${TMPDIR:-/tmp}/cluster-prelude.XXXXXX"
 target="$(uname -m)-apple-macos14.0"
-
-xcrun swiftc -swift-version 6 -warnings-as-errors -target "$target" \
-  -enable-testing -emit-library -emit-module -module-name DarkbloomClusterBootstrap \
-  -emit-module-path "$task_build/DarkbloomClusterBootstrap.swiftmodule" \
-  "$task_root"/Sources/DarkbloomClusterBootstrap/*.swift -o "$task_build/libDarkbloomClusterBootstrap.dylib"
-xcrun swiftc -swift-version 6 -warnings-as-errors -target "$target" \
-  -enable-testing -emit-library -emit-module -module-name DarkbloomClusterSecurity \
-  -I "$task_build" -L "$task_build" -lDarkbloomClusterBootstrap \
-  -Xlinker -rpath -Xlinker "$task_build" \
-  -emit-module-path "$task_build/DarkbloomClusterSecurity.swiftmodule" \
-  "$task_root"/Sources/DarkbloomClusterSecurity/*.swift -o "$task_build/libDarkbloomClusterSecurity.dylib"
-xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$target" \
-  -I "$task_build" -L "$task_build" -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity \
-  -Xlinker -rpath -Xlinker "$task_build" \
-  "$task_root/Tests/PreludeChecks/main.swift" -o "$task_build/check"
+compile_checks() {
+  xcrun swiftc -swift-version 6 -warnings-as-errors -target "$target" \
+    -enable-testing -emit-library -emit-module -module-name DarkbloomClusterBootstrap \
+    -emit-module-path "$task_build/DarkbloomClusterBootstrap.swiftmodule" \
+    "$task_root"/Sources/DarkbloomClusterBootstrap/*.swift -o "$task_build/libDarkbloomClusterBootstrap.dylib"
+  xcrun swiftc -swift-version 6 -warnings-as-errors -target "$target" \
+    -enable-testing -emit-library -emit-module -module-name DarkbloomClusterSecurity \
+    -I "$task_build" -L "$task_build" -lDarkbloomClusterBootstrap \
+    -Xlinker -rpath -Xlinker "$task_build" \
+    -emit-module-path "$task_build/DarkbloomClusterSecurity.swiftmodule" \
+    "$task_root"/Sources/DarkbloomClusterSecurity/*.swift -o "$task_build/libDarkbloomClusterSecurity.dylib"
+  xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$target" \
+    -I "$task_build" -L "$task_build" -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity \
+    -Xlinker -rpath -Xlinker "$task_build" \
+    "$task_root/Tests/PreludeChecks/main.swift" -o "$task_build/check"
+}
+check_phases compile_checks
 "$task_build/check"

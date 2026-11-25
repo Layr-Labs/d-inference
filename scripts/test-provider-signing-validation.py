@@ -4,8 +4,10 @@ from datetime import datetime, timedelta, timezone
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -58,9 +60,13 @@ def cluster_helper_source(root):
 
 
 class SigningValidationTests(unittest.TestCase):
-    def test_workflow_has_no_environment_or_publication_route(self):
+    def test_workflow_has_no_publication_route_and_signs_in_the_prod_environment(self):
         workflow = (ROOT / ".github/workflows/provider-signing-validation.yml").read_text()
-        self.assertNotRegex(workflow, r"(?m)^\s+environment:")
+        # Only the job that reads the signing secrets names an environment: prod's
+        # branch policy and reviewers apply before it starts. The build job reads
+        # no secret and names none.
+        self.assertEqual(re.findall(r"(?m)^\s+environment:.*$", workflow), ["    environment: prod"])
+        self.assertIn("    environment: prod\n", workflow.split("  signing:", 1)[1].split("    steps:", 1)[0])
         self.assertIn("  workflow_dispatch:", workflow)
         self.assertNotRegex(workflow, r"(?m)^  (push|pull_request|workflow_run):")
         self.assertIn("  contents: read", workflow)
@@ -77,14 +83,76 @@ class SigningValidationTests(unittest.TestCase):
         for name in ["app_name", "cli_name", "enclave_name", "release_environment"]:
             self.assertIn("${{ needs.build.outputs.%s }}" % name, signing_job)
 
+    def test_workflow_signs_only_reviewed_master_source_with_an_isolated_key(self):
+        workflow = (ROOT / ".github/workflows/provider-signing-validation.yml").read_text()
+        build_job, signing_job = workflow.split("  signing:", 1)
+
+        def step(job, name):
+            return job.split("      - name: " + name + "\n", 1)[1].split("\n      - ", 1)[0]
+
+        # The source gate runs before the candidate is checked out: dispatched
+        # on master, the commit verified and on master's ancestry
+        # (provider_release_resume.api.verify_validation_source).
+        gate = step(build_job, "Require a reviewed master source")
+        self.assertIn('run: python3 tooling/scripts/provider-release-resume.py verify-validation-source '
+                      '--source "$SOURCE_SHA"', gate)
+        self.assertIn("SOURCE_SHA: ${{ inputs.source_sha }}", gate)
+        self.assertLess(build_job.index("- name: Require a reviewed master source"),
+                        build_job.index("- name: Checkout candidate"))
+        self.assertNotIn("commit.verification.verified", workflow)
+        # The signing job takes the build job's artifact by id and digest.
+        self.assertIn("        id: unsigned_retention\n", step(build_job, "Retain unsigned input for the separate signing job"))
+        for output in ("id", "digest"):
+            self.assertIn("      unsigned_artifact_%s: ${{ steps.unsigned_retention.outputs.artifact-%s }}\n"
+                          % (output, output), build_job)
+        fetch = step(signing_job, "Read this run's unsigned artifact")
+        self.assertIn('python3 tooling/scripts/provider-release-publication.py download \\\n'
+                      '            --artifact-id "$UNSIGNED_ARTIFACT_ID" --artifact-digest "$UNSIGNED_ARTIFACT_DIGEST" \\\n'
+                      '            --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/incoming"\n', fetch)
+        for by_name in ("gh run download", "--name provider-signing-input"):
+            self.assertNotIn(by_name, workflow)
+        # The key exists for the codesign step alone, through the shared
+        # scripts, and is gone before the notarization credentials appear.
+        names = ("Embed and check the provisioning profile", "Import Developer ID certificate",
+                 "Sign and statically verify the app", "Remove the signing keychain",
+                 "Validate Apple notarization", "Staple and verify the notarized app")
+        positions = [signing_job.index("      - name: " + name + "\n") for name in names]
+        self.assertEqual(positions, sorted(positions))
+        keychain = '"$RUNNER_TEMP/signing-validation.keychain-db"'
+        self.assertIn("run: bash tooling/scripts/import-signing-certificate.sh " + keychain,
+                      step(signing_job, "Import Developer ID certificate"))
+        self.assertIn("run: bash tooling/scripts/remove-signing-keychain.sh " + keychain + ' "$DEVELOPER_ID"',
+                      step(signing_job, "Remove the signing keychain"))
+        owners = {"APPLE_CERTIFICATE_P12": "Import Developer ID certificate",
+                  "APPLE_CERTIFICATE_PASSWORD": "Import Developer ID certificate",
+                  "PROVISIONING_PROFILE_BASE64": "Embed and check the provisioning profile",
+                  "APPLE_ID": "Validate Apple notarization", "APPLE_APP_PASSWORD": "Validate Apple notarization"}
+        for secret, owner in owners.items():
+            with self.subTest(secret=secret):
+                self.assertEqual(workflow.count("secrets." + secret), 1)
+                self.assertIn("secrets." + secret, step(signing_job, owner))
+        self.assertEqual(workflow.count("secrets."), len(owners))
+        notarize = step(signing_job, "Validate Apple notarization")
+        self.assertIn("xcrun notarytool submit", notarize)
+        for later in ("stapler", "spctl", "codesign", "tooling/scripts"):
+            self.assertNotIn(later, notarize)
+        self.assertNotIn("--keychain", workflow.split("- name: Remove the signing keychain", 1)[1])
+
     def make_archive(self, directory, mutate=False, info_updates=None, version="test-version",
                      app=PROD_NAMES["appBundleName"], executable=PROD_NAMES["cliName"],
-                     name=PROD_NAMES["appDisplayName"], packaging=None):
+                     name=PROD_NAMES["appDisplayName"], packaging=None,
+                     enclave=PROD_NAMES["enclaveName"], modes=None):
         source = directory / "source"
         (source / "validation-inputs").mkdir(parents=True)
         app_contents = source / app / "Contents"
         app_contents.mkdir(parents=True)
         write_app_with_cluster_helpers(source / app)
+        for path in [app_contents / "MacOS" / executable, app_contents / "MacOS" / enclave,
+                     app_contents / "Helpers" / VALIDATION.FAN_HELPER]:
+            path.write_bytes(MACHO_ARM64)
+            path.chmod(0o755)
+        for relative, mode in (modes or {}).items():
+            (app_contents / relative).chmod(mode)
         info = {"CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": version,
                 "CFBundleShortVersionString": version, "CFBundleExecutable": executable,
                 "CFBundleName": name}
@@ -185,6 +253,132 @@ class SigningValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "build-cluster-helpers.sh"):
             VALIDATION.stage_cluster_helpers(None, Path("/nonexistent"))
 
+    def staged_from_private_build(self, root):
+        """Stages SwiftPM products and cluster helpers that a build under
+        umask 077 left at mode 0700, as a private release build does."""
+        products = root / "bin"
+        products.mkdir()
+        for product in [*PRODUCTS.values(), VALIDATION.FAN_HELPER]:
+            (products / product).write_bytes(MACHO_ARM64 + product.encode())
+            (products / product).chmod(0o700)
+        (root / "mlx.metallib").write_bytes(b"metallib")
+        helpers = cluster_helper_source(root)
+        for name in VALIDATION.CLUSTER_HELPER_EXECUTABLES:
+            (helpers / name).chmod(0o700)
+        # Resource staging needs ditto; the paged-source match is the cluster tests' to check.
+        with mock.patch.object(VALIDATION.subprocess, "run"), \
+                mock.patch.object(VALIDATION.subprocess, "check_output", return_value=""), \
+                mock.patch.object(VALIDATION, "check_cluster_helpers"):
+            VALIDATION.stage(argparse.Namespace(source=ROOT, bin=products, metallib=root / "mlx.metallib",
+                output=root / "stage", version=PROD, cluster_helpers=helpers))
+        return products
+
+    def executable_paths(self, app, names=PROD_NAMES):
+        return [app / "Contents/MacOS" / names["cliName"], app / "Contents/MacOS" / names["enclaveName"],
+                *[app / "Contents/Helpers" / name for name in (VALIDATION.FAN_HELPER, *VALIDATION.CLUSTER_HELPER_EXECUTABLES)]]
+
+    def test_stage_pack_and_unpack_keep_every_executable_0755_under_umask_077(self):
+        previous = os.umask(0o077)
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                products = self.staged_from_private_build(root)
+                app = root / "stage" / PROD_NAMES["appBundleName"]
+                staged = self.executable_paths(app)
+                self.assertEqual([path.stat().st_mode & 0o7777 for path in staged], [0o755] * 5)
+                # Only the executables change mode; the build outputs keep theirs and every byte.
+                self.assertEqual((app / "Contents/MacOS/mlx.metallib").stat().st_mode & 0o777,
+                                 (root / "mlx.metallib").stat().st_mode & 0o777)
+                for product, name in [(PRODUCTS["cli"], PROD_NAMES["cliName"]), (VALIDATION.FAN_HELPER, None)]:
+                    self.assertEqual((products / product).stat().st_mode & 0o777, 0o700)
+                    packaged = app / ("Contents/MacOS/" + name if name else "Contents/Helpers/" + product)
+                    self.assertEqual(packaged.read_bytes(), (products / product).read_bytes())
+                archive = root / "unsigned-provider.tar.gz"
+                with tarfile.open(archive, "w:gz") as output:
+                    output.add(root / "stage", arcname=".")
+                with tarfile.open(archive) as packed:
+                    members = {member.name: member.mode for member in packed}
+                for path in staged:
+                    self.assertEqual(members["./" + str(path.relative_to(root / "stage"))], 0o755)
+                with mock.patch.object(VALIDATION, "check_cluster_helpers"):
+                    VALIDATION.unpack(argparse.Namespace(archive=archive, output=root / "readback",
+                        source_sha="", version=PROD))
+                readback = self.executable_paths(root / "readback" / PROD_NAMES["appBundleName"])
+                self.assertEqual([path.stat().st_mode & 0o7777 for path in readback], [0o755] * 5)
+        finally:
+            os.umask(previous)
+
+    def test_unpack_refuses_an_executable_whose_mode_is_not_0755(self):
+        executables = [f"MacOS/{PROD_NAMES['cliName']}", f"MacOS/{PROD_NAMES['enclaveName']}",
+                       f"Helpers/{VALIDATION.FAN_HELPER}",
+                       *[f"Helpers/{name}" for name in VALIDATION.CLUSTER_HELPER_EXECUTABLES]]
+        for relative in executables:
+            # Modes every supported Python's tar extraction keeps as archived.
+            for mode in [0o700, 0o744, 0o644]:
+                with self.subTest(executable=relative, mode=f"{mode:04o}"), \
+                        tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    archive = self.make_archive(root, modes={relative: mode})
+                    # A cluster helper without every execute bit already fails its own check.
+                    with self.assertRaisesRegex(ValueError, f"has mode {mode:04o}|is not executable"):
+                        VALIDATION.unpack(argparse.Namespace(archive=archive, output=root / "output",
+                            source_sha="test-source", version="test-version"))
+
+    def test_executable_modes_cover_every_macho_file_and_refuse_links(self):
+        for scenario in ["valid", "extra-macho", "missing-fan", "fan-symlink"]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                app = Path(temporary) / PROD_NAMES["appBundleName"]
+                write_app_with_cluster_helpers(app)
+                for path in self.executable_paths(app)[:3]:
+                    path.write_bytes(MACHO_ARM64)
+                    path.chmod(0o755)
+                fan = app / "Contents/Helpers" / VALIDATION.FAN_HELPER
+                if scenario == "extra-macho":
+                    (app / "Contents/Resources/tool").write_bytes(MACHO_ARM64)
+                    (app / "Contents/Resources/tool").chmod(0o644)
+                if scenario == "missing-fan":
+                    fan.unlink()
+                if scenario == "fan-symlink":
+                    fan.unlink()
+                    fan.symlink_to(app / "Contents/Helpers/darkbloom-cluster-worker")
+                if scenario == "valid":
+                    VALIDATION.check_executable_modes(app, VALIDATION.packaging(release_identity.DOCUMENT, PROD))
+                else:
+                    with self.assertRaisesRegex(ValueError, "Resources/tool has mode 0644|not a regular file"):
+                        VALIDATION.check_executable_modes(app, VALIDATION.packaging(release_identity.DOCUMENT, PROD))
+
+    def test_release_signing_copy_keeps_executable_modes_under_umask_077(self):
+        release = (ROOT / ".github/workflows/release-provider.yml").read_text()
+        step = release.split("- name: Stage bundle and smoke it before signing", 1)[1].split("\n      - name:", 1)[0]
+        copy = next(line.strip() for line in step.splitlines() if '"$UNSIGNED_ROOT/$APP_NAME" "$APP"' in line)
+        check = 'provider-signing-validation.py executable-modes --app "$APP" --version "$VERSION"'
+        self.assertIn(check, step)
+        self.assertLess(step.index(copy), step.index(check))
+        self.assertLess(step.index(check), step.index("runtime-smoke"))
+        self.assertLess(release.index(check), release.index("- name: Import Developer ID certificate"))
+        script = ROOT / "scripts/provider-signing-validation.py"
+        for command, valid in [(copy, True), (copy.replace("cp -pR", "cp -R"), False)]:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                unsigned = root / "qualified-unsigned"
+                write_app_with_cluster_helpers(unsigned / PROD_NAMES["appBundleName"])
+                for path in self.executable_paths(unsigned / PROD_NAMES["appBundleName"])[:3]:
+                    path.write_bytes(MACHO_ARM64)
+                    path.chmod(0o755)
+                app = root / "bundle" / PROD_NAMES["appBundleName"]
+                app.parent.mkdir()
+                environment = dict(os.environ, UNSIGNED_ROOT=str(unsigned), APP_NAME=PROD_NAMES["appBundleName"],
+                                   APP=str(app), VERSION=PROD)
+                subprocess.run(["bash", "-c", "set -euo pipefail; umask 077; " + command], env=environment, check=True)
+                result = subprocess.run([sys.executable, str(script), "executable-modes", "--app", str(app),
+                                         "--version", PROD], capture_output=True, text=True)
+                if valid:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual([path.stat().st_mode & 0o7777 for path in self.executable_paths(app)], [0o755] * 5)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("has mode 0700", result.stderr)
+
     def test_release_workflows_build_ship_and_sign_the_cluster_helpers(self):
         # The release body lives in the reusable workflow release-swift.yml calls per environment.
         release = (ROOT / ".github/workflows/release-provider.yml").read_text()
@@ -236,7 +430,7 @@ class SigningValidationTests(unittest.TestCase):
 
     def test_dev_version_requires_the_dev_app_identity(self):
         layouts = {version: {"app": names["appBundleName"], "executable": names["cliName"],
-                             "name": names["appDisplayName"]}
+                             "name": names["appDisplayName"], "enclave": names["enclaveName"]}
                    for version, names in [(PROD, PROD_NAMES), (DEV, DEV_NAMES), (STAGING, STAGING_NAMES)]}
         for scenario, layout, version, valid in [
                 ("dev", layouts[DEV], DEV, True), ("prod", layouts[PROD], PROD, True),
@@ -362,13 +556,12 @@ class SigningValidationTests(unittest.TestCase):
     def test_unpack_checks_the_recorded_names(self):
         packaged = {"cliName": "candidate-cli", "enclaveName": "candidate-enclave",
                     "appBundleName": "Candidate.app", "appDisplayName": "Candidate", "products": PRODUCTS}
+        recorded = {"app": "Candidate.app", "executable": "candidate-cli", "name": "Candidate",
+                    "enclave": "candidate-enclave"}
         for scenario, layout, packaging, valid in [
-                ("recorded", {"app": "Candidate.app", "executable": "candidate-cli", "name": "Candidate"},
-                 packaged, True),
-                ("layout-differs", {"app": "Candidate.app", "executable": "other-cli", "name": "Candidate"},
-                 packaged, False),
-                ("unsafe-name", {"app": "Candidate.app", "executable": "candidate-cli", "name": "Candidate"},
-                 dict(packaged, appBundleName="../Candidate.app"), False)]:
+                ("recorded", recorded, packaged, True),
+                ("layout-differs", dict(recorded, executable="other-cli"), packaged, False),
+                ("unsafe-name", recorded, dict(packaged, appBundleName="../Candidate.app"), False)]:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 archive = self.make_archive(root, version=DEV, packaging=packaging, **layout)
@@ -480,6 +673,141 @@ class SigningValidationTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, "application identifier mismatch"):
                         VALIDATION.profile(argparse.Namespace(profile=path))
+
+    # codesign stand-in for the synthetic app, whose executables are only Mach-O
+    # headers: prints the entitlements recorded for the file it is asked about,
+    # and fails like codesign for an unsigned one.
+    CODESIGN_STUB = """#!/usr/bin/env python3
+import json, os, sys
+signed = json.load(open(os.environ["STUB_ENTITLEMENTS"]))
+kinds = json.load(open(os.environ["STUB_SIGNATURES"]))
+path = sys.argv[-1]
+if path not in signed:
+    sys.exit("code object is not signed at all")
+if "-dv" in sys.argv:
+    directory = {"developer-id": "flags=0x10000(runtime)", "other-team": "flags=0x10000(runtime)",
+                 "adhoc": "flags=0x2(adhoc)", "linker-signed": "flags=0x20002(adhoc,linker-signed)"}
+    kind = kinds.get(path, "developer-id")
+    lines = ["Executable=" + path, "CodeDirectory v=20500 size=1 " + directory[kind] + " hashes=1+7 location=embedded"]
+    if kind in ("adhoc", "linker-signed"):
+        lines += ["Signature=adhoc", "TeamIdentifier=not set"]
+    else:
+        lines += ["Authority=Developer ID Application", "TeamIdentifier=" + ("SLDQ2GJ6TL" if kind == "developer-id" else "OTHERTEAM1")]
+    sys.stderr.write("\\n".join(lines) + "\\n")
+    sys.exit(0)
+sys.stdout.write(signed[path])
+"""
+
+    def write_signed_app(self, root):
+        """An app with the CLI, the enclave and fan helpers, and both cluster helpers."""
+        app = root / "Darkbloom.app"
+        write_app_with_cluster_helpers(app)
+        for name in ["MacOS/darkbloom", "MacOS/darkbloom-enclave", "Helpers/darkbloom-fan-helper"]:
+            (app / "Contents" / name).write_bytes(MACHO_ARM64)
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "darkbloom"}))
+        return app
+
+    def check_bundle_with_stub(self, app, entitlements, signatures=None):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        stub = directory / "codesign"
+        stub.write_text(self.CODESIGN_STUB)
+        stub.chmod(0o755)
+        (directory / "signed.json").write_text(json.dumps(
+            {str(app / "Contents" / name): value for name, value in entitlements.items()}))
+        (directory / "signatures.json").write_text(json.dumps(
+            {str(app / "Contents" / name): kind for name, kind in (signatures or {}).items()}))
+        environment = {"PATH": f"{directory}:{os.environ['PATH']}",
+                       "STUB_ENTITLEMENTS": str(directory / "signed.json"),
+                       "STUB_SIGNATURES": str(directory / "signatures.json")}
+        with mock.patch.dict(os.environ, environment), mock.patch("sys.stdout", new=io.StringIO()):
+            VALIDATION.bundle_entitlements(argparse.Namespace(app=app))
+
+    def test_bundle_entitlements_cover_every_executable_in_the_app(self):
+        network = plistlib.dumps({"com.apple.security.network.client": True}).decode()
+        executables = ["MacOS/darkbloom", "MacOS/darkbloom-enclave", "Helpers/darkbloom-fan-helper",
+                       "Helpers/darkbloom-cluster-worker", "Helpers/darkbloom-cluster-plan"]
+        refused = [("debug", plistlib.dumps({"com.apple.security.get-task-allow": True}).decode()),
+                   ("legacy-debug", plistlib.dumps({"get-task-allow": True}).decode()),
+                   ("malformed-debug", plistlib.dumps({"get-task-allow": "false"}).decode()),
+                   ("unsigned", None)]
+        with tempfile.TemporaryDirectory() as temporary:
+            app = self.write_signed_app(Path(temporary))
+            # The fan helper is signed with no entitlements at all.
+            clean = {name: network for name in executables} | {"Helpers/darkbloom-fan-helper": ""}
+            self.check_bundle_with_stub(app, clean)
+            for name in executables:
+                for scenario, value in refused:
+                    with self.subTest(executable=name, scenario=scenario):
+                        entitlements = dict(clean)
+                        if value is None:
+                            del entitlements[name]
+                            expected = "is not signed"
+                        else:
+                            entitlements[name] = value
+                            expected = "enables or malforms get-task-allow"
+                        with self.assertRaisesRegex(ValueError, f"Contents/{name} {expected}"):
+                            self.check_bundle_with_stub(app, entitlements)
+                # A signature that is not the team's Developer ID: ad hoc, the linker's own, another team's.
+                for kind in ("adhoc", "linker-signed", "other-team"):
+                    with self.subTest(executable=name, signature=kind):
+                        with self.assertRaisesRegex(ValueError, f"Contents/{name} is not signed by the Developer ID"):
+                            self.check_bundle_with_stub(app, clean, {name: kind})
+
+    def test_bundle_entitlements_require_the_main_executable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app = self.write_signed_app(Path(temporary))
+            (app / "Contents/MacOS/darkbloom").write_bytes(b"#!/bin/sh\n")
+            with self.assertRaisesRegex(ValueError, "Contents/MacOS/darkbloom is not a Mach-O executable"):
+                self.check_bundle_with_stub(app, {})
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("codesign") and shutil.which("clang"),
+                         "needs macOS codesign and clang")
+    def test_bundle_entitlements_read_real_signatures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "Darkbloom.app"
+            for directory in ["MacOS", "Helpers"]:
+                (app / "Contents" / directory).mkdir(parents=True)
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "darkbloom"}))
+            (root / "main.c").write_text("int main(void) { return 0; }\n")
+            debug = root / "debug.plist"
+            debug.write_bytes(plistlib.dumps({"com.apple.security.get-task-allow": True}))
+            names = ["Helpers/darkbloom-fan-helper", "Helpers/darkbloom-cluster-worker",
+                     "Helpers/darkbloom-cluster-plan", "MacOS/darkbloom-enclave", "MacOS/darkbloom"]
+            for name in names:
+                subprocess.run(["clang", "-o", str(app / "Contents" / name), str(root / "main.c")], check=True)
+            # Only the linker's signature (arm64 always has one): not the Developer ID.
+            linked = app / "Contents/Helpers/darkbloom-fan-helper"
+            self.assertEqual(VALIDATION.developer_id_problem(linked), "is not signed by the Developer ID")
+            # An ad-hoc signature is not the Developer ID either; its entitlements are still read exactly.
+            worker = app / "Contents/Helpers/darkbloom-cluster-worker"
+            subprocess.run(["codesign", "--force", "--options", "runtime", "--sign", "-", str(worker)],
+                           check=True, capture_output=True)
+            self.assertEqual(VALIDATION.developer_id_problem(worker), "is not signed by the Developer ID")
+            self.assertIsNone(VALIDATION.entitlement_problem(worker))
+            subprocess.run(["codesign", "--force", "--options", "runtime", "--entitlements", str(debug),
+                            "--sign", "-", str(worker)], check=True, capture_output=True)
+            self.assertEqual(VALIDATION.entitlement_problem(worker), "enables or malforms get-task-allow")
+            with self.assertRaisesRegex(ValueError, "Contents/Helpers/darkbloom-fan-helper is not signed by the Developer ID"), \
+                    mock.patch("sys.stdout", new=io.StringIO()):
+                VALIDATION.bundle_entitlements(argparse.Namespace(app=app))
+
+    def test_release_checks_every_executable_after_signing_and_before_notarization(self):
+        release = (ROOT / ".github/workflows/release-provider.yml").read_text()
+        signed = release.index('--sign "$DEVELOPER_ID" "$APP"\n')
+        check = release.index('provider-signing-validation.py bundle-entitlements --app "$APP"')
+        notarize = release.index("xcrun notarytool submit")
+        self.assertLess(signed, check)
+        self.assertLess(check, notarize)
+
+    def test_signing_validation_checks_every_executable_after_signing_and_before_notarization(self):
+        validation = (ROOT / ".github/workflows/provider-signing-validation.yml").read_text()
+        signed = validation.index('--sign "$DEVELOPER_ID" "$app"\n')
+        check = validation.index('provider-signing-validation.py bundle-entitlements --app "$app"')
+        notarize = validation.index("xcrun notarytool submit")
+        self.assertLess(signed, check)
+        self.assertLess(check, notarize)
 
 
 if __name__ == "__main__":

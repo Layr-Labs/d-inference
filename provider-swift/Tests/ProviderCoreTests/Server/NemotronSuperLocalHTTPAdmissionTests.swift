@@ -77,7 +77,10 @@ struct NemotronSuperLocalHTTPAdmissionTests {
             kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
-        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
+        // The stacked bound is 3 s in production. 1.2 s keeps every image wait
+        // above the text bound (1 s), and the four image waits take about 5 s, not 12 s.
+        let stackedWait: Duration = .milliseconds(1_200)
+        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template, stackedMediaWait: stackedWait)
         let token = "synthetic-super-busy"
         let tracker = LocalResponseTracker()
         let gate = SuperHTTPTerminalGate()
@@ -109,7 +112,7 @@ struct NemotronSuperLocalHTTPAdmissionTests {
                         try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
                             body: ByteBuffer(bytes: body)) { response in
                             let waited = ContinuousClock.now - start
-                            #expect(image ? waited >= NemotronSuperServingPolicy.stackedMediaWait - .milliseconds(100)
+                            #expect(image ? waited >= stackedWait - .milliseconds(100)
                                           : waited < .seconds(1),
                                     "image \(image) stream \(stream) contradictory \(contradictory)")
                             #expect(response.status == .tooManyRequests,

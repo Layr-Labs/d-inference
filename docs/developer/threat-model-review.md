@@ -1,6 +1,6 @@
 # Configure threat-model review and merge clearance
 
-> Last updated: 2026-10-22
+> Last updated: 2026-11-20
 
 The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
 Opus and Sol 6.1, and saves completed findings before continuing. Public comments
@@ -11,6 +11,12 @@ override, to satisfy the security workflow requirement. Each automatic CI review
 either completes or requires human review instead of a manual paid rerun.
 See [Bedrock and merge-policy rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/threat-review-rollout.md).
 Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
+Both `.github/workflows/threat-model-review.yml` and
+`.github/workflows/bedrock-smoke.yml` are currently paused to cut spend:
+`pull_request_target` is removed from `threat-model-review.yml` and every job in
+both workflows is gated on `vars.BEDROCK_SCAN_ENABLED == 'true'` (preventing
+both Bedrock and its OpenRouter fallback from running while
+`BEDROCK_SCAN_ENABLED` is `false`).
 
 ## Prerequisites
 

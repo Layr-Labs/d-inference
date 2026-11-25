@@ -51,6 +51,12 @@ public protocol NativePairMemberServingHost: AnyObject, Sendable {
     /// retired. The epoch is released at once, so a later start can begin
     /// during that retirement, and is never served afterwards. Idempotent.
     func stopServingCommittedStart(epoch: UUID) async
+    /// The same, with why the session ended (`reason`, in its own words), for a host that reports it.
+    func stopServingCommittedStart(epoch: UUID, reason: String) async
+}
+
+extension NativePairMemberServingHost {
+    public func stopServingCommittedStart(epoch: UUID, reason: String) async { await stopServingCommittedStart(epoch: epoch) }
 }
 
 /// Why a pair slot or a member serving host refused (kept beside the seam so

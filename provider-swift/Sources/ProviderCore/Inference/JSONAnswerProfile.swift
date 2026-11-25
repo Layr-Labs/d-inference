@@ -164,6 +164,44 @@ extension JSONAnswerProfile {
         answerEOS: [.init(spelling: "<|call|>", id: 200012)],
         vocabularySize: 201088)
 
+    /// GPT-OSS's final answer to a JSON `response_format`
+    /// (`GPTOSSJSONAnswerConstraint`): the vocabulary of `gptOSS`, but the
+    /// answer ends with `<|return|>`, Harmony's end of a final message. Its own
+    /// family name keeps its cached vocabulary apart from the call arguments'.
+    static let gptOSSFinal = JSONAnswerProfile(
+        family: "GPT-OSS final",
+        thinkClose: "<|end|>",
+        reasoningStops: harmonyMarkers,
+        contentMarkers: harmonyMarkers,
+        bpeIDs: 0..<199998,
+        pieceTokens: [],
+        answerEOS: [.init(spelling: "<|return|>", id: 200002)],
+        vocabularySize: 201088)
+
+    /// Inkling 2 (`inkling2_loop`, o200k-based): the body of a forced call
+    /// (`InklingForcedToolConstraint`). Byte-level BPE below its first added
+    /// token; the message and content tokens above it are never pieces, and no
+    /// body may spell one. A call body ends with `<|end_message|>`, which only
+    /// the body's own delegate reads as a terminator (it never ends the
+    /// request). The model's vocabulary pads the tokenizer's ids to 201,024.
+    static let inkling2Arguments = JSONAnswerProfile(
+        family: "Inkling",
+        thinkClose: "<|end_message|>",
+        reasoningStops: inklingMarkers,
+        contentMarkers: inklingMarkers,
+        bpeIDs: 0..<199998,
+        pieceTokens: [],
+        answerEOS: [.init(spelling: "<|end_message|>", id: 200010)],
+        vocabularySize: 201024)
+
+    /// The Inkling 2 spellings its channel lexer reads as framing.
+    static let inklingMarkers = [
+        "<|endoftext|>", "<|message_user|>", "<|message_model|>", "<|message_system|>", "<|message_tool|>",
+        "<|content_text|>", "<|content_image|>", "<|content_model_end_sampling|>", "<|content_thinking|>",
+        "<|end_message|>", "<|content_tool_error|>", "<|content_xml|>", "<|begin_of_text|>",
+        "<|content_invoke_tool_json|>", "<|content_invoke_tool_text|>",
+    ]
+
     /// The Harmony spellings the stream's parsers read as framing.
     static let harmonyMarkers = [
         "<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>", "<|return|>", "<|call|>",

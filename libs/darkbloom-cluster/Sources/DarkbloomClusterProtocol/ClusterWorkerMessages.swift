@@ -145,6 +145,16 @@ public struct ClusterWorkerProfile: Equatable, Sendable {
             maximumOutputTokens: min(maximumOutputTokens, ClusterWorkerLimits.outputTokens, context - 1),
             maximumChunkTokens: min(maximumChunkTokens, prompt), maximumContextTokens: context)
     }
+
+    /// This profile cut to `contextTokens` (prompt plus output), each leaving room for one token of the other; the
+    /// profile itself when it is no longer.
+    public func scope(contextTokens: Int) -> ClusterWorkerProfile {
+        guard contextTokens < maximumContextTokens else { return self }
+        let prompt = min(maximumPromptTokens, contextTokens - 1)
+        return .init(id: id, vocabularySize: vocabularySize, maximumPromptTokens: prompt,
+            maximumOutputTokens: min(maximumOutputTokens, contextTokens - 1),
+            maximumChunkTokens: min(maximumChunkTokens, prompt), maximumContextTokens: contextTokens)
+    }
 }
 
 /// The data-plane credential of one worker (S16): its per-epoch signing key,

@@ -13,7 +13,11 @@ enum DistributedCapabilityProbe {
         let arguments = ["--describe-runtime", "--config", plan.configurationURL.path,
             "--manifest", plan.manifestURL.path, "--expected-executable-sha256", plan.capability.runtimeBinarySHA256]
             + (!plan.capability.hasPrivateImages ? [] : [ClusterMiMoImageCandidate.runtimeProfileArgument,plan.capability.profile.id])
-        let bytes = try run(executable: executable.url, arguments: arguments, deadline: deadline)
+        // The worker it describes is the one verified above: its launch is bound to those bytes (and, in a signed
+        // provider, to the worker's signature), as its native launch is.
+        let bytes = try run(executable: executable.url, arguments: arguments, deadline: deadline,
+                            maximumOutputBytes: ClusterRuntimeCapabilityCodec.maximumBytes,
+                            verifyLaunched: try executable.launchVerifier(.worker))
         // A record this build cannot read is a mixed install, and is said so;
         // one it can read but that differs is a worker changed since setup.
         let described = try ClusterCapabilityRecord.decode(bytes, writtenBy: "the installed worker (\(executable.url.path))")
@@ -25,16 +29,59 @@ enum DistributedCapabilityProbe {
         try DistributedInstalledFiles.check(deadline)
     }
 
-    // Internal actual-child fixture seam. Production supplies only the fixed
-    // describe-runtime command above after verifying its executable pin.
+    /// Runs a metadata-only command of one of this Mac's cluster helpers (the worker's `--describe-runtime`, the
+    /// placement tool) and returns what it printed. A provider signed with a certificate checks the file against
+    /// `helper`'s requirement before the spawn and the suspended child before it runs
+    /// (`DistributedInstalledHelperSignature.metadataVerifier`), so nothing a helper signed otherwise prints is read.
+    /// `helper` is nil only for a command that is none of this Mac's helpers (the developer route's SSH client).
     static func run(executable: URL, arguments: [String], deadline: UInt64,
-                    maximumOutputBytes: Int = ClusterRuntimeCapabilityCodec.maximumBytes) throws -> Data {
+                    maximumOutputBytes: Int = ClusterRuntimeCapabilityCodec.maximumBytes,
+                    helper: DistributedInstalledHelper?,
+                    signature: DistributedInstalledHelperSignature = .current) throws -> Data {
+        try succeeded(outcome(executable: executable, arguments: arguments, deadline: deadline,
+                              maximumOutputBytes: maximumOutputBytes, helper: helper, signature: signature))
+    }
+
+    static func run(executable: URL, arguments: [String], deadline: UInt64, maximumOutputBytes: Int,
+                    verifyLaunched: (@Sendable (pid_t) throws -> Void)?) throws -> Data {
+        try succeeded(outcome(executable: executable, arguments: arguments, deadline: deadline,
+                              maximumOutputBytes: maximumOutputBytes, verifyLaunched: verifyLaunched))
+    }
+
+    /// What a command that exited printed, whatever its status: for a caller that reports a helper's own
+    /// refusal (its first line on standard error). Checked exactly as `run`; a child that ended by a signal throws.
+    struct Outcome: Sendable, Equatable {
+        let status: Int32
+        let output: Data
+        let error: Data
+        var errorText: String { String(decoding: error, as: UTF8.self) }
+    }
+
+    static func outcome(executable: URL, arguments: [String], deadline: UInt64, maximumOutputBytes: Int,
+                        helper: DistributedInstalledHelper?,
+                        signature: DistributedInstalledHelperSignature = .current) throws -> Outcome {
         try DistributedInstalledFiles.check(deadline)
-        let child = Process(), output = Pipe(), error = Pipe()
-        child.executableURL = executable; child.arguments = arguments
-        child.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"]
-        child.standardInput = FileHandle.nullDevice
-        child.standardOutput = output; child.standardError = error
+        let verify = try helper.flatMap { try signature.metadataVerifier($0, file: executable, deadline: deadline) }
+        return try outcome(executable: executable, arguments: arguments, deadline: deadline,
+                           maximumOutputBytes: maximumOutputBytes, verifyLaunched: verify)
+    }
+
+    private static func succeeded(_ outcome: Outcome) throws -> Data {
+        guard outcome.status == 0, outcome.error.isEmpty else {
+            throw ClusterConfigurationError.invalid("Installed capability command failed")
+        }
+        return outcome.output
+    }
+
+    /// The bounded run itself. With `verifyLaunched` the child is spawned suspended and runs only once the check
+    /// accepted it (`ClusterChildProcess`); a refused child is killed and reaped, and the run fails before reading.
+    static func outcome(executable: URL, arguments: [String], deadline: UInt64, maximumOutputBytes: Int,
+                        verifyLaunched: (@Sendable (pid_t) throws -> Void)?) throws -> Outcome {
+        try DistributedInstalledFiles.check(deadline)
+        let input = Pipe(), output = Pipe(), error = Pipe()
+        let child = ClusterChildProcess(launch: .init(executable: executable, arguments: arguments,
+                environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"], verifyLaunched: verifyLaunched),
+            standardInput: input, standardOutput: output, standardError: error)
         let handles = [output.fileHandleForReading, error.fileHandleForReading]
         for handle in handles {
             let descriptor = handle.fileDescriptor, flags = fcntl(handle.fileDescriptor, F_GETFL)
@@ -54,9 +101,12 @@ enum DistributedCapabilityProbe {
                 exit.wait()
             }
             for handle in handles { try? handle.close() }
+            try? input.fileHandleForReading.close(); try? input.fileHandleForWriting.close()
             try? output.fileHandleForWriting.close(); try? error.fileHandleForWriting.close()
         }
         try exit.run(child); launched = true
+        // The command reads nothing: its input ends at once.
+        try input.fileHandleForWriting.close(); try input.fileHandleForReading.close()
         try output.fileHandleForWriting.close(); try error.fileHandleForWriting.close()
         var data = [Data(), Data()], open = [true, true]
         let limits = [maximumOutputBytes, 4096]
@@ -81,9 +131,7 @@ enum DistributedCapabilityProbe {
         }
         exit.wait()
         try DistributedInstalledFiles.check(deadline)
-        guard child.terminationReason == .exit, child.terminationStatus == 0, data[1].isEmpty else {
-            throw ClusterConfigurationError.invalid("Installed capability command failed")
-        }
-        return data[0]
+        guard child.terminationReason == .exit else { throw ClusterConfigurationError.invalid("Installed capability command failed") }
+        return .init(status: child.terminationStatus, output: data[0], error: data[1])
     }
 }

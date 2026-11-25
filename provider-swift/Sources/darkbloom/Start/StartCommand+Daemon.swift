@@ -17,11 +17,12 @@ extension Start {
         configPath: URL?,
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
         scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)? = nil,
+        bootSecuritySnapshot: BootSecuritySnapshot = .live(),
         serving resolved: StartServing? = nil
     ) async throws {
         let serving = resolved ?? servingFromFlags
         // Run critical checks before downloading models or prompting.
-        try runPreflightChecks(snapshot: snapshot)
+        try runPreflightChecks(snapshot: snapshot, bootSecurity: bootSecuritySnapshot)
 
         // Offer account linking before the model picker.
         await offerInlineLogin(coordinatorURL: coordinatorURL)

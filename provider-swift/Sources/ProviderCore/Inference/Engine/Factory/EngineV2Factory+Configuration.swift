@@ -84,11 +84,16 @@ extension EngineV2Factory {
         public let bidirectionalMediaPrefillChunkCeiling: Int?
     }
 
+    /// `chipIdentity` nil means an unknown chip (the SDK chunk for the 27B);
+    /// serving passes `servingChipIdentity` through `productionSchedulerConfig`.
     public static func prefillGeometry(
         model: (any LanguageModel)?,
+        modelID: String? = nil,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> PrefillGeometry {
-        var chunk = prefillChunkTokens(model: model, environment: environment)
+        var chunk = prefillChunkTokens(
+            model: model, modelID: modelID, chipIdentity: chipIdentity, environment: environment)
         var stripe = soloPrefillStripeTokens(abovePlainChunk: chunk, model: model, environment: environment)
         // A chunk that starts at a bidirectional block covers the whole block,
         // and the paged window rings hold only max(chunk, stripe) tokens
@@ -98,7 +103,19 @@ extension EngineV2Factory {
             chunk = gemma4MaximumMediaBlockTokens
             stripe = nil
         }
+        // Inkling 2's recurrent checkpoints sit on its fixed prefill grid
+        // (`inkling2PrefillChunkTokens`); a solo stripe, an operator override
+        // included, is a range wider than one grid chunk and disarms every
+        // checkpoint of the request.
+        if isInkling2(model) { stripe = nil }
         var budget = stepTokenBudget(abovePlainChunk: chunk, environment: environment)
+        // The grid gives the step's first prompt row its whole chunk past the
+        // budget, so the SDK budget still makes progress; it keeps one step's
+        // prompt tokens at the 2,048 the solo stripe carried before (doubling
+        // it would let a chunk and a finishing remainder share a step).
+        if isInkling2(model), environment[stepTokenBudgetKey] == nil {
+            budget = max(CBv2SchedulerConfig().maxBatchedTokensPerStep, chunk)
+        }
         // Submit validation refuses a block longer than the step budget
         // (`CBv2MultimodalPlan.validate`), so the budget must hold one too.
         if isGemma4(model) {
@@ -119,31 +136,85 @@ extension EngineV2Factory {
     /// 5.5), and floors move only with a platform-coordinated re-measurement.
     /// Nemotron and Bonsai demanded checkpoints split only an armed 2,048-token
     /// stripe; MoE Qwen's peak rises about 2 GiB; Qwen3-VL, Qwen4, MiMo and
-    /// other families have no busy-engine measurement of it.
+    /// other families have no busy-engine measurement of it. Qwen3.8-27B takes
+    /// a narrower 1,024-token chunk on the SDK step budget instead
+    /// (`usesQwen38PrefillChunk`).
     static func usesWidePrefillChunk(_ model: (any LanguageModel)?) -> Bool {
         isGemma4(model)
+    }
+
+    /// `DARKBLOOM_QWEN38_PREFILL_CHUNK`: `0`, `off`, `false` or `no` (trimmed,
+    /// case-insensitive) keeps the SDK chunk for Qwen3.8-27B; unset or any
+    /// other value keeps its own default.
+    public static let qwen38PrefillChunkKey = "DARKBLOOM_QWEN38_PREFILL_CHUNK"
+    /// Qwen3.8-27B's plain chunk, and so the prompt work beside decode rows.
+    public static let qwen38PrefillChunkTokens = 1024
+
+    /// The exact Qwen3.8-27B builds take ``qwen38PrefillChunkTokens`` on an M5
+    /// Ultra (the chip it was measured on) unless the switch is off. On an M5
+    /// Max the wider chunk lengthened the pause of requests decoding beside a
+    /// prompt more than its first-token gain was worth; other chips are
+    /// unmeasured. Every chip but the M5 Ultra, and an unknown chip, keeps the
+    /// SDK chunk.
+    static func usesQwen38PrefillChunk(
+        modelID: String?, chipIdentity: (family: ChipFamily, tier: ChipTier)?,
+        environment: [String: String]
+    ) -> Bool {
+        guard let modelID, ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(modelID),
+            let chipIdentity, chipIdentity.family == .m5, chipIdentity.tier == .ultra
+        else { return false }
+        guard let raw = environment[qwen38PrefillChunkKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return true }
+        return !["0", "off", "false", "no"].contains(raw)
     }
 
     static func isGemma4(_ model: (any LanguageModel)?) -> Bool {
         model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4
     }
 
+    /// Inkling 2's plain chunk, and so its prefill grid. With MLX's own prefill
+    /// products (the SDK default) its prefill bits depend on the chunk
+    /// partition, so the engine keeps a fixed chunk grid of the scheduler's
+    /// chunk and captures recurrent checkpoints only where every prompt range
+    /// was exactly one grid chunk (`Inkling2CBv2.cbv2Capabilities`). Under the
+    /// SDK's 512-token chunk with the default 2,048-token solo stripe, the first
+    /// range of every prompt was a stripe of four grid chunks and no checkpoint
+    /// was ever captured. 2,048 is the grid the SDK's Inkling prefill, prefix
+    /// restore and load warm-up were measured on; boundaries fall at 2,048,
+    /// 4,096, 6,144, ... and the prompt end is never exported.
+    public static let inkling2PrefillChunkTokens = 2048
+
+    static func isInkling2(_ model: (any LanguageModel)?) -> Bool {
+        model is Inkling2Model || model is MLXVLM.Inkling2VLM
+    }
+
     /// Absent selects the family default. A positive explicit value applies to
     /// every model (Gemma 4 raises it to cover a media block, `prefillGeometry`);
     /// zero, negative, or malformed values restore the SDK chunk.
     static func prefillChunkTokens(
-        model: (any LanguageModel)?, environment: [String: String]
+        model: (any LanguageModel)?, modelID: String? = nil,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)? = nil, environment: [String: String]
     ) -> Int {
         let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
         guard let raw = environment[prefillChunkKey] else {
-            return usesWidePrefillChunk(model) ? widePrefillChunkTokens : sdkChunk
+            if isInkling2(model) { return inkling2PrefillChunkTokens }
+            if usesWidePrefillChunk(model) { return widePrefillChunkTokens }
+            if usesQwen38PrefillChunk(
+                modelID: modelID, chipIdentity: chipIdentity, environment: environment)
+            {
+                return qwen38PrefillChunkTokens
+            }
+            return sdkChunk
         }
         guard let value = Int(raw), value > 0 else { return sdkChunk }
         return value
     }
 
     /// Absent selects twice the plain chunk, never below the SDK budget, so a
-    /// full chunk and a finishing row's remainder fit beside decode rows. An
+    /// full chunk and a finishing row's remainder fit beside decode rows (the
+    /// scheduler trims a remainder that would overrun it, e.g. under decode
+    /// rows at Qwen3.8-27B's 1,024 / 2,048). An
     /// explicit value must cover the plain chunk; smaller, zero, negative, or
     /// malformed values restore the SDK budget, raised to the plain chunk.
     static func stepTokenBudget(
@@ -167,9 +238,11 @@ extension EngineV2Factory {
         model: (any LanguageModel)? = nil,
         modelID: String? = nil,
         performanceProfile: ServingPerformanceProfile? = nil,
+        chipIdentity: (family: ChipFamily, tier: ChipTier)? = servingChipIdentity,
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
-        let geometry = prefillGeometry(model: model, environment: environment)
+        let geometry = prefillGeometry(
+            model: model, modelID: modelID, chipIdentity: chipIdentity, environment: environment)
         var config = CBv2SchedulerConfig(
             maxConcurrentRequests: nativeConcurrentRequestLimit(
                 requested: maxConcurrentRequests, model: model, environment: environment),

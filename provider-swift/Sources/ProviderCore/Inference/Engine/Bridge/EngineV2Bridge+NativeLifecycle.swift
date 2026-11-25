@@ -48,7 +48,7 @@ extension EngineV2Bridge {
     /// A managed bridge cannot fall back to legacy admission after losing its
     /// weak owner or before actual lifecycle-gated publication.
     func canSubmitWithNativeOwner() -> Bool {
-        guard !nativeShutdownClosed else { return false }
+        guard !nativeShutdownClosed, !retainedFaultFence.isClosed else { return false }
         do {
             if isGLM5NextManaged {
                 try GLM5NextLoadFaultState.requireHealthy()
@@ -121,8 +121,8 @@ extension EngineV2Bridge {
     /// `heldBytes` is each admitted request's reservation; `Int.max` when it
     /// cannot be computed. A request is in `active` from the engine's
     /// acceptance but keeps its gate reservation until `submitTokenized`
-    /// returns, which a streamed local request does once the engine starts it
-    /// (`holdHeadUntilAdmitted`). So each request counts once, at the larger of
+    /// returns, which a held local request (a streamed one, and the owner's)
+    /// does once the engine starts it (`holdHeadUntilAdmitted`). So each request counts once, at the larger of
     /// its two figures. The sum saturates at `Int.max`.
     nonisolated static func glm5NextCommittedBytes(
         gateReservations: [String: Int], heldBytes: [String: Int]

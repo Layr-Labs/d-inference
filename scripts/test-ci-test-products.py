@@ -6,6 +6,7 @@ fixed values. The fixed build path is a temporary directory here.
 """
 
 import contextlib
+import http.server
 import importlib.util
 import io
 import json
@@ -14,6 +15,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -164,6 +167,176 @@ class TestProductsTests(unittest.TestCase):
         status, printed = self.run_main("unpack", "provider", str(self.archive))
         self.assertEqual(status, 1)
         self.assertIn("failed (exit", printed)
+
+
+class JobsAPI(http.server.BaseHTTPRequestHandler):
+    """A loopback stand-in for GET /repos/{repository}/actions/runs/{run}/jobs.
+
+    Each request takes the next answer: a list of jobs, an HTTP status, or
+    (status, headers, body). The last answer repeats.
+    """
+
+    def do_GET(self):
+        server = self.server
+        server.requests.append((self.path, self.headers.get("Authorization")))
+        answer = server.answers[min(len(server.requests), len(server.answers)) - 1]
+        if isinstance(answer, int):
+            answer = (answer, {}, b"")
+        elif isinstance(answer, list):
+            answer = (200, {"Content-Type": "application/json"},
+                      json.dumps({"total_count": len(answer), "jobs": answer}).encode())
+        status, headers, body = answer
+        self.send_response(status)
+        for name, value in {"Content-Length": str(len(body)), **headers}.items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def job(name, status, conclusion=None):
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+PLAN = job("plan / route / Select Runners", "completed", "success")
+SHARD = job("Tests / Provider Unit Tests (shard 1)", "in_progress")
+BUILD = "Tests / Build provider test products"
+
+
+class WaitTests(unittest.TestCase):
+    """`wait` against a real HTTP server on 127.0.0.1, with a fake clock."""
+
+    def serve(self, *answers):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), JobsAPI)
+        server.answers, server.requests = list(answers), []
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        patch = mock.patch.dict(os.environ, {
+            "GITHUB_API_URL": f"http://127.0.0.1:{server.server_address[1]}", "GITHUB_REPOSITORY": "o/r",
+            "GITHUB_RUN_ID": "42", "GITHUB_TOKEN": "token"})
+        patch.start()
+        self.addCleanup(patch.stop)
+        return server
+
+    def wait(self, lane="provider", **bounds):
+        now = [0.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            try:
+                products.wait(lane, poll=15, clock=lambda: now[0], sleep=sleep, **bounds)
+                failure = None
+            except products.ProductsError as error:
+                failure = str(error)
+        return failure, printed.getvalue(), now[0]
+
+    def test_waits_for_the_build_job_of_its_lane_to_succeed(self):
+        server = self.serve([PLAN, SHARD, job(BUILD, "queued")], [PLAN, SHARD, job(BUILD, "in_progress")],
+                            [PLAN, SHARD, job(BUILD, "in_progress")],
+                            [PLAN, SHARD, job("Tests / Build cluster test products", "in_progress"),
+                             job(BUILD, "completed", "success")])
+        failure, printed, waited = self.wait()
+        self.assertIsNone(failure, printed)
+        self.assertEqual(waited, 45)
+        self.assertEqual(len(server.requests), 4)
+        path, authorization = server.requests[0]
+        self.assertEqual(path, "/repos/o/r/actions/runs/42/jobs?filter=latest&per_page=100")
+        self.assertEqual(authorization, "Bearer token")
+        # One line per change of state, not one per poll.
+        self.assertEqual(printed.count("in_progress"), 1)
+        self.assertIn("waited 45 s for the provider products", printed)
+
+    def test_a_build_that_did_not_succeed_fails_at_once(self):
+        for conclusion in ("failure", "cancelled", "skipped", "timed_out"):
+            with self.subTest(conclusion=conclusion):
+                self.serve([job(BUILD, "in_progress")], [job(BUILD, "completed", conclusion)])
+                failure, _, waited = self.wait()
+                self.assertIn(f"ended {conclusion}", failure)
+                self.assertIn("no provider products", failure)
+                self.assertEqual(waited, 15)
+
+    def test_failed_requests_are_retried_until_the_limit(self):
+        # A server error, then a response cut short (http.client.IncompleteRead).
+        cut_short = (200, {"Content-Length": "100"}, b'{"jobs": [')
+        self.serve(502, cut_short, [job(BUILD, "completed", "success")])
+        failure, printed, waited = self.wait()
+        self.assertIsNone(failure, printed)
+        self.assertEqual(waited, 30)
+        self.assertIn("request failed", printed)
+        self.assertIn("IncompleteRead", printed)
+        self.serve(500)
+        failure, _, waited = self.wait(limit=60)
+        self.assertIn("had not ended after 60 s", failure)
+        self.assertEqual(waited, 60)
+
+    def test_a_rate_limited_request_waits_as_long_as_github_asks(self):
+        success = [job(BUILD, "completed", "success")]
+        # A secondary limit may name no wait (then a minute) or name it in Retry-After.
+        secondary = (403, {}, b'{"message": "You have exceeded a secondary rate limit."}')
+        self.serve(secondary, (429, {"Retry-After": "40"}, b""), 429, success)
+        failure, printed, waited = self.wait()
+        self.assertIsNone(failure, printed)
+        self.assertEqual(waited, 60 + 40 + 60)
+        # No request left: until the budget resets, and never past the limit.
+        exhausted = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(int(time.time()) + 120)}
+        self.serve((403, exhausted, b""), success)
+        failure, printed, waited = self.wait()
+        self.assertIsNone(failure, printed)
+        self.assertTrue(100 < waited <= 120, waited)
+        self.serve((403, {**exhausted, "X-RateLimit-Reset": str(int(time.time()) + 3600)}, b""))
+        failure, _, waited = self.wait(limit=300)
+        self.assertIn("had not ended after 300 s", failure)
+        self.assertEqual(waited, 300)
+
+    def test_a_token_that_cannot_read_the_jobs_fails_at_once(self):
+        denied = (403, {"X-RateLimit-Remaining": "998"}, b'{"message": "Resource not accessible by integration"}')
+        for answer in (401, 403, 404, denied):
+            with self.subTest(answer=answer):
+                self.serve(answer)
+                failure, _, waited = self.wait()
+                self.assertIn("needs the token permission actions: read", failure)
+                self.assertEqual(waited, 0)
+
+    def test_a_build_still_running_at_the_limit_fails(self):
+        self.serve([job(BUILD, "in_progress")])
+        failure, _, waited = self.wait(limit=300)
+        self.assertIn("had not ended after 300 s (in_progress)", failure)
+        self.assertEqual(waited, 300)
+
+    def test_a_missing_or_ambiguous_build_job_fails(self):
+        self.serve([PLAN, SHARD])
+        failure, _, waited = self.wait(missing=60)
+        self.assertIn("lists no 'Build provider test products' job after 60 s", failure)
+        self.assertEqual(waited, 60)
+        self.serve([job(BUILD, "queued"), job("Other / Build provider test products", "queued")])
+        failure, _, _ = self.wait()
+        self.assertIn("2 jobs of this run", failure)
+
+    def test_the_cluster_lane_waits_for_the_cluster_build_alone(self):
+        self.serve([job(BUILD, "completed", "failure"), job("Build cluster test products", "completed", "success")])
+        failure, printed, _ = self.wait("cluster")
+        self.assertIsNone(failure, printed)
+
+    def test_the_command_reports_a_failure_as_an_error_annotation(self):
+        self.serve([job(BUILD, "completed", "failure")])
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            status = products.main(["wait", "provider"])
+        self.assertEqual(status, 1)
+        self.assertIn("::error title=Test products::", printed.getvalue())
+        with mock.patch.dict(os.environ):
+            del os.environ["GITHUB_TOKEN"]
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                self.assertEqual(products.main(["wait", "provider"]), 1)
+            self.assertIn("GITHUB_TOKEN is not set", printed.getvalue())
 
 
 if __name__ == "__main__":

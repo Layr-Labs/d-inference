@@ -1,67 +1,196 @@
 name: SDK 27 release preparation
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - 'provider-swift/**'
-      - 'libs/**'
-      - 'fixtures/prompt-contract/**'
-      - 'scripts/**'
-      - '.github/actions/provider-release-build/**'
-      - '.github/workflows/provider-release-cache.yml'
-      - '.github/workflows/release-swift.yml'
+  schedule:
+    # Daily warm on master instead of firing 2 Blacksmith Macs on every master
+    # push; the cheap gate job skips when provider-swift/ and libs/ have not
+    # changed since the last successful warm.
+    - cron: '47 6 * * *'
+  # A pull request warms both lanes only when the one-shot `run-release-ci`
+  # label is added (`gh pr edit <PR> --add-label run-release-ci`); the
+  # `unlabel` job removes it when the run starts. Each lane takes 20 to 40
+  # minutes, so pull requests do not run them by default. No ruleset requires
+  # them, and the release flow reads only master's runs (job `gate`).
   pull_request:
-    paths:
-      - '.github/actions/provider-release-build/**'
-      - '.github/workflows/release-swift.yml'
-      - '.github/workflows/provider-release-cache.yml'
-      - 'scripts/provider-release-cache.py'
-      - 'scripts/provider_release_cache/**'
-      - 'scripts/test-provider-release-cache.py'
-      - 'scripts/test-provider-release-pipeline.py'
-      - 'scripts/provider-release-swift.sh'
-      - 'scripts/prepare-provider-release-toolchain.sh'
-      - 'scripts/check-provider-weak-imports.py'
-      - 'scripts/install-release-cmake.sh'
-      - 'scripts/prepare-metal-toolchain.py'
-      - 'scripts/test-prepare-metal-toolchain.py'
-      - 'scripts/fetch-metallib.sh'
-      - 'scripts/verify-prompt-parity.sh'
-      - 'scripts/verify-nemotron-prompt-parity.sh'
-      - 'scripts/prepare-prompt-fixtures.py'
-      - 'scripts/verified_download_cache.py'
-      - 'scripts/fixture_redirects.py'
-      - 'scripts/test-prepare-prompt-fixtures.py'
-      - 'scripts/run-provider-tests.sh'
-      - 'provider-swift/Tests/ProviderCoreTests/Qwen4StandaloneAdmissionTests.swift'
-      - 'provider-swift/Sources/ProviderCore/KVCacheSSD/BoundedSingleConsumerPipeline.swift'
-      - 'provider-swift/Tests/ProviderCoreTests/KVCacheSSD/BoundedSingleConsumerPipelineTests.swift'
+    types: [labeled]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Let the current warm finish saving reusable objects; only the latest pending
-# master revision needs another warm. PR validation writes only its own PR scope.
+# Supersede stale warms on the same PR or branch. Any other label gets a
+# group of its own, so it never cancels an active warm.
 concurrency:
-  group: provider-sdk27-cache-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  group: >-
+    ${{ (github.event_name == 'pull_request' && github.event.label.name != 'run-release-ci' && format('provider-sdk27-cache-label-{0}', github.run_id)) ||
+        format('provider-sdk27-cache-{0}', github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-release-ci' }}
 
 jobs:
+  unlabel:
+    name: Consume run-release-ci label
+    if: ${{ github.event_name == 'pull_request' && github.event.label.name == 'run-release-ci' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Remove the one-shot run-release-ci label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/run-release-ci" >/dev/null 2>&1 || true
+
+  gate:
+    name: Check whether release cache needs warming
+    if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-release-ci' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Decide whether to warm SDK 27 caches
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != schedule ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Find the most recent successful run in the last 6 days where both
+          # `SDK 27 release` and `SDK 27 qualification` actually succeeded
+          # (skipped schedule runs finish with workflow status=success and must
+          # not advance last_green or let GitHub's 7-day cache TTL expire).
+          # Any transient API error fails open so warming is never silently stuck.
+          tmp_dir=$(mktemp -d)
+          trap 'rm -rf "$tmp_dir"' EXIT
+          last_green=""
+          if gh api "repos/$REPOSITORY/actions/workflows/provider-release-cache.yml/runs?branch=master&status=success&per_page=10" > "$tmp_dir/runs.json" 2>/dev/null; then
+            now=$(date -u +%s)
+            candidates=$(python3 - "$tmp_dir/runs.json" "$now" <<'PY' 2>/dev/null || true
+          import datetime, json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          now = int(sys.argv[2])
+          for run in data.get("workflow_runs") or []:
+              if run.get("event") not in ("schedule", "workflow_dispatch", "push"):
+                  continue
+              created = run.get("created_at") or ""
+              try:
+                  ts = int(datetime.datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp())
+              except ValueError:
+                  continue
+              if now - ts > 6 * 86400:
+                  continue
+              rid = run.get("id")
+              sha = run.get("head_sha") or ""
+              if isinstance(rid, int) and sha:
+                  print(f"{rid} {sha}")
+          PY
+            )
+            while read -r rid sha; do
+              [ -n "$rid" ] || continue
+              if ! gh api "repos/$REPOSITORY/actions/runs/${rid}/jobs?per_page=20" > "$tmp_dir/jobs.json" 2>/dev/null; then
+                # Fail open on transient API error rather than trusting an older run.
+                last_green=""
+                break
+              fi
+              both_ok=$(python3 - "$tmp_dir/jobs.json" <<'PY' 2>/dev/null || echo "error"
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          conclusions = {j.get("name"): j.get("conclusion") for j in (data.get("jobs") or [])}
+          ok = conclusions.get("SDK 27 release") == "success" and conclusions.get("SDK 27 qualification") == "success"
+          print("true" if ok else "false")
+          PY
+              )
+              if [ "$both_ok" = error ]; then
+                last_green=""
+                break
+              elif [ "$both_ok" = true ]; then
+                last_green="$sha"
+                break
+              fi
+            done <<<"$candidates"
+          fi
+
+          if [ -n "$last_green" ] && [ "$last_green" = "$HEAD_SHA" ]; then
+            echo "::notice title=Release cache warm skipped::master HEAD ($HEAD_SHA) already has a recent successful warm."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$last_green" ]; then
+            if gh api "repos/$REPOSITORY/compare/${last_green}...${HEAD_SHA}" > "$tmp_dir/compare.json" 2>/dev/null; then
+              should_run=$(python3 - "$tmp_dir/compare.json" <<'PY' 2>/dev/null
+          import fnmatch, json, sys
+
+          PATTERNS = [
+              'provider-swift/**',
+              'libs/**',
+              '.gitmodules',
+              'fixtures/prompt-contract/**',
+              '.github/actions/provider-release-build/**',
+              '.github/workflows/provider-release-cache.yml',
+              '.github/workflows/release-swift.yml',
+          ]
+
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          if data.get('status') not in ('ahead', 'identical'):
+              print('true')
+              sys.exit(0)
+          files = data.get('files') or []
+          if len(files) >= 300:
+              print('true')
+              sys.exit(0)
+          def matches(path, pat):
+              if pat.endswith('/**'):
+                  prefix = pat[:-3]
+                  return path == prefix or path.startswith(prefix + '/')
+              return fnmatch.fnmatchcase(path, pat)
+          for entry in files:
+              name = entry.get('filename') or ''
+              prev = entry.get('previous_filename') or ''
+              if any(matches(p, pat) for p in (name, prev) if p for pat in PATTERNS):
+                  print('true')
+                  sys.exit(0)
+          print('false')
+          PY
+              ) || should_run=true
+              if [ "$should_run" = false ]; then
+                echo "::notice title=Release cache warm skipped::No provider-swift/ or libs/ changes between $last_green and $HEAD_SHA."
+                echo "run=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+          fi
+
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
   # Only pull-request warming may use Darkbloom Sandboxes. Master and dispatched
   # runs warm the caches that release builds restore, so they keep Blacksmith.
   route:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
     uses: ./.github/workflows/darkbloom-route.yml
     permissions: {}
     with:
       lanes: |
-        warm macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'pull_request' && 2 || 0 }}
+        warm macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'pull_request' && 2 || 0 }} balanced 12x32
 
   warm:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    if: ${{ needs.gate.outputs.run == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}
     name: SDK 27 ${{ matrix.lane }}
-    needs: route
+    needs: [gate, route]
     runs-on: ${{ github.event_name == 'pull_request' && fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}
     timeout-minutes: 60
     strategy:

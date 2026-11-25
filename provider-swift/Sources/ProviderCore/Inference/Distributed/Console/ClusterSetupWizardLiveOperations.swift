@@ -296,7 +296,8 @@ final class LiveContext: @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: file) }
         return (try? DistributedCapabilityProbe.run(executable: URL(fileURLWithPath: worker), arguments: ["--describe-runtime",
             "--config", folder.appendingPathComponent("config.json").path, "--manifest", file.path,
-            "--expected-executable-sha256", digest], deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000)) != nil
+            "--expected-executable-sha256", digest], deadline: DispatchTime.now().uptimeNanoseconds + 20_000_000_000,
+            helper: .worker)) != nil
     }
 
     /// The worker's digest, read again only when its size or change time moved (each refresh asks).
@@ -463,6 +464,7 @@ final class LiveContext: @unchecked Sendable {
 
     /// The pinned route to the other Mac and where its installation is.
     func route() throws -> (ssh: ClusterSSHConfiguration, peer: (worker: String, models: String)) {
+        do { try DistributedInstalledDeveloperSSH.requireSSHRoute() } catch { throw ClusterSetupFailure(error) }
         let saved = savedConfiguration().configuration
         if let saved, saved.role == .leader {
             guard let trust = saved.trust else {
@@ -524,9 +526,11 @@ final class LiveContext: @unchecked Sendable {
     /// `keeping`: the mode each model id keeps when it is planned again after a Darkbloom update (the service's
     /// re-plan), as `ClusterSetupPlanning.decide` takes it; empty for every other plan. `coordinator`: the setup will
     /// serve through the coordinator (the onboarding's public scope): no speculative assistant under `auto`, and equal
-    /// tensor-parallel shares only. The six-step wizard's local sessions leave it off.
+    /// tensor-parallel shares only. The six-step wizard's local sessions leave it off. `freePagesFirst`: the cluster
+    /// service's plan after a Mac's load gate refused its share (`ClusterPlacementPolicy.freePagesFirst`).
     func plan(peer: ClusterSetupReport, keeping: [String: ClusterGenerationMode] = [:],
-              coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:]) -> ClusterSetupPlansResult {
+              coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:],
+              freePagesFirst: Bool = false) -> ClusterSetupPlansResult {
         let input = pairInput()
         guard let description = input.description, let memberID = input.pair?.memberID,
               let local = description.members.first(where: { $0.id == memberID }) else {
@@ -576,21 +580,22 @@ final class LiveContext: @unchecked Sendable {
             let layout: Result<ClusterModelLayout, ClusterSetupFailure>
             do {
                 layout = .success(try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool, arguments: layoutArguments,
-                    deadline: deadline(), maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes)))
+                    deadline: deadline(), maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes, helper: .planner)))
             } catch {
-                layout = .failure(ClusterSetupFailure(toolError(executable: tool, arguments: layoutArguments, fallback: error)))
+                layout = .failure(ClusterSetupFailure(toolError(executable: tool, arguments: layoutArguments, helper: .planner, fallback: error)))
             }
             let worker = URL(fileURLWithPath: local.workerExecutable)
             let describe = probes.capability
             let capability: Result<(record: ClusterRuntimeCapability, data: Data, sha256: String), ClusterSetupFailure>
             do {
-                let data = try DistributedCapabilityProbe.run(executable: worker, arguments: describe, deadline: deadline())
+                let data = try DistributedCapabilityProbe.run(executable: worker, arguments: describe, deadline: deadline(),
+                    helper: .worker)
                 let record = try ClusterCapabilityRecord.decode(data, writtenBy: "the worker")
                 if settings.privateGLMImageQualification { try ClusterGLMOnboardingSelection.requireCandidate(record) }
                 else { try ClusterMiMoOnboardingSelection.requireCandidate(record, qualifying: settings.privateMiMoImageQualification) }
                 capability = .success((record, data, ClusterConfigurationCodec.sha256(data)))
             } catch {
-                capability = .failure(ClusterSetupFailure(toolError(executable: worker, arguments: describe, fallback: error)))
+                capability = .failure(ClusterSetupFailure(toolError(executable: worker, arguments: describe, helper: .worker, fallback: error)))
             }
             let manifest = ClusterSetupModelFolders.readManifest(directory.appendingPathComponent("manifest.json")) ?? Data()
             let assistantQuote: Result<ClusterPlacementTensorBatchQuote, ClusterSetupFailure>?
@@ -689,7 +694,7 @@ final class LiveContext: @unchecked Sendable {
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
             shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))),
             peerMayReceive: settings.derivedPlacement && !settings.privateImageQualification, keeping: keeping,
-            coordinator: coordinator, chosenModes: chosenModes)
+            coordinator: coordinator, chosenModes: chosenModes, freePagesFirst: freePagesFirst)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.
         let options = decided.map(\.option)
@@ -699,12 +704,22 @@ final class LiveContext: @unchecked Sendable {
     }
 
     /// A tool's own error line, for a model it refused: the first line it wrote on standard error.
-    func toolError(executable: URL, arguments: [String], fallback: Error) -> String {
-        if let outcome = try? ClusterSetupChild.run(executable: executable, arguments: arguments, seconds: 15, maximumOutputBytes: 1 << 20),
-           outcome.status != 0, let line = outcome.errorText.split(whereSeparator: \.isNewline).first {
-            return clean(ClusterConsoleText.bounded(String(line), maximum: 160))
+    func toolError(executable: URL, arguments: [String], helper: DistributedInstalledHelper, fallback: Error) -> String {
+        if let line = Self.toolErrorLine(executable: executable, arguments: arguments, helper: helper) {
+            return clean(ClusterConsoleText.bounded(line, maximum: 160))
         }
         return clean(ClusterConsoleText.bounded(String(describing: fallback), maximum: 160))
+    }
+
+    /// The first line a helper that refused writes on standard error, from a run checked like its first one
+    /// (`DistributedCapabilityProbe`): a helper the check refuses is not started again and says nothing.
+    static func toolErrorLine(executable: URL, arguments: [String], helper: DistributedInstalledHelper,
+                              signature: DistributedInstalledHelperSignature = .current) -> String? {
+        guard let outcome = try? DistributedCapabilityProbe.outcome(executable: executable, arguments: arguments,
+                  deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000, maximumOutputBytes: 1 << 20,
+                  helper: helper, signature: signature),
+              outcome.status != 0, let line = outcome.errorText.split(whereSeparator: \.isNewline).first else { return nil }
+        return String(line)
     }
 
     /// Speed measurements kept beside the wizard's record, by the placement work's own format.

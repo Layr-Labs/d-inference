@@ -203,7 +203,8 @@ runs:
           cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
         done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
     # Prompt Parity runs once per qualification, against the test build above,
-    # and records each run's executed count for the shard audit.
+    # and records each run's executed count for the shard audit, from the run's
+    # xUnit report and stdout (NESTED_SUITE_REPORT, scripts/run-nested-suite.sh).
     - name: Verify public prompt golden vectors
       if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'
       id: parity
@@ -214,9 +215,9 @@ runs:
         set -euo pipefail
         report="$RUNNER_TEMP/provider-sdk-shard"
         mkdir -p "$report"
-        ./scripts/verify-prompt-parity.sh 2>&1 | tee "$report/parity-prompt.log"
+        NESTED_SUITE_REPORT="$report/parity-prompt" ./scripts/verify-prompt-parity.sh
         python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
-          "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
+          "$report/parity-prompt-swift-testing.xml" "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
     - name: Verify pinned Nemotron prompts
       if: inputs.lane == 'qualification' && steps.lane.outputs.parity == 'true'
       shell: bash
@@ -224,9 +225,9 @@ runs:
         set -euo pipefail
         report="$RUNNER_TEMP/provider-sdk-shard"
         mkdir -p "$report"
-        ./scripts/verify-nemotron-prompt-parity.sh 2>&1 | tee "$report/parity-nemotron.log"
+        NESTED_SUITE_REPORT="$report/parity-nemotron" ./scripts/verify-nemotron-prompt-parity.sh
         python3 scripts/provider-test-shards.py counts parity NemotronTemplateParityLiveTests \
-          "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
+          "$report/parity-nemotron-swift-testing.xml" "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
     - name: Prepare MiMo image HTTP fixtures
       if: inputs.lane == 'qualification'
       shell: bash
@@ -255,9 +256,15 @@ runs:
           export PROVIDER_TEST_SHARD="$QUALIFICATION_SHARD"
           export PROVIDER_TEST_REPORT_DIR="$RUNNER_TEMP/provider-sdk-shard"
         fi
+        # A shard runs a fifth of the suite and keeps the 30-minute deadline. The
+        # unsharded lane (SDK 27 release preparation on a pull request) runs the
+        # whole suite serially on one Mac and gets 45 minutes, which still ends
+        # inside the routed job's 60-minute limit.
+        timeout=1800
+        [ -n "$QUALIFICATION_SHARD" ] || timeout=2700
         python3 ../scripts/run-provider-test-watchdog.py \
           --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
-          --diagnostic-after-seconds 900 --timeout-seconds 1800 \
+          --diagnostic-after-seconds 900 --timeout-seconds "$timeout" \
           -- ../scripts/run-provider-tests.sh
     - name: Restore pinned MiMo audio codec
       if: env.CI_ACTIONS_CACHE != 'off' && inputs.lane == 'qualification' && steps.lane.outputs.last == 'true'
@@ -323,12 +330,16 @@ runs:
       working-directory: provider-swift
       run: |
         set -euo pipefail
-        swift build -c release --product "$PRODUCT_CLI_NAME"
-        swift build -c release --product "$PRODUCT_ENCLAVE_NAME"
-        swift build -c release --product darkbloom-fan-helper
+        # A fixed 8 MiB main-thread stack for every shipped executable
+        # (scripts/check-fixed-stack.sh says why).
+        stack=(-Xlinker -stack_size -Xlinker 0x800000)
+        swift build -c release --product "$PRODUCT_CLI_NAME" "${stack[@]}"
+        swift build -c release --product "$PRODUCT_ENCLAVE_NAME" "${stack[@]}"
+        swift build -c release --product darkbloom-fan-helper "${stack[@]}"
         BIN_DIR=$(swift build -c release --show-bin-path)
         for product in "$PRODUCT_CLI_NAME" "$PRODUCT_ENCLAVE_NAME" darkbloom-fan-helper; do
           test -x "$BIN_DIR/$product"
+          ../scripts/check-fixed-stack.sh "$BIN_DIR/$product"
         done
         echo "bin_dir=$BIN_DIR" >> "$GITHUB_OUTPUT"
     - name: Build cluster helpers (worker and placement tool)

@@ -66,11 +66,14 @@ public struct NodeKeyPair: Sendable {
         )
     }
 
-    /// Restore from a raw 32-byte secret key (e.g. loaded from disk).
+    /// Tests only (fixed vectors): a key from known bytes. A provider never
+    /// restores an endpoint key; every process makes a fresh one with
+    /// `generate()` and keeps it in memory only, so no key of an earlier
+    /// process or release can be the one a later process registers.
     ///
     /// Derives the public key from the secret key using CryptoKit's
     /// Curve25519 (same X25519 math as libsodium).
-    public init(rawSecret: Data) throws {
+    init(rawSecret: Data) throws {
         guard rawSecret.count == 32 else {
             throw CryptoError.keyFileCorrupted(path: "<raw>", got: rawSecret.count)
         }
@@ -104,7 +107,8 @@ public struct NodeKeyPair: Sendable {
     ///   - senderPublicKey: The sender's 32-byte X25519 public key.
     ///   - ciphertext: `nonce (24 bytes) || authenticated_ciphertext`. The authenticated
     ///     ciphertext includes the 16-byte Poly1305 authentication tag prepended by XSalsa20-Poly1305.
-    /// - Returns: The decrypted plaintext.
+    /// - Returns: The decrypted plaintext, in storage that is zeroed after its
+    ///   last reference is released (see ``ReleasedBufferWipe``).
     public func decrypt(senderPublicKey: Data, ciphertext: Data) throws -> Data {
         guard ciphertext.count >= naclNonceSize else {
             throw CryptoError.ciphertextTooShort(got: ciphertext.count, minimum: naclNonceSize)
@@ -116,15 +120,15 @@ public struct NodeKeyPair: Sendable {
         // swift-sodium's open(nonceAndAuthenticatedCipherText:...) expects
         // the combined format: nonce (24) || tag (16) || encrypted_data,
         // which is exactly the wire format we receive.
-        guard let plaintext = sodium.box.open(
-            nonceAndAuthenticatedCipherText: Bytes(ciphertext),
-            senderPublicKey: Bytes(senderPublicKey),
-            recipientSecretKey: Bytes(secretKeyBytes)
-        ) else {
+        guard let plaintext = withZeroedCopy(of: secretKeyBytes, { secretKey in
+            sodium.box.open(
+                nonceAndAuthenticatedCipherText: Bytes(ciphertext),
+                senderPublicKey: Bytes(senderPublicKey),
+                recipientSecretKey: secretKey)
+        }) else {
             throw CryptoError.decryptionFailed
         }
-
-        return Data(plaintext)
+        return Data(zeroingOnRelease: plaintext)
     }
 
     // MARK: - Encrypt
@@ -145,14 +149,15 @@ public struct NodeKeyPair: Sendable {
         // to the authenticated ciphertext, producing the combined format:
         // nonce (24) || tag (16) || encrypted_data.
         // Use the Bytes? overload (combined format), not the tuple overload.
-        guard let sealed: Bytes = sodium.box.seal(
-            message: Bytes(plaintext),
-            recipientPublicKey: Bytes(recipientPublicKey),
-            senderSecretKey: Bytes(secretKeyBytes)
-        ) else {
-            throw CryptoError.encryptionFailed
+        let sealed = withZeroedCopy(of: plaintext) { message in
+            withZeroedCopy(of: secretKeyBytes) { secretKey -> Bytes? in
+                sodium.box.seal(
+                    message: message,
+                    recipientPublicKey: Bytes(recipientPublicKey),
+                    senderSecretKey: secretKey)
+            }
         }
-
+        guard let sealed else { throw CryptoError.encryptionFailed }
         return Data(sealed)
     }
 
@@ -168,26 +173,26 @@ public struct NodeKeyPair: Sendable {
         guard recipientPublicKey.count == 32 else {
             throw CryptoError.invalidPublicKeyLength(got: recipientPublicKey.count)
         }
-        guard let key = sodium.box.beforenm(
-            recipientPublicKey: Bytes(recipientPublicKey),
-            senderSecretKey: Bytes(secretKeyBytes)
-        ) else {
+        guard let key = withZeroedCopy(of: secretKeyBytes, { secretKey in
+            sodium.box.beforenm(recipientPublicKey: Bytes(recipientPublicKey), senderSecretKey: secretKey)
+        }) else {
             throw CryptoError.encryptionFailed
         }
-        return Data(key)
+        return Data(zeroingOnRelease: key)
     }
 
     /// Encrypt using a precomputed shared key from ``precomputeSharedKey(recipientPublicKey:)``.
     ///
     /// Output format is identical to ``encrypt(recipientPublicKey:plaintext:)``:
-    /// `nonce (24 bytes) || authenticated_ciphertext`.
-    public func encryptWithSharedKey(_ sharedKey: Data, plaintext: Data) throws -> Data {
-        guard let sealed: Bytes = sodium.box.seal(
-            message: Bytes(plaintext),
-            beforenm: Bytes(sharedKey)
-        ) else {
-            throw CryptoError.encryptionFailed
+    /// `nonce (24 bytes) || authenticated_ciphertext`. The one copy of
+    /// `plaintext` this makes is zeroed before it is freed.
+    public func encryptWithSharedKey(_ sharedKey: Data, plaintext: some Collection<UInt8>) throws -> Data {
+        let sealed = withZeroedCopy(of: plaintext) { message in
+            withZeroedCopy(of: sharedKey) { key -> Bytes? in
+                sodium.box.seal(message: message, beforenm: key)
+            }
         }
+        guard let sealed else { throw CryptoError.encryptionFailed }
         return Data(sealed)
     }
 
@@ -196,11 +201,35 @@ public struct NodeKeyPair: Sendable {
     /// Drop-in replacement for ``encryptPayload(recipientPublicKey:plaintext:)``
     /// on the hot path where the same recipient key is used many times (e.g.
     /// per-chunk SSE encryption during a streaming response).
-    public func encryptPayloadFast(sharedKey: Data, plaintext: Data) throws -> EncryptedPayload {
+    public func encryptPayloadFast(sharedKey: Data, plaintext: some Collection<UInt8>) throws -> EncryptedPayload {
         let ciphertext = try encryptWithSharedKey(sharedKey, plaintext: plaintext)
         return EncryptedPayload(
             ephemeralPublicKey: publicKeyBase64,
             ciphertext: ciphertext.base64EncodedString()
+        )
+    }
+
+    /// ``encryptPayloadFast(sharedKey:plaintext:)`` under a nonce the caller
+    /// chooses, in the same `nonce (24) || tag (16) || encrypted_data` format,
+    /// so any NaCl box open reads it. The caller must never use one nonce
+    /// twice with one shared key.
+    ///
+    /// A box sealed with a precomputed key is the secretbox of that key
+    /// (`crypto_box_easy_afternm` is `crypto_secretbox_easy`), which is the
+    /// only libsodium seal swift-sodium exposes with an explicit nonce.
+    func encryptPayloadFast(
+        sharedKey: Data, plaintext: some Collection<UInt8>, nonce: [UInt8]
+    ) throws -> EncryptedPayload {
+        guard nonce.count == naclNonceSize else { throw CryptoError.encryptionFailed }
+        let sealed = withZeroedCopy(of: plaintext) { message in
+            withZeroedCopy(of: sharedKey) { key -> Bytes? in
+                sodium.secretBox.seal(message: message, secretKey: key, nonce: nonce)
+            }
+        }
+        guard let sealed else { throw CryptoError.encryptionFailed }
+        return EncryptedPayload(
+            ephemeralPublicKey: publicKeyBase64,
+            ciphertext: Data(nonce + sealed).base64EncodedString()
         )
     }
 
@@ -231,10 +260,120 @@ public struct NodeKeyPair: Sendable {
     }
 }
 
+// MARK: - Zeroed buffers
+
+/// Calls `body` with a `[UInt8]` copy of `bytes` (swift-sodium takes and
+/// returns arrays) and zeroes that copy before it is freed. `bytes` is a
+/// collection so the copy is allocated once at its final size, not grown
+/// through buffers that would be freed unzeroed. `body` must not keep the
+/// array: the copy is zeroed in place only while it is the array's sole owner.
+private func withZeroedCopy<R>(of bytes: some Collection<UInt8>, _ body: (Bytes) throws -> R) rethrows -> R {
+    var copy = Bytes(bytes)
+    defer { copy.withUnsafeMutableBytes { secureZero($0) } }
+    return try body(copy)
+}
+
+private extension Data {
+    /// A copy of `bytes` whose storage, and `bytes` itself, are zeroed and
+    /// freed by ``ReleasedBufferWipe`` after the last reference to the copy is
+    /// released, on whichever path that happens. Nothing is zeroed before
+    /// then, so making the copy adds no zeroing to the caller's path. `bytes`
+    /// must not be kept elsewhere: it is zeroed in place only while this is its
+    /// sole owner. Copies made from the result (a mutation of a shared value,
+    /// a `String`, a re-encoding) are separate allocations and are not
+    /// covered, nor is a value of at most 14 bytes, which Foundation keeps
+    /// inline in the `Data` itself.
+    init(zeroingOnRelease bytes: consuming Bytes) {
+        guard !bytes.isEmpty else {
+            self.init()
+            return
+        }
+        let buffer = ReleasedBuffer(copying: bytes)
+        self.init(bytesNoCopy: buffer.storage, count: buffer.count, deallocator: .custom { _, _ in
+            ReleasedBufferWipe.enqueue(buffer)
+        })
+    }
+}
+
+/// The storage behind a `Data(zeroingOnRelease:)` and the array it was
+/// copied from, zeroed and freed together.
+private final class ReleasedBuffer: @unchecked Sendable {
+    let storage: UnsafeMutableRawPointer
+    let count: Int
+    private var source: Bytes
+
+    init(copying source: consuming Bytes) {
+        let count = source.count
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 1)
+        source.withUnsafeBytes { bytes in
+            if let base = bytes.baseAddress { storage.copyMemory(from: base, byteCount: count) }
+        }
+        self.storage = storage
+        self.count = count
+        self.source = source
+    }
+
+    /// Runs once, on `ReleasedBufferWipe`'s queue.
+    func zeroAndFree() {
+        secureZero(UnsafeMutableRawBufferPointer(start: storage, count: count))
+        storage.deallocate()
+        source.withUnsafeMutableBytes { secureZero($0) }
+        source = []
+    }
+}
+
+/// Zeroes and frees the buffers behind `Data(zeroingOnRelease:)` on one
+/// background queue. The thread that releases the last reference to such a
+/// buffer, for a request body after the request's last message is sent,
+/// only enqueues the work, so zeroing a request body never runs on the
+/// request's path.
+enum ReleasedBufferWipe {
+    private static let queue = DispatchQueue(label: "ProviderCore.ReleasedBufferWipe", qos: .utility)
+    /// Read and written only on `queue`.
+    private nonisolated(unsafe) static var observer: (@Sendable (Int) -> Void)?
+
+    fileprivate static func enqueue(_ buffer: ReleasedBuffer) {
+        queue.async {
+            buffer.zeroAndFree()
+            observer?(buffer.count)
+        }
+    }
+
+    /// Tests only: returns after every buffer released before the call has
+    /// been zeroed and freed.
+    static func waitForPendingForTesting() {
+        queue.sync {}
+    }
+
+    /// Tests only: while suspended, released buffers wait, still unzeroed.
+    /// Each call must be followed by exactly one `resumeForTesting()`.
+    static func suspendForTesting() {
+        queue.suspend()
+    }
+
+    static func resumeForTesting() {
+        queue.resume()
+    }
+
+    /// Tests only: `observer` receives each buffer's byte count once it is
+    /// zeroed. Call while the queue is not suspended.
+    static func observeForTesting(_ observer: (@Sendable (Int) -> Void)?) {
+        queue.sync { self.observer = observer }
+    }
+}
+
 // MARK: - CustomDebugStringConvertible
 
 extension NodeKeyPair: CustomDebugStringConvertible {
     public var debugDescription: String {
         "NodeKeyPair(public: \(publicKeyBase64), secret: [REDACTED])"
+    }
+}
+
+/// Reflection (`Mirror`, `dump`) shows only the public key: the default
+/// mirror would list the secret's bytes.
+extension NodeKeyPair: CustomReflectable {
+    public var customMirror: Mirror {
+        Mirror(self, children: ["publicKey": publicKeyBase64], displayStyle: .struct)
     }
 }

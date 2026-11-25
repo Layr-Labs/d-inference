@@ -94,11 +94,16 @@ public struct ChatTemplateControls: Sendable, Equatable {
 
     /// The controls with the ordered tool declarations of `body`, the bytes
     /// they were decoded from, when it asked for Transformers' tool JSON.
+    /// A body that declares tools also gives its declarations as sent
+    /// (`TemplateJSONOrder.Evidence.declarations`).
     func capturingTemplateJSON(from body: Data) -> Self {
         var copy = self
-        copy.templateJSON = templateJSON.capturing(body: body)
+        copy.templateJSON = templateJSON.capturing(body: body, declaresTools: declaresTools)
         return copy
     }
+
+    /// The decoded body declares at least one tool a template can render.
+    private var declaresTools: Bool { declaredTools?.isEmpty == false }
 
     /// `capturingTemplateJSON` for a local API request, which
     /// `DARKBLOOM_TEMPLATE_JSON=transformers` also asks for.
@@ -107,7 +112,7 @@ public struct ChatTemplateControls: Sendable, Equatable {
     ) -> Self {
         var copy = self
         copy.templateJSON = templateJSON.askingLocally(environment: environment)
-            .capturing(body: body, environment: environment)
+            .capturing(body: body, declaresTools: declaresTools, environment: environment)
         return copy
     }
 
@@ -117,10 +122,13 @@ public struct ChatTemplateControls: Sendable, Equatable {
     /// Transformers' tool JSON: a prompt the plan does not expect contradicts
     /// its cache receipts, and a caller could set the field through a
     /// coordinator that forwards it.
+    /// The declarations as sent stay: a family that renders them
+    /// (`TemplateJSONOrder.callerArgumentModelTypes`) does so on every
+    /// request, and its plan renders them the same way.
     func servingCoordinatorRequest(planned: Bool) -> Self {
         guard planned, templateJSON != .init() else { return self }
         var copy = self
-        copy.templateJSON = .init()
+        copy.templateJSON = .init(declarations: templateJSON.declarations)
         return copy
     }
 
@@ -226,6 +234,11 @@ extension MultiModelBatchSchedulerEngine {
         if let effort {
             context["reasoning_effort"] = ReasoningEffortPolicy.templateEffort(
                 effort, modelID: request.model, modelType: modelType, thinking: context["enable_thinking"] as? Bool)
+        } else if Inkling2PromptContract.withholdsReasoning(request, controls: controls, modelType: modelType) {
+            // Inkling 2 has no thinking switch: a caller's thinking off is its
+            // lowest effort. A default above (media) is not the caller's and
+            // keeps the template's own effort.
+            context["reasoning_effort"] = ReasoningEffort.none.rawValue
         }
         if let preserveThinking = controls.preserveThinking {
             context["preserve_thinking"] = preserveThinking

@@ -11,7 +11,7 @@ extension CoordinatorClient {
     // MARK: - Registration
 
     internal func sendRegistration(connection: NWConnection) async throws {
-        let privacyCapabilities = config.privacyCapabilities ?? PrivacyCapabilities(
+        let privacyCapabilities = refreshedPrivacyCapabilities ?? config.privacyCapabilities ?? PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
             sipEnabled: SecurityChecks.isSIPEnabled(),
@@ -82,14 +82,17 @@ extension CoordinatorClient {
 
     // MARK: - Heartbeat
 
-    func buildHeartbeatJSON() -> String {
-        buildHeartbeatFrame().json
+    /// nil when nothing may be sent (see `buildHeartbeatFrame`).
+    func buildHeartbeatJSON() -> String? {
+        buildHeartbeatFrame()?.json
     }
 
     /// Keep the sequence paired with the exact encoded frame. The published
     /// quote snapshot can outlive a nil/failed heartbeat and cannot prove what
-    /// this send actually contained.
-    func buildHeartbeatFrame() -> (json: String, capacitySeq: UInt64?) {
+    /// this send actually contained. Every heartbeat send (the baseline timer
+    /// and the event heartbeats) builds its frame here; nil means it sends
+    /// nothing: a cluster member's frame that failed to encode.
+    func buildHeartbeatFrame() -> (json: String, capacitySeq: UInt64?)? {
         let isActive = state.inferenceActive
         let activeModel = state.currentModel
         let warmModels = state.warmModels
@@ -151,7 +154,8 @@ extension CoordinatorClient {
             modelAutopilot: modelAutopilot,
             // S16: a member's current session and its data-plane protection.
             clusterSession: nativePairMember?.sessionStatus,
-            busy: busy
+            busy: busy,
+            coordinatorConnectionCheck: coordinatorConnectionReport.value?.rawValue
         )
 
         do {
@@ -162,6 +166,13 @@ extension CoordinatorClient {
             return (json, capacity?.capacitySeq)
         } catch {
             recordEncodeFailure("heartbeat", error)
+            // A cluster member sends nothing; its next heartbeat covers it.
+            // The minimal frame has no `capacity_seq`, so the coordinator
+            // applies it outside the sequence order, and it has no
+            // `cluster_session`, so it withdraws the member's session report:
+            // the pair would stop serving public requests until the next
+            // full heartbeat.
+            guard config.executionRole == .solo else { return nil }
             // Last resort: a minimal valid heartbeat keeps the connection alive
             // rather than shipping malformed bytes the coordinator would drop.
             // It carries the status computed above — a draining box must not
@@ -182,11 +193,20 @@ extension CoordinatorClient {
         _ = sendEventHeartbeatWithCapacitySeq()
     }
 
+    /// The baseline timer's heartbeat. Built and written inside the actor, as
+    /// an event heartbeat is, so every heartbeat leaves in `capacity_seq`
+    /// order: the coordinator applies only a higher sequence than the last
+    /// it applied, and treats an older frame as liveness only.
+    func sendBaselineHeartbeat(on connection: NWConnection) {
+        guard let frame = buildHeartbeatFrame() else { return }
+        sendTextFrame(frame.json, on: connection, identifier: "heartbeat")
+    }
+
     /// Returns the capacity sequence stamped into this exact heartbeat so a
     /// model-switch ready frame can require its application before routing.
     func sendEventHeartbeatWithCapacitySeq() -> UInt64? {
-        guard sessionRegistered, let connection = nwConnection else { return nil }
-        let frame = buildHeartbeatFrame()
+        guard sessionRegistered, let connection = nwConnection,
+              let frame = buildHeartbeatFrame() else { return nil }
         sendTextFrame(frame.json, on: connection, identifier: "heartbeat")
         return frame.capacitySeq
     }

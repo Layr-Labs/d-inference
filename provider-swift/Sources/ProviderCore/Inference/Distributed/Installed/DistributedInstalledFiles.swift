@@ -5,7 +5,7 @@ import Darwin
 /// Streaming verification of installed executables and bounded public metadata.
 /// Checkpoint payload verification remains in the native loader. This is a
 /// filesystem identity check, not library attestation. An executable's launch
-/// is bound to the verified bytes by `launchVerifier()`.
+/// is bound to the verified bytes by `launchVerifier(_:)`.
 enum DistributedInstalledFiles {
     struct Identity: @unchecked Sendable {
         let url: URL
@@ -15,16 +15,14 @@ enum DistributedInstalledFiles {
         /// it has no usable code signature, and for any other file.
         let codeDirectoryHashes: Set<Data>
 
-        /// The check a launcher runs on the child it spawned from this file,
-        /// before that child runs: its image must be these bytes. An
-        /// executable without a code signature is refused here, before any spawn.
-        func launchVerifier() throws -> @Sendable (pid_t) throws -> Void {
-            #if DEBUG
-            // Debug builds (the provider's unit tests) launch CPU fixtures whose installed executables are
-            // scripts, which have no code signature. Release builds refuse those; a signed file is always checked.
-            if codeDirectoryHashes.isEmpty { return { _ in } }
-            #endif
-            return try DistributedInstalledLaunchImage.verifier(expected: codeDirectoryHashes)
+        /// The check a launcher runs on the `helper` it spawned from this
+        /// file, before that child runs: its image must be these bytes and,
+        /// in a provider signed with a certificate, signed like the provider
+        /// (`DistributedInstalledHelperSignature`). An executable without a
+        /// code signature is refused here, before any spawn.
+        func launchVerifier(_ helper: DistributedInstalledHelper,
+                            signature: DistributedInstalledHelperSignature = .current) throws -> @Sendable (pid_t) throws -> Void {
+            try signature.verifier(helper, file: url, pinned: codeDirectoryHashes)
         }
 
         func requireUnchanged() throws {

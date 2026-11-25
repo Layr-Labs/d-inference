@@ -9,16 +9,17 @@ struct ProviderOnboardingPolicyTests {
         #expect(ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) == usesAppAttest)
     }
 
-    @Test("setup guidance never asks for an MDM profile or a coordinator readiness gate")
+    @Test("setup guidance is App Attest only and never names MDM or a coordinator readiness gate")
     func guidanceIsAppAttestOnly() {
         let cli = BuildEnvironment.current.cliName
         #expect(ProviderOnboardingPolicy.appAttestRequirement.contains("App Attest only"))
         #expect(ProviderOnboardingPolicy.appAttestRequirement.contains("macOS 27 or later"))
-        #expect(ProviderOnboardingPolicy.appAttestRequirement.contains("Darkbloom MDM is retired"))
+        #expect(!ProviderOnboardingPolicy.appAttestRequirement.contains("MDM"))
         #expect(ProviderOnboardingPolicy.appAttestGuidance.contains("`\(cli) start`"))
         #expect(ProviderOnboardingPolicy.upgradeGuidance.contains("macOS 27 or later"))
         for text in [ProviderOnboardingPolicy.appAttestGuidance, ProviderOnboardingPolicy.upgradeGuidance] {
             #expect(!text.contains("\(cli) enroll"))
+            #expect(!text.contains("MDM"))
             #expect(!text.contains("once removal is approved"))
             #expect(!text.contains("Keep existing management"))
         }

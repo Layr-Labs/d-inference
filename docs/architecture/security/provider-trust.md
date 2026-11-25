@@ -1,8 +1,8 @@
 # Provider trust with App Attest
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-20
 
-Qualified App Attest is the only provider authorization path. Darkbloom MDM is retired: production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from a planned coordinator restart, and the platform removes its MDM code in a separate change, so no legacy MDM path or cohort remains for a provider to rely on. This explanation separates App Attest authorization from the shared dispatch checks, from the legacy evidence fields that remain, and from claims App Attest does not prove. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
+Qualified App Attest is the only provider authorization path. This explanation separates App Attest authorization from the shared dispatch checks, from the legacy evidence fields that remain, and from claims App Attest does not prove. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
 ## Context
 
@@ -28,9 +28,6 @@ extend Apple proof lifetime.
 
 ## Mechanism
 
-Darkbloom MDM is retired: production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from a planned coordinator restart, and the platform removes its MDM code in a separate change. The frozen legacy MDM cohort that once let enrolled Macs serve without App
-Attest is historical; see the
-[former enrollment page](https://github.com/Layr-Labs/d-inference/blob/63a82b502c/docs/architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
 A Mac below macOS 27 cannot use App Attest and has no fallback.
 
 Base rewards require current qualified App Attest authorization; existing
@@ -62,7 +59,6 @@ The diagram describes public serving. Authenticated owner routing may relax the 
 | Evidence | Establishes | Does not establish | Code |
 |---|---|---|---|
 | Legacy SE-signed registration/status | Signature validity and binding of reported fields to the registered key | A self-signature alone does not independently certify key provenance or each reported fact | [coordinator/attestation/attestation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/attestation/attestation.go) (`Verify`, `VerifyStatusSignature`) |
-| MDM SecurityInfo, Apple MDA chain | Nothing: removed with Darkbloom MDM. Public `mdm_verified` / `mda_verified` are historical, always false | Any serving or reward permission | — |
 | APNs code identity and legacy release evidence | Legacy application/endpoint evidence subject to configured enforcement policy | Continuous measurement of every instruction or model computation | [coordinator/registry/attestation_policy.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/attestation_policy.go) (`codeAttestationEnforcedAtLocked`, `providerHoldsCurrentApplicationEvidenceLocked`) |
 | App Attest enrollment/assertion | Verified credential, Mac access-policy and code evidence plus a signed current transcript | Authorization without official-build, accepted-proof and live connection checks; recurring receipt readiness for rewards | [coordinator/appattest/verify.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/verify.go) (`Verifier.Attestation`, `Verifier.Assertion`); [coordinator/appattest/authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/authorization.go) (`EvaluateAuthorization`) |
 | App Attest v3 hardware/status fields | App-origin claims bound to account, session, endpoint and verification key | Independent Apple certification of RAM, physical uniqueness or model execution | `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift` (`clientHash`) |
@@ -72,7 +68,7 @@ The diagram describes public serving. Authenticated owner routing may relax the 
 
 1. **App Attest grants do not rewrite legacy evidence.** A current lease never sets `TrustHardware`, `MDAVerified` or `CodeAttested`. Common runtime/transport/privacy checks remain — [coordinator/registry/attestation_policy.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/attestation_policy.go) (`providerSupportsPrivateTextAuthorizationAtLocked`).
 2. **Selection is not final authorization.** Every inference handoff rechecks current connection, account/machine/endpoint binding and applicable policy after frame preparation and owner acknowledgment. Later invalidation fences subsequent handoffs but cannot recall committed frames — [coordinator/registry/inference_authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/inference_authorization.go) (`WriteInferenceTextDeferred`, `InferenceHandoff.Authorize`).
-3. **Missing evidence and hard denial differ.** Expiry or a transient lookup/Apple failure cannot extend App Attest permission, and there is no legacy MDM evidence to fall back to. Explicit credential revocation and security denial fence matching live connections — [coordinator/appattest/service/authorizer.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/service/authorizer.go) (`refresh`); [coordinator/registry/app_attest_authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/app_attest_authorization.go) (`RevokeAppAttestCredential`); [coordinator/registry/app_attest_denial.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/app_attest_denial.go) (`denyAppAttestProviderLocked`).
+3. **Missing evidence and hard denial differ.** Expiry or a transient lookup/Apple failure cannot extend App Attest permission, and there is no other evidence to fall back to. Explicit credential revocation and security denial fence matching live connections — [coordinator/appattest/service/authorizer.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/service/authorizer.go) (`refresh`); [coordinator/registry/app_attest_authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/app_attest_authorization.go) (`RevokeAppAttestCredential`); [coordinator/registry/app_attest_denial.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/app_attest_denial.go) (`denyAppAttestProviderLocked`).
 4. **Official registration is not runtime authorization.** Trusted CI registers the complete official identity through the existing scoped release API. Serving still requires real, durably accepted Apple proof, matching official code/runtime hashes, and current revocation evidence. Recurring receipt readiness separately gates rewards. Apple's truncated measurement must uniquely bind the durable full hash. Earlier implementation evidence remains in [coordinator/appattest/service/build_qualifications.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/service/build_qualifications.go) (`applyBuildQualification`) and [coordinator/registry/app_attest_authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/app_attest_authorization.go) (`providerHasAppAttestAuthorizationLocked`); current policy is platform-owned.
 
 CI and repository writers are trusted for official build identity, not proof
@@ -83,7 +79,7 @@ matching platform persistence change before using the provider workflow. See
 For existing deployments only, `applyBuildQualification` can use configured exact build/code mappings for a full Apple measurement when no durable row exists and the qualification snapshot is fresh. Durable rows and revocation tombstones override this compatibility path; truncated measurements and new release publication require durable qualification.
 
 5. **Legacy evidence cannot use the retired downgrade exceptions.** Every registration blob must meet `RegistrationAttestationMaxAge`, regardless of its claimed provider version. A challenge for an attested SE key requires a valid `status_signature`; missing SIP or Secure Boot status fails the challenge. These checks constrain signed claims and freshness, not independent physical measurement — [coordinator/api/provider/trust/attestation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider/trust/attestation.go), [coordinator/api/provider/trust/attestation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider/trust/attestation.go), [coordinator/internal/provider/challenge/challenge_verify.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/provider/challenge/challenge_verify.go) (`VerifyProviderAttestation`, `verifyChallengeResponse`).
-6. **Onboarding is not permission.** Darkbloom MDM is removed: setup never enrolls a Mac in MDM and waits for App Attest. An old Darkbloom profile does nothing; the provider only reads `profiles status -type enrollment` unprivileged, names the profile and opens System Settings, the operator removes it, no coordinator decision is involved, and an employer's profile is never offered (`parseMDMEnrollmentStatus`; `UnenrollKeepServingTests`, `MDMEnrollmentTests`; the unprivileged read is a regression check in `scripts/test-provider-profiles-unprivileged.py`) — `provider-swift/Sources/darkbloom/EnrollCommand.swift` (`Enroll.guidance`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` (`guideRetiredProfileRemoval`).
+6. **Onboarding is not permission.** Setup installs no profile and waits for App Attest. An old Darkbloom enrollment profile does nothing; the provider only reads `profiles status -type enrollment` unprivileged, names the profile and opens System Settings, the operator removes it, no coordinator decision is involved, and an employer's profile is never offered (`parseMDMEnrollmentStatus`; `UnenrollKeepServingTests`, `MDMEnrollmentTests`; the unprivileged read is a regression check in `scripts/test-provider-profiles-unprivileged.py`) — `provider-swift/Sources/darkbloom/EnrollCommand.swift` (`Enroll.guidance`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` (`guideRetiredProfileRemoval`).
 
 Autopilot reward qualification checks the App Attest lease at the original
 server receive time, while retaining current binding, revocation and privacy
@@ -91,6 +87,37 @@ checks. Processing a queued frame after a new grant cannot backdate its
 qualification. This historical financial check does not replace the current-time
 serving handoff gates above; see the [billing mechanism](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/billing.md#autopilot-rewards)
 and [coordinator/registry/autopilot_reward_snapshot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_reward_snapshot.go) (`AutopilotRewardDeclarationAt`).
+
+### Serving processes start from Darkbloom's service
+
+A release build serves the network only from Darkbloom's background service:
+the provider's launchd job, or a part that the service runs (the always-on
+member under its supervisor, a pair's member under the cluster service). The
+check reads facts from macOS, not from any service the starting program could
+answer. Any other start says so, asks launchd to start the service and exits
+(`provider-swift/Sources/ProviderCore/Service/ServiceLaunchCheck.swift`,
+`Start.requireServiceLaunch`). The check is stronger on macOS 15.4 and later, where
+macOS reports each process's original parent. A build switch
+(`ServiceLaunchCheck.requiresOriginalParentInThisBuild`, off in current builds)
+makes the check require that fact: before macOS 15.4, a network-serving start is
+then refused and says to update macOS. Debug builds do not enforce it.
+
+### Where serving processes run from
+
+The registration reports where the provider's executable, and every other image
+it loaded from outside the system's shared cache, sits
+(`privacy_capabilities.serving_volume`): `internal` (an internal, fixed, local
+APFS or HFS+ volume), `network`, `disk_image`, `removable`, `external` or
+`unknown` (`provider-swift/Sources/ProviderCore/Service/ServingVolumeCheck.swift`).
+The facts come from the file the kernel mapped for each image, not the path it was
+loaded by, then the mounted file system (`getfsstat`) and Disk Arbitration. A
+release build can also refuse to serve the network from anywhere but the internal
+disk: such a start says so and exits 1, without asking launchd to start it again
+(`Start.requireServiceLaunch`). Refusing is off unless
+`DARKBLOOM_SERVING_VOLUME_CHECK=refuse`, and the report is the same either way.
+Debug builds never refuse. The coordinator decides what the reported class means
+for routing: `internal` grants nothing, and another class can only narrow where the
+provider is eligible.
 
 ## Failure modes and limits
 
@@ -101,7 +128,7 @@ and [coordinator/registry/autopilot_reward_snapshot.go](https://github.com/Layr-
 | Revoke a qualified build or collide a truncated measurement | Fresh durable policy must reject stale/ambiguous approval | `T-054` |
 | Reinstall, rotate credentials or inflate hardware claims | Known associations deduplicate rewards; they do not prove unique physical hardware or certified capacity | `T-055` |
 | Compromise the running provider or substitute computation | Process memory/GPU remain the inference endpoint; neither path supplies a computation proof | `T-056` |
-| Lose Apple/receipt availability | App Attest may become pending; there is no MDM fallback and no automatic relaxation of authorization | `T-023`, `T-057` |
+| Lose Apple/receipt availability | App Attest may become pending; there is no fallback and no automatic relaxation of authorization | `T-023`, `T-057` |
 
 Platform security, signed-artifact qualification and physical SIP/boot transitions need adversarial evidence on supported hardware. Synthetic tests establish code behavior, not resistance to every host compromise. The [encryption explanation](encryption.md) owns the plaintext and key-lifetime model; attestation does not alter it.
 
@@ -130,8 +157,7 @@ same thresholds. The release build refuses a binary that imports either symbol
 ## Related
 
 - [Provider attestation](attestation.md) — legacy evidence fields, App Attest policy and routing details.
-- [Old Darkbloom MDM profile cleanup](enrollment.md) — the provider's unprivileged profile notice and removal guidance.
+- [Old Darkbloom profile cleanup](enrollment.md) — the provider's unprivileged profile notice and removal guidance.
 - [Identity binding](identity-binding.md) — key custody and transcript bindings.
 - [Serving authorization reference](../../reference/provider-authorization.md) — exact controls, deadlines and qualification.
-- [MDM-optional rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/mdm-optional-rollout.md) — historical activation and removal procedure.
 - [Hybrid trust review](../../reports/2026-09-27-hybrid-provider-trust-review.md) — scoped evidence and limits of this update.

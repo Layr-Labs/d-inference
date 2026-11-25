@@ -4,7 +4,7 @@ import Testing
 @testable import ProviderCore
 
 /// Me first in words (`MeFirstWords`): `darkbloom status` on one Mac ("Serving: …") and a pair's line ("Pair: …"), which
-/// the leading Mac's status carries to both Macs. Times are said from now. Journey 2a on pair-2 (J2-i) read "paused
+/// the leading Mac's status carries to both Macs. Times are said from now. A DevNet pair read "paused
 /// since 21:41" over SSH at 05:41 UTC: a clock time in the Mac's own zone, which no line names.
 @Suite("Me first in words")
 struct MeFirstWordsTests {

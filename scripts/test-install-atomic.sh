@@ -222,8 +222,8 @@ FAN_HELPER_REQUIREMENT=$(codesign -d -r- \
     "$SIGNATURE_ROOT/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper" 2>&1 \
     | awk -F' => ' '/designated/{print $2; exit}')
 [ -n "$FAN_HELPER_REQUIREMENT" ]
-PRODUCTION_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
-PRODUCTION_FAN_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+PRODUCTION_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"'
+PRODUCTION_FAN_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL" and certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"'
 for installer in "$REPO_ROOT/scripts/install.sh"
 do
     grep -Fqx \

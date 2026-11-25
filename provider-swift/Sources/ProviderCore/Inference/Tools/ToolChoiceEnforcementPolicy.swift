@@ -8,7 +8,10 @@ import MLXLMServer
 /// token-level grammar and GPT-OSS frames its Harmony call in the sampler;
 /// supported native structured formats are prompt-forced. Every forced call is
 /// then rejected fail-closed unless parsing, function selection, and schema
-/// validation all succeed before any call is exposed to the client.
+/// validation all succeed before any call is exposed to the client, except
+/// the calls of Gemma 4, Qwen 3.5–3.8 and GPT-OSS to a client that streams,
+/// which are validated when each frame closes and refused in-band
+/// (`ToolStreamPreparation`).
 enum ToolChoiceEnforcementPolicy {
     enum Strategy: Equatable {
         case none
@@ -80,9 +83,14 @@ enum ToolChoiceEnforcementPolicy {
         // GLM's forced calls are prompt-forced, withheld and validated like
         // Qwen and Nemotron; its engine constrains only JSON answers
         // (`JSONAnswerPolicy`; `DARKBLOOM_GLM_JSON_ANSWERS=0` turns that off).
+        // Inkling 2's template has no tool-choice control: its calls are
+        // framed in the sampler (`InklingForcedToolConstraint`, with
+        // `DARKBLOOM_INKLING_FORCED_TOOLS` off prompt-forced alone), and each
+        // frame is checked when it closes.
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
             || modelContext.modelType == "mimo_v2"
-            || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
+            || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType)
+            || Inkling2PromptContract.applies(modelType: modelContext.modelType) {
             return .structuredPostValidation
         }
         if GPTOSSForcedToolCalls.applies(to: modelContext) { return .harmonyFraming }
@@ -92,7 +100,8 @@ enum ToolChoiceEnforcementPolicy {
 
     /// Whether this concrete advertised model can honor required/named tool
     /// choice. Gemma's sampler grammar remains bound to its pinned template;
-    /// native Qwen/Nemotron use prompt forcing plus withheld post-validation.
+    /// native Qwen/Nemotron use prompt forcing plus post-validation, withheld
+    /// or, for Qwen 3.5–3.8 to a client that streams, at each frame's close.
     static func advertisesCapability(for model: ModelInfo) -> Bool {
         let context = ChatTemplateFixContext(
             modelId: model.id, modelType: model.modelType)
@@ -120,6 +129,12 @@ enum ToolChoiceEnforcementPolicy {
             return model.modelType == admittedType
         }
         if GPTOSSForcedToolCalls.advertises(model) { return true }
+        // Inkling 2 frames required/named calls in the sampler
+        // (`InklingForcedToolConstraint`) and checks each native call frame
+        // (`Inkling2OutputChannels`) before it leaves.
+        if Inkling2PromptContract.applies(modelType: model.modelType), model.templateRenderOK == true {
+            return true
+        }
         return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)
             && Qwen35TemplateFix.applies(to: context)
     }

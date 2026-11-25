@@ -510,7 +510,7 @@ struct GLM5NextMediaRoutingTests {
             } else {
                 // Visible reasoning reaches the service's own think parser.
                 #expect(content.contains("closely") && content.hasSuffix("red"), "\(control): \(content)")
-                #expect(usage.withheldReasoning.isEmpty, "\(control)")
+                #expect(!usage.hasWithheldReasoning, "\(control)")
             }
         }
     }

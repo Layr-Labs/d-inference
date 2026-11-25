@@ -123,7 +123,41 @@ enum GLM5NextVisionBudget {
             videoMinimumTokens: processor.videoMinimumTokens, videoMaximumTokens: features,
             maximumDecodedBytes: processor.maximumDecodedBytes,
             maximumPreparedBytes: processor.maximumPreparedBytes,
-            videoSamplingPolicy: processor.videoSamplingPolicy)
+            videoSamplingPolicy: processor.videoSamplingPolicy,
+            fitsVideoSampleToDecodedBytes: processor.fitsVideoSampleToDecodedBytes)
+    }
+
+    /// Exact `0`, `false`, `no` or `off` (trimmed, case-insensitive), read
+    /// when the model loads, keeps the official 2 FPS sample whole, so the
+    /// processor refuses a clip whose sample passes the decoded-frame cap, as
+    /// 0.10.14 did.
+    static let longVideoSamplingEnvironmentKey = "DARKBLOOM_GLM_LONG_VIDEO_SAMPLING"
+
+    static func samplesLongVideos(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        switchIsOn(longVideoSamplingEnvironmentKey, environment)
+    }
+
+    /// `processor` sampling a clip whose official 2 FPS sample passes the
+    /// decoded-frame cap down to the frames the cap holds, spread over the
+    /// whole clip (`fitsVideoSampleToDecodedBytes`), instead of refusing it.
+    /// A single Mac's only: a pair's rank 0 prepares the clip with the
+    /// leader's wire budgets, which carry no sampling option.
+    static func samplingLongVideos(
+        _ processor: GLM5NextProcessorConfiguration,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> GLM5NextProcessorConfiguration {
+        guard samplesLongVideos(environment: environment), !processor.fitsVideoSampleToDecodedBytes
+        else { return processor }
+        return try .init(
+            patchSize: processor.patchSize, imageMinimumTokens: processor.imageMinimumTokens,
+            imageMaximumTokens: processor.imageMaximumTokens,
+            videoMinimumTokens: processor.videoMinimumTokens,
+            videoMaximumTokens: processor.videoMaximumTokens,
+            maximumDecodedBytes: processor.maximumDecodedBytes,
+            maximumPreparedBytes: processor.maximumPreparedBytes,
+            videoSamplingPolicy: processor.videoSamplingPolicy, fitsVideoSampleToDecodedBytes: true)
     }
 
     private static func switchIsOn(_ key: String, _ environment: [String: String]) -> Bool {

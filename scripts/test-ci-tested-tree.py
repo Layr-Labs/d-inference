@@ -54,6 +54,11 @@ def record(run_id, tree=TREE, base=BASE, head=HEAD, selected=None, **changes):
     return {"name": name, "expired": False, "workflow_run": {"id": run_id}, **changes}
 
 
+def tree_record(run_id, tree=TREE, selected=None, **changes):
+    name = lookup.tree_record_name(tree, selected or ALL)
+    return {"name": name, "expired": False, "workflow_run": {"id": run_id}, **changes}
+
+
 class LookupTests(unittest.TestCase):
     def push(self, api, selected=PROVIDER, commit=MERGE, tree=TREE):
         return lookup.decide(REPO, REF, "push", commit, tree, "", "", selected, 99, get=api)
@@ -67,6 +72,24 @@ class LookupTests(unittest.TestCase):
         self.assertTrue(skip)
         self.assertEqual(url, f"https://github.com/{REPO}/actions/runs/7")
         self.assertIn("already passed", note)
+
+    def test_squash_merge_push_skips_after_the_pull_request_tree_record(self):
+        squash_commits = {MERGE: {"tree": {"sha": TREE}, "parents": [{"sha": BASE}]}}
+        api = Api([tree_record(7)], {7: run(7)}, commits=squash_commits)
+        skip, url, note = self.push(api)
+        self.assertTrue(skip)
+        self.assertEqual(url, f"https://github.com/{REPO}/actions/runs/7")
+        self.assertIn("already passed", note)
+        # Component coverage still applies to squash-merge tree records.
+        self.assertFalse(self.push(Api([tree_record(7, selected=PROVIDER)], {7: run(7)},
+                                       commits=squash_commits), selected=ALL)[0])
+        # A different tree or unproven run never skips on a squash merge.
+        self.assertFalse(self.push(Api([tree_record(7, tree=OTHER)], {7: run(7)}, commits=squash_commits))[0])
+        self.assertFalse(self.push(Api([tree_record(7)], {7: run(7, conclusion="failure")}, commits=squash_commits))[0])
+        self.assertFalse(self.push(Api([tree_record(7)], {7: run(7, head_repository={"full_name": "fork/d-inference"})},
+                                       commits=squash_commits))[0])
+        self.assertFalse(self.push(Api([tree_record(7)], {7: run(7, path=".github/workflows/ci-master.yml")},
+                                       commits=squash_commits))[0])
 
     def test_a_different_tree_runs(self):
         self.assertFalse(self.push(Api([record(7, tree=OTHER)], {7: run(7)}))[0])
@@ -102,12 +125,14 @@ class LookupTests(unittest.TestCase):
         # A pushed commit whose tree is not the tree under test proves nothing.
         commits = {MERGE: {"tree": {"sha": OTHER}, "parents": [{"sha": BASE}, {"sha": HEAD}]}}
         self.assertFalse(self.push(Api([record(7)], {7: run(7)}, commits=commits))[0])
-        # A direct push (one parent) can only match a run of itself.
+        # A direct push (one parent) does not match a two-parent PR change record,
+        # only a tree record (`ci-tested-tree-...`) or a push record of itself.
         commits = {MERGE: {"tree": {"sha": TREE}, "parents": [{"sha": BASE}]}}
         self.assertFalse(self.push(Api([record(7)], {7: run(7)}, commits=commits))[0])
-        # A pull request matches only its own base and head.
+        # A pull request matches only its own base and head, never a tree-only record.
         self.assertTrue(self.pull(Api([record(7)], {7: run(7)}))[0])
         self.assertFalse(self.pull(Api([record(7)], {7: run(7)}), base=ELSE)[0])
+        self.assertFalse(self.pull(Api([tree_record(7)], {7: run(7)}), base=ELSE)[0])
 
     def test_a_dispatched_run_never_skips_and_reads_no_record(self):
         api = Api([record(7, base="push", head=MERGE)], {7: run(7, event="push", head_sha=MERGE)})
@@ -158,6 +183,10 @@ class LookupTests(unittest.TestCase):
                                  "--components", "provider=true,cluster=false,mimo_audio=true"],
                                 capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), f"ci-tested-{TREE}-push-{MERGE}-p1c0m1")
+        tree_result = subprocess.run([sys.executable, str(ROOT / "scripts/ci-tested-tree.py"), "tree-name",
+                                      "--tree", TREE, "--components", "provider=true,cluster=false,mimo_audio=true"],
+                                     capture_output=True, text=True, check=True)
+        self.assertEqual(tree_result.stdout.strip(), f"ci-tested-tree-{TREE}-p1c0m1")
         self.assertEqual(lookup.workflow_path(f"{REPO}/.github/workflows/ci-master.yml@refs/pull/12/merge", REPO),
                          ".github/workflows/ci-master.yml")
 

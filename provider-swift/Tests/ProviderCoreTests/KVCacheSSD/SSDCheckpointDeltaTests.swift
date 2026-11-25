@@ -52,9 +52,9 @@ struct SSDCheckpointDeltaTests {
         let chain = try #require(store.index.chain(tag16: Data(tag.prefix(16)))?.tags)
         #expect(chain.count == files)
         var opened = try store.openChain(.init(position: position, tag: tag, chain: chain, fileBytes: 0),
-            tracksIdentity: true, check: {}, beforeRead: { _ in }, countRead: { _ in }, blame: { _ in })
+            promptTokens: f.tokens, tracksIdentity: true, check: {}, beforeRead: { _ in }, countRead: { _ in }, blame: { _ in })
         var received = opened[0].link.manifest.tensors.map { _ in Data() }
-        #expect(try store.streamChain(&opened, check: {}, blame: { _ in }) { received[$0].append($2) } != nil)
+        #expect(try store.streamChain(&opened, parallel: store.config.parallelStage, check: {}, blame: { _ in }) { received[$0].append($2) } != nil)
         let expected = try source(f, position)
         for (index, tensor) in expected.manifest.tensors.enumerated() {
             #expect(received[index] == (try expected.readSegment(tensorIndex: index, byteOffset: 0, maximumBytes: tensor.byteCount)))
@@ -147,7 +147,8 @@ struct SSDCheckpointDeltaTests {
         let commitment = keys.checkpointParentCommitmentHex(parentTag: tag, parentFileIV: iv)
         #expect(commitment != keys.checkpointParentCommitmentHex(parentTag: tag, parentFileIV: Data(count: 12)))
         #expect(commitment != SSDLookupKeys(kek: SymmetricKey(size: .bits256)).checkpointParentCommitmentHex(parentTag: tag, parentFileIV: iv))
-        let complete = try SSDHybridCheckpointEnvelope(manifest: f.manifest(position: 512), maximumPlaintextBytes: 1 << 24)
+        let complete = try SSDHybridCheckpointEnvelope(manifest: f.manifest(position: 512), lookupKeys: keys,
+                                                       maximumPlaintextBytes: 1 << 24)
         let metadata = complete.metadata(tag: tag, identity: f.identity, createdAt: 1, backendLayout: f.backendLayout)
         #expect(!String(decoding: try SSDBlockStore.canonicalEncode(metadata), as: UTF8.self).contains("parent"))
     }

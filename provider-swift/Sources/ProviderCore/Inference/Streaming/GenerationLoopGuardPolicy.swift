@@ -8,11 +8,13 @@ import MLXLMServer
 ///
 /// On by default for the families whose answers were seen repeating verbatim
 /// to their cap: Gemma 4, Qwen 3.5/3.6/3.8 (and Flash-Next), GPT-OSS,
-/// Nemotron 3.5 Lightning and Super, GLM-5.3 and MiMo. Super's text requests
-/// take the owner's own route, which resolves the same guard from its request
-/// plan (`NemotronSuperRequestPlan.loopGuard()`). One Mac's image and video
-/// requests (`EngineV2VisionPrefill`) take the same rule as text; the pairs'
-/// media routes, MiMo's native media and Super's media pass none.
+/// Nemotron 3.5 Lightning and Super, GLM-5.3, MiMo and Inkling 2 Mini (whose
+/// card warns of long reasoning loops). Super's requests take the owner's own
+/// route, which resolves the same guard from its request plan
+/// (`NemotronSuperRequestPlan.loopGuard()`), its image and video requests
+/// included. One Mac's image and video requests (`EngineV2VisionPrefill`) take
+/// the same rule as text; the pairs' media routes and MiMo's native media pass
+/// none.
 /// Off for every other family (diffusion Gemma, exact Flint, Bonsai,
 /// Qwen3-VL), and for any request whose output is a constrained or JSON value:
 /// a token constraint, a forced tool call, or a JSON `response_format`.
@@ -30,6 +32,7 @@ enum GenerationLoopGuardPolicy {
         "nemotron_h", "nemotron_h_omni",
         "glm5_next",
         "mimo_v2",
+        "inkling2_loop",
     ]
 
     /// Text that opens a tool call in any served family's output (Qwen, GLM,
@@ -70,14 +73,20 @@ enum GenerationLoopGuardPolicy {
     ) -> GenerationLoopGuard? {
         guard case .modelTypes(let enabled) = setting,
               let modelType = modelType?.lowercased(), enabled.contains(modelType) else { return nil }
-        // The strict-tool grammar leaves reasoning and text free: a loop there
-        // is still stopped, and one inside a call ends it as at `max_tokens`.
-        guard tokenConstraint == nil || tokenConstraint is QwenStrictToolConstraint, !prepared.requiresToolCall,
+        // The strict-tool and GPT-OSS `auto` grammars leave reasoning and text
+        // free: a loop there is still stopped, and one inside a call ends it
+        // as at `max_tokens`.
+        guard tokenConstraint == nil || tokenConstraint is QwenStrictToolConstraint
+                || tokenConstraint is GPTOSSAutoToolConstraint, !prepared.requiresToolCall,
               prepared.responseFormat == nil, prepared.glmResponseFormat == nil,
               request.responseFormat?.requiresJSONOutput != true else { return nil }
         var markers = genericToolCallMarkers
-        // MiMo parses calls even without declared tools (`ToolStreamPreparation`).
-        if prepared.tools?.isEmpty == false || modelType == "mimo_v2" {
+        if Inkling2PromptContract.applies(modelType: modelType) {
+            // Inkling 2's calls open with their own message token, read by its
+            // channel lexer, never by a text tool parser (`ToolStreamPreparation`).
+            markers += Inkling2PromptContract.toolCallMarkers
+        } else if prepared.tools?.isEmpty == false || modelType == "mimo_v2" {
+            // MiMo parses calls even without declared tools (`ToolStreamPreparation`).
             // A parser that also reads a call without any tag (bare JSON, or a
             // function name then JSON) leaves no marker to stop at.
             guard let format = try? ServerToolParser.resolve(
@@ -88,9 +97,11 @@ enum GenerationLoopGuardPolicy {
         }
         // A row the strict-tool grammar constrains keeps its guard but not the
         // exit: the continuation is submitted without the grammar, so its call
-        // could miss the schema the request asked for.
+        // could miss the schema the request asked for. The GPT-OSS `auto`
+        // grammar keeps both: its continuation is submitted under the same
+        // grammar (`GPTOSSAutoToolConstraint.withMaxTokens`).
         return GenerationLoopGuard(
             modelType: modelType, toolCallMarkers: markers, thresholds: thresholds,
-            exitThinking: tokenConstraint == nil ? exitThinking : nil)
+            exitThinking: tokenConstraint == nil || tokenConstraint is GPTOSSAutoToolConstraint ? exitThinking : nil)
     }
 }

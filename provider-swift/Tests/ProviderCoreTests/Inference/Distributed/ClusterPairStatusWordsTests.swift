@@ -3,7 +3,7 @@ import Testing
 
 @testable import ProviderCore
 
-/// Journey 2a on pair-2 (DevNet `.144`, `validation-evidence/journey-2a.md`, steps 3 and 5): what the status both Macs
+/// On a DevNet pair (`.144`): what the status both Macs
 /// read says while the pair starts, and while it serves Both, me first and is paused for its owner.
 @Suite("journey 2a: the pair's status while it starts and while it is paused")
 struct ClusterPairStatusWordsTests {

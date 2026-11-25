@@ -159,7 +159,7 @@ public enum ClusterPublicModels {
     /// Gemma 4 26B QAT's catalog revision since 2026-11-14, `2026-11-13-qat-lattice8-r1` ("Gemma C"). The owner
     /// declared the model in pipeline and tensor parallel on 2026-11-03, for its June revision `2468a0cb…`
     /// (`evidenceDocument`'s); this revision is declared in both on its own evidence (`gemmaQATLatticeDocument`): the
-    /// pipeline its pair qualification on DevNet pair-2 ran, and its tensor parallel on the owner's decision of
+    /// pipeline its pair qualification on a DevNet pair ran, and its tensor parallel on the owner's decision of
     /// 2026-11-15, whose condition was its tensor-parallel runs on that pair and the product's on a DevNet build.
     static let gemmaQATLatticeDocument = "docs/reports/2026-11-15-gemma-c-public-pair.md"
     static let gemmaQATLattice = try! ClusterPublicEvidence(document: gemmaQATLatticeDocument,

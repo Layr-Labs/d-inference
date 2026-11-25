@@ -13,7 +13,7 @@ import Testing
 /// context it serves is refused in one Mac's code and words, and a request
 /// both Macs' memory can't hold now gets one Mac's memory 503, each before any
 /// SSE header: a streamed request never gets a 200 that then fails at once
-/// ("Response generation failed", Gemma 4 26B on pair-2, 2026-11-08). The API
+/// ("Response generation failed", Gemma 4 26B on a DevNet pair, 2026-11-08). The API
 /// is the leader's local endpoint beside Darkbloom, which has no pair HTTP
 /// writer of its own, over a fabricated pair at Gemma 4 26B's native limits.
 /// No process, model or GPU.
@@ -124,17 +124,18 @@ struct PairContextWindowTests {
     }
 
     /// Within the context, both Macs' memory decides: a request longer than
-    /// the context the ranks admit now gets one Mac's memory 503, before any
-    /// SSE header, streamed or not.
+    /// the context the ranks' memory admits with nothing running gets one
+    /// Mac's memory 503 that asks for a smaller request, at once, before any
+    /// SSE header, streamed or not (one only busy waits: `LocalMemoryWaitTests`).
     @Test(arguments: [false, true])
-    func aRequestBothMacsMemoryCantHoldNowGetsOneMacsMemory503(stream: Bool) async throws {
+    func aRequestLongerThanBothMacsIdleMemoryGetsOneMacsMemory503(stream: Bool) async throws {
         let owner = Owner()
         owner.servingContextTokens = 4_096
         let bridge = try Self.bridge(owner)
         let answer = try await Self.answer(bridge, prompt: 8, maxTokens: 8_000, stream: stream)
         #expect(answer.status == 503, "\(answer.body.prefix(300))")
         #expect(answer.contentType == "application/json")
-        #expect(answer.error["message"] as? String == memoryRefusalWords)
+        #expect(answer.error["message"] as? String == memoryExceedsIdleWords)
         #expect(owner.reservedRequests.isEmpty)
         await bridge.shutdown()
     }

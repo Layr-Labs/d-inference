@@ -128,7 +128,7 @@ actor NemotronSuperLocalLoad {
     /// `routingIdentity` is what the owner's prefix checkpoints are bound to
     /// and the checkpoint quantization settings choose their profile
     /// (`NemotronSuperLocalBridgeBuilder.make`); nil keeps reuse local.
-    /// `completeCheckpointIdentity` is the builder's test seam.
+    /// `completeCheckpointIdentity` and `engineShutdownTimeout` are the builder's test seams.
     func load(staging makeStaging: () throws -> Staging,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>, sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int, admissionKVBytes: Int? = nil, backendAllowanceBytes: Int,
@@ -137,7 +137,8 @@ actor NemotronSuperLocalLoad {
         routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil,
         checkpointQuantizationConfig: String = "balanced",
         checkpointQuantizationConfigByModel: [String: String] = [:],
-        completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil
+        completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil,
+        engineShutdownTimeout: TimeInterval? = nil
     ) async throws -> EngineV2Bridge {
         guard phase == .idle else { throw Failure.invalidState }
         phase = .loading
@@ -225,7 +226,8 @@ actor NemotronSuperLocalLoad {
                         leaseShares: admitted.fit.shares, routingIdentity: routingIdentity,
                         checkpointQuantizationConfig: checkpointQuantizationConfig,
                         checkpointQuantizationConfigByModel: checkpointQuantizationConfigByModel,
-                        completeCheckpointIdentity: completeCheckpointIdentity)
+                        completeCheckpointIdentity: completeCheckpointIdentity,
+                        engineShutdownTimeout: engineShutdownTimeout)
                     break
                 } catch let refusal where Self.isMemoryRefusal(refusal) {
                     // Any bridge the builder built has retired and its own
@@ -342,6 +344,9 @@ actor NemotronSuperLocalLoad {
 
     /// Read-only installation residency for diagnostics, kept after close.
     var residencySnapshot: NemotronSuperResidency.Snapshot? { residency?.snapshot }
+
+    /// Test seam: the built owner both routes serve.
+    var ownerForTesting: NemotronSuperLocalBridgeBuilder.Owner? { owner }
 
     /// The built owner's shared-budget reservations beside its KV grant and
     /// its prefix bank; zero without an owner.

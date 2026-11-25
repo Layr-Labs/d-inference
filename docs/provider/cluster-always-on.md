@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-11-15
+> Last updated: 2026-11-20
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -202,10 +202,22 @@ The rules each Mac applies to the other's progress are in
    start. The single-Mac updater never asks such a pair to follow its install
    (`ClusterPairUpdate.askPairToFollow`). The running supervisor does all this,
    so the update to 0.10.14 itself goes 0.10.13's way: the cycle defers, and
-   the leader's re-plan restarts the parts on the new release (DevNet pair-2:
+   the leader's re-plan restarts the parts on the new release (on a DevNet pair:
    1.5–2.5 min), else `cluster stop --local-only --service` and `start`.
    `DARKBLOOM_CLUSTER_LOCAL_UPDATE_RESTART=0` in the cluster service's
    environment restores 0.10.13's behaviour.
+   Any other pair's update installs the release on both Macs before it
+   restarts their cluster services. The leader's old service could notice the
+   new release in between and start setting the pair up again; the restart then
+   ended that halfway, with the pair's start cleared, and the pair stayed
+   "■ Stopped" until `darkbloom start`. Now the leader's service doesn't start
+   that while its own update has drained or is restarting, on a local-only
+   pair too (the service after the restart sets the pair up again). Its
+   `service.log` says so once: "this Mac's update to … restarts the cluster
+   service next: setting the cluster up again waits for that restart". If a
+   run is still ended halfway, the next one puts the pair's start back, as
+   above. `DARKBLOOM_CLUSTER_UPDATE_REPLAN_GUARD=0` turns off that wait on any
+   pair, and that mark on a pair that isn't local-only.
 5. A Mac whose partner has automatic updates off gives the slot's release up
    before downloading it. A Mac with automatic updates off reports `disabled`
    whenever no cycle runs on it, except for the minute after a cycle that
@@ -558,6 +570,37 @@ stop, `darkbloom cluster verify-teardown --json` says whether anything is left o
 this Mac (processes, wired memory against a baseline, the journal, bootstrap
 directories) and exits 1 when it is not clean; `darkbloom cluster cancel-all`
 force-cancels every request served on this Mac without the leader or SSH.
+
+The cluster service of `darkbloom cluster` recovers a stranded device journal
+by itself too. A stop that lands seconds after the pair came up (the guided
+setup's approval step, or the service's own approval check) can end the owner
+before it publishes its worker's cleanup. Every later start of this Mac's part
+then ended with "Unresolved native ownership journal … Run `darkbloom cluster
+recover`" until someone ran it. Now, once per run of such refused starts, the
+service runs that same recovery (`ClusterDeviceRecovery.recover`: the journal
+is cleared only when no process holds this Mac's device scope and none carries
+the recorded session's epoch; nothing is signalled), removes the bootstrap
+directories no process has bound, logs one line, and starts the part again at
+once. A recovery that refuses says why and changes nothing.
+
+The same stop also refused the save of the pair's cluster approval: the
+approval step saves right after its stop, and a save needs the journal empty.
+The pair then served on its local API only ("not offered to Darkbloom (this Mac
+could not save its setup: Unresolved native ownership journal …)"), and nothing
+tried the save again. Now a save the journal refused runs the same recovery
+once and saves again (`ClusterApprovalJournalRecovery`), and its line says what
+the recovery did first. When that recovery refused and the part's recovery
+cleared the journal later, the next approval check asks again at once, and the
+status says the journal is cleared and the next check saves the approval, in
+place of "run `darkbloom cluster recover`".
+
+A pair that isn't offered asks the coordinator for its approval again after
+the other Mac comes back. An approval check that waited because the other Mac
+didn't answer (a change of approval stops both parts, so it waits for both), or
+because another cluster command held the command lock, no longer counts as the
+service's one check of its run; the next check, a minute on, asks again.
+`DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER=0`, exported before `darkbloom start`
+or `darkbloom cluster`, turns all of this off.
 
 
 ### Signing and the release check (owner identity)

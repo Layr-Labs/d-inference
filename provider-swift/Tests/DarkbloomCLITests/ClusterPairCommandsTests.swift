@@ -52,6 +52,11 @@ private func exitWithPair(_ summary: ClusterPairSummary, _ body: () async throws
     try await exitWithPair(summary, actions: nil) { _ in try await body() }
 }
 
+/// A Mac whose boot security lets it serve Darkbloom.
+private let servableBootSecurity = BootSecuritySnapshot(
+    macOSMajorVersion: 26, sip: .enabled, sipConfiguration: SIPConfiguration(rawValue: 0), secureBoot: .full,
+    processSandbox: .notSandboxed)
+
 /// As above, with the pair's actions (`ClusterPairActions.forTesting`) and the sandbox given to `body`.
 private func exitWithPair(_ summary: ClusterPairSummary, actions: ClusterPairActions?,
                           _ body: (CLICommandSandbox) async throws -> Void) async throws -> Never {
@@ -60,10 +65,13 @@ private func exitWithPair(_ summary: ClusterPairSummary, actions: ClusterPairAct
     try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
     var status: Int32 = 0
     do {
-        try await ClusterPairSummary.$readerForTesting.withValue({ _ in summary }) {
-            try await ClusterPairActions.$forTesting.withValue(actions) {
-                try await LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
-                    try await LaunchctlControl.$runnerForTesting.withValue(recordingLaunchctl) { try await body(sandbox) }
+        // The pair's flows, never this host's own boot security: a start reads a Mac that can serve.
+        try await Start.$bootSecurityForTesting.withValue(servableBootSecurity) {
+            try await ClusterPairSummary.$readerForTesting.withValue({ _ in summary }) {
+                try await ClusterPairActions.$forTesting.withValue(actions) {
+                    try await LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
+                        try await LaunchctlControl.$runnerForTesting.withValue(recordingLaunchctl) { try await body(sandbox) }
+                    }
                 }
             }
         }
@@ -1105,7 +1113,7 @@ struct ClusterPairControlTests {
         #expect(calls.isEmpty, "\(calls)")
     }
 
-    /// Journey 2a (pair-2, J2-b): a script's `start` on a pair that served said "starting the pair". It keeps the pair as
+    /// On a DevNet pair: a script's `start` on a pair that served said "starting the pair". It keeps the pair as
     /// it is: one look, then the result block, and nothing is asked of either Mac.
     @Test("`darkbloom start` without a terminal on a pair that already serves says so, starts nothing and ends with the result block; exit 0")
     func startWithoutATerminal() async {
@@ -1244,7 +1252,7 @@ struct ClusterPairControlTests {
         #expect(pairActionCalls(text(result?.standardErrorContent)) == ["stop", "verifyTeardown", "ensureService", "serve"])
     }
 
-    /// DevNet pair-2, 2026-11-07: `restart` on the stopped pair's leading Mac loaded the single-Mac job it served with
+    /// A DevNet pair, 2026-11-07: `restart` on the stopped pair's leading Mac loaded the single-Mac job it served with
     /// before pairing ("Provider started."), which registered with the coordinator and held the Mac's serving lock.
     @Test("`darkbloom restart` on a Mac whose pair is stopped starts nothing: a single-Mac plist left by `stop` is not started; exit 1")
     func restartOnAStoppedPairStartsNothing() async {
@@ -1291,8 +1299,8 @@ struct ClusterPairControlTests {
     }
 
     /// `stop` says "`darkbloom start` on either Mac starts the pair again", and a script (or an agent following
-    /// `cluster status`'s `next`) now finds that true: on DevNet pair-2 it served this Mac alone and stopped at the model
-    /// picker.
+    /// `cluster status`'s `next`) now finds that true: on a DevNet pair it served this Mac alone and stopped at the
+    /// model picker.
     @Test("`darkbloom start` without a terminal on a stopped pair starts it again with its saved model; exit 0")
     func startWithoutATerminalStartsAStoppedPair() async {
         let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
@@ -1449,7 +1457,7 @@ struct ClusterPairControlTests {
             + ClusterPairSummary.releaseBusyLines + [""])
     }
 
-    /// On DevNet pair-2 a start with `--opencode` that got no answer hung on "Serve on this Mac alone / Start the
+    /// On a DevNet pair a start with `--opencode` that got no answer hung on "Serve on this Mac alone / Start the
     /// pair". No start asks a question without a terminal: on a paired Mac one starts the pair, with or without the tool
     /// flags, and never reads standard input (`neverAnswering`).
     @Test("a start without a terminal on a paired Mac starts the pair and never reads standard input, with or without --opencode or --hermes")
@@ -1582,7 +1590,7 @@ struct ClusterPairControlTests {
         #expect(stdout.contains("\nSingle-Mac serving: off (this Mac serves in its two-Mac cluster: `darkbloom cluster status`)\n"))
     }
 
-    /// On DevNet pair-2 a paired Mac whose pair was stopped served alone, and `status` said only "Single-Mac serving:
+    /// On a DevNet pair a paired Mac whose pair was stopped served alone, and `status` said only "Single-Mac serving:
     /// running beside the pair (`darkbloom-dev status --solo` shows it)", 27 lines down, without its `Serving:` line.
     @Test("`darkbloom status` on a paired Mac that serves alone says so under the pair, then single-Mac serving's own lines")
     func statusSaysThisMacServesAlone() async {
@@ -2321,7 +2329,7 @@ private final class SaidLines: @unchecked Sendable {
     var all: [String] { lock.withLock { lines } }
 }
 
-@Suite("Pair-2 findings, CLI side: the remaining names, a truthful other Mac, a bounded answer from the leading Mac")
+@Suite("DevNet pair findings, CLI side: the remaining names, a truthful other Mac, a bounded answer from the leading Mac")
 struct ClusterPairTwoFindingsTests {
     @Test("P2-2: no-terminal `cluster`, the cluster service status lines and the Ctrl-C line name the DevNet CLI")
     func remainingTextsNameTheIdentity() async {
@@ -2520,7 +2528,7 @@ struct ClusterStatusTruthTests {
 
     @Test("R-7: a status read keeps the other Mac's refusal across this Mac's part restarts; a start's own wait doesn't")
     func refusalHoldsAcrossTheLeadersPartRestarts() {
-        // The pair-2 re-test of the DevNet build: while the other Mac is refused, this Mac's part waits 32 s for the link,
+        // A DevNet re-test: while the other Mac is refused, this Mac's part waits 32 s for the link,
         // ends (exit 1) and starts again 6-25 s later. A stand-in for its published status at each moment of four parts.
         let parts: [(start: Double, end: Double)] = [(0, 32), (38, 70), (83, 115), (140, 172)]
         func own(at t: Double) -> ClusterServiceStatus.Child {
@@ -3035,9 +3043,9 @@ private func onlyMeServingPair() -> ClusterPairSummary {
     return summary
 }
 
-/// Journey 2a on pair-2 (DevNet `.144`, `validation-evidence/journey-2a.md`, step 3): every paired `start` said "starting
-/// the pair" first. A script's start on a pair that served kept it (J2-b), and one in a terminal on a stopped pair waited
-/// at the model list until Enter (J2-d). The first line now says what the start does.
+/// On a DevNet pair (`.144`), every paired `start` said "starting
+/// the pair" first. A script's start on a pair that served kept it, and one in a terminal on a stopped pair waited
+/// at the model list until Enter. The first line now says what the start does.
 @Suite("journey 2a: a paired start's first line says what it does")
 struct PairStartFirstLineTests {
     /// In a terminal, the words for the screen that opens: the leading Mac's list, where Enter starts the last model;

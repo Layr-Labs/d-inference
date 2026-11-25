@@ -2,7 +2,8 @@
 //
 // Fail-closed JSON-Schema subset used by forced tool-choice enforcement.
 // Gemma consumes it in the sampler grammar; Qwen consumes it at the withheld
-// parser/validation boundary before any call is exposed.
+// parser/validation boundary before any call is exposed, or, to a client that
+// streams, when each call's frame closes (`ToolStreamPreparation`).
 // The subset is intentionally small and exact. Unsupported assertion keywords
 // are rejected for required/named choices instead of being prompt-only theater.
 
@@ -170,8 +171,11 @@ enum ToolConstraintSchemaCompiler {
     /// The compiler infers `string` for an untyped leaf, which is the right
     /// render type for a tool argument but would silently narrow an untyped
     /// (accept-anything) output schema. Runs after compilation, which already
-    /// bounded the depth and validated these subschema positions.
-    private static func requireExplicitResponseTypes(_ raw: MLXLMCommon.JSONValue, path: String) throws {
+    /// bounded the depth and validated these subschema positions. GPT-OSS's
+    /// widened `auto` arguments (`GPTOSSAutoToolGrammar.widenedArguments`)
+    /// apply it, after compiling, to a rewritten declaration for the same
+    /// reason.
+    static func requireExplicitResponseTypes(_ raw: MLXLMCommon.JSONValue, path: String) throws {
         guard case .object(let object) = raw else { return }
         let typed = (object["type"].map { $0 != .null } ?? false)
             || ["properties", "additionalProperties", "items", "enum", "const"].contains { object[$0] != nil }
@@ -268,11 +272,16 @@ enum ToolConstraintSchemaCompiler {
         // stays unsupported so compilation falls back to raw validation,
         // which restores the exact allow-all semantics — a compiled string
         // grammar would wrongly reject schema-valid non-string values.
+        // Annotations beside the marker (the coordinator keeps a `{}`'s
+        // `description`) assert nothing and compile the same way.
         if let marker = object[ToolSchemaNormalization.originalBooleanSchemaKey] {
             guard allowRenderMetadata,
                 marker == .bool(true),
-                object.count == 2,
-                object["type"] == .string("string")
+                object["type"] == .string("string"),
+                object.keys.allSatisfy({
+                    $0 == "type" || $0 == ToolSchemaNormalization.originalBooleanSchemaKey
+                        || ToolConstraintValidation.renderOnlyAnnotationKeys.contains($0)
+                })
             else {
                 throw ToolConstraintSchemaError.unsupported(
                     "\(path) uses reserved schema metadata")

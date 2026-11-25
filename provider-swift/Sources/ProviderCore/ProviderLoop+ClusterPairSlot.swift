@@ -69,15 +69,20 @@ final class ClusterPairSlotHandle: @unchecked Sendable {
     let requestTimeout: Duration
     /// The prompt, output and context the pair's mode serves
     /// (`DistributedResidentExecutionProfile.served`): what its slot reports to
-    /// the coordinator, and what the leader lists on its local API.
+    /// the coordinator.
     let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
+    /// What it serves the owner's own requests (`DistributedResidentExecutionProfile.ownerServed`): what the leader
+    /// lists on its local API.
+    let ownerServed: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     let publishedAt = ContinuousClock.now
 
     init(modelID: String, membershipEpoch: UUID, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
          owner: ClusterPairSlotOwner, requestTimeout: Duration,
-         served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)) {
+         served: (promptTokens: Int, outputTokens: Int, contextTokens: Int),
+         ownerServed: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil) {
         self.modelID = modelID; self.membershipEpoch = membershipEpoch; self.tokenizer = tokenizer
         self.sizing = sizing; self.owner = owner; self.requestTimeout = requestTimeout; self.served = served
+        self.ownerServed = ownerServed ?? served
     }
 
     /// The pair's batch lanes, which its engine admits at once.
@@ -218,7 +223,7 @@ extension ProviderLoop {
         let handle = ClusterPairSlotHandle(modelID: specification.publicModelID,
             membershipEpoch: specification.expectedIdentity.membershipEpoch,
             tokenizer: specification.tokenizer, sizing: sizing, owner: owner, requestTimeout: profile.requestTimeout,
-            served: profile.served)
+            served: profile.served, ownerServed: profile.ownerServed)
         // No suspension since the checks above: publication is atomic on
         // this actor with them.
         try requireClusterPairPublication(specification.publicModelID)
@@ -338,22 +343,39 @@ extension ProviderLoop {
     }
 
     /// A stopping member ends its pair session while its control connection
-    /// is still open: the pair slot retires (the leader's engine shuts its
-    /// owner down once the drained request finished), the member session ends
-    /// its owner, and the stop waits, bounded, until the owner released its
-    /// device and the session sent its authenticated release receipt. Closing
-    /// the connection first left no way for the receipt to arrive: the
-    /// coordinator then fenced both devices until the grant lease plus the
-    /// owner retirement limit passed (about two minutes on hardware) before
-    /// the pair could form again.
+    /// is still open, and only then retires what is left of its pair slot.
+    /// Every stop comes here, the update restart too: the supervisor's SIGTERM
+    /// reaches the cluster service, which stops this part with SIGTERM, and the
+    /// part's cancellation runs `drainAndShutdown` or `shutdownStoppedClusterMember`.
+    ///
+    /// The session ends first, the way a coordinator's cancel ends it: its
+    /// cancel retires the slot it serves (`stopServingCommittedStart`), fences
+    /// its owner through the owner's own endpoint, and sends the authenticated
+    /// release receipt once the owner released its device. The stop waits for
+    /// that, bounded, before the connection closes. Do not retire the slot
+    /// first: the leader's pair engine then shuts the owner down outside the
+    /// session (`ClusterWorkerPair.shutdown`). An owner ended that way can lack
+    /// the release proof a receipt needs, so the session sends
+    /// `native_pair_cancel` and no receipt, and the coordinator holds both
+    /// devices until the last grant plus 40 s. Closing the connection before
+    /// the receipt has the same cost.
     func releaseClusterMemberSessionBeforeClose() async {
         guard isClusterMember else { return }
-        await retireClusterPairSlot(reason: "member stopping")
-        guard let control = nativePairMemberControl else { return }
-        if !(await control.endSessionBeforeClose(timeout: Self.memberSessionReleaseTimeoutSeconds)) {
-            logger.warning("Cluster member stopping: the pair session did not release within \(Int(Self.memberSessionReleaseTimeoutSeconds)) s; closing the control connection anyway")
+        if let control = nativePairMemberControl,
+           !(await control.endSessionBeforeClose(timeout: memberSessionReleaseTimeout)) {
+            logger.warning("Cluster member stopping: the pair session did not release within \(Int(memberSessionReleaseTimeout)) s; closing the control connection anyway")
         }
+        // A slot whose session already ended, or a member without a session.
+        await retireClusterPairSlot(reason: "member stopping")
     }
+    /// The bound on a stopping member's wait for its release receipt. An owner
+    /// releases within about 0.6 s of a cancel on hardware (DevNet,
+    /// 2026-11-18). The coordinator holds the pair's devices until the last
+    /// granted expiry plus 40 s, which is at least 40 s after a stop while
+    /// the session runs, so a receipt sent within this bound still reaches a
+    /// coordinator that holds them. The cluster service gives a stopping part 300 s
+    /// (`ClusterServiceAgentPlan.partStopGraceSeconds`), so this wait never
+    /// makes the service give up on the part, and an update cannot hang on it.
     static let memberSessionReleaseTimeoutSeconds: TimeInterval = 30
 
     /// The member's capacity: the pair slot's bridge, or no slot. Never a

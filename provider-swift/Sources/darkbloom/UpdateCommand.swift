@@ -213,7 +213,8 @@ struct Update: AsyncParsableCommand {
     }
 
     /// An update that failed on a nearly full disk says so: the download, its unpacked app and the verifier copies need
-    /// about twice the installed app's size free (W1, 11-15: only "process exited 1", with 1.7 GiB free and a 913 MB app).
+    /// about twice the installed app's size free (a DevNet run, 11-15: only "process exited 1", with 1.7 GiB free and a
+    /// 913 MB app).
     static func lowDiskLines(availableBytes: Int64? = Update.availableDiskBytes(), appBytes: Int64? = Update.runningAppBytes()) -> [String] {
         guard let available = availableBytes, let app = appBytes, app > 0 else { return [] }
         let needed = app * 2 + 512 * 1_048_576
@@ -229,17 +230,30 @@ struct Update: AsyncParsableCommand {
         return values?.volumeAvailableCapacity.map(Int64.init)
     }
 
+    /// The app bundle an executable belongs to, following symlinks: the CLI runs through `~/.darkbloom/bin/darkbloom`
+    /// (and `/usr/local/bin/darkbloom`), symlinks into `Darkbloom.app/Contents/MacOS/`, so `Bundle.main` names `bin/`.
+    static func appBundle(containing executable: URL?) -> URL? {
+        guard var url = executable?.resolvingSymlinksInPath() else { return nil }
+        while url.pathComponents.count > 1 {
+            url.deleteLastPathComponent()
+            if url.pathExtension == "app" { return url }
+        }
+        return nil
+    }
+
     /// The running app bundle's size, or nil outside an app bundle or past `maxFiles` files (the walk stays short on
     /// the failure path).
-    static func runningAppBytes(maxFiles: Int = 20_000) -> Int64? {
-        let app = Bundle.main.bundleURL
-        guard app.pathExtension == "app",
-              let files = FileManager.default.enumerator(at: app, includingPropertiesForKeys: [.fileSizeKey]) else { return nil }
+    static func runningAppBytes(app: URL? = Update.appBundle(containing: Bundle.main.executableURL),
+                                maxFiles: Int = 20_000) -> Int64? {
+        guard let app, app.pathExtension == "app",
+              let files = FileManager.default.enumerator(at: app, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey])
+        else { return nil }
         var total: Int64 = 0, count = 0
         for case let file as URL in files {
             count += 1
             if count > maxFiles { return nil }
-            total += Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            let values = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            if values?.isRegularFile == true { total += Int64(values?.fileSize ?? 0) }
         }
         return total
     }

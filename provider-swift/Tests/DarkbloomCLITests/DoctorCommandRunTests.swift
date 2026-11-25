@@ -136,7 +136,8 @@ struct DoctorCommandRunTests {
         #expect(output.contains(
             "  [PASS] coordinator trust: provider-live online, trust=hardware\n"))
         #expect(output.contains("  [WARN] kv backend crash-loop guard: ACTIVE — "))
-        #expect(output.contains("\nSupport\n  coordinator: https://coordinator.invalid\n  auth token: present\n  mdm enrolled: "))
+        #expect(output.contains("\nSupport\n  coordinator: https://coordinator.invalid\n  auth token: present\n  pid file: "))
+        #expect(!output.contains("mdm enrolled"))
         #expect(output.contains("  pid file: "))
     }
 
@@ -211,7 +212,7 @@ struct DoctorCommandRunTests {
             #expect(check(checks, "coordinator trust")?.status == .warn)
             #expect(check(checks, "coordinator trust")?.detail
                 == DoctorAttestationIdentityUnavailable.daemonStateMissing.detail)
-            #expect(check(checks, "darkbloom mdm profile")?.status.isFailure(strict: true) == false)
+            #expect(!checks.contains { $0.status.isFailure(strict: true) && $0.name == "darkbloom mdm profile" })
 
             // A running daemon that does not report its signer key.
             var now = Date().timeIntervalSince1970
@@ -324,7 +325,7 @@ struct DoctorCommandRunTests {
             #expect(check(checks, "coordinator trust")?.detail
                 == "provider-live online, trust=hardware")
             #expect(attestationLookups() == 1)
-            // No row fails a strict run; the retired MDM profile row is never a failure.
+            // No row fails a strict run.
             #expect(!checks.contains { $0.status.isFailure(strict: true) })
 
             // A none report of the same age is a warning. The lookup runs

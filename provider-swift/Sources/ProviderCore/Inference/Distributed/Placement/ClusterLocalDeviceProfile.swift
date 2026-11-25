@@ -19,7 +19,7 @@ enum ClusterLocalDeviceProfile {
     static func read(tool: URL, deadline: UInt64, homeDirectory: URL, modelLoaded: Bool) throws -> ClusterDeviceProfile {
         let profile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: ["device", "--json"] + (modelLoaded ? [] : ["--index"]), deadline: deadline,
-            maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
+            maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes, helper: .planner))
         if let index = profile.speedIndex {
             ClusterDeviceIndexRecord.record(index, homeDirectory: homeDirectory)
             return profile

@@ -56,7 +56,7 @@ import Testing
         #expect(legacy == .authorized("served through legacy verification for now; App Attest authorization is needed to keep serving"))
         // A coordinator without App Attest serving sends no authorization object.
         let hardware = ServingReadiness.verdict(state(trust: DaemonState.Trust(
-            trustLevel: "hardware", status: "online", reason: "MDM verification passed", receivedAt: now)), now: now)
+            trustLevel: "hardware", status: "online", reason: "recovered after transient deroute", receivedAt: now)), now: now)
         #expect(hardware == .authorized("hardware-trusted (legacy verification)"))
         // Below hardware trust such a coordinator's own trust floor decides.
         #expect(ServingReadiness.verdict(state(trust: DaemonState.Trust(

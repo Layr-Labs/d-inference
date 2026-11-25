@@ -151,8 +151,10 @@ struct StartServingGuardTests {
     @Test("preflight accepts a Mac with enough RAM or unknown hardware")
     func preflightAcceptsEnoughMemory() throws {
         let start = try Start.parse([])
-        try start.runPreflightChecks(snapshot: fixtureSnapshot(models: [], hardware: fixtureHardware(memoryGb: 8)))
-        try start.runPreflightChecks(snapshot: fixtureSnapshot(models: []))
+        let servable = BootSecuritySnapshot(macOSMajorVersion: 26, sip: .enabled)
+        try start.runPreflightChecks(snapshot: fixtureSnapshot(models: [], hardware: fixtureHardware(memoryGb: 8)),
+                                     bootSecurity: servable)
+        try start.runPreflightChecks(snapshot: fixtureSnapshot(models: []), bootSecurity: servable)
     }
 
     /// The preflight and Only me's background start make the same check.

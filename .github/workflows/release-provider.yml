@@ -4,9 +4,18 @@ name: Provider Release Lane (reusable)
 # per lane: release-swift.yml (master push -> staging; tag -> prod; dispatch ->
 # the chosen environment, or the dev lane for a signed validation build) and
 # release-dev-branch.yml (dev push -> dev). Each caller owns its lane-level
-# serialization groups; this reusable workflow encapsulates the whole resolve ->
-# build -> qualify -> sign -> stage -> publish chain so each lane keeps its own
-# artifact ids and digests, which a matrix would collapse into one.
+# serialization groups; this reusable workflow encapsulates the resolve ->
+# build -> sign -> stage -> publish chain so each lane keeps its own artifact
+# ids and digests, which a matrix would collapse into one.
+#
+# SDK qualification is not here. Each caller first calls release-qualify.yml
+# from its job `qualify`, with no secrets (its shards can run on a Darkbloom
+# Sandbox), and calls this workflow only after that gate passed, or on a
+# resume, where qualification is skipped. Every job here keeps a literal
+# Blacksmith runner. Every hand-off of build or signed bytes is pinned: a job
+# downloads the producing job's artifact by ID and checks its digest before it
+# reads it (scripts/provider-release-publication.py download), never by name,
+# because any job of the run can replace an artifact of a name.
 #
 # Builds and ships:
 #   - Darkbloom.app          (signed, notarized app; the only installed artifact)
@@ -48,10 +57,20 @@ name: Provider Release Lane (reusable)
 # retained-build recovery dispatch); resolve-provider-release.sh refuses prod on
 # any non-tag trigger, so a push can never reach the prod signing identity.
 #
-# Repo secrets use DEV_/PROD_/STAGING_ prefixes. Source verification gates every
-# credential-consuming job; release jobs do not need environment approvals.
-# This assumes trusted repository writers: YAML cannot constrain a hostile
-# writer who can change workflows and access repository secrets.
+# Secrets live in GitHub environments. The three jobs that read a secret
+# (build-and-release, stage-release and publish-release) name the lane's
+# environment (job resolve-env: output build_environment for signing and
+# staging, output deployment for publication), so its branch and tag policy and
+# its reviewers apply before the job starts and before it can read a secret:
+#   prod-build  signing and staging of a production release (master or a
+#               release tag; no reviewers)
+#   prod        publication of a production release, and the signed
+#               validation build (both run from master or a release tag)
+#   staging     a staging release
+#   dev         a dev-branch release
+# No other job names an environment or reads a secret. Source verification
+# still gates every job. The publication secrets carry the environment's
+# DEV_, PROD_ or STAGING_ prefix:
 #   DEV_R2_ACCESS_KEY_ID  / PROD_R2_ACCESS_KEY_ID  / STAGING_R2_ACCESS_KEY_ID
 #   DEV_R2_SECRET_ACCESS_KEY / PROD_R2_SECRET_ACCESS_KEY / STAGING_R2_SECRET_ACCESS_KEY
 #   DEV_R2_ENDPOINT       / PROD_R2_ENDPOINT       / STAGING_R2_ENDPOINT
@@ -62,7 +81,7 @@ name: Provider Release Lane (reusable)
 # The STAGING_* secrets and the staging coordinator do not exist yet (DBLM-771);
 # release-swift.yml runs the staging lane only when the STAGING_ENABLED
 # repository variable is 'true'. Apple signing secrets are shared (same cert for
-# all envs).
+# all envs), so each environment that signs holds its own copy of them.
 #
 # Repository variables DEV_CLUSTER_RUNTIME_ENABLED, STAGING_CLUSTER_RUNTIME_ENABLED
 # and PROD_CLUSTER_RUNTIME_ENABLED: 'true' sends the final signed app's cluster
@@ -99,13 +118,24 @@ on:
         type: boolean
         default: false
 
+# Read-only for every job; publish-release alone raises contents to write.
 permissions:
-  contents: write   # gh release create
-  actions: read     # download the unsigned artifact from this run
+  contents: read
+  actions: read     # download this run's artifacts by id
 
 env:
+  # No release job restores or saves an Actions cache. Any job of a run on this
+  # branch, a Darkbloom-routed one included, holds the run's cache token and
+  # can write any cache key of the branch's scope, and GitHub cannot limit a key
+  # to Blacksmith jobs. So every cache step of .github/actions/provider-release-build
+  # (gated on CI_ACTIONS_CACHE) is skipped, and the build compiles cold.
+  CI_ACTIONS_CACHE: 'off'
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
+  # The certificates that may sign a release: DarkbloomSigningIdentity.certificateSHA1s
+  # in provider-swift. A build signed by any other certificate fails the
+  # verification steps below before it is uploaded.
+  SIGNING_CERTIFICATE_REQUIREMENT: 'certificate leaf = H"95b67556e04653f56ba5411d20d33dd263ef6e2a"'
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
   MIN_MACOS: '14.0'
@@ -127,10 +157,28 @@ jobs:
     permissions:
       contents: read
       actions: read
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       workflow_sha: ${{ steps.trust.outputs.source_sha }}
       environment: ${{ steps.pick.outputs.environment }}
+      # The GitHub environment of this lane's publication job, and of its
+      # signing and staging jobs unless build_environment names another. A dev
+      # lane that does not publish is the validation build, which runs on
+      # master. Anything unexpected falls to prod, the most restricted, and so
+      # does a job that receives no value.
+      deployment: >-
+        ${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') ||
+            (steps.pick.outputs.environment == 'staging' && 'staging') || 'prod' }}
+      # The environment of the lane's signing and staging jobs. A production
+      # release signs, notarizes and stages in prod-build, which admits master
+      # and v* tags, as prod does, and has no reviewers, so a signed tag runs
+      # them by itself; publication, which registers the release with every
+      # provider, still waits in prod for its one approval. Any other lane uses
+      # its deployment environment, as above.
+      build_environment: >-
+        ${{ (steps.pick.outputs.environment == 'dev' && steps.pick.outputs.publish == 'true' && 'dev') ||
+            (steps.pick.outputs.environment == 'staging' && 'staging') ||
+            (steps.pick.outputs.environment == 'prod' && steps.pick.outputs.publish == 'true' && 'prod-build') || 'prod' }}
       version: ${{ steps.pick.outputs.version }}
       publish: ${{ steps.pick.outputs.publish }}
       resume: ${{ steps.pick.outputs.resume || 'false' }}
@@ -138,7 +186,6 @@ jobs:
       release_tag: ${{ steps.pick.outputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
       build_run_id: ${{ steps.pick.outputs.build_run_id || github.run_id }}
       build_run_attempt: ${{ steps.pick.outputs.build_run_attempt || github.run_attempt }}
-      unsigned_artifact: ${{ steps.pick.outputs.unsigned_artifact }}
       unsigned_artifact_id: ${{ steps.pick.outputs.unsigned_artifact_id }}
       unsigned_artifact_digest: ${{ steps.pick.outputs.unsigned_artifact_digest }}
       build_sdk_version: ${{ steps.pick.outputs.build_sdk_version }}
@@ -193,14 +240,16 @@ jobs:
     permissions:
       contents: read
     outputs:
-      artifact_name: ${{ steps.input.outputs.artifact_name }}
+      artifact_id: ${{ steps.unsigned_retention.outputs.artifact-id }}
+      artifact_digest: ${{ steps.unsigned_retention.outputs.artifact-digest }}
       build_sdk_version: ${{ steps.build.outputs.build-sdk-version }}
       mlx_sha_short: ${{ steps.build.outputs.mlx-sha-short }}
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
       # Package.swift compiles ProviderCore with this environment's defaults.
-      # qualify-sdk-shard sets prod: tests must see production defaults on every
-      # branch (on dev, an unset value compiles the dev identity).
+      # The qualification shards (release-qualify.yml) set prod: tests must see
+      # production defaults on every branch (on dev, an unset value compiles the
+      # dev identity).
       DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -243,99 +292,35 @@ jobs:
           fi
           echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
       - name: Transfer only unsigned products and resources
+        id: unsigned_retention
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ steps.input.outputs.artifact_name }}
           path: ${{ runner.temp }}/unsigned-provider.tar.gz
           compression-level: 0
           if-no-files-found: error
-          retention-days: 3
-
-  # SDK 27 qualification runs the provider suite in shards on separate Macs,
-  # with the shard plan ci.yml uses (scripts/provider-test-shards.py): each
-  # shard builds the tests and runs its suites serially; shard 1 also runs the
-  # MLX-free targets in one parallel process, shard 2 Prompt Parity, and the
-  # last shard every unassigned suite, the isolated processes and the audio
-  # gate. Job qualify-sdk is the one qualification result that signing and
-  # recovery (scripts/provider_release_resume/identity.py) read.
-  qualify-sdk-shard:
-    name: Qualify provider with SDK 27 (shard ${{ matrix.shard }})
-    needs: resolve-env
-    if: needs.resolve-env.outputs.resume != 'true'
-    runs-on: blacksmith-12vcpu-macos-27
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    strategy:
-      # Every shard finishes and keeps its diagnostics when another one fails.
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5]
-    env:
-      # The test suite pins production names and defaults. Package.swift
-      # defaults to dev on the dev branch, so name prod here, as ci.yml does.
-      DARKBLOOM_RELEASE_ENVIRONMENT: prod
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
-          submodules: recursive
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12.10'
-      - uses: ./.github/actions/provider-release-build
-        with:
-          lane: qualification
-          environment: ${{ needs.resolve-env.outputs.environment }}
-          shard: ${{ matrix.shard }}/${{ strategy.job-total }}
-
-  qualify-sdk:
-    name: Qualify provider with SDK 27
-    # Runs only when every shard passed; skipped on resume, like the shards.
-    needs: [resolve-env, qualify-sdk-shard]
-    if: needs.resolve-env.outputs.resume != 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
-          persist-credentials: false
-      - name: Download the shard counts
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          pattern: provider-sdk-qualification-${{ needs.resolve-env.outputs.environment }}-${{ github.sha }}-shard-*
-          path: ${{ runner.temp }}/provider-sdk-shards
-      - name: Check that the shards executed the full SDK 27 suite
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          lists=("$RUNNER_TEMP"/provider-sdk-shards/*/provider-tests.txt)
-          if [ "${#lists[@]}" -eq 0 ]; then
-            echo "::error::No shard suite list in $RUNNER_TEMP/provider-sdk-shards"
-            exit 1
-          fi
-          # Every shard built the same suite from the same source. Compare the
-          # test identifiers (lines without spaces) in sorted order.
-          for list in "${lists[@]}"; do
-            diff <(grep -v '[[:space:]]' "${lists[0]}" | sort -u) <(grep -v '[[:space:]]' "$list" | sort -u)
-          done
-          python3 scripts/provider-test-shards.py audit "${lists[0]}" "$RUNNER_TEMP/provider-sdk-shards"
+          retention-days: 7
 
   build-and-release:
     name: Sign, notarize and retain exact artifact
-    needs: [resolve-env, build-provider, qualify-sdk]
+    needs: [resolve-env, build-provider]
     if: >-
       ${{ !cancelled() && needs.resolve-env.result == 'success' &&
-          ((needs.resolve-env.outputs.resume == 'true' && needs.build-provider.result == 'skipped' && needs.qualify-sdk.result == 'skipped') ||
-           (needs.resolve-env.outputs.resume == 'false' && needs.build-provider.result == 'success' && needs.qualify-sdk.result == 'success')) }}
+          ((needs.resolve-env.outputs.resume == 'true' && needs.build-provider.result == 'skipped') ||
+           (needs.resolve-env.outputs.resume == 'false' && needs.build-provider.result == 'success')) }}
+    # SDK qualification passed before this workflow started: each caller's
+    # release lane needs its `qualify` job (release-qualify.yml), skipped only
+    # on a resume.
     # The signed artifact and its unsigned inputs are all built on Blacksmith.
     runs-on: blacksmith-12vcpu-macos-27
+    environment: ${{ needs.resolve-env.outputs.build_environment || 'prod' }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
     outputs:
-      validation_artifact: ${{ steps.validation_identity.outputs.artifact_name }}
+      validation_artifact_id: ${{ steps.validation_retention.outputs.artifact-id }}
+      validation_artifact_digest: ${{ steps.validation_retention.outputs.artifact-digest }}
       publication_artifact: ${{ steps.publication_identity.outputs.artifact_name }}
       publication_artifact_id: ${{ steps.publication_retention.outputs.artifact-id }}
       publication_artifact_digest: ${{ steps.publication_retention.outputs.artifact-digest }}
@@ -350,8 +335,10 @@ jobs:
       RELEASE_TAG: ${{ needs.resolve-env.outputs.release_tag }}
       RELEASE_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
       RELEASE_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt || '1' }}
-      RELEASE_UNSIGNED_ARTIFACT_ID: ${{ needs.resolve-env.outputs.unsigned_artifact_id }}
-      RELEASE_UNSIGNED_ARTIFACT_DIGEST: ${{ needs.resolve-env.outputs.unsigned_artifact_digest }}
+      # The one unsigned artifact this job signs: the retained one on a resume,
+      # otherwise the one job build-provider uploaded in this run.
+      RELEASE_UNSIGNED_ARTIFACT_ID: ${{ needs.resolve-env.outputs.unsigned_artifact_id || needs.build-provider.outputs.artifact_id }}
+      RELEASE_UNSIGNED_ARTIFACT_DIGEST: ${{ needs.resolve-env.outputs.unsigned_artifact_digest || needs.build-provider.outputs.artifact_digest }}
       RELEASE_BUILD_RUN_ID: ${{ needs.resolve-env.outputs.build_run_id }}
       RELEASE_BUILD_RUN_ATTEMPT: ${{ needs.resolve-env.outputs.build_run_attempt }}
       # 'true' only when this run registers a release and the environment's
@@ -445,7 +432,6 @@ jobs:
       - name: Fetch and verify this run's unsigned build
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_ARTIFACT: ${{ needs.resolve-env.outputs.unsigned_artifact || needs.build-provider.outputs.artifact_name }}
           EXPECTED_SOURCE: ${{ needs.resolve-env.outputs.source_sha }}
           BUILD_SDK_VERSION: ${{ needs.resolve-env.outputs.build_sdk_version || needs.build-provider.outputs.build_sdk_version }}
         run: |
@@ -454,8 +440,11 @@ jobs:
           if [ -n "$RELEASE_RESUME_RUN_ID" ]; then
             python3 scripts/provider-release-resume.py download --output "$RUNNER_TEMP/unsigned-download"
           else
-            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-              --name "$EXPECTED_ARTIFACT" --dir "$RUNNER_TEMP/unsigned-download"
+            # The exact bytes job build-provider uploaded: its artifact id, its
+            # digest and this run, not whichever artifact carries the name.
+            python3 scripts/provider-release-publication.py download \
+              --artifact-id "$RELEASE_UNSIGNED_ARTIFACT_ID" --artifact-digest "$RELEASE_UNSIGNED_ARTIFACT_DIGEST" \
+              --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/unsigned-download"
           fi
           python3 scripts/provider-signing-validation.py unpack \
             --archive "$RUNNER_TEMP/unsigned-download/unsigned-provider.tar.gz" \
@@ -463,33 +452,6 @@ jobs:
             --source-sha "$EXPECTED_SOURCE" --version "$VERSION"
           echo "UNSIGNED_ROOT=$RUNNER_TEMP/qualified-unsigned" >> "$GITHUB_ENV"
           echo "BUILD_SDK_VERSION=$BUILD_SDK_VERSION" >> "$GITHUB_ENV"
-
-      - name: Import Developer ID certificate
-        env:
-          P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          set -euo pipefail
-          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
-          echo "$P12_BASE64" | base64 --decode > /tmp/cert.p12
-
-          security create-keychain -p "build" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "build" "$KEYCHAIN_PATH"
-          KEYCHAINS=("$KEYCHAIN_PATH")
-          while read -r keychain; do
-            keychain="${keychain#\"}"
-            KEYCHAINS+=("${keychain%\"}")
-          done < <(security list-keychains -d user)
-          security list-keychains -d user -s "${KEYCHAINS[@]}"
-          security import /tmp/cert.p12 -k "$KEYCHAIN_PATH" \
-            -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign -f pkcs12
-          security set-key-partition-list -S apple-tool:,apple: \
-            -s -k "build" "$KEYCHAIN_PATH"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
-
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          rm -f /tmp/cert.p12
 
       - name: Embed provisioning profile
         env:
@@ -575,7 +537,7 @@ jobs:
           echo "profile_available=true" >> "$GITHUB_OUTPUT"
         id: profile
 
-      - name: Stage and sign bundle
+      - name: Stage bundle and smoke it before signing
         id: bundle
         run: |
           set -euo pipefail
@@ -586,7 +548,11 @@ jobs:
           # authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/$APP_NAME"
           mkdir -p "$STAGE"
-          cp -R "$UNSIGNED_ROOT/$APP_NAME" "$APP"
+          # -p keeps the unpacked modes whatever the runner's umask (plain -R
+          # gives 0700 under umask 077); every executable stays 0755, the mode
+          # the final archive check and the installer require of the fan helper.
+          cp -pR "$UNSIGNED_ROOT/$APP_NAME" "$APP"
+          python3 scripts/provider-signing-validation.py executable-modes --app "$APP" --version "$VERSION"
           printf '1\n' > "$APP/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
 
           cat > "$APP/Contents/Info.plist" << PLIST
@@ -648,6 +614,27 @@ jobs:
             | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} cli=${CLI_NAME} "
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+
+      # The signing key exists from here to the step 'Remove the signing
+      # keychain'. Nothing between them runs a file this release built: the
+      # unsigned app is staged and smoked above, and every later run of the
+      # provider comes after the keychain is deleted.
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          ./scripts/import-signing-certificate.sh "$KEYCHAIN_PATH"
+
+      - name: Sign bundle
+        run: |
+          set -euo pipefail
+          STAGE="${{ steps.bundle.outputs.stage }}"
+          APP="$STAGE/$APP_NAME"
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -659,7 +646,7 @@ jobs:
             --identifier "$FAN_HELPER_ID" \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/Helpers/$FAN_HELPER_NAME"
-          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\" and $SIGNING_CERTIFICATE_REQUIREMENT"
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" \
             "$APP/Contents/Helpers/$FAN_HELPER_NAME"
@@ -704,6 +691,17 @@ jobs:
           # shows this text once; the approval follows the bundle identifier
           # and team, so updates and reboots keep it (S18).
           /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$APP/Contents/Info.plist" >/dev/null
+
+      # The last signature is made. Delete the key, and prove no keychain still
+      # lists the identity, before the signed provider runs for the first time.
+      - name: Remove the signing keychain
+        run: ./scripts/remove-signing-keychain.sh "$KEYCHAIN_PATH" "$DEVELOPER_ID"
+
+      - name: Verify the signed bundle and prepare the notarization input
+        run: |
+          set -euo pipefail
+          STAGE="${{ steps.bundle.outputs.stage }}"
+          APP="$STAGE/$APP_NAME"
 
           # Packaged post-sign smoke: the release-candidate evaluator must be
           # exposed by the exact signed main executable. This checks command
@@ -758,6 +756,10 @@ jobs:
             exit 1
           fi
           echo "APNs code-identity entitlements verified: aps-environment=production, get-task-allow absent"
+          # Every executable in the app (the CLI, the enclave and fan helpers,
+          # the cluster worker and plan) must be signed by the Developer ID with
+          # get-task-allow absent.
+          python3 scripts/provider-signing-validation.py bundle-entitlements --app "$APP"
           if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
             if [ ! -f "$APP/Contents/embedded.provisionprofile" ]; then
               echo "::error::Provisioning profile secret set but not embedded in app bundle"
@@ -789,9 +791,10 @@ jobs:
           # while the coordinator hashes the regular file at bin/darkbloom.
           tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$STAGE" .
           tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
           ls -lh /tmp/darkbloom-bundle-macos-arm64.tar.gz
 
+      # The notarization credentials are in this step alone. It runs notarytool
+      # and nothing this release built.
       - name: Notarize bundle
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -830,6 +833,9 @@ jobs:
             exit 1
           fi
 
+      - name: Staple and verify the final artifact
+        run: |
+          set -euo pipefail
           # Stapler supports executable bundles, not individual Mach-O files.
           # Require an attached ticket and a local Gatekeeper acceptance before
           # the distribution artifact can be rebuilt or uploaded.
@@ -930,7 +936,7 @@ jobs:
           test "$(tr -d '[:space:]' < "$FINAL_FAN_MARKER")" = "1"
           LC_ALL=C grep -a -q -F 'darkbloom-fan-helper-v1' \
             "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME"
-          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\" and $SIGNING_CERTIFICATE_REQUIREMENT"
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" "$FINAL_FAN_HELPER"
           # The cluster helpers in the FINAL archived bytes: present where the
@@ -941,7 +947,7 @@ jobs:
           # The provider self-updater accepts only this designated requirement
           # (DarkbloomCodeSignature.designatedRequirement, policy
           # .darkbloomProduction), for every environment.
-          APP_REQUIREMENT="anchor apple generic and identifier \"io.darkbloom.provider\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          APP_REQUIREMENT="anchor apple generic and identifier \"io.darkbloom.provider\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\" and $SIGNING_CERTIFICATE_REQUIREMENT"
           codesign --verify --deep --strict --verbose=2 \
             "-R=$APP_REQUIREMENT" "$SMOKE_ROOT/$APP_NAME"
           FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
@@ -1005,9 +1011,10 @@ jobs:
       # The payload carries them only when CLUSTER_RUNTIME_SEND is 'true';
       # otherwise a failure here only warns (continue-on-error) and the release
       # continues exactly as before. No secret is in this step: it reads no secrets.*,
-      # removes the two secret-derived values the job's GITHUB_ENV holds and
-      # the signing keychain (and proves the identity is gone) before any
-      # release code runs, and runs the app's CLI with an empty environment.
+      # removes the two secret-derived values the job's GITHUB_ENV holds,
+      # checks that the signing keychain is gone (the step 'Remove the signing
+      # keychain' deleted it and proved the identity gone), and runs the app's
+      # CLI with an empty environment.
       - name: Compute cluster runtime facts from the final signed app
         id: cluster_runtime
         continue-on-error: ${{ env.CLUSTER_RUNTIME_SEND != 'true' }}
@@ -1015,16 +1022,7 @@ jobs:
         run: |
           set -euo pipefail
           unset r2_public_url coordinator_url
-          # The signing keychain must be gone, and no keychain may still list
-          # the signing identity, before any release code runs.
-          security delete-keychain "$KEYCHAIN_PATH"
           test ! -e "$KEYCHAIN_PATH"
-          test -n "$DEVELOPER_ID"
-          IDENTITIES=$(security find-identity -p codesigning)
-          if grep -F -q -- "$DEVELOPER_ID" <<< "$IDENTITIES"; then
-            echo "::error::The signing identity is still readable after the signing keychain was deleted"
-            exit 1
-          fi
           test "$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)" = "$BUNDLE_HASH"
           FACTS_ROOT="$RUNNER_TEMP/cluster-runtime"
           rm -rf "$FACTS_ROOT"
@@ -1115,6 +1113,7 @@ jobs:
           echo "artifact_name=darkbloom-signed-validation-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Retain signed validation bundle
+        id: validation_retention
         if: needs.resolve-env.outputs.publish == 'false'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -1176,17 +1175,22 @@ jobs:
           retention-days: 30
           compression-level: 0
 
+      # Only a run that failed between the import and the removal step still
+      # has a keychain here.
       - name: Cleanup keychain
         if: always()
         run: |
-          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
 
   stage-release:
     name: Stage retained signed artifact in R2
     needs: [resolve-env, build-and-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    environment: ${{ needs.resolve-env.outputs.build_environment || 'prod' }}
+    timeout-minutes: 60   # 2 artifact-download attempts of 20 minutes (scripts/provider_release_artifact.py) + the readiness loop's ~18
     permissions:
       contents: read
       actions: read
@@ -1209,6 +1213,15 @@ jobs:
         with:
           ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           persist-credentials: false
+      # Before any credential is in this job's environment: only the wheels
+      # whose hashes scripts/provider-release-publication-requirements.txt pins.
+      - name: Install publication tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/publication-tools"
+          "$RUNNER_TEMP/publication-tools/bin/pip" install --require-hashes --only-binary :all: \
+            -r scripts/provider-release-publication-requirements.txt
+          echo "$RUNNER_TEMP/publication-tools/bin" >> "$GITHUB_PATH"
       - name: Resolve env-specific secrets
         if: needs.resolve-env.outputs.publish == 'true'
         env:
@@ -1271,12 +1284,6 @@ jobs:
           python3 scripts/provider-release-publication.py download \
             --artifact-id "$PUBLICATION_ARTIFACT_ID" --artifact-digest "$PUBLICATION_ARTIFACT_DIGEST" \
             --run-id "$RELEASE_SIGNING_RUN_ID" --directory "$RUNNER_TEMP/provider-publication"
-      - name: Install publication tools
-        run: |
-          set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/publication-tools"
-          "$RUNNER_TEMP/publication-tools/bin/pip" install awscli
-          echo "$RUNNER_TEMP/publication-tools/bin" >> "$GITHUB_PATH"
       - name: Stage immutable bundle in R2
         if: needs.resolve-env.outputs.publish == 'true'
         env:
@@ -1291,8 +1298,12 @@ jobs:
     name: Register and publish exact signed release
     needs: [resolve-env, build-and-release, stage-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.stage-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    environment: ${{ needs.resolve-env.outputs.deployment || 'prod' }}
+    timeout-minutes: 60   # 2 artifact-download attempts of 20 minutes (scripts/provider_release_artifact.py) + the readiness loop's ~18
+    permissions:
+      contents: write   # gh release create; no other job of this workflow writes
+      actions: read
     concurrency:
       group: provider-publication-${{ needs.resolve-env.outputs.environment }}
       cancel-in-progress: false
@@ -1316,6 +1327,15 @@ jobs:
           ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           fetch-depth: 0   # the GitHub release notes read master, dev and the release tags
           persist-credentials: false
+      # Before any credential is in this job's environment: only the wheels
+      # whose hashes scripts/provider-release-publication-requirements.txt pins.
+      - name: Install publication tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/publication-tools"
+          "$RUNNER_TEMP/publication-tools/bin/pip" install --require-hashes --only-binary :all: \
+            -r scripts/provider-release-publication-requirements.txt
+          echo "$RUNNER_TEMP/publication-tools/bin" >> "$GITHUB_PATH"
       - name: Resolve env-specific secrets
         if: needs.resolve-env.outputs.publish == 'true'
         env:
@@ -1386,12 +1406,6 @@ jobs:
           python3 scripts/provider-release-publication.py download \
             --artifact-id "$PUBLICATION_ARTIFACT_ID" --artifact-digest "$PUBLICATION_ARTIFACT_DIGEST" \
             --run-id "$RELEASE_SIGNING_RUN_ID" --directory "$RUNNER_TEMP/provider-publication"
-      - name: Install publication tools
-        run: |
-          set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/publication-tools"
-          "$RUNNER_TEMP/publication-tools/bin/pip" install awscli
-          echo "$RUNNER_TEMP/publication-tools/bin" >> "$GITHUB_PATH"
       - name: Register release with coordinator and publish aliases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1418,6 +1432,10 @@ jobs:
         with:
           ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           persist-credentials: false
+      # The checked downloader needs Python 3.11 or later.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - name: Install pinned GitHub CLI
         run: ./scripts/install-macos-github-cli.sh
       - name: Resolve packaged app names
@@ -1427,14 +1445,16 @@ jobs:
       - name: Verify and smoke the exact signed validation artifact
         env:
           GH_TOKEN: ${{ github.token }}
-          SIGNED_VALIDATION_ARTIFACT: ${{ needs.build-and-release.outputs.validation_artifact }}
+          SIGNED_VALIDATION_ARTIFACT_ID: ${{ needs.build-and-release.outputs.validation_artifact_id }}
+          SIGNED_VALIDATION_ARTIFACT_DIGEST: ${{ needs.build-and-release.outputs.validation_artifact_digest }}
         run: |
           set -euo pipefail
           ARTIFACT="$RUNNER_TEMP/signed-provider"
-          test -n "$SIGNED_VALIDATION_ARTIFACT"
-          gh run download "$GITHUB_RUN_ID" \
-            --name "$SIGNED_VALIDATION_ARTIFACT" \
-            --dir "$ARTIFACT"
+          # Exactly build-and-release's upload: its ID, and its zip's SHA-256
+          # checked against its digest before anything is extracted.
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$SIGNED_VALIDATION_ARTIFACT_ID" --artifact-digest "$SIGNED_VALIDATION_ARTIFACT_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" --directory "$ARTIFACT"
           python3 - "$ARTIFACT" <<'PY'
           import hashlib, json, os, pathlib, subprocess, sys
           root = pathlib.Path(sys.argv[1])

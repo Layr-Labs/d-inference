@@ -19,6 +19,7 @@ extension DaemonState {
         case autopilotState, coordinatorConnection, addonHold, meFirst
         // The state file's snake-case coder writes `local_api_failure` and reads it back as `localApiFailure`.
         case localAPIFailure = "localApiFailure"
+        case bootSecurityHold
     }
 
     public init(from decoder: Decoder) throws {
@@ -65,6 +66,7 @@ extension DaemonState {
         addonHold = try c.decodeIfPresent(AddonHoldSnapshot.self, forKey: .addonHold)
         meFirst = try c.decodeIfPresent(MeFirstSnapshot.self, forKey: .meFirst)
         localAPIFailure = try c.decodeIfPresent(LocalAPIFailure.self, forKey: .localAPIFailure)
+        bootSecurityHold = try c.decodeIfPresent([String].self, forKey: .bootSecurityHold)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -110,5 +112,6 @@ extension DaemonState {
         try c.encodeIfPresent(addonHold, forKey: .addonHold)
         try c.encodeIfPresent(meFirst, forKey: .meFirst)
         try c.encodeIfPresent(localAPIFailure, forKey: .localAPIFailure)
+        try c.encodeIfPresent(bootSecurityHold, forKey: .bootSecurityHold)
     }
 }

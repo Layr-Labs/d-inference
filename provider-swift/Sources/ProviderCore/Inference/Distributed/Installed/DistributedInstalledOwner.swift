@@ -163,6 +163,6 @@ public enum DistributedInstalledOwner {
                 attachment: attachment, dataPlane: dataPlaneTrust != nil, prefixSSDKey: prefixSSDKey != nil),
             environment: plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: ownerEnvironment),
             initialInput: input.isEmpty ? nil : input,
-            verifyLaunched: try prepared.validation.workerExecutable.launchVerifier())
+            verifyLaunched: try prepared.validation.workerExecutable.launchVerifier(.worker))
     }
 }

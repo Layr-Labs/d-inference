@@ -416,11 +416,13 @@ enum NemotronSuperServingPolicy {
     /// `stackedMediaWait` later, or earlier so that `expectedFirstChunk` and
     /// `stackedMediaWaitMargin` still fit before a forwarded first-content
     /// deadline. Nil when no wait fits: the request is refused at once, as
-    /// before. A local request forwards no deadline.
+    /// before. A local request forwards no deadline. `wait` is
+    /// `stackedMediaWait` except in a test that shortens it.
     static func stackedMediaWaitEnd(now: ContinuousClock.Instant = .now,
                                     firstContentDeadline: ContinuousClock.Instant?,
-                                    expectedFirstChunk: Duration) -> ContinuousClock.Instant? {
-        var end = now + stackedMediaWait
+                                    expectedFirstChunk: Duration,
+                                    wait: Duration = NemotronSuperServingPolicy.stackedMediaWait) -> ContinuousClock.Instant? {
+        var end = now + wait
         if let firstContentDeadline {
             end = min(end, firstContentDeadline - expectedFirstChunk - stackedMediaWaitMargin)
         }

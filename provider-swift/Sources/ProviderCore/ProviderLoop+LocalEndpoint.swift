@@ -99,6 +99,7 @@ extension ProviderLoop {
         // One partition for this local application's Super prefix reuse,
         // separate from every authenticated coordinator scope.
         let superCacheScope = "local-super-" + UUID().uuidString
+        let localCachePolicy = RequestCachePolicy.localServing()
         return makeLocalInferenceApplication(
             config: cfg,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
@@ -129,11 +130,12 @@ extension ProviderLoop {
                     cacheScope: superCacheScope, acquire: { [weak self] in
                         guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(request.model) }
                         return try await self.acquireNemotronSuperForLocal(request.model)
-                    }, logprobs: logprobs)
+                    }, logprobs: logprobs, cachePolicy: localCachePolicy)
             },
             modelLimits: { [weak self] modelId in
                 await self?.localModelLimits(modelId)
-            }
+            },
+            localCachePolicy: localCachePolicy
         )
     }
 
@@ -144,13 +146,14 @@ extension ProviderLoop {
 
     /// What the router's `/v1/models` says of a model this Mac serves: the input it takes, and once it is loaded its
     /// limits as its engine admits them. A single Mac lists its window as the context and the output: a prompt and
-    /// its output together may fill it. A pair lists its own limits, the context and the output its mode serves (what
-    /// its slot reports to the coordinator): a `max_tokens` past its output is cut to it.
+    /// its output together may fill it. A pair lists its own limits, the context and the output its mode serves the
+    /// owner (`ownerServed`, at least what its slot reports to the coordinator): a `max_tokens` past its output is
+    /// cut to it.
     func localModelLimits(_ modelId: String) -> LocalModelLimits? {
         let input = localInputModalities(modelId)
         guard let slot = modelSlots[modelId] else { return input.map { LocalModelLimits(inputModalities: $0) } }
         if let pair = slot.modelContainer.clusterPair {
-            return LocalModelLimits(served: pair.served, inputModalities: input)
+            return LocalModelLimits(served: pair.ownerServed, inputModalities: input)
         }
         return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength,
                                 inputModalities: input)

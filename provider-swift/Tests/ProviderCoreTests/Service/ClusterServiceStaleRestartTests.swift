@@ -3,7 +3,7 @@ import Testing
 
 @testable import ProviderCore
 
-/// 0.10.12 W1-D2 (pair-2, DevNet): after `darkbloom update` on both Macs, a pair that serves only on its local API kept
+/// 0.10.12, on a DevNet pair: after `darkbloom update` on both Macs, a pair that serves only on its local API kept
 /// both cluster services on the earlier release. Their supervisors' update cycle does not drain such a pair, so it never
 /// restarted them; `restart` restarted only the parts, which ran the installed release. A part of the installed release
 /// restarts its service's launchd job once. No launchd: the job's `launchctl print` and the kickstart are stand-ins.
@@ -100,7 +100,7 @@ struct ClusterServiceStaleRestartTests {
     @Test func devNetBuildsCompareTheirBuildNumbers() throws {
         let directory = try serviceDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        // W1's update: the services stayed on .175 while their parts ran .176.
+        // The DevNet update: the services stayed on .175 while their parts ran .176.
         supervisor(directory, version: "0.10.10-dev.branch.175")
         let launchd = Launchd(jobPID: Self.supervisorPID)
         #expect(start(directory, thisVersion: "0.10.12-dev.branch.176", launchd: launchd)
@@ -169,7 +169,8 @@ struct ClusterServiceStaleRestartTests {
     }
 
     /// The order is the releases' (`SemanticVersion`), never the text's: as text, 0.10.9 sorts after 0.10.10 and 0.10.12,
-    /// and DevNet's build 99 after 100. W1's morning run is the first case: a supervisor on .176, the folded build's part.
+    /// and DevNet's build 99 after 100. A DevNet morning run is the first case: a supervisor on .176, the folded
+    /// build's part.
     @Test(arguments: [("0.10.12-dev.branch.176", "0.10.12-dev.branch.177", true),
                       ("0.10.12-dev.branch.177", "0.10.12-dev.branch.176", false),
                       ("0.10.12-dev.branch.99", "0.10.12-dev.branch.100", true),

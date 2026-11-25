@@ -35,6 +35,12 @@ struct ProviderLogger: Sendable {
         publicLog(.info, message)
     }
 
+    /// At the level unified logging keeps on disk, so `darkbloom logs --last` still shows it hours later (an info
+    /// line lives only in memory). For the rare lines a person reads after the fact.
+    func notice(_ message: ProviderOperationalMessage) {
+        publicLog(.notice, message)
+    }
+
     func warning(_ message: ProviderOperationalMessage) {
         publicLog(.warning, message)
     }
@@ -64,6 +70,8 @@ struct ProviderLogger: Sendable {
         switch level {
         case .info:
             osLogger.info("\(message.text, privacy: .public)")
+        case .notice:
+            osLogger.notice("\(message.text, privacy: .public)")
         case .warning:
             osLogger.warning("\(message.text, privacy: .public)")
         case .error:
@@ -83,6 +91,8 @@ struct ProviderLogger: Sendable {
         switch level {
         case .info:
             osLogger.info("\(message, privacy: .private)")
+        case .notice:
+            osLogger.notice("\(message, privacy: .private)")
         case .warning:
             osLogger.warning("\(message, privacy: .private)")
         case .error:
@@ -98,12 +108,14 @@ struct ProviderLogger: Sendable {
 
 enum ProviderLogLevel: Sendable, Equatable {
     case info
+    case notice
     case warning
     case error
 
     fileprivate var label: String {
         switch self {
         case .info: "INFO"
+        case .notice: "NOTICE"
         case .warning: "WARN"
         case .error: "ERROR"
         }
@@ -137,7 +149,10 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case coordinatorConnectionClosed = "Coordinator connection closed; reconnecting"
     case coordinatorConnectionFailed = "Coordinator connection failed; reconnecting"
     case coordinatorClientShutdown = "Coordinator client shut down"
+    case coordinatorRegistrationRefused = "Not connecting: this Mac's boot settings keep Darkbloom serving off. Run {cli} status."
     case coordinatorTransportReady = "Coordinator transport ready; sending registration"
+    case coordinatorHostNotPinned = "Coordinator host is not this build's coordinator; the connection continues"
+    case coordinatorCertificateNotPinned = "Coordinator certificate is not from an expected authority; the connection continues"
     case coordinatorRegistrationSent = "Coordinator registration sent"
     case coordinatorConnected = "Connected to coordinator"
     case coordinatorDisconnected = "Disconnected from coordinator"
@@ -200,10 +215,28 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case refusalRequestExceedsContext = "Inference failure: invalid request (request exceeds context)"
     case refusalUnsupportedOutputControl = "Inference failure: invalid request (unsupported output control)"
     case refusalMissingUserQuery = "Inference failure: invalid request (missing user query)"
+    case refusalMediaRoleNotRendered = "Inference failure: invalid request (media role not rendered)"
+
+    // Prompt cache (`ToolCallHistoryNullCache`).
+    case promptCacheSkippedToolCallNull = "Prompt cache skipped: an earlier tool call has a null argument; served cold"
+    case promptCacheSkippedToolUnionType = "Prompt cache skipped: a tool parameter renders a different type; served cold"
+    case promptCacheSkippedToolRawSchema = "Prompt cache skipped: a GPT-OSS tool schema renders as written; served cold"
 
     // Memory accounting.
     case superVideoChargesHeldPastDrainWait =
         "Super video frame read outlasted its drain wait; its memory charge returns when the read ends"
+
+    // A single Mac's background update (`AutoUpdateController.Step`, `ProviderLoop.autoUpdateNotice`).
+    case autoUpdateAvailable = "Auto-update: a newer release is available; staging it while serving"
+    case autoUpdateInstalledNotRunning = "Auto-update: a newer release is installed; draining requests before the restart"
+    case autoUpdateStaged = "Auto-update: new release staged; draining requests before installing it"
+    case autoUpdateRestarting = "Auto-update: new release installed; restarting into it"
+    case autoUpdateDeferred = "Auto-update deferred: requests did not finish in time; nothing installed"
+    case autoUpdateQuarantined = "Auto-update: the latest release is quarantined on this Mac; staying on this one"
+    case autoUpdateCheckFailed = "Auto-update: release check failed; the next check tries again"
+    case autoUpdateStageFailed = "Auto-update: download or staging failed; staying on this release"
+    case autoUpdateInstallFailed = "Auto-update: installing the staged release failed; staying on this release"
+    case autoUpdateRestartFailed = "Auto-update: restart into the new release failed; serving on this release"
 
     // Operator guidance.
     case glmWiredLimitNotice = "GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run {cli} doctor for the fix."

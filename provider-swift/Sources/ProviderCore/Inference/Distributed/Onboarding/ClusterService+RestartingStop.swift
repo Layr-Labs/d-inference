@@ -21,7 +21,7 @@ import Foundation
 /// The steps, and the memory re-plan, take the command lock beside this service's own files: on a Mac, the one every
 /// cluster command takes.
 ///
-/// DevNet pair-2, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted
+/// A DevNet pair, 2026-11-07 (`0.10.10-dev.branch.135` → `.137`): such a stop failed right after both Macs restarted
 /// into the update, and the pair stayed stopped on both Macs until `darkbloom cluster` was run.
 extension ClusterService {
     /// The steps of the re-plan after an update, as the control leader's onboarding operations run them (`controlLive`);
@@ -103,13 +103,14 @@ extension ClusterService {
         try? store.updateRecord { $0.leadership?.serving = true; $0.stopDrain = nil }
     }
 
-    /// A local-only pair's re-plan after an update marks the record before its stop (`ClusterSetupRecord.updateReplan`):
-    /// true once marked. Its pair serves on the leading Mac's local API and drains for no update, so `darkbloom update`
-    /// restarts the cluster service at once (`ClusterLocalPairUpdate`), which may end this service in the middle of the
-    /// re-plan. Another pair's services restart only once both Macs drained, before their builds change, and are not
-    /// marked. A mark that cannot be written leaves the re-plan as it was.
+    /// A re-plan after an update marks the record before its stop (`ClusterSetupRecord.updateReplan`): true once marked.
+    /// A local-only pair serves on the leading Mac's local API and drains for no update, so `darkbloom update` restarts
+    /// the cluster service at once (`ClusterLocalPairUpdate`), which may end this service in the middle of the re-plan.
+    /// Another pair's coordinated update installs before it restarts the services, so a re-plan begun in between is
+    /// ended the same way (`ClusterUpdateReplanGuard`, which also keeps the check from beginning one then). A mark that
+    /// cannot be written leaves the re-plan as it was.
     func markUpdateReplan(localOnly: Bool) -> Bool {
-        guard localOnly, resumesInterruptedUpdateReplan else { return false }
+        guard localOnly ? resumesInterruptedUpdateReplan : updateReplanGuard else { return false }
         return (try? store.updateRecord {
             $0.updateReplan = .init(stopsAsked: $0.stopsAsked ?? 0, startedAt: Date().timeIntervalSince1970)
         }) != nil
@@ -121,13 +122,14 @@ extension ClusterService {
     }
 
     /// The mark of a re-plan the previous run of this service began and never ended (it was ended in the middle of it,
-    /// W1 `.180` → `.181`): the start its stop cleared is put back, as the re-plan's own failure would have
+    /// on a DevNet pair): the start its stop cleared is put back, as the re-plan's own failure would have
     /// (`restoreStart`), so the pair is set up again once both Macs run one build. Only a recent mark of a re-plan this
     /// Mac still leads is acted on (its control claim, `followsPeer`: the re-plan runs on the derived control leader,
     /// whichever Mac drove the onboarding), and only while the start is still cleared and no stop a person asked for was
     /// counted since (`ClusterSetupRecord.stopsAsked`; a stop while the pair is down, which isn't counted, drops the
-    /// mark: `forgetInterruptedUpdateReplan`). Any mark is dropped, also with `ClusterLocalPairUpdate` off. The line for
-    /// the log, or nil when there was nothing to put back.
+    /// mark: `forgetInterruptedUpdateReplan`). Any mark is dropped, also with its switch off (`ClusterLocalPairUpdate` for
+    /// a local-only pair, `ClusterUpdateReplanGuard` for another). The line for the log, or nil when there was nothing to
+    /// put back.
     func resumeInterruptedUpdateReplan(now: Double = Date().timeIntervalSince1970) -> String? {
         var resumedAfter: Double?
         let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore)
@@ -135,7 +137,8 @@ extension ClusterService {
             guard let mark = record.updateReplan else { return }
             record.updateReplan = nil
             let age = now - mark.startedAt
-            guard resumesInterruptedUpdateReplan, (0...Self.interruptedUpdateReplanSeconds).contains(age),
+            let resumes = record.leadership?.scope.isLocalOnly == true ? resumesInterruptedUpdateReplan : updateReplanGuard
+            guard resumes, (0...Self.interruptedUpdateReplanSeconds).contains(age),
                   (record.stopsAsked ?? 0) == mark.stopsAsked, Self.leadsByControl(record: record, pairing: pairing),
                   record.leadership?.serving == false else { return }
             record.leadership?.serving = true

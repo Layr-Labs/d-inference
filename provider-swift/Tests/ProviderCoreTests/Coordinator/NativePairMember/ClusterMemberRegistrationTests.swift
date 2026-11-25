@@ -113,9 +113,12 @@ struct ClusterMemberRegistrationTests {
     func realSocketRoleNegotiation(acknowledge: Bool) async throws {
         let mock = MockCoordinator()
         let base = try await mock.start()
+        // Unacknowledged, the member waits out its whole negotiation window,
+        // so that case uses 1 s. The acknowledged case keeps the production 10 s.
         let client = CoordinatorClient(config: .init(url: base.mockProviderWebSocketURL(),
             hardware: memberHardware(), models: memberConfig(role: .clusterMember).models,
-            backendName: "mlx-swift", heartbeatInterval: 1, executionRole: .clusterMember),
+            backendName: "mlx-swift", heartbeatInterval: 1, executionRole: .clusterMember,
+            memberNegotiationWindow: acknowledge ? nil : .seconds(1)),
             stats: .init(), state: .init(), liveAPNsToken: { nil })
         let (events, _) = await client.start()
         do {

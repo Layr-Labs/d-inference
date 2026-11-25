@@ -62,11 +62,18 @@ struct ToolSchemaRefPolicy: Sendable, Equatable {
     static let environmentKey = "DARKBLOOM_TOOLSCHEMA_REF_RESOLVE_MODELS"
 
     /// The coordinator's default list: Gemma 4 26B (every build) and Qwen 3.8
-    /// 27B, inlined. Every other model keeps the legacy repair.
-    static let defaultRules = [
-        Rule(pattern: "gemma-4-26b", mode: .inline),
-        Rule(pattern: "qwen3.8-27b", mode: .inline),
-    ]
+    /// 27B, inlined. While the GPT-OSS `auto` grammar is on
+    /// (`GPTOSSAutoToolGrammar`), the local API also inlines every GPT-OSS
+    /// build's, for every tool choice, so its prompt shows the objects the
+    /// grammar can then hold the arguments to (a tool whose prompt keeps a
+    /// `$ref` keeps free arguments). Routed requests keep the coordinator's
+    /// rendering. Every other model keeps the legacy repair.
+    static let defaultRules = defaultRules(gptOSSAutoToolGrammar: GPTOSSAutoToolGrammar.enabled)
+
+    static func defaultRules(gptOSSAutoToolGrammar: Bool) -> [Rule] {
+        [Rule(pattern: "gemma-4-26b", mode: .inline), Rule(pattern: "qwen3.8-27b", mode: .inline)]
+            + (gptOSSAutoToolGrammar ? [Rule(pattern: "gpt-oss", mode: .inline)] : [])
+    }
 
     static let `default` = ToolSchemaRefPolicy(rules: defaultRules)
 

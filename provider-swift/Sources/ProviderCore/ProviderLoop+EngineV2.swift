@@ -119,6 +119,10 @@ extension ProviderLoop {
         /// Machine-memory override for the re-slice fleet budget (nil ⇒
         /// real physical memory).
         let physicalMemoryBytes: UInt64?
+        /// Overrides the process-wide GLM retained-owner charge in the fleet
+        /// budget (nil ⇒ the live charge), so another test's retained fault
+        /// can't shrink a pinned scenario.
+        let retainedResidentBytes: UInt64?
         /// Deterministic load-admission sample for eviction integration tests.
         let availableMemoryGb: Double?
         /// Explicit post-build memory sample for scripted recovery tests.
@@ -145,6 +149,7 @@ extension ProviderLoop {
             extraEOSTokens: [String] = [],
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             physicalMemoryBytes: UInt64? = nil,
+            retainedResidentBytes: UInt64? = nil,
             availableMemoryGb: Double? = nil,
             measuredKVHeadroomBytes: UInt64? = nil,
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
@@ -156,6 +161,7 @@ extension ProviderLoop {
             self.extraEOSTokens = extraEOSTokens
             self.emitTelemetry = emitTelemetry
             self.physicalMemoryBytes = physicalMemoryBytes
+            self.retainedResidentBytes = retainedResidentBytes
             self.availableMemoryGb = availableMemoryGb
             self.measuredKVHeadroomBytes = measuredKVHeadroomBytes
             self.kvBackendKindByModel = kvBackendKindByModel
@@ -184,10 +190,11 @@ extension ProviderLoop {
     /// activation reserve, honoring the operator `memory_reserve_gb`.
     /// `activationReserveBytes` overrides the live serving-set reserve for a
     /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
-    private func fleetKVBudgetBytes(
+    func fleetKVBudgetBytes(
         extraWeightBytes: Int,
         activationReserveBytes: UInt64? = nil,
-        excludingModelIDs: Set<String> = []
+        excludingModelIDs: Set<String> = [],
+        quotingAfterRetirementOf: Set<String> = []
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
         for (id, slot) in modelSlots where !excludingModelIDs.contains(id) {
@@ -195,7 +202,8 @@ extension ProviderLoop {
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
         }
-        for (modelID, sizing) in nativeMiMoRetiringSizing where modelSlots[modelID] == nil {
+        for (modelID, sizing) in nativeMiMoRetiringSizing
+        where modelSlots[modelID] == nil && !quotingAfterRetirementOf.contains(modelID) {
             let (sum, overflow) = totalWeights.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
         }
@@ -209,7 +217,9 @@ extension ProviderLoop {
             ?? ProcessInfo.processInfo.physicalMemory
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
-            residentWeightBytes: GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
+            residentWeightBytes: engineV2SlotHooks?.retainedResidentBytes
+                .map { GLM5NextLoadFaultState.saturatingSum([totalWeights, $0]) }
+                ?? GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
             // The serving set's resolved reserve, so engine grants carve the
             // same activation floor the load gate and runtime KV gate hold.
             activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
@@ -454,6 +464,7 @@ extension ProviderLoop {
                 fleetKVBudgetBytes: fleetBudget,
                 minimumGrantBytes: minimumGrants)
         }
+        kvBudget.memoryOnlyPool.updateBudget(fleetKVHeadroomBytes: fleetBudget)
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
             targets, minimumGrantBytes: minimumGrants)
         else {
@@ -529,7 +540,22 @@ extension ProviderLoop {
         // proportional shares shrink too; kept for self-healing when a
         // previous state left a slot under-granted).
         await completeNewcomerReslice(reslice)
+        if bundle.bridge.isGLM5NextManaged {
+            await bundle.bridge.installGLMSoloGrant { [weak self] in await self?.glmSoloGrant(for: modelId) }
+        }
         return EngineV2SlotBuild(bundle: bundle, sizing: sizing)
+    }
+
+    func glmSoloGrant(for id: String) -> UInt64? {
+        // MiMo moves its weights out of the slot and into retiring sizing before
+        // it waits for the native owner. Only the hypothetical quote may omit
+        // them, and only while successful retirement remains possible.
+        let retiring = nativeMiMoRegistry.hasRetainedFault ? Set<String>() : Set(nativeMiMoRetiringSizing.keys)
+        let peers = Set(modelSlots.keys).union(modelsLoading).union(retiring)
+            .union(pendingSurvivorRegrowth.values).subtracting([id])
+        guard modelSlots[id] != nil, !peers.isEmpty else { return nil }
+        return fleetKVBudgetBytes(extraWeightBytes: 0, excludingModelIDs: peers,
+            quotingAfterRetirementOf: peers.intersection(retiring))
     }
 
     /// A newcomer's re-sliced grant with every survivor's target and restore
@@ -658,6 +684,8 @@ extension ProviderLoop {
     /// floors keep a slot a load funded to its floor from being shrunk
     /// back below it.
     internal func resliceGrowSurvivorsLocked() async {
+        // Host memory: the RAM-only tier follows the serving set whatever native MiMo owns.
+        kvBudget.memoryOnlyPool.updateBudget(fleetKVHeadroomBytes: fleetKVBudgetBytes(extraWeightBytes: 0))
         guard nativeMiMoAllowsReclamation() else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
         guard nativeMiMoAllowsReclamation() else { return }

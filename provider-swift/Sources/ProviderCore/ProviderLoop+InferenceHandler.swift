@@ -146,7 +146,8 @@ extension ProviderLoop {
         if autopilotCommand != nil {
             throw MultiModelBatchSchedulerEngineError.queueFull("model autopilot placement in progress")
         }
-        if isShuttingDown {
+        // A boot-settings refusal found before connecting ends serving as a stop does, from the moment it is found.
+        if isShuttingDown || registrationRefused {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
         if isDraining {
@@ -199,6 +200,7 @@ extension ProviderLoop {
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
         gemmaPromptContract: Int? = nil,
+        frameCachePolicy: RequestCachePolicy = .default,
         send: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
     ) async {
@@ -230,7 +232,7 @@ extension ProviderLoop {
         // Cache receipt ownership begins before any admission/decrypt/load work.
         // A valid nonce must settle exactly once even when the request never
         // reaches EngineV2Bridge.submitTokenized.
-        let remoteCache = RemotePrefixCacheContext(
+        let frameCache = RemotePrefixCacheContext(
             cacheScope: authenticatedCacheScope,
             cacheReceiptNonce: cacheReceiptNonce,
             repeatedPrefixTokens: cacheRepeatedPrefixTokens)
@@ -238,7 +240,7 @@ extension ProviderLoop {
         if prefixCacheProtocol != 2 {
             receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
                 requestID: requestId,
-                nonce: remoteCache.receiptNonce,
+                nonce: frameCache.receiptNonce,
                 send: send)
         }
         let lookupReceiptFinalizer = PrefixCacheLookupReceiptFinalizer(
@@ -257,6 +259,11 @@ extension ProviderLoop {
         func rejectInvalidRequest(_ refusal: InferenceRefusalReason) {
             reject(InferenceFailure(code: .invalidRequest, statusCode: 400), refusal: refusal)
         }
+        // The decrypted body, held until this function's last message (the
+        // settling in the `defer` below included) has gone to `send`; the
+        // inference task holds its own reference.
+        var heldBody: Data?
+        defer { withExtendedLifetime(heldBody) {} }
         var receiptTransferredToTask = false
         defer {
             if !receiptTransferredToTask {
@@ -331,6 +338,7 @@ extension ProviderLoop {
             rejectInvalidRequest(.undecryptableRequest)
             return
         }
+        heldBody = decryptedData
         profile.mark(.decrypted)
 
         if rejectIfFirstContentDeadlineExpired(
@@ -389,6 +397,14 @@ extension ProviderLoop {
             return
         }
         let chatRequest = inbound.request
+        // The coordinator's plan. It selects the template controls below; the
+        // cache context the request is served with is settled once the slot's
+        // model type is known (`ToolCallHistoryNullCache`).
+        let plannedCache = frameCache.applying(sealed: inbound.extensions.sealedPrefixCache)
+        // Unlike the scope, the policy needs no matching nonce (it can only
+        // narrow), and a plaintext frame hint narrows it further.
+        let cachePolicy = inbound.extensions.cachePolicy.narrowed(by: frameCachePolicy)
+        RequestCachePolicyCounters.shared.recordRequest(cachePolicy)
         profile.mark(.parsed)
 
         // A member serves only its pair's model, and only while that slot is
@@ -437,13 +453,8 @@ extension ProviderLoop {
         // the coordinator's prompt cache renders the prompt of its plan, in
         // the Gemma 4 prompt contract the coordinator planned and counted it with.
         let templateControls = inbound.extensions.templateControls.servingCoordinatorRequest(
-            planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil,
+            planned: plannedCache.scope != nil || plannedCache.receiptNonce != nil,
             gemmaPromptContract: gemmaPromptContract)
-        // Cache identity is coordinator-authored and authenticated outside the
-        // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
-        // for remote cache partitioning. Legacy coordinators omit the outer
-        // scope; those requests still serve, but with caching disabled.
-        let cacheScope = remoteCache.scope ?? ""
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
         // honored by the EngineV2 path (see EngineV2Logprobs.swift).
@@ -711,6 +722,31 @@ extension ProviderLoop {
             rejectInvalidRequest(refusal)
             return
         }
+        let (historyNullContext, historyNullServedCold) = ToolCallHistoryNullCache.servingContext(
+            plannedCache, for: chatRequest, modelType: modelType,
+            managedSuper: slot.modelContainer.nemotronSuper != nil)
+        if historyNullServedCold {
+            stats.incrementPromptCacheSkippedToolCallNull()
+            logger.info(.promptCacheSkippedToolCallNull)
+        }
+        let (unionTypeContext, unionTypeServedCold) = GemmaToolUnionTypeCache.servingContext(
+            historyNullContext, for: chatRequest, modelType: modelType,
+            declared: templateControls.declaredTools)
+        if unionTypeServedCold {
+            stats.incrementPromptCacheSkippedToolUnionType()
+            logger.info(.promptCacheSkippedToolUnionType)
+        }
+        let (remoteCache, rawToolSchemaServedCold) = GPTOSSToolSchemaCache.servingContext(
+            unionTypeContext, for: chatRequest, declared: templateControls.declaredTools, modelType: modelType)
+        if rawToolSchemaServedCold {
+            stats.incrementPromptCacheSkippedToolRawSchema()
+            logger.info(.promptCacheSkippedToolRawSchema)
+        }
+        // Cache identity is coordinator-authored: the sealed copy bound to this
+        // attempt's receipt nonce, else the frame's scope. Never trust
+        // caller-controlled prompt_cache_key/user for remote cache partitioning.
+        // Without a scope, requests still serve, but with caching disabled.
+        let cacheScope = remoteCache.scope ?? ""
         let slotContainer = slot.container
         let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
@@ -729,7 +765,8 @@ extension ProviderLoop {
                 requestID: requestId,
                 nonce: nonce,
                 send: send,
-                readyBoundaryMode: cacheReceiptBoundaryMode)
+                readyBoundaryMode: cacheReceiptBoundaryMode,
+                durable: cachePolicy.permitsSSDTier)
         {
             receiptCallbacks = (callbacks.lookup, callbacks.ready)
             lookupReceiptFinalizer.configureV2(
@@ -787,6 +824,10 @@ extension ProviderLoop {
         receiptTransferredToTask = true
         profile.mark(.taskSpawned)
         let task = Task.detached {
+            // Runs last: the decrypted body is released, and its zeroing
+            // queued, only after this request's response (every chunk and the
+            // terminal message) has gone to `send`.
+            defer { withExtendedLifetime(decryptedData) {} }
             defer {
                 // Stream construction awaited bridge admission before returning;
                 // remaining inner tasks consume events and cannot acquire anew.
@@ -891,6 +932,7 @@ extension ProviderLoop {
                 return
             }
             if rejectExpiredDeadline() { return }
+            let responseSealer = ResponseFrameSealer(keyPair: kp, sharedKey: sharedKey)
 
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
@@ -899,10 +941,7 @@ extension ProviderLoop {
             let emitSSE: @Sendable (String) -> Bool = { sseData in
                 let encryptedPayload: EncryptedPayload
                 do {
-                    encryptedPayload = try kp.encryptPayloadFast(
-                        sharedKey: sharedKey,
-                        plaintext: Data(sseData.utf8)
-                    )
+                    encryptedPayload = try responseSealer.sealFrame(sseData.utf8)
                 } catch {
                     log.error("[\(requestId)] response-chunk encryption failed")
                     providerStats.incrementChunkEncryptionErrors()
@@ -960,7 +999,8 @@ extension ProviderLoop {
                 providerEngine = superOwner.chatEngine(body: decryptedData,
                     hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
                     trustsSchemaMetadata: true, logprobs: logprobsChannel, usageSignal: v2UsageSignal,
-                    donationDemand: remoteCache.donationDemand, firstContentDeadline: firstContentDeadline)
+                    donationDemand: remoteCache.donationDemand, cachePolicy: cachePolicy,
+                    firstContentDeadline: firstContentDeadline, cancelCause: { token.endCause })
             } else {
                 providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
@@ -978,6 +1018,7 @@ extension ProviderLoop {
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 donationDemand: remoteCache.donationDemand,
+                cachePolicy: cachePolicy,
                 engineV2Logprobs: logprobsSpec.map {
                     EngineV2LogprobsPlumbing(topLogprobs: $0.topLogprobs, relay: logprobsChannel)
                 },
@@ -1041,7 +1082,9 @@ extension ProviderLoop {
                 // owner's request can tell whether the engine has admitted this
                 // one (`giveWayToOwner`).
                 frames = try await MeFirstDarkbloomRequest.$id.withValue(requestId) {
-                    try await service.streamChatCompletionFrames(request: streamingRequest)
+                    try await InklingWithheldReasoningHeartbeat.$enabled.withValue(true) {
+                        try await service.streamChatCompletionFrames(request: streamingRequest)
+                    }
                 }
                 if rejectExpiredDeadline() { return }
             } catch {
@@ -1164,12 +1207,15 @@ extension ProviderLoop {
             await me.updateAggregateCapacity()
             if rejectExpiredDeadline() { return }
 
-            var fullResponseText = ""
+            // The output the response hash covers. This and the two text
+            // buffers below hold the response in storage that is zeroed when
+            // the request ends (`ResponseTextBuffer`).
+            let hashedOutput = ResponseTextBuffer()
             // Visible output only (content, reasoning, tool names and argument
             // text): the cancelled-stream billing floor. Streamed calls add one
-            // hash marker per fragment to `fullResponseText`, which would
+            // hash marker per fragment to `hashedOutput`, which would
             // otherwise inflate that floor.
-            var deliveredText = ""
+            let deliveredText = ResponseTextBuffer()
             var promptTokens = 0
             var completionTokens = 0
             // Profiler frame counters (locals; written to the profile once at
@@ -1194,12 +1240,24 @@ extension ProviderLoop {
             // channel, Qwen3/DeepSeek <think>, Gemma4 channels). Re-tokenized
             // at completion to report an accurate `reasoning_tokens` count —
             // upstream's usage block only carries the total completion count.
-            var reasoningText = ""
+            let reasoningText = ResponseTextBuffer()
             var reasoningTokens = 0
-            // Reasoning the request asked not to receive is never framed, but
-            // it is still generated: count it with the visible reasoning.
-            func generatedReasoningText() -> String {
-                reasoningText + v2UsageSignal.withheldReasoning
+            // Reasoning the client declined to receive (`reasoning.exclude`) is
+            // never framed, but it is still generated: count it with the visible
+            // reasoning. A thought written with thinking turned off (Inkling 2)
+            // is not recorded as reasoning, so it counts only in completion
+            // tokens (`MultiModelBatchSchedulerEngine.recordWithheldReasoning`).
+            func tokenCount(_ text: ResponseTextBuffer) -> Int {
+                text.withText { tokenizer.inner.encode(text: $0, addSpecialTokens: false).count }
+            }
+            func hasGeneratedReasoning() -> Bool {
+                !reasoningText.isEmpty || v2UsageSignal.hasWithheldReasoning
+            }
+            func generatedReasoningTokenCount() -> Int {
+                let generated = ResponseTextBuffer()
+                generated.append(contentsOf: reasoningText)
+                v2UsageSignal.appendWithheldReasoning(to: generated)
+                return tokenCount(generated)
             }
 
             // A cancelled request that already streamed output settles through
@@ -1221,7 +1279,23 @@ extension ProviderLoop {
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
             do {
-                for try await frame in frames {
+                var sentWithheldReasoningHeartbeat = false
+                for try await streamed in frames {
+                    // Inkling 2's one empty answer delta while it withholds its
+                    // reasoning (`InklingWithheldReasoningHeartbeat`).
+                    // It is output the coordinator commits to, so it claims
+                    // output first (me first), as a first content frame does.
+                    var frame = streamed
+                    if !sentWithheldReasoningHeartbeat,
+                        let heartbeat = InklingWithheldReasoningHeartbeat.frame(rewriting: streamed)
+                    {
+                        guard token.claimOutput() else {
+                            endAfterGivingWay(framesEmitted, bytesEmitted)
+                            return
+                        }
+                        frame = heartbeat
+                        sentWithheldReasoningHeartbeat = true
+                    }
                     // The iterator suspension is the final pre-content await.
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,
@@ -1266,8 +1340,8 @@ extension ProviderLoop {
                     if let parsed = Self.parseStreamChunk(frame) {
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
-                            fullResponseText += content
-                            deliveredText += content
+                            hashedOutput.append(content)
+                            deliveredText.append(content)
                             // Count only NON-empty content toward the billing
                             // floor: parseStreamChunk returns a non-nil but empty
                             // contentDelta for SSE frames carrying "content":""
@@ -1278,15 +1352,16 @@ extension ProviderLoop {
                             }
                         }
                         if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
-                            fullResponseText += reasoning
-                            deliveredText += reasoning
+                            hashedOutput.append(reasoning)
+                            deliveredText.append(reasoning)
                             frameHadContent = true
-                            reasoningText += reasoning
+                            reasoningText.append(reasoning)
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
-                            fullResponseText += Self.encodeToolCallsForHash(toolCalls)
+                            hashedOutput.append(Self.encodeToolCallsForHash(toolCalls))
                             for call in toolCalls {
-                                deliveredText += (call.function?.name ?? "") + (call.function?.arguments ?? "")
+                                deliveredText.append(call.function?.name ?? "")
+                                deliveredText.append(call.function?.arguments ?? "")
                             }
                             // A streamed call's first fragment is content: the
                             // pre-content deadline no longer applies once a
@@ -1330,18 +1405,12 @@ extension ProviderLoop {
                             // (OpenAI shape). The coordinator forwards this
                             // chunk verbatim, so no coordinator change is
                             // needed for the streaming path.
-                            let generatedReasoning = generatedReasoningText()
-                            if !generatedReasoning.isEmpty {
+                            if hasGeneratedReasoning() {
                                 // Re-tokenizing detokenized text isn't a perfect
                                 // identity (whitespace/special-token merges), so
                                 // clamp to the engine's completion count — a
                                 // reasoning subset can never exceed the total.
-                                reasoningTokens = min(
-                                    tokenizer.inner.encode(
-                                        text: generatedReasoning, addSpecialTokens: false
-                                    ).count,
-                                    max(0, completionTokens)
-                                )
+                                reasoningTokens = min(generatedReasoningTokenCount(), max(0, completionTokens))
                                 frameToEmit = Self.injectReasoningTokens(
                                     into: frame, reasoningTokens: reasoningTokens
                                 )
@@ -1413,7 +1482,7 @@ extension ProviderLoop {
                     GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                     if Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
-                        fullResponseText: fullResponseText
+                        hasResponseText: !hashedOutput.isEmpty
                     ) {
                         providerStats.incrementGenerationErrorsAfterOutput()
                     }
@@ -1456,16 +1525,10 @@ extension ProviderLoop {
                 return
             }
             if cancelledMidStream {
-                let generatedReasoning = generatedReasoningText()
-                if reasoningTokens == 0 && !generatedReasoning.isEmpty {
+                if reasoningTokens == 0 && hasGeneratedReasoning() {
                     let completionFloor = completionTokens > 0 ? completionTokens : contentFrameCount
                     if completionFloor > 0 {
-                        reasoningTokens = min(
-                            tokenizer.inner.encode(
-                                text: generatedReasoning, addSpecialTokens: false
-                            ).count,
-                            completionFloor
-                        )
+                        reasoningTokens = min(generatedReasoningTokenCount(), completionFloor)
                     }
                 }
 
@@ -1474,12 +1537,10 @@ extension ProviderLoop {
                     completionTokens: completionTokens,
                     reasoningTokens: reasoningTokens,
                     contentFrameCount: contentFrameCount,
-                    deliveredCompletionTokenFloor: tokenizer.inner.encode(
-                        text: deliveredText, addSpecialTokens: false
-                    ).count,
+                    deliveredCompletionTokenFloor: tokenCount(deliveredText),
                     hasVisibleOutput: Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
-                        fullResponseText: fullResponseText
+                        hasResponseText: !hashedOutput.isEmpty
                     )
                 )
                 let terminal = partialUsage.cancelledTerminal(promptTokenFloor: promptFloor())
@@ -1555,14 +1616,8 @@ extension ProviderLoop {
                     }
                 }
                 // Re-tokenize reasoning here too when the usage frame is missing.
-                let generatedReasoning = generatedReasoningText()
-                if reasoningTokens == 0 && !generatedReasoning.isEmpty && completionTokens > 0 {
-                    reasoningTokens = min(
-                        tokenizer.inner.encode(
-                            text: generatedReasoning, addSpecialTokens: false
-                        ).count,
-                        completionTokens
-                    )
+                if reasoningTokens == 0 && completionTokens > 0 && hasGeneratedReasoning() {
+                    reasoningTokens = min(generatedReasoningTokenCount(), completionTokens)
                 }
                 if promptTokens == 0 || completionTokens == 0 {
                     log.warning(
@@ -1616,7 +1671,7 @@ extension ProviderLoop {
                 identity: signingIdentity,
                 requestId: requestId,
                 completionTokens: UInt64(max(completionTokens, 0)),
-                responseBody: fullResponseText
+                response: hashedOutput
             )
             let seSignDuration = SuspendingClock.now - seSignStart
             let cacheResult = remoteCache.scope == nil ? nil : v2UsageSignal.lookupResult
@@ -1638,6 +1693,20 @@ extension ProviderLoop {
                 inputTokens: usageInfo.promptTokens, outputTokens: usageInfo.completionTokens,
                 cachedInputTokens: localCachedTokens, reasoningTokens: usageInfo.reasoningTokens,
                 exact: !usageRecovered))
+            if let toolCalls = v2UsageSignal.toolCalls {
+                profile.update { f, _ in
+                    f.set(.toolCalls, Int64(toolCalls.returned))
+                    f.set(.toolCallsBreakingDeclaration, Int64(toolCalls.breakingDeclaration))
+                }
+            }
+            let encryptedUsage: EncryptedPayload?
+            do {
+                encryptedUsage = try responseSealer.sealUsage(usageInfo)
+            } catch {
+                log.error("[\(requestId)] usage encryption failed")
+                providerStats.incrementChunkEncryptionErrors()
+                encryptedUsage = nil
+            }
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(
@@ -1648,7 +1717,8 @@ extension ProviderLoop {
                     responseHash: attestation.hash,
                     // Live builder: SendHandle.send stamps flush/terminal_sent,
                     // the codec materializes the wire object at encode time.
-                    profile: profile),
+                    profile: profile,
+                    encryptedUsage: encryptedUsage),
                 fallbackFailure: .policy,
                 send: send)
 

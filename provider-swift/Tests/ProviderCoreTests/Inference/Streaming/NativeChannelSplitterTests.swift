@@ -87,6 +87,56 @@ struct NativeChannelSplitterTests {
         #expect(pieces.map(\.content).joined() == "answer more")
     }
 
+    static func frame(_ text: String) -> String {
+        "<tool_call>\n<function=post>\n<parameter=text>\n\(text)\n</parameter>\n</function>\n</tool_call>"
+    }
+
+    /// Lightning's shape: the thought closes early, draft frames and more
+    /// thought follow, a second `</think>` closes it, then the real calls.
+    static let draftThenCalls = "Same two calls as before. Probably something like:\n\n</think>\n\n"
+        + frame("A") + "\n" + frame("B") + "\n\n\n\nBut keep each value exact.\n\nThus two calls.\n\n</think>\n\n"
+        + frame("A") + "\n" + frame("B")
+
+    @Test func framesBeforeASecondCloseStayReasoning() {
+        let draft = Self.frame("A") + "\n" + Self.frame("B") + "\n\n\n\nBut keep each value exact.\n\nThus two calls.\n\n"
+        for width in [1, 3, 7, 64, 4096] {
+            var splitter = NativeChannelSplitter(prefix: "<think>", protectToolFrames: true,
+                absorbStrayThinkClose: true, holdsFramesAfterThought: true)
+            var pieces: [ParsedReasoning] = []
+            let characters = Array(Self.draftThenCalls)
+            for start in stride(from: 0, to: characters.count, by: width) {
+                pieces += splitter.parse(String(characters[start..<min(characters.count, start + width)]))
+            }
+            pieces += splitter.finish()
+            #expect(pieces.compactMap(\.reasoningContent).joined()
+                == "Same two calls as before. Probably something like:\n\n" + draft)
+            #expect(pieces.map(\.content).joined() == "\n\n\n\n" + Self.frame("A") + "\n" + Self.frame("B"))
+        }
+    }
+
+    @Test func framesAfterAClosedThoughtAreContentWithoutASecondClose() {
+        let text = "thought</think>\n" + Self.frame("A") + "\nDone."
+        var splitter = NativeChannelSplitter(prefix: "<think>", protectToolFrames: true,
+            absorbStrayThinkClose: true, holdsFramesAfterThought: true)
+        let pieces = splitter.parse(text) + splitter.finish()
+        #expect(pieces.compactMap(\.reasoningContent).joined() == "thought")
+        #expect(pieces.map(\.content).joined() == "\n" + Self.frame("A") + "\nDone.")
+    }
+
+    @Test func framesStayContentWhereNoFrameIsHeld() {
+        // Without the hold (other families), or without a closed thought
+        // (a closed prompt), a stray close keeps the frames before it.
+        let text = "</think>\n" + Self.frame("A") + "\nmore</think>\n" + Self.frame("B")
+        for (prefix, holds) in [("<think>", false), ("<think></think>", true)] {
+            var splitter = NativeChannelSplitter(prefix: prefix, protectToolFrames: true,
+                absorbStrayThinkClose: true, holdsFramesAfterThought: holds)
+            let pieces = splitter.parse(text) + splitter.finish()
+            let content = "\n" + Self.frame("A") + "\nmore\n" + Self.frame("B")
+            #expect(pieces.map(\.content).joined() == content)
+            #expect(pieces.compactMap(\.reasoningContent).joined().isEmpty)
+        }
+    }
+
     @Test func closeMarkerInsideToolFrameStaysOpaque() {
         var splitter = NativeChannelSplitter(prefix: "<think></think>", protectToolFrames: true,
             absorbStrayThinkClose: true)

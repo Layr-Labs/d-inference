@@ -35,6 +35,7 @@ extension EngineV2Factory {
                 profile: profile)
         return (productionSchedulerConfig(
             maxConcurrentRequests: concurrency, model: model, modelID: modelID,
-            performanceProfile: profile, environment: environment), profile)
+            performanceProfile: profile, chipIdentity: chipIdentity, environment: environment),
+            profile)
     }
 }

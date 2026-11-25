@@ -101,6 +101,27 @@ enum GLM5ToolSuffix {
         return String(decoding: bytes[..<start], as: UTF8.self)
     }
 
+    /// The closed frames that end a thought that never closed (whitespace
+    /// only between and after them), from the first after which every one
+    /// parses on its own: GLM calling from inside its thought. Nil when there
+    /// are none, or when a frame is still open or broken at the end.
+    static func trailingCalls(in thought: String, tools: [[String: any Sendable]]?) -> String? {
+        let bytes = Array(thought.utf8)
+        var lexer = Lexer(bytes: bytes, tools: tools, grammarOnly: GrammarOnlyToolParsing.isEnabled)
+        lexer.run()
+        guard lexer.unclosed == nil, lexer.cutHeader == nil else { return nil }
+        var runStart = bytes.count
+        var head = lexer.frames.endIndex
+        while head > 0, Lexer.isWhitespace(bytes[lexer.frames[head - 1].upperBound ..< runStart]) {
+            head -= 1
+            runStart = lexer.frames[head].lowerBound
+        }
+        var first = lexer.frames.endIndex
+        while first > head, lexer.call(first - 1) != nil { first -= 1 }
+        guard first < lexer.frames.endIndex else { return nil }
+        return String(decoding: bytes[lexer.frames[first].lowerBound...], as: UTF8.self)
+    }
+
     /// Top-level GLM frames, read by the SDK parser's grammar: a name up to `<`,
     /// then `</tool_call>`, or `<arg_key>` pairs. A `<tool_call>` followed by
     /// anything else is a mention and stays text, unless a frame's own tags

@@ -90,7 +90,8 @@ enum ClusterPlacementTensorWidth {
             widened.leader = leader; widened.requiredTensorShares = chosen.tensorShares ?? [1, 1]
             var sized = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: widened, link: link)
             guard let wide = sized.chosen, wide.mode == .tensorParallel, wide.ranks.map(\.device) == chosen.ranks.map(\.device),
-                  wide.tensorShares == chosen.tensorShares, wide.admitted(requireNow: true) else { continue }
+                  wide.tensorShares == chosen.tensorShares, wide.admitted(requireNow: true),
+                  wide.keepsFreePagesFit(of: chosen, devices: devices, policy: policy) else { continue }
             sized.modesReason = singleton.modesReason; sized.keptModeReason = singleton.keptModeReason
             sized.tensorParallel = singleton.tensorParallel; sized.shards = singleton.shards
             lanes = width.lanes
@@ -106,5 +107,13 @@ extension ClusterPlacementCandidate {
     /// (`DistributedAutomaticBatchPlanner.accepts`) are held to it alike.
     func admitted(requireNow: Bool) -> Bool {
         possible && withinGPUWorkingSet && (!requireNow || ranks.allSatisfy { $0.fit == .now })
+    }
+
+    /// A wider width of `singleton`, planned again after a load-gate refusal (`ClusterPlacementPolicy.freePagesFirst`):
+    /// it replaces a singleton every Mac's free pages hold only when they hold it too, so the width never brings back
+    /// a share that fits only by the file cache the gate withdraws mid-load.
+    func keepsFreePagesFit(of singleton: ClusterPlacementCandidate, devices: [ClusterPlacementDevice],
+                           policy: ClusterPlacementPolicy) -> Bool {
+        !policy.freePagesFirst || !singleton.fitsOnFreePages(devices) || fitsOnFreePages(devices)
     }
 }

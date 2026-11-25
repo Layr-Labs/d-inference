@@ -277,7 +277,7 @@ struct PrefixCacheEvidenceSequencerTests {
             case .prefixCacheLookupV2(let lookup): "lookup:\(lookup.requestId)"
             case .prefixCacheReadyV2(let ready): "ready:\(ready.requestId)"
             case .inferenceError(let requestID, _, _): "error:\(requestID)"
-            case .inferenceComplete(let requestID, _, _, _, _, _): "complete:\(requestID)"
+            case .inferenceComplete(let requestID, _, _, _, _, _, _): "complete:\(requestID)"
             default: "unexpected"
             }
         }

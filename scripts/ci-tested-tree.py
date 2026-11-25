@@ -1,35 +1,38 @@
 #!/usr/bin/env python3
 """Find a successful CI run of this workflow that already tested the same change.
 
-CI tests each change once. A passing run's gate uploads an empty record, an
-artifact named
+CI tests each change once. A passing run's gate uploads empty records,
+artifacts named
 
     ci-tested-<tree>-<base>-<head>-p<0|1>c<0|1>m<0|1>
+    ci-tested-tree-<tree>-p<0|1>c<0|1>m<0|1>
 
-<tree> is the tree the run tested. A pull request run names the base and head
-commits GitHub merged for its test (`github.event.pull_request.base.sha`,
-`.head.sha`); a push run names `push` and its commit. The p, c and m flags
-say which components ran: provider, cluster, MiMo audio.
+<tree> is the git root tree the run tested (`git rev-parse HEAD^{tree}`). A pull
+request run names the base and head commits GitHub merged for its test
+(`github.event.pull_request.base.sha`, `.head.sha`); a push run names `push`
+and its commit. The p, c and m flags say which components ran: provider,
+cluster, MiMo audio.
 
 Before testing, a run looks for a record that binds to its own change and
 covers every component it would run:
 
 - a pull request: `<tree>-<base>-<head>` of its own event;
-- a push of commit S: `<tree(S)>-<first parent>-<second parent>` (the pull
-  request whose head S merges, tested against S's first parent), and
-  `<tree(S)>-push-<S>` (an earlier run of this push).
+- a push of commit S: `<tree(S)>-<first parent>-<second parent>` when S is a
+  two-parent merge, `ci-tested-tree-<tree(S)>` when S is a squash merge or a
+  merge of the exact tested tree, and `<tree(S)>-push-<S>` (an earlier run of
+  this push).
 
-A dispatched run (the hourly full run of dev) never skips: it reads no
-record.
+A dispatched run never skips: it reads no record.
 
 It accepts a record only from a completed, successful run of the same
-workflow file in this repository (not a fork), of the matching event, whose
-head commit is the record's head. Any doubt runs the tests: no record, an
-expired or foreign one, a failed or unfinished run, or an API error.
+workflow file in this repository (not a fork), of a matching event, whose
+head commit matches the record (or is a valid commit SHA for a tree record).
+Any doubt runs the tests: no record, an expired or foreign one, a failed or
+unfinished run, or an API error.
 
 A same-repository pull request runs its own workflow file, so a record is as
-trustworthy as the reviewed workflow at that head; the binding keeps a
-record of one change from standing in for another.
+trustworthy as the reviewed workflow at that head; the tree hash binds every
+tracked file, mode and submodule commit in the repository.
 
 Usage: ci-tested-tree.py lookup --repository OWNER/REPO --workflow-ref REF
        --event NAME --sha SHA --tree TREE [--base SHA --head SHA]
@@ -37,6 +40,7 @@ Usage: ci-tested-tree.py lookup --repository OWNER/REPO --workflow-ref REF
        [--output GITHUB_OUTPUT]
        ci-tested-tree.py name --tree TREE --base SHA|push --head SHA
        --components ...
+       ci-tested-tree.py tree-name --tree TREE --components ...
 Reads GITHUB_TOKEN (actions: read, contents: read) from the environment.
 """
 
@@ -84,6 +88,10 @@ def record_name(tree, base, head, selected):
     return f"ci-tested-{sha(tree, 'tree')}-{base if base == 'push' else sha(base, 'base')}-{sha(head, 'head')}-{flags(selected)}"
 
 
+def tree_record_name(tree, selected):
+    return f"ci-tested-tree-{sha(tree, 'tree')}-{flags(selected)}"
+
+
 def supersets(selected):
     """Every component set that covers `selected`, `selected` itself first."""
     choices = [[True] if selected[name] else [False, True] for name in COMPONENTS]
@@ -99,18 +107,21 @@ def workflow_path(workflow_ref, repository):
 
 
 def candidates(repository, event, commit, tree, base, head, get):
-    """[(base, head, event of the recording run)] that may stand in for this run."""
+    """[(kind, base, head, allowed events)] that may stand in for this run."""
     if event == "pull_request":
-        return [(sha(base, "base"), sha(head, "head"), "pull_request")]
+        return [("change", sha(base, "base"), sha(head, "head"), ("pull_request",))]
     if event != "push":
         raise ValueError(f"Unsupported event: {event!r}")
     found = get(f"/repos/{repository}/git/commits/{commit}")
     if found.get("tree", {}).get("sha") != tree:
         raise ValueError("The pushed commit's tree is not the tree under test")
     parents = [parent.get("sha") for parent in found.get("parents", [])]
-    result = [("push", commit, "push")]
+    result = [("change", "push", commit, ("push",))]
     if len(parents) == 2 and all(isinstance(parent, str) and SHA.fullmatch(parent) for parent in parents):
-        result.insert(0, (parents[0], parents[1], "pull_request"))
+        result.insert(0, ("change", parents[0], parents[1], ("pull_request",)))
+        result.append(("tree", None, None, ("pull_request", "push")))
+    elif len(parents) == 1 and isinstance(parents[0], str) and SHA.fullmatch(parents[0]):
+        result.insert(0, ("tree", None, None, ("pull_request", "push")))
     return result
 
 
@@ -118,9 +129,10 @@ def tested_run(repository, path, event, commit, tree, base, head, selected, run_
     """The URL of a successful run that recorded this change with a superset, or None."""
     sha(tree, "tree")
     sha(commit, "commit")
-    for record_base, record_head, record_event in candidates(repository, event, commit, tree, base, head, get):
+    for kind, record_base, record_head, allowed_events in candidates(repository, event, commit, tree, base, head, get):
         for covering in supersets(selected):
-            name = record_name(tree, record_base, record_head, covering)
+            name = (tree_record_name(tree, covering) if kind == "tree"
+                    else record_name(tree, record_base, record_head, covering))
             listing = get(f"/repos/{repository}/actions/artifacts?name={name}&per_page=100")
             for artifact in listing.get("artifacts", []):
                 source = artifact.get("workflow_run") or {}
@@ -129,9 +141,12 @@ def tested_run(repository, path, event, commit, tree, base, head, selected, run_
                 if not isinstance(source.get("id"), int) or source["id"] == run_id:
                     continue
                 run = get(f"/repos/{repository}/actions/runs/{source['id']}")
+                head_sha = run.get("head_sha")
+                head_ok = (isinstance(head_sha, str) and bool(SHA.fullmatch(head_sha))
+                           if record_head is None else head_sha == record_head)
                 if (run.get("status") == "completed" and run.get("conclusion") == "success"
-                        and run.get("path") == path and run.get("event") == record_event
-                        and run.get("head_sha") == record_head
+                        and run.get("path") == path and run.get("event") in allowed_events
+                        and head_ok
                         and (run.get("repository") or {}).get("full_name") == repository
                         and (run.get("head_repository") or {}).get("full_name") == repository):
                     return run.get("html_url") or f"https://github.com/{repository}/actions/runs/{source['id']}"
@@ -167,9 +182,15 @@ def main():
     name = commands.add_parser("name")
     for option in ("--tree", "--base", "--head", "--components"):
         name.add_argument(option, required=True)
+    tree_name = commands.add_parser("tree-name")
+    for option in ("--tree", "--components"):
+        tree_name.add_argument(option, required=True)
     args = parser.parse_args()
     if args.command == "name":
         print(record_name(args.tree, args.base, args.head, components(args.components)))
+        return 0
+    if args.command == "tree-name":
+        print(tree_record_name(args.tree, components(args.components)))
         return 0
     try:
         selected = components(args.components)

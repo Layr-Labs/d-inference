@@ -107,7 +107,9 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
             return lease
         }
     }
-    func shutdown() async { lock.withLock { shutdowns += 1; available = false } }
+    /// Called at the start of each shutdown, before it is counted.
+    var onShutdown: (@Sendable () -> Void)?
+    func shutdown() async { onShutdown?(); lock.withLock { shutdowns += 1; available = false } }
     /// A rank is gone: readiness ends and the one observer is told.
     func losePeer() {
         let handler = lock.withLock { available = false; return invalidation }

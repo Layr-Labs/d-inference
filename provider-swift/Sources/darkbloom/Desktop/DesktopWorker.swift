@@ -32,12 +32,24 @@ final class DesktopWorker: @unchecked Sendable {
     init(_ process: Process) { self.process = process }
   }
 
+  /// Starts a command's deadline: calls `expire` once `timeout` has passed. Production waits on the wall clock;
+  /// a test passes its own to expire a command at a point it chooses instead of after a real wait.
+  typealias Deadline = @Sendable (_ timeout: TimeInterval, _ expire: @escaping @Sendable () -> Void) -> Void
+
+  static let wallClockDeadline: Deadline = { timeout, expire in
+    DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { expire() }
+  }
+
   private let lock = NSLock()
   private var invocation: Invocation?
   private var cancelled = false
   private let executable: URL?
+  private let deadline: Deadline
 
-  init(executable: URL? = nil) { self.executable = executable }
+  init(executable: URL? = nil, deadline: @escaping Deadline = DesktopWorker.wallClockDeadline) {
+    self.executable = executable
+    self.deadline = deadline
+  }
 
   func cancel() {
     let current = lock.withLock {
@@ -119,7 +131,7 @@ final class DesktopWorker: @unchecked Sendable {
               buffer.markReadFailure()
             }
           }
-          DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self, weak current] in
+          deadline(timeout) { [weak self, weak current] in
             guard let current else { return }
             // A completed probe's deadline must never cancel the next command on this worker.
             self?.stop(current, reason: .timedOut)

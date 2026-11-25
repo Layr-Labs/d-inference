@@ -123,7 +123,8 @@ private final class Harness {
     private(set) var output: Int32
     private var sequence: UInt64 = 0
     private var renewals: UInt64 = 0
-    init(rank: Int = 0, leaseNanoseconds: UInt64 = 5_000_000_000, idleRelease: WorkerIdleRelease = .never) throws {
+    init(rank: Int = 0, leaseNanoseconds: UInt64 = 5_000_000_000, idleRelease: WorkerIdleRelease = .never,
+         readyPublished: @escaping @Sendable (ClusterWorkerReady) -> Void = { _ in }) throws {
         runtime = FakeRuntime(rank: rank)
         exits.runtime = runtime
         var a: [Int32] = [0, 0], b: [Int32] = [0, 0]
@@ -137,7 +138,7 @@ private final class Harness {
                 let io = try WorkerPipes(input: childInput, output: childOutput,
                     deadline: DispatchTime.now().uptimeNanoseconds + leaseNanoseconds)
                 let coordinator = try WorkerCoordinator(runtime: runtime, pipes: io, exitHooks: hooks,
-                    idleRelease: idleRelease)
+                    idleRelease: idleRelease, readyPublished: readyPublished)
                 box.set(coordinator)
                 try coordinator.run()
             } catch { result.save(error) }
@@ -871,5 +872,86 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
         XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
         XCTAssertEqual(h.runtime.startCount, 0)
+    }
+
+    // MARK: the start-up record (`WorkerOwnerPhases`, `darkbloom-owner-phases-v1`)
+
+    /// Each phase is the time since the previous mark; the load's own phases
+    /// are what the runtime clock added inside `runtime_load`, and the rest of
+    /// the load is `runtime_other`. Milliseconds, uptime clock.
+    func testOwnerPhasesNameEachPhaseAndTheLoadsOwnInMilliseconds() throws {
+        let ms: UInt64 = 1_000_000
+        let phases = WorkerOwnerPhases(started: 0)
+        phases.mark("configure", at: 3 * ms)
+        phases.mark("lease_arm", at: 4 * ms); phases.mark("credential_read", at: 10 * ms)
+        phases.mark("orphan_guard", at: 12 * ms)
+        phases.beginRuntime([.checkpointVerify: .init(nanoseconds: 100 * ms, count: 1)], at: 20 * ms)
+        phases.endRuntime([.checkpointVerify: .init(nanoseconds: 400 * ms, count: 2),
+                           .weightRead: .init(nanoseconds: 300 * ms, count: 5),
+                           .jacclGroup: .init(nanoseconds: 50 * ms, count: 1)], at: 1_020 * ms)
+        // Before the readiness: no ready_publish and no total yet.
+        XCTAssertEqual(phases.durations.map { $0.name }, ["configure", "lease_arm", "credential_read",
+            "orphan_guard", "bootstrap_attach", "runtime_load", "jaccl_group", "checkpoint_verify", "weight_read",
+            "runtime_other"])
+        phases.ready(at: 1_100 * ms)
+        let epoch = try XCTUnwrap(UUID(uuidString: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"))
+        let times = "configure_ms=3 lease_arm_ms=1 credential_read_ms=6 orphan_guard_ms=2"
+            + " bootstrap_attach_ms=8 runtime_load_ms=1000 jaccl_group_ms=50 checkpoint_verify_ms=300 weight_read_ms=300"
+            + " runtime_other_ms=350 ready_publish_ms=80 total_ms=1100"
+        XCTAssertEqual(phases.line(rank: 1, epoch: epoch, generation: 7, modelID: "registered_qwen38_27b",
+            mode: "pipeline", stageCut: 32),
+            "darkbloom-owner-phases-v1 rank=1 epoch=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee generation=7"
+            + " model=registered_qwen38_27b mode=pipeline stage_cut=32 " + times)
+        XCTAssertTrue(phases.line(rank: 0, epoch: epoch, generation: nil, modelID: "m", mode: "pipeline", stageCut: 4)
+            .contains(" generation=none "))
+        XCTAssertEqual(phases.loadMemoryFields, times.split(separator: " ").map { "phase_" + $0 }.joined(separator: " "))
+        // A load whose phases took longer than the load itself never reports a negative rest.
+        let odd = WorkerOwnerPhases(started: 0)
+        odd.beginRuntime([:], at: ms)
+        odd.endRuntime([.weightCopy: .init(nanoseconds: 9 * ms, count: 1)], at: 2 * ms)
+        XCTAssertEqual(odd.durations.first { $0.name == "runtime_other" }?.milliseconds, 0)
+    }
+
+    /// The load's `darkbloom-load-memory-v1` lines keep every field of their
+    /// own, in place, and carry the phases after them as new keys only.
+    func testLoadMemoryLinesKeepTheirFieldsAndCarryThePhasesAfterThem() {
+        let record = "darkbloom-load-memory-v1 scope=Resident_load decisions=2 refused=0 unjudged=0 rule=free_pages"
+            + " required=1 admissible=2 free=2 file_backed=0 counted=0 kernel_file_cache_minimum=unknown anonymous=0"
+            + " compressor=0 pressure=1 compressed_since_first=0 swapped_out_since_first=0"
+        XCTAssertEqual(WorkerLoadMemory.lines([record, record], phases: nil), [record, record])
+        let phases = WorkerOwnerPhases(started: 0)
+        phases.mark("configure", at: 2_000_000)
+        let lines = WorkerLoadMemory.lines([record], phases: phases)
+        XCTAssertEqual(lines, [record + " phase_configure_ms=2"])
+        // No new key repeats one of the record's own.
+        let own = Set(record.split(separator: " ").dropFirst().map { $0.split(separator: "=")[0] })
+        let added = lines[0].split(separator: " ").dropFirst().map { $0.split(separator: "=")[0] }.filter { !own.contains($0) }
+        XCTAssertEqual(added, ["phase_configure_ms"])
+        // Phases with nothing closed yet add nothing.
+        XCTAssertEqual(WorkerLoadMemory.lines([record], phases: WorkerOwnerPhases(started: 0)), [record])
+    }
+
+    /// The start-up record's hook runs once, after the readiness event was
+    /// written, with the readiness the owner read; it changes nothing the
+    /// owner sees.
+    func testTheReadyHookRunsOnceAfterTheReadinessWasWritten() throws {
+        final class Calls: @unchecked Sendable {
+            private let lock = NSLock(); private var values: [ClusterWorkerReady] = []
+            func add(_ value: ClusterWorkerReady) { lock.lock(); values.append(value); lock.unlock() }
+            var all: [ClusterWorkerReady] { lock.lock(); defer { lock.unlock() }; return values }
+        }
+        let calls = Calls()
+        let h = try Harness(readyPublished: { calls.add($0) })
+        guard case .ready(let ready) = try h.event().event else { return XCTFail("Missing fake ready") }
+        let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+        while calls.all.isEmpty && DispatchTime.now().uptimeNanoseconds < deadline { usleep(1_000) }
+        XCTAssertEqual(calls.all.count, 1)
+        XCTAssertEqual(calls.all.first?.identity.membershipEpoch, ready.identity.membershipEpoch)
+        XCTAssertEqual(calls.all.first?.rank, ready.rank)
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        h.closeInput()
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(h.result.error)
+        XCTAssertEqual(calls.all.count, 1)
     }
 }

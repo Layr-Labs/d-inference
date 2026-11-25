@@ -468,7 +468,7 @@ enum IsolationFixtures {
                 serviceInfo: [ClusterLinkServiceName.cluster(interface: port): .output(IsolationFixtures.manualServiceInfo(address: address))],
                 bridgePreferences: .output(bridges), routes: .output(IsolationFixtures.routeTable(routes + extraRoutes)),
                 dns: .output("DNS configuration\n\n" + IsolationFixtures.resolver(1, servers: ["192.0.2.1"], interface: wifi, scoped: false)))
-            // Darkbloom's services in the preferences, each the only one on its port (pair-2's MacBook).
+            // Darkbloom's services in the preferences, each the only one on its port (as on a DevNet MacBook).
             let ours = ([port] + otherPorts).map { (id: IsolationFixtures.serviceID("a" + String($0.last!)), name: ClusterLinkServiceName.cluster(interface: $0), device: $0) }
             tools.isolation.servicePreferences = .output(IsolationFixtures.servicePreferences(ours))
             tools.isolation.currentSet = .output("/Sets/\(IsolationFixtures.networkSet)\n")

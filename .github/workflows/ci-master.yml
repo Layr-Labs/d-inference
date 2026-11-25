@@ -1,14 +1,36 @@
 name: CI (master)
 
-# Pull requests into master and pushes to master run the provider and
-# cluster tests (.github/workflows/provider-tests.yml), Release Integrity and
-# Docs Lint. Pull requests into dev run only the tests (ci-dev.yml).
+# Pull requests into master run Release Integrity and Docs Lint on request
+# only: on a label (`run-ci` among them) or when marked ready for review, never
+# on a push to the pull request's branch. They run the macOS provider and
+# cluster tests (.github/workflows/provider-tests.yml) when opted in via the
+# one-shot `run-ci` label (`gh pr edit <PR> --add-label run-ci`). Pushes to
+# master run all suites (unless deduplicated by ci-tested-tree.py). A dispatch
+# runs all suites against one commit, a SHA or a branch:
+#   gh workflow run ci-master.yml --ref master -f ref=<sha>
+#   (or -f pr=<n> [-f ref=<its head>]: the pull request merged with its base)
+run-name: ${{ github.event_name == 'workflow_dispatch' && (inputs.pr != '' && format('CI (master) at PR {0} {1}(merged)', inputs.pr, inputs.ref != '' && format('at {0} ', inputs.ref) || '') || format('CI (master) at {0}', inputs.ref || github.ref_name)) || '' }}
 on:
   push:
     # Pushes to master save the caches that pull requests into master restore.
     branches: [master, main]
   pull_request:
     branches: [master, main]
+    # Every label event runs Release Integrity, so a label can never leave a
+    # skipped (passing) Release Integrity on a head it did not test.
+    types: [labeled, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The commit to test, a SHA (short or full) or a branch of this repository (default the head of --ref)
+        type: string
+        required: false
+        default: ''
+      pr:
+        description: A pull request number of this repository; tests its head (or `ref`, which must be its head) merged with its base
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -26,32 +48,57 @@ env:
     !/docs/reports/evidence/**/*.gz
     !/landing/public/media/
 
-# Only revisions of the same PR supersede each other; pushes stay independent.
+# Revisions and `run-ci`/`run-gpu-ci` triggers on the same PR supersede each
+# other; unrelated label additions use an isolated group so they never cancel
+# an active `run-ci` run; pushes stay independent.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    ${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'run-ci' && github.event.label.name != 'run-gpu-ci' && format('{0}-label-{1}', github.workflow, github.run_id)) ||
+        format('{0}-{1}-{2}', github.workflow, github.event_name, github.event.pull_request.number || github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}
 
 jobs:
+  unlabel:
+    name: Consume run-ci label
+    if: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Remove one-shot run-ci labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/run-ci" >/dev/null 2>&1 || true
+          gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/run-gpu-ci" >/dev/null 2>&1 || true
+
   plan:
     uses: ./.github/workflows/provider-plan.yml
     permissions:
       contents: read
       actions: read
     with:
+      run_tests: ${{ github.event_name != 'pull_request' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci' }}
       linux_lanes: |
-        release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404
-        docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
+        docs linux_arm64 blacksmith-4vcpu-ubuntu-2404 1 balanced 4x16
 
   tests:
     name: Tests
     needs: plan
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}
     uses: ./.github/workflows/provider-tests.yml
     permissions:
       contents: read
+      actions: read
     with:
       provider: ${{ needs.plan.outputs.provider }}
       cluster: ${{ needs.plan.outputs.cluster }}
+      cluster_gpu: ${{ needs.plan.outputs.cluster_gpu }}
       mimo_audio: ${{ needs.plan.outputs.mimo_audio }}
       changed_provider: ${{ needs.plan.outputs.changed_provider }}
       changed_cluster: ${{ needs.plan.outputs.changed_cluster }}
@@ -62,13 +109,16 @@ jobs:
       base: ${{ needs.plan.outputs.base }}
       head: ${{ needs.plan.outputs.head }}
       routes: ${{ needs.plan.outputs.routes }}
+      sha: ${{ needs.plan.outputs.sha }}
       strict_cache: true
 
   release-integrity:
-    name: Release Integrity
     # A top-level job, so its check is named exactly Release Integrity, the
     # name master's ruleset requires. It reads its lane of the run's one route
-    # request (provider-plan.yml).
+    # request (provider-plan.yml). A dispatch's check runs belong to the head
+    # of its --ref: one that tested another commit reports under another name,
+    # so it can never satisfy the ruleset for a head it did not test.
+    name: ${{ (github.event_name == 'workflow_dispatch' && needs.plan.outputs.sha != github.sha) && 'Release Integrity (dispatch)' || 'Release Integrity' }}
     needs: plan
     if: ${{ !cancelled() }}
     runs-on: ${{ fromJSON(needs.plan.outputs.routes)['release-integrity'] }}
@@ -136,6 +186,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false # Keeps the job token out of the saved .git/config.
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
@@ -145,76 +196,87 @@ jobs:
         with:
           path: .git
           key: ${{ steps.git-cache.outputs.cache-primary-key }}
-      # A plain build of master must be prod and a plain build of dev must be
-      # dev. The target is the pull request's base branch, or the pushed branch.
-      - name: Check the provider's plain-build default for the target branch
+      # The checks below are independent: they run at the same time, at most
+      # one per CPU and in this order, longest first, and each one's output is
+      # printed whole, in this order, with its duration
+      # (scripts/run-concurrent-checks.py). Each gets its own TMPDIR; a test
+      # server binds an ephemeral port. Any failure fails the step once every
+      # check has run; no check is retried or given a time limit.
+      - name: Run the release integrity checks
         env:
+          # A plain build of master must be prod and a plain build of dev must be
+          # dev. The target is the pull request's base branch, or the pushed branch.
           TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
         run: |
-          python3 scripts/test-provider-build-default.py
-          python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"
-      - name: Validate changelog fragments
-        run: |
-          python3 scripts/test-changelog.py
-          make changelog-check
-      - name: Check provider release and installer integrity
-        run: |
-          ./scripts/check-release-version.sh
-          python3 scripts/test-provider-release-resolution.py
-          python3 scripts/test-provider-release-resume.py
-          python3 scripts/test-provider-release-toolchain.py
-          python3 scripts/test-provider-release-cache.py
-          python3 scripts/test-prepare-metal-toolchain.py
-          python3 scripts/test-provider-release-pipeline.py
-          python3 scripts/test-provider-release-publication.py
-          python3 scripts/test-provider-release-notes.py
-          python3 scripts/test-provider-cluster-runtime-models.py
-          python3 scripts/test-release-dev-branch.py
-          python3 scripts/test-provider-release-artifact.py
-          python3 scripts/test-provider-signing-validation.py
-          python3 scripts/test-provider-identity.py
+          python3 scripts/run-concurrent-checks.py <<'CHECKS'
+          # Advisory threat review with local HTTP fixtures; its budget suite
+          # is the longest check (72 s on 2026-11-20), so it starts first.
+          python3 .github/scripts/test-threat-budget.py
+          # Provider release and installer integrity; the route suite takes
+          # 40 s.
+          python3 scripts/test-darkbloom-route.py
+          # Serving qualification evidence and catalogs without a GPU.
+          python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
+          # Actual-call and bounded timing receipts without a GPU.
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
+          # SDK 27.2 back-deploys Date's >= and <=; pre-release macOS 27.2
+          # builds lack the symbols. The release build also checks the built
+          # binaries.
+          python3 scripts/test-check-date-comparisons.py
+          python3 scripts/check-date-comparisons.py
+          python3 scripts/test-check-provider-weak-imports.py
+          # The model registry workflow with loopback HTTP.
+          python3 scripts/test_model_registry_workflow.py
+          python3 scripts/test-ci-component-paths.py
           python3 scripts/test-provider-test-watchdog.py
-          python3 scripts/test-stage-test-metallib.py
+          python3 scripts/test-provider-signing-validation.py
+          python3 scripts/test-cluster-test-plan.py
+          python3 scripts/test-provider-cluster-runtime-models.py
+          # Native GPU CI routing without a GPU.
+          python3 scripts/test-native-gpu-ci.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
+          python3 scripts/test-provider-test-shards.py
+          python3 scripts/test-provider-identity.py
+          python3 scripts/test-provider-release-notes.py
+          python3 .github/scripts/test-threat-model-review.py
           python3 scripts/test-provider-ci-cache.py
           python3 scripts/test-provider-ci-workflow.py
-          python3 scripts/test-provider-test-shards.py
-          python3 scripts/test-cluster-test-plan.py
-          python3 scripts/test-ci-component-paths.py
-          python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-run-concurrent-checks.py
+          python3 scripts/test-provider-release-toolchain.py
+          python3 scripts/test-provider-release-pipeline.py
+          python3 scripts/test-provider-release-cache.py
+          python3 scripts/test-provider-release-resolution.py
+          python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-desktop-release.py
+          python3 scripts/test-stage-test-metallib.py
+          python3 scripts/test-provider-release-resume.py
+          python3 scripts/test-prepare-metal-toolchain.py
+          python3 scripts/test-release-dev-branch.py
+          python3 scripts/test-signing-keychain.py
+          python3 scripts/test-sign-desktop-app.py
+          python3 scripts/test-provider-release-artifact.py
+          python3 scripts/test-signing-certificate-pins.py
           python3 scripts/test-ci-tested-tree.py
           python3 scripts/test-prepare-prompt-fixtures.py
           python3 provider-swift/Tests/test_protocol_fixture_resources.py
           python3 scripts/test-app-attest-entitlements.py
+          ./scripts/check-release-version.sh
           ./scripts/test-setup-macos-homebrew.sh
-      # SDK 27.2 back-deploys Date's >= and <=; pre-release macOS 27.2 builds
-      # lack the symbols. The release build also checks the built binaries.
-      - name: Refuse back-deployed Date comparisons in provider source
-        run: |
-          python3 scripts/test-check-date-comparisons.py
-          python3 scripts/test-check-provider-weak-imports.py
-          python3 scripts/check-date-comparisons.py
-      - name: Test advisory threat review with local HTTP fixtures
-        run: |
-          python3 .github/scripts/test-threat-model-review.py
+          python3 .github/scripts/test-threat-bedrock.py
           python3 .github/scripts/test-threat-full-scan.py
           python3 .github/scripts/test-threat-ensemble.py
-          python3 .github/scripts/test-threat-budget.py
-          python3 .github/scripts/test-threat-bedrock.py
           python3 .github/scripts/test-threat-diagnostics.py
           python3 .github/scripts/test-threat-integration-scope.py
-      - name: Test native GPU CI routing without a GPU
-        run: python3 scripts/test-native-gpu-ci.py
-      - name: Test model registry workflow with loopback HTTP
-        run: python3 scripts/test_model_registry_workflow.py
-      - name: Test bounded MiMo provider fixture provisioning offline
-        run: python3 scripts/test-prepare-mimo-provider-fixtures.py
-      - name: Test serving qualification evidence and catalogs without a GPU
-        run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
-      - name: Test actual-call and bounded timing receipts without a GPU
-        run: |
+          # Bounded MiMo provider fixture provisioning, offline.
+          python3 scripts/test-prepare-mimo-provider-fixtures.py
           python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
-          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
-          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
+          # The provider's plain-build default for the target branch.
+          python3 scripts/test-provider-build-default.py
+          python3 scripts/provider-build-default.py --branch "$TARGET_BRANCH"
+          # Changelog fragments.
+          python3 scripts/test-changelog.py
+          make changelog-check
+          CHECKS
 
   docs:
     name: Docs Lint
@@ -283,6 +345,7 @@ jobs:
           rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ needs.plan.outputs.sha }}
           fetch-depth: 0 # Frozen source links require committed document provenance.
           filter: blob:none # Old file contents are fetched only when read.
           persist-credentials: false

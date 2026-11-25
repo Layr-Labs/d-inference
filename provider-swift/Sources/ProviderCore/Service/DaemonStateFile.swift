@@ -146,6 +146,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// absence as "Darkbloom network only". Nil while it listens or there is
     /// none, and for older daemons.
     public var localAPIFailure: LocalAPIFailure?
+    /// While this service holds Darkbloom serving off for boot security, the
+    /// refusals it holds for (`BootSecurityIssue.Kind` raw values, from its
+    /// own checks). Nil otherwise, and for older daemons.
+    public var bootSecurityHold: [String]?
 
     public struct LocalAPIFailure: Codable, Sendable, Equatable {
         public var host: String
@@ -195,7 +199,16 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var cancellationsPartialComplete: UInt64?
         /// The same requests by what stopped them. Nil on older runtimes.
         public var endedEarly: EndedEarlyCounts?
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil, endedEarly: EndedEarlyCounts? = nil) {
+        /// Planned requests served without the prompt cache because an earlier
+        /// tool call's arguments carry a null. Nil on older runtimes.
+        public var promptCacheSkippedToolCallNull: UInt64?
+        /// The same for a Gemma tool union rendered as its typed member. Nil on
+        /// older runtimes.
+        public var promptCacheSkippedToolUnionType: UInt64?
+        /// The same for a GPT-OSS tool declaration rendered as written. Nil on
+        /// older runtimes.
+        public var promptCacheSkippedToolRawSchema: UInt64?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil, endedEarly: EndedEarlyCounts? = nil, promptCacheSkippedToolCallNull: UInt64? = nil, promptCacheSkippedToolUnionType: UInt64? = nil, promptCacheSkippedToolRawSchema: UInt64? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
@@ -204,6 +217,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.reasoningTokens = reasoningTokens
             self.cancellationsPartialComplete = cancellationsPartialComplete
             self.endedEarly = endedEarly
+            self.promptCacheSkippedToolCallNull = promptCacheSkippedToolCallNull
+            self.promptCacheSkippedToolUnionType = promptCacheSkippedToolUnionType
+            self.promptCacheSkippedToolRawSchema = promptCacheSkippedToolRawSchema
         }
     }
 
@@ -444,11 +460,13 @@ public struct DaemonState: Codable, Sendable, Equatable {
         autopilotOperation: AutopilotOperation? = nil,
         addonHold: AddonHoldSnapshot? = nil,
         meFirst: MeFirstSnapshot? = nil,
-        localAPIFailure: LocalAPIFailure? = nil
+        localAPIFailure: LocalAPIFailure? = nil,
+        bootSecurityHold: [String]? = nil
     ) {
         self.addonHold = addonHold
         self.meFirst = meFirst
         self.localAPIFailure = localAPIFailure
+        self.bootSecurityHold = bootSecurityHold
         self.schema = schema
         self.pid = pid
         self.processIdentity = processIdentity
@@ -664,10 +682,10 @@ public func daemonProcessAlive(pid: Int32) -> Bool {
 }
 
 /// Reads/writes the daemon state file at `~/.darkbloom/daemon-state.json`
-/// (override with `DARKBLOOM_STATE_FILE`).
+/// (`LocationOverride.daemonStateFile` moves it).
 public enum DaemonStateFile {
     public static func path() -> URL {
-        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_STATE_FILE"], !override.isEmpty {
+        if let override = LocationOverride.daemonStateFile.value() {
             return URL(fileURLWithPath: override)
         }
         return path(for: .current)

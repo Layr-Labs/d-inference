@@ -23,6 +23,33 @@ public enum ClusterOnboardingPairReport {
     /// `memory_gate_refused`), or a few fixed words.
     public static func stoppedLine(_ guidance: String) -> String { logPrefix + "stopped (" + guidance + ")" }
 
+    /// The guidance code of a rank's load-gate refusal (`ClusterGuidance`).
+    public static let memoryRefusedCode = "memory_gate_refused"
+
+    /// What a stopped line says for a start that failed (`error`, the leader's failure as it was recorded) with the
+    /// incident's guidance code: a load-gate refusal the follower reported says that rank and both of its figures
+    /// (`memoryRefusal`); anything else is the guidance code, or "the pair did not form" without one.
+    public static func stoppedWords(guidance: String?, error: String) -> String {
+        if guidance == memoryRefusedCode, let marker = error.range(of: followerSaidMarker),
+           let words = memoryRefusal(rank: 1, said: String(error[marker.upperBound...])) {
+            return words
+        }
+        return guidance ?? "the pair did not form"
+    }
+
+    /// Where the leader's failure carries rank 1's own words (the follower's reason over the link).
+    public static let followerSaidMarker = "; rank 1 said: "
+
+    /// A rank's load-gate refusal in a stopped line: "memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB", from
+    /// that rank's words ("… needs 73.57 GiB of admissible memory and has 68.20 GiB …"); nil unless they give both.
+    public static func memoryRefusal(rank: Int, said: String) -> String? {
+        let pattern = #"needs ([0-9]+(?:\.[0-9]+)?) GiB of admissible memory and has ([0-9]+(?:\.[0-9]+)?) GiB"#
+        guard let match = said.range(of: pattern, options: .regularExpression) else { return nil }
+        let numbers = said[match].split(separator: " ").filter { Double($0) != nil }
+        guard numbers.count == 2 else { return nil }
+        return "\(memoryRefusedCode): rank \(rank) needs \(numbers[0]) GiB, has \(numbers[1]) GiB"
+    }
+
     public enum State: Sendable, Equatable {
         case starting
         /// The first request's time ("in 0.84 s") when the warm-up ran.
@@ -180,11 +207,24 @@ public enum ClusterOnboardingNotServing {
         return formatter.string(from: date)
     }
 
+    /// A Mac's memory is the reason (`lacksMemory`, or a load-gate refusal with its figures).
+    public static func isMemoryShort(_ line: String) -> Bool {
+        line.contains("lacks free memory") || line.contains("enough free memory for its share")
+    }
+
     public static func lacksMemory(_ mac: String) -> String { "\(ClusterOnboardingMacName.sentence(mac)) lacks free memory for its share" }
 
     /// The plain words for a reason one of the Macs knows: a coordinator refusal word (`liveness:trust_floor`,
-    /// `private_text`, `serves_model`, …) or an incident's guidance code (`memory_gate_refused`, …), about `mac`.
-    public static func words(reason: String, mac: String) -> String {
+    /// `private_text`, `serves_model`, …) or an incident's guidance code (`memory_gate_refused`, …), about `mac`. A
+    /// rank's load-gate refusal with its figures (`ClusterOnboardingPairReport.memoryRefusal`) names that Mac when
+    /// `viewerRank` (the rank of the Mac whose screen the words are for) is known, and both figures. Any other stopped start is the pair's,
+    /// never the coordinator's: the coordinator committed it, and a Mac's part ended it.
+    public static func words(reason: String, mac: String, viewerRank: Int? = nil) -> String {
+        if let short = memoryShort(reason) {
+            let who = viewerRank.map { $0 == short.rank ? "this Mac" : "the other Mac" } ?? mac
+            return "\(ClusterOnboardingMacName.sentence(who)) doesn't have enough free memory for its share "
+                + "(needs \(short.needs) GiB, has \(short.has) GiB)"
+        }
         let reason = reason.lowercased()
         let trust = ["trust_floor", "private_text", "app_attest", "no_trust_evidence", "runtime_unverified", "challenge_stale",
                      "attestation", "untrusted", "private_only"]
@@ -200,14 +240,26 @@ public enum ClusterOnboardingNotServing {
         if reason.contains("release") || reason.contains("build_hash") { return "The two Macs run different Darkbloom builds" }
         if reason.contains("clock") { return "The clock of \(mac) is off; turn on Set time automatically there" }
         let shown = reason.count <= 80 && ClusterOnboardingDeployment.shownPlainly(reason) ? reason : "no reason given"
-        return "The coordinator didn't accept the pair (\(shown))"
+        return "The pair stopped (\(shown))"
+    }
+
+    /// The rank and both figures, one decimal each, of a load-gate refusal a stopped line says
+    /// (`ClusterOnboardingPairReport.memoryRefusal`); nil for any other reason.
+    static func memoryShort(_ reason: String) -> (rank: Int, needs: String, has: String)? {
+        let prefix = ClusterOnboardingPairReport.memoryRefusedCode + ": rank "
+        guard reason.hasPrefix(prefix) else { return nil }
+        let parts = reason.dropFirst(prefix.count).split(separator: " ")
+        // "1 needs 73.57 GiB, has 68.20 GiB"
+        guard parts.count == 7, let rank = Int(parts[0]), parts[1] == "needs", let needs = Double(parts[2]),
+              parts[4] == "has", let has = Double(parts[5]) else { return nil }
+        return (rank, String(format: "%.1f", needs), String(format: "%.1f", has))
     }
 
     /// `words(reason:mac:)` for a coordinator refusal on a pair whose Macs report their App Attest authorization:
     /// Apple verification is named only when a Mac reports it missing (`anyUnverified`); otherwise a trust word is the
     /// coordinator's, said as such (DevNet, 2026-11-05: `private_text` on two authorized Macs read "isn't verified").
-    public static func words(reason: String, mac: String, anyUnverified: Bool) -> String {
-        let said = words(reason: reason, mac: mac)
+    public static func words(reason: String, mac: String, anyUnverified: Bool, viewerRank: Int? = nil) -> String {
+        let said = words(reason: reason, mac: mac, viewerRank: viewerRank)
         guard !anyUnverified, said.contains("isn't verified by Apple yet") else { return said }
         let code = reason.count <= 80 && ClusterOnboardingDeployment.shownPlainly(reason) ? reason : "no reason given"
         return "The coordinator didn't accept the pair yet (\(code)); both Macs are verified by Apple, and it retries by itself"
@@ -218,7 +270,7 @@ public enum ClusterOnboardingNotServing {
     public static func remedy(forReason line: String) -> String? {
         if isMissingLogin(line) { return "Run `\(ClusterOnboardingCommand.name) login` on each Mac named, then Retry." }
         if line.contains("isn't verified by Apple yet") { return "Then choose Retry." }
-        if line.contains("lacks free memory") { return "Quit apps on that Mac, then Retry; or change the model." }
+        if isMemoryShort(line) { return "Quit apps on that Mac, then Retry; or change the model." }
         return notPublicRemedy(forReason: line)
     }
 
@@ -274,7 +326,7 @@ public enum ClusterOnboardingNotServing {
 
 /// Apple's check of each Mac of a pair the coordinator forms (App Attest), which pair membership requires. A part that
 /// just started has none yet: its authorization lands about a minute after it registers, so the coordinator's first
-/// trust status for it carries none (journey 2a on pair-2, J2-c: every healthy 45-second start said "isn't verified by
+/// trust status for it carries none (seen on a DevNet pair: every healthy 45-second start said "isn't verified by
 /// Apple yet … Don't restart either Mac" for both Macs).
 ///
 /// The warning (`ClusterOnboardingNotServing.notVerified`) is said only when it is real (`Mac.warns`); until then the

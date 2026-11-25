@@ -7,17 +7,17 @@ import Darwin
 /// every model ends the wait at once with its ✗, and every end is a ✗ with what to do. The leader's own Local Network
 /// wait has a bound too.
 extension OnboardingChecks {
-    static func followWaitChecks() {
-        theFollowLineFitsEveryWidthAndKeepsItsTimer()
-        theLeaderStepReadsAndCountsAsPublished()
-        theJoinedMacSaysWhatTheLeaderWaitsOnAtEachWidth()
-        aNarrowedWindowNeverWrapsTheLiveLine()
-        aPlainTranscriptSaysEachStateOnce()
-        aLeaderThatRefusesEveryModelEndsTheWaitAtOnce()
-        anOlderLeaderKeepsTheGenericWordsAndTheWaitEndsWithACross()
-        theLeadersLocalNetworkWaitIsBoundedAndSaysWhereToTurnItOn()
-        theLeaderPublishesEachStepAndItsRefusal()
-    }
+    static var followWaitGroups: [CheckGroup] { [
+        CheckGroup("theFollowLineFitsEveryWidthAndKeepsItsTimer") { theFollowLineFitsEveryWidthAndKeepsItsTimer() },
+        CheckGroup("theLeaderStepReadsAndCountsAsPublished") { theLeaderStepReadsAndCountsAsPublished() },
+        CheckGroup("theJoinedMacSaysWhatTheLeaderWaitsOnAtEachWidth") { theJoinedMacSaysWhatTheLeaderWaitsOnAtEachWidth() },
+        CheckGroup("aNarrowedWindowNeverWrapsTheLiveLine") { aNarrowedWindowNeverWrapsTheLiveLine() },
+        CheckGroup("aPlainTranscriptSaysEachStateOnce") { aPlainTranscriptSaysEachStateOnce() },
+        CheckGroup("aLeaderThatRefusesEveryModelEndsTheWaitAtOnce") { aLeaderThatRefusesEveryModelEndsTheWaitAtOnce() },
+        CheckGroup("anOlderLeaderKeepsTheGenericWordsAndTheWaitEndsWithACross") { anOlderLeaderKeepsTheGenericWordsAndTheWaitEndsWithACross() },
+        CheckGroup("theLeadersLocalNetworkWaitIsBoundedAndSaysWhereToTurnItOn") { theLeadersLocalNetworkWaitIsBoundedAndSaysWhereToTurnItOn() },
+        CheckGroup("theLeaderPublishesEachStepAndItsRefusal") { theLeaderPublishesEachStepAndItsRefusal() },
+    ] }
 
     static let m5Max = "Apple M5 Max, 128 GB"
     static let m5MaxNamed = ClusterOnboardingMacName.other(named: m5Max)
@@ -261,10 +261,10 @@ extension OnboardingChecks {
 /// Mac's part ended (exit 1: another update operation owns the lock (pid 952 …" repeated end to end, each petal turn
 /// leaving the wrapped start of the last one behind.
 extension OnboardingChecks {
-    static func liveLineChecks() {
-        aLongReasonIsShortenedNeverWrapped()
-        theUsersLoadingLineStaysOneRow()
-    }
+    static var liveLineGroups: [CheckGroup] { [
+        CheckGroup("aLongReasonIsShortenedNeverWrapped") { aLongReasonIsShortenedNeverWrapped() },
+        CheckGroup("theUsersLoadingLineStaysOneRow") { theUsersLoadingLineStaysOneRow() },
+    ] }
 
     /// The user's reason, as the leader's wait reports it (a part's error can carry a newline or a tab).
     static let usersLoadingReport = "starting; this Mac's part ended (exit 1: another update operation owns the lock (pid 952)) and starts again "

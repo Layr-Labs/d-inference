@@ -15,228 +15,250 @@ import Darwin
     }
 
     static func main() {
-        signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(600); defer { alarm(0) }
         // A run over pipes that ended closes its end; a late key is then an error, never the end of the checks.
         signal(SIGPIPE, SIG_IGN)
-        aFinishedRunLeavesNothingReadingItsTerminal()
-        privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac()
-        terminalPresentationFallbacks()
-        // The start's progress on both Macs (2026-11-04).
-        startProgressFieldsAndComponents()
-        leaderShowsEachMacsPartFitted()
-        theJoinedMacShowsTheStartsProgress()
-        colourSetupDrawsTheMarkAndKeepsTheTranscript()
-        narrowOrPlainLocaleColourKeepsPlainLines()
-        narrowColourWindowKeepsOneRowLines()
-        failedTestDoesNotClaimSetupSuccess()
-        modelPresentationPreservesEveryFamilyAndBlocker()
-        pairingStateMachine()
-        leaderFromScratch()
-        leaderWaitsForThePartsAfterTheRegistration()
-        forcedModeNoticeOnTheSetupScreen()
-        memberFromScratch()
-        bothWaitingAtOnce()
-        cancelWhileWaiting()
-        declinedCode()
-        linkNotReady()
-        memberAgain()
-        resumedMacsOpenWithTheMark()
-        // The owner, 2026-11-05: each Mac's part by the mark.
-        roleHeaderChecks()
+        let arguments = Array(ProcessInfo.processInfo.arguments.dropFirst())
+        if arguments.count == 2, arguments[0] == "--group" { exit(runGroup(named: arguments[1])) }
+        if arguments == ["--list"] {
+            for group in groups { print(group.name) }
+            exit(0)
+        }
+        guard arguments.isEmpty else {
+            print("usage: onboarding-checks [--group NAME | --list]; ONBOARDING_JOBS=N runs N groups at a time")
+            exit(2)
+        }
+        exit(runGroups(groups.map(\.name), jobs: groupJobs(), seconds: runSeconds))
+    }
+
+    /// Every group of checks, in the order one process ran them all before (`runGroups` runs each in its own).
+    static var groups: [CheckGroup] {
+        var all: [CheckGroup] = [
+            CheckGroup("aFinishedRunLeavesNothingReadingItsTerminal") { aFinishedRunLeavesNothingReadingItsTerminal() },
+            CheckGroup("privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac") { privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac() },
+            CheckGroup("terminalPresentationFallbacks") { terminalPresentationFallbacks() },
+            // The start's progress on both Macs (2026-11-04).
+            CheckGroup("startProgressFieldsAndComponents") { startProgressFieldsAndComponents() },
+            CheckGroup("leaderShowsEachMacsPartFitted") { leaderShowsEachMacsPartFitted() },
+            CheckGroup("theJoinedMacShowsTheStartsProgress") { theJoinedMacShowsTheStartsProgress() },
+            CheckGroup("colourSetupDrawsTheMarkAndKeepsTheTranscript") { colourSetupDrawsTheMarkAndKeepsTheTranscript() },
+            CheckGroup("narrowOrPlainLocaleColourKeepsPlainLines") { narrowOrPlainLocaleColourKeepsPlainLines() },
+            CheckGroup("narrowColourWindowKeepsOneRowLines") { narrowColourWindowKeepsOneRowLines() },
+            CheckGroup("failedTestDoesNotClaimSetupSuccess") { failedTestDoesNotClaimSetupSuccess() },
+            CheckGroup("modelPresentationPreservesEveryFamilyAndBlocker") { modelPresentationPreservesEveryFamilyAndBlocker() },
+            CheckGroup("pairingStateMachine") { pairingStateMachine() },
+            CheckGroup("leaderFromScratch") { leaderFromScratch() },
+            CheckGroup("leaderWaitsForThePartsAfterTheRegistration") { leaderWaitsForThePartsAfterTheRegistration() },
+            CheckGroup("forcedModeNoticeOnTheSetupScreen") { forcedModeNoticeOnTheSetupScreen() },
+            CheckGroup("memberFromScratch") { memberFromScratch() },
+            CheckGroup("bothWaitingAtOnce") { bothWaitingAtOnce() },
+            CheckGroup("cancelWhileWaiting") { cancelWhileWaiting() },
+            CheckGroup("declinedCode") { declinedCode() },
+            CheckGroup("linkNotReady") { linkNotReady() },
+            CheckGroup("memberAgain") { memberAgain() },
+            CheckGroup("resumedMacsOpenWithTheMark") { resumedMacsOpenWithTheMark() },
+            // The owner, 2026-11-05: each Mac's part by the mark.
+            CheckGroup("roleHeaderChecks") { roleHeaderChecks() },
+        ]
         // The owner, 2026-11-05: "all captured in one, instead of keep dropping down a million lines in the CLI".
-        stepFoldChecks()
-        leaderAgainServing()
-        leaderPairedNotServing()
-        noModelOffered()
-        servingLineNamesTheMac()
-        leaderKeepsMembersInStep()
-        leaderCopiesAMissingModelOverTheCable()
-        leaderChoosesTheCatalogInstead()
-        leaderDownloadsAModelNoMacHas()
-        downloadProgressStaysOnOneLine()
-        copyDeclined()
-        copyBlockedByDisk()
-        // Pair 2, 2026-11-03: MiMo's 172.9 GB download was offered on an M3 Ultra with 54.1 GB free.
-        modelWithoutRoomOnDiskIsMarked()
-        copyInterrupted()
-        // Finish 2026-10-13 night: failing first on c35897c36.
-        shortCopyIsAListLikeAnyOther()
-        shortCopyStopsFromItsList()
-        // One-command fixes 2026-10-14: failing first on 265648289.
-        deploymentWords()
-        cableLinesStreamBeforeTheApproval()
-        twoCablesAreAskedOnScreen()
-        fittingChoicesComeFirst()
-        fitRecheckedBeforeTheStart()
-        timeoutOffersADiagnosticsFile()
-        restartLineAtTheEnd()
-        restartWords()
-        updateNoticed()
-        memberWaitsForLeaderSetupAfterUpdate()
-        // F9 + F16 (round 6b, 2026-10-14): failing first on 33da00709.
-        modelTitlesAreCatalogNames()
-        deploymentTravelsWithTheStart()
-        // `darkbloom cluster local` (2026-10-15): failing first on 69ba75be7.
-        localFromScratch()
-        localOnAStoppedLeader()
-        localSwitchesAServingCluster()
-        localAgainShowsTheMenu()
-        menuKeysSwitchTheScope()
+        all += stepFoldGroups
+        all += [
+            CheckGroup("leaderAgainServing") { leaderAgainServing() },
+            CheckGroup("leaderPairedNotServing") { leaderPairedNotServing() },
+            CheckGroup("noModelOffered") { noModelOffered() },
+            CheckGroup("servingLineNamesTheMac") { servingLineNamesTheMac() },
+            CheckGroup("leaderKeepsMembersInStep") { leaderKeepsMembersInStep() },
+            CheckGroup("leaderCopiesAMissingModelOverTheCable") { leaderCopiesAMissingModelOverTheCable() },
+            CheckGroup("leaderChoosesTheCatalogInstead") { leaderChoosesTheCatalogInstead() },
+            CheckGroup("leaderDownloadsAModelNoMacHas") { leaderDownloadsAModelNoMacHas() },
+            CheckGroup("downloadProgressStaysOnOneLine") { downloadProgressStaysOnOneLine() },
+            CheckGroup("copyDeclined") { copyDeclined() },
+            CheckGroup("copyBlockedByDisk") { copyBlockedByDisk() },
+            // Pair 2, 2026-11-03: MiMo's 172.9 GB download was offered on an M3 Ultra with 54.1 GB free.
+            CheckGroup("modelWithoutRoomOnDiskIsMarked") { modelWithoutRoomOnDiskIsMarked() },
+            CheckGroup("copyInterrupted") { copyInterrupted() },
+            // Finish 2026-10-13 night: failing first on c35897c36.
+            CheckGroup("shortCopyIsAListLikeAnyOther") { shortCopyIsAListLikeAnyOther() },
+            CheckGroup("shortCopyStopsFromItsList") { shortCopyStopsFromItsList() },
+            // One-command fixes 2026-10-14: failing first on 265648289.
+            CheckGroup("deploymentWords") { deploymentWords() },
+            CheckGroup("cableLinesStreamBeforeTheApproval") { cableLinesStreamBeforeTheApproval() },
+            CheckGroup("twoCablesAreAskedOnScreen") { twoCablesAreAskedOnScreen() },
+            CheckGroup("fittingChoicesComeFirst") { fittingChoicesComeFirst() },
+            CheckGroup("fitRecheckedBeforeTheStart") { fitRecheckedBeforeTheStart() },
+            CheckGroup("timeoutOffersADiagnosticsFile") { timeoutOffersADiagnosticsFile() },
+            CheckGroup("restartLineAtTheEnd") { restartLineAtTheEnd() },
+            CheckGroup("restartWords") { restartWords() },
+            CheckGroup("updateNoticed") { updateNoticed() },
+            CheckGroup("memberWaitsForLeaderSetupAfterUpdate") { memberWaitsForLeaderSetupAfterUpdate() },
+            // F9 + F16 (round 6b, 2026-10-14): failing first on 33da00709.
+            CheckGroup("modelTitlesAreCatalogNames") { modelTitlesAreCatalogNames() },
+            CheckGroup("deploymentTravelsWithTheStart") { deploymentTravelsWithTheStart() },
+            // `darkbloom cluster local` (2026-10-15): failing first on 69ba75be7.
+            CheckGroup("localFromScratch") { localFromScratch() },
+            CheckGroup("localOnAStoppedLeader") { localOnAStoppedLeader() },
+            CheckGroup("localSwitchesAServingCluster") { localSwitchesAServingCluster() },
+            CheckGroup("localAgainShowsTheMenu") { localAgainShowsTheMenu() },
+            CheckGroup("menuKeysSwitchTheScope") { menuKeysSwitchTheScope() },
+        ]
         // Local-first L5b (2026-11-07): the single-Mac start's three choices for a pair, Both, me first preselected.
-        simplerOnboardingChecks()
-        localNamesTheModel()
-        memberJoinsWithLocal()
-        servingScopeValues()
-        sameTitleShowsTheID()
-        // Tensor parallel made visible (2026-10-24).
-        tensorParallelNotesOnTheModelLine()
-        // Two identical Macs named apart, and the plain presentations of those lines (2026-10-25).
-        identicalMacsAreToldApart()
-        plainPresentationsKeepTheNewLines()
-        // The 2026-11-02 onboarding review: lists, permissions asked at stated moments, a read-only member, approved
-        // models only, sudo instead of a script, and the window's fate said on both Macs.
-        arrowKeysTakeAMenuItem()
-        onlyApprovedModelsAreListed()
-        memberLocalPointsToTheLeader()
-        localNetworkAskedAtStatedMoments()
-        cablePortSetUpWithSudoWhereNoPromptShows()
-        codeListEndsWhenThePairingDoes()
-        developmentBuildKeepsTheWindowsOpen()
-        // P2-11 (pair-2, 2026-11-04): the card said "on both Macs" from this Mac's service alone.
-        // The audit of that change: keys during waits, q, SSH, a probe that tells nothing, a slow Allow on the other
-        // Mac, and how the pair serves.
-        arrowKeysDoNotStopAWait()
-        qCancelsAListBeforeALetter()
-        sshSessionsAreToldWhereThePromptIs()
-        bothMacsSayScreenSharingFirst()
-        otherMacPromptNamesItsScreen()
-        sshSaysBeforeTryingWhereToRun()
-        serviceThatCannotTellStillGetsTheAsk()
-        otherMacThatDidNotAnswerOffersTryAgain()
-        startSaysHowThePairServes()
-        // The two-Mac test on two M5 Ultras and the final review: which physical Mac plays which part, a model copied
-        // from the other Mac, a model that does not fit now, and the window's line.
-        eachMacNamesItselfBesideItsPart()
-        modelOnTheOtherMacIsCopiedNotDownloaded()
-        modelThatDoesNotFitSaysSoOnce()
-        // Already paired Macs whose pairing cannot be used (2026-11-03): failing first on 0f99ddb18.
-        keyChangedLeaderPairsAgain()
-        keyChangedMemberPairsAgain()
-        keyChangedQuitChangesNothing()
-        memberWhoseLeaderIsSilentPairsAgain()
-        leaderWhoseMemberIsSilentOffersStartOver()
-        answeringOtherMacKeepsTheScreens()
-        failedUnpairStopsBeforePairing()
-        // The owner's second pair and an end user's live session (2026-11-03): failing first on 9f9ddf1ed.
-        reachWaitSaysWhyAndOffersStartOver()
-        cableStepContinuesToTheNextStep()
-        memberNamesItsLeaderAndTheNextStep()
-        startOverIsAlwaysOfferedWithOneConfirmation()
-        // 2026-11-03, the owner's second pair and an end user's: "Serving" and "Done" while nothing was loaded.
-        offeredPairThatTheCoordinatorRefusesSaysWhy()
-        failedRestartAfterTheRegistrationIsNotDone()
-        missingLoginIsSaidBeforeTheStart()
-        theDevNetAppNamesItsOwnCommand()
-        aDevNetLiveRowNamingACommandStillFitsTheWindow()
-        offeredPairServesOnceLoaded()
-        pairReportsAndReasonsInPlainWords()
-        // The end user's call (Dylan, 2026-11-03): a clear outcome, a sense of time, the reason with its time.
-        startSaysItTakesAWhileAndShowsEachMac()
-        theOutcomeIsItsOwnBlock()
-        appleVerificationSaysWhenItRetries()
-        memberSeesTheOutcomeOrWhereToLook()
-        // A set-up pair works like `darkbloom start` (owner, 2026-11-04): failing first on c8a6b5a49.
-        leaderScreenIsTheModelList()
-        memberScreenSaysWhoLeadsAndWhatToRun()
-        switchAsksOnceThenEndsLikeStart()
-        qAtTheListChangesNothing()
-        aModeChangeOfTheServingModelIsAskedAsOne()
-        aSetUpPairWithNoModelToListOffersStartOver()
-        aPairThatDoesNotServeIsNeitherMarkedNorTestedTwice()
-        theServingMarkerFollowsOnlyASettledServingLine()
-        theServingModelsTestNeverMarksAStart()
-        pairingSaysWhatToCheckWhenTheOtherMacIsNotFound()
-        // R-3 (the pair-2 re-test, 2026-11-04): the hint's firewall line named production's app in the DevNet app.
-        pairingLinesNameTheApp()
-        // R-8 (the round-3 re-test): a stopped DevNet pair's status named `darkbloom local`.
-        theServingLinesNameThisBuildsCommand()
-        alreadyServingTestsAgainOrSaysWhyNot()
-        aDeadPendingStartIsClearedOnlyWhileStillRecorded()
-        modeChoiceOffersBothWithTheFastestMeasuredFirst()
-        modeQuestionRecommendsOneForTheseMacs()
-        // R6-2 (M5 Ultra pair, DevNet branch.81): each mode's line was cut at 120 columns, and a wider window never redrew it.
-        modeLinesFitTheWindowAsItIsNow()
-        // DevNet .118, pair-2 (2026-11-06): right after the update the question said "Pipeline, faster here" for Gemma,
-        // from predictions, though these Macs had served its tensor parallel faster with every earlier build.
-        modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate()
-        theListAndTheDefaultFollowTheRecommendation()
-        // DevNet .118, pair-2 (2026-11-06): the list still quoted each mode's tok/s.
-        modelListMarksTheCurrentModelAndQuotesNoSpeed()
-        firstRunSaysWhatWillBeAsked()
-        stoppedPairPreselectsTheLastModel()
-        switchToDarkbloomChecksLoginsFirst()
-        // The refactor pass's finding: the menu's switch to Darkbloom claimed ✓ for a registered pair.
-        menuSwitchToDarkbloomWaitsForThePair()
-        // The DevNet traffic run (2026-11-04): the switch to Darkbloom kept the local plan, the pair was never offered,
-        // and both windows said ✓. Failing first on 447b230367.
-        switchToDarkbloomPlansTheModelAgain()
-        aPairThatIsNotOfferedEndsWithWhyNot()
-        theServingModelChosenAgainWhenNotOfferedIsPlannedAgain()
-        theJoinedMacEndsWithTheLeadersNotOffered()
-        aStartTheCoordinatorDidNotTakeNeverEndsWithATick()
-        // UX audit P3 (2026-11-04): silence is not a broken pairing. Failing first on a91d5d51d7.
-        silenceIsNotABrokenPairing()
-        // The seam the stack's merge left: Change model after ✗ keeps a Mac paired before this run's choices. Failing
-        // first on 1ec3a927ce.
-        changeModelAfterNotServingKeepsTheChoices()
-        // The owner's O8 and A1 (2026-11-04): the Mac that joined follows the start; the registration reads as offered.
-        // Failing first on c8a6b5a494.
-        joinedMacFollowsTheStartToServing()
-        aLateOfferNeverGivesTheJoinedMacAnEarlyTick()
-        joinedMacFollowsTheStartToNotServing()
-        joinedMacLeavesOrStopsFollowingSaying()
-        registrationIsSaidAsOfferedNotAccepted()
-        // Validator D on PR #1778: both windows end alike, only the start that registers marks itself, the pending check
-        // is no ✓, each stage of the start has its own bound. Failing first on a148285f70.
-        aFailedStartTestEndsTheJoinedMacTheSame()
-        theJoiningMacMirrorsALocalStartsFailedTest()
-        theJoiningMacSaysWhenItsServiceIsKeptOffTheLocalNetwork()
-        theJoiningMacShowsTheLeadersStateWhileItWaits()
-        retryStartsAStoppedPairAndQLeavesTheWait()
-        theJoiningMacMirrorsTheLeadersPass()
-        onlyTheStartThatRegistersMarksItself()
-        thePendingCheckIsNoTickOnAnyScreen()
-        eachStageOfTheStartHasItsOwnBound()
+        all += simplerOnboardingGroups
+        all += [
+            CheckGroup("localNamesTheModel") { localNamesTheModel() },
+            CheckGroup("memberJoinsWithLocal") { memberJoinsWithLocal() },
+            CheckGroup("servingScopeValues") { servingScopeValues() },
+            CheckGroup("sameTitleShowsTheID") { sameTitleShowsTheID() },
+            // Tensor parallel made visible (2026-10-24).
+            CheckGroup("tensorParallelNotesOnTheModelLine") { tensorParallelNotesOnTheModelLine() },
+            // Two identical Macs named apart, and the plain presentations of those lines (2026-10-25).
+            CheckGroup("identicalMacsAreToldApart") { identicalMacsAreToldApart() },
+            CheckGroup("plainPresentationsKeepTheNewLines") { plainPresentationsKeepTheNewLines() },
+            // The 2026-11-02 onboarding review: lists, permissions asked at stated moments, a read-only member, approved
+            // models only, sudo instead of a script, and the window's fate said on both Macs.
+            CheckGroup("arrowKeysTakeAMenuItem") { arrowKeysTakeAMenuItem() },
+            CheckGroup("onlyApprovedModelsAreListed") { onlyApprovedModelsAreListed() },
+            CheckGroup("memberLocalPointsToTheLeader") { memberLocalPointsToTheLeader() },
+            CheckGroup("localNetworkAskedAtStatedMoments") { localNetworkAskedAtStatedMoments() },
+            CheckGroup("cablePortSetUpWithSudoWhereNoPromptShows") { cablePortSetUpWithSudoWhereNoPromptShows() },
+            CheckGroup("codeListEndsWhenThePairingDoes") { codeListEndsWhenThePairingDoes() },
+            CheckGroup("developmentBuildKeepsTheWindowsOpen") { developmentBuildKeepsTheWindowsOpen() },
+            // A DevNet pair (2026-11-04): the card said "on both Macs" from this Mac's service alone.
+            // The audit of that change: keys during waits, q, SSH, a probe that tells nothing, a slow Allow on the other
+            // Mac, and how the pair serves.
+            CheckGroup("arrowKeysDoNotStopAWait") { arrowKeysDoNotStopAWait() },
+            CheckGroup("qCancelsAListBeforeALetter") { qCancelsAListBeforeALetter() },
+            CheckGroup("sshSessionsAreToldWhereThePromptIs") { sshSessionsAreToldWhereThePromptIs() },
+            CheckGroup("bothMacsSayScreenSharingFirst") { bothMacsSayScreenSharingFirst() },
+            CheckGroup("otherMacPromptNamesItsScreen") { otherMacPromptNamesItsScreen() },
+            CheckGroup("sshSaysBeforeTryingWhereToRun") { sshSaysBeforeTryingWhereToRun() },
+            CheckGroup("serviceThatCannotTellStillGetsTheAsk") { serviceThatCannotTellStillGetsTheAsk() },
+            CheckGroup("otherMacThatDidNotAnswerOffersTryAgain") { otherMacThatDidNotAnswerOffersTryAgain() },
+            CheckGroup("startSaysHowThePairServes") { startSaysHowThePairServes() },
+            // The two-Mac test on two M5 Ultras and the final review: which physical Mac plays which part, a model copied
+            // from the other Mac, a model that does not fit now, and the window's line.
+            CheckGroup("eachMacNamesItselfBesideItsPart") { eachMacNamesItselfBesideItsPart() },
+            CheckGroup("modelOnTheOtherMacIsCopiedNotDownloaded") { modelOnTheOtherMacIsCopiedNotDownloaded() },
+            CheckGroup("modelThatDoesNotFitSaysSoOnce") { modelThatDoesNotFitSaysSoOnce() },
+            // Already paired Macs whose pairing cannot be used (2026-11-03): failing first on 0f99ddb18.
+            CheckGroup("keyChangedLeaderPairsAgain") { keyChangedLeaderPairsAgain() },
+            CheckGroup("keyChangedMemberPairsAgain") { keyChangedMemberPairsAgain() },
+            CheckGroup("keyChangedQuitChangesNothing") { keyChangedQuitChangesNothing() },
+            CheckGroup("memberWhoseLeaderIsSilentPairsAgain") { memberWhoseLeaderIsSilentPairsAgain() },
+            CheckGroup("leaderWhoseMemberIsSilentOffersStartOver") { leaderWhoseMemberIsSilentOffersStartOver() },
+            CheckGroup("answeringOtherMacKeepsTheScreens") { answeringOtherMacKeepsTheScreens() },
+            CheckGroup("failedUnpairStopsBeforePairing") { failedUnpairStopsBeforePairing() },
+            // The owner's second pair and an end user's live session (2026-11-03): failing first on 9f9ddf1ed.
+            CheckGroup("reachWaitSaysWhyAndOffersStartOver") { reachWaitSaysWhyAndOffersStartOver() },
+            CheckGroup("cableStepContinuesToTheNextStep") { cableStepContinuesToTheNextStep() },
+            CheckGroup("memberNamesItsLeaderAndTheNextStep") { memberNamesItsLeaderAndTheNextStep() },
+            CheckGroup("startOverIsAlwaysOfferedWithOneConfirmation") { startOverIsAlwaysOfferedWithOneConfirmation() },
+            // 2026-11-03, the owner's second pair and an end user's: "Serving" and "Done" while nothing was loaded.
+            CheckGroup("offeredPairThatTheCoordinatorRefusesSaysWhy") { offeredPairThatTheCoordinatorRefusesSaysWhy() },
+            CheckGroup("failedRestartAfterTheRegistrationIsNotDone") { failedRestartAfterTheRegistrationIsNotDone() },
+            CheckGroup("missingLoginIsSaidBeforeTheStart") { missingLoginIsSaidBeforeTheStart() },
+            CheckGroup("theDevNetAppNamesItsOwnCommand") { theDevNetAppNamesItsOwnCommand() },
+            CheckGroup("aDevNetLiveRowNamingACommandStillFitsTheWindow") { aDevNetLiveRowNamingACommandStillFitsTheWindow() },
+            CheckGroup("offeredPairServesOnceLoaded") { offeredPairServesOnceLoaded() },
+            CheckGroup("pairReportsAndReasonsInPlainWords") { pairReportsAndReasonsInPlainWords() },
+            // The end user's call (Dylan, 2026-11-03): a clear outcome, a sense of time, the reason with its time.
+            CheckGroup("startSaysItTakesAWhileAndShowsEachMac") { startSaysItTakesAWhileAndShowsEachMac() },
+            CheckGroup("theOutcomeIsItsOwnBlock") { theOutcomeIsItsOwnBlock() },
+            CheckGroup("appleVerificationSaysWhenItRetries") { appleVerificationSaysWhenItRetries() },
+            CheckGroup("memberSeesTheOutcomeOrWhereToLook") { memberSeesTheOutcomeOrWhereToLook() },
+            // A set-up pair works like `darkbloom start` (owner, 2026-11-04): failing first on c8a6b5a49.
+            CheckGroup("leaderScreenIsTheModelList") { leaderScreenIsTheModelList() },
+            CheckGroup("memberScreenSaysWhoLeadsAndWhatToRun") { memberScreenSaysWhoLeadsAndWhatToRun() },
+            CheckGroup("switchAsksOnceThenEndsLikeStart") { switchAsksOnceThenEndsLikeStart() },
+            CheckGroup("qAtTheListChangesNothing") { qAtTheListChangesNothing() },
+            CheckGroup("aModeChangeOfTheServingModelIsAskedAsOne") { aModeChangeOfTheServingModelIsAskedAsOne() },
+            CheckGroup("aSetUpPairWithNoModelToListOffersStartOver") { aSetUpPairWithNoModelToListOffersStartOver() },
+            CheckGroup("aPairThatDoesNotServeIsNeitherMarkedNorTestedTwice") { aPairThatDoesNotServeIsNeitherMarkedNorTestedTwice() },
+            CheckGroup("theServingMarkerFollowsOnlyASettledServingLine") { theServingMarkerFollowsOnlyASettledServingLine() },
+            CheckGroup("theServingModelsTestNeverMarksAStart") { theServingModelsTestNeverMarksAStart() },
+            CheckGroup("pairingSaysWhatToCheckWhenTheOtherMacIsNotFound") { pairingSaysWhatToCheckWhenTheOtherMacIsNotFound() },
+            // A DevNet re-test (2026-11-04): the hint's firewall line named production's app in the DevNet app.
+            CheckGroup("pairingLinesNameTheApp") { pairingLinesNameTheApp() },
+            // R-8 (the round-3 re-test): a stopped DevNet pair's status named `darkbloom local`.
+            CheckGroup("theServingLinesNameThisBuildsCommand") { theServingLinesNameThisBuildsCommand() },
+            CheckGroup("alreadyServingTestsAgainOrSaysWhyNot") { alreadyServingTestsAgainOrSaysWhyNot() },
+            CheckGroup("aDeadPendingStartIsClearedOnlyWhileStillRecorded") { aDeadPendingStartIsClearedOnlyWhileStillRecorded() },
+            CheckGroup("modeChoiceOffersBothWithTheFastestMeasuredFirst") { modeChoiceOffersBothWithTheFastestMeasuredFirst() },
+            CheckGroup("modeQuestionRecommendsOneForTheseMacs") { modeQuestionRecommendsOneForTheseMacs() },
+            // R6-2 (M5 Ultra pair, DevNet branch.81): each mode's line was cut at 120 columns, and a wider window never redrew it.
+            CheckGroup("modeLinesFitTheWindowAsItIsNow") { modeLinesFitTheWindowAsItIsNow() },
+            // A DevNet pair on .118 (2026-11-06): right after the update the question said "Pipeline, faster here" for
+            // Gemma, from predictions, though these Macs had served its tensor parallel faster with every earlier
+            // build.
+            CheckGroup("modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate") { modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate() },
+            CheckGroup("theListAndTheDefaultFollowTheRecommendation") { theListAndTheDefaultFollowTheRecommendation() },
+            // A DevNet pair on .118 (2026-11-06): the list still quoted each mode's tok/s.
+            CheckGroup("modelListMarksTheCurrentModelAndQuotesNoSpeed") { modelListMarksTheCurrentModelAndQuotesNoSpeed() },
+            CheckGroup("firstRunSaysWhatWillBeAsked") { firstRunSaysWhatWillBeAsked() },
+            CheckGroup("stoppedPairPreselectsTheLastModel") { stoppedPairPreselectsTheLastModel() },
+            CheckGroup("switchToDarkbloomChecksLoginsFirst") { switchToDarkbloomChecksLoginsFirst() },
+            // The refactor pass's finding: the menu's switch to Darkbloom claimed ✓ for a registered pair.
+            CheckGroup("menuSwitchToDarkbloomWaitsForThePair") { menuSwitchToDarkbloomWaitsForThePair() },
+            // The DevNet traffic run (2026-11-04): the switch to Darkbloom kept the local plan, the pair was never offered,
+            // and both windows said ✓. Failing first on 447b230367.
+            CheckGroup("switchToDarkbloomPlansTheModelAgain") { switchToDarkbloomPlansTheModelAgain() },
+            CheckGroup("aPairThatIsNotOfferedEndsWithWhyNot") { aPairThatIsNotOfferedEndsWithWhyNot() },
+            CheckGroup("theServingModelChosenAgainWhenNotOfferedIsPlannedAgain") { theServingModelChosenAgainWhenNotOfferedIsPlannedAgain() },
+            CheckGroup("theJoinedMacEndsWithTheLeadersNotOffered") { theJoinedMacEndsWithTheLeadersNotOffered() },
+            CheckGroup("aStartTheCoordinatorDidNotTakeNeverEndsWithATick") { aStartTheCoordinatorDidNotTakeNeverEndsWithATick() },
+            // UX audit P3 (2026-11-04): silence is not a broken pairing. Failing first on a91d5d51d7.
+            CheckGroup("silenceIsNotABrokenPairing") { silenceIsNotABrokenPairing() },
+            // The seam the stack's merge left: Change model after ✗ keeps a Mac paired before this run's choices. Failing
+            // first on 1ec3a927ce.
+            CheckGroup("changeModelAfterNotServingKeepsTheChoices") { changeModelAfterNotServingKeepsTheChoices() },
+            // The owner's O8 and A1 (2026-11-04): the Mac that joined follows the start; the registration reads as offered.
+            // Failing first on c8a6b5a494.
+            CheckGroup("joinedMacFollowsTheStartToServing") { joinedMacFollowsTheStartToServing() },
+            CheckGroup("aLateOfferNeverGivesTheJoinedMacAnEarlyTick") { aLateOfferNeverGivesTheJoinedMacAnEarlyTick() },
+            CheckGroup("joinedMacFollowsTheStartToNotServing") { joinedMacFollowsTheStartToNotServing() },
+            CheckGroup("joinedMacLeavesOrStopsFollowingSaying") { joinedMacLeavesOrStopsFollowingSaying() },
+            CheckGroup("registrationIsSaidAsOfferedNotAccepted") { registrationIsSaidAsOfferedNotAccepted() },
+            // Validator D on PR #1778: both windows end alike, only the start that registers marks itself, the pending check
+            // is no ✓, each stage of the start has its own bound. Failing first on a148285f70.
+            CheckGroup("aFailedStartTestEndsTheJoinedMacTheSame") { aFailedStartTestEndsTheJoinedMacTheSame() },
+            CheckGroup("theJoiningMacMirrorsALocalStartsFailedTest") { theJoiningMacMirrorsALocalStartsFailedTest() },
+            CheckGroup("theJoiningMacSaysWhenItsServiceIsKeptOffTheLocalNetwork") { theJoiningMacSaysWhenItsServiceIsKeptOffTheLocalNetwork() },
+            CheckGroup("theJoiningMacShowsTheLeadersStateWhileItWaits") { theJoiningMacShowsTheLeadersStateWhileItWaits() },
+            CheckGroup("retryStartsAStoppedPairAndQLeavesTheWait") { retryStartsAStoppedPairAndQLeavesTheWait() },
+            CheckGroup("theJoiningMacMirrorsTheLeadersPass") { theJoiningMacMirrorsTheLeadersPass() },
+            CheckGroup("onlyTheStartThatRegistersMarksItself") { onlyTheStartThatRegistersMarksItself() },
+            CheckGroup("thePendingCheckIsNoTickOnAnyScreen") { thePendingCheckIsNoTickOnAnyScreen() },
+            CheckGroup("eachStageOfTheStartHasItsOwnBound") { eachStageOfTheStartHasItsOwnBound() },
+        ]
         // A user's report (2026-11-04): "an infinite loop of waiting for the other Mac, Apple M5 Max 128 GB".
-        followWaitChecks()
-        // 0.10.9 DevNet, pair-2 (f2): the joining Mac's last word is the leading Mac's outcome.
-        followFinalOutcomeChecks()
+        all += followWaitGroups
+        // 0.10.9 on a DevNet pair: the joining Mac's last word is the leading Mac's outcome.
+        all += followFinalOutcomeGroups
         // R7-1 (DevNet branch.87): the registration's hand-off is no ✗ on the joining Mac.
-        noFalseCrossChecks()
+        all += noFalseCrossGroups
         // A 0.10.8 user's leader screen: its loading line repeated end to end in a narrow window.
-        liveLineChecks()
+        all += liveLineGroups
         // 0.10.8, 2026-11-04: one Mac of a pair updated alone; its part ended every 38 s and no screen named the versions.
-        versionSplitChecks()
-        // DevNet pair-2, 2026-11-05: the coordinator's wait blamed Apple, couldn't be left, and the joining Mac didn't follow.
-        waitHonestChecks()
-        // 0.10.8, 2026-11-04: single-Mac serving held the provider instance lock on both Macs of a pair; the start looped
-        // "this Mac's part ended (… another update operation owns the lock (pid 9523, provider-instance)) and starts again
-        // by itself", the other Mac read "no error reported", and the guidance was `darkbloom stop`, which stops the pair.
-        soloServingOnBothMacsIsSaidBeforeAnythingStarts()
-        soloServingIsLeftWithNothingStarted()
-        soloServingFoundWhileWaitingIsNeverRetried()
-        soloServingNamesTheDevNetCommand()
-        // 0.10.9 DevNet, pair-2 (f1): the leader showed the block, the joining Mac said "registering with the coordinator"
-        // for minutes while its own part waited for its single-Mac provider (process 68099).
-        soloServingOnTheJoiningMacIsSaidOnBothScreens()
-        theJoiningMacFollowsTheStartOnceSingleMacServingStops()
-        // 0.10.9 DevNet build C (R8-1): the joining Mac opened on a stopped pair while its own single-Mac provider blocked
-        // the leader's start, and said "Stopped … Close" with no ✗.
-        theJoiningMacOnAStoppedPairSaysTheBlock()
-        stoppedLocalPairSwitchedToDarkbloomKeepsItsMode()
-        print("onboarding checks: \(passed) passed, \(failures.count) failed")
-        for failure in failures { print("FAIL " + failure) }
-        exit(failures.isEmpty ? 0 : 1)
+        all += versionSplitGroups
+        // A DevNet pair, 2026-11-05: the coordinator's wait blamed Apple, couldn't be left, and the joining Mac didn't
+        // follow.
+        all += waitHonestGroups
+        all += [
+            // 0.10.8, 2026-11-04: single-Mac serving held the provider instance lock on both Macs of a pair; the start looped
+            // "this Mac's part ended (… another update operation owns the lock (pid 9523, provider-instance)) and starts again
+            // by itself", the other Mac read "no error reported", and the guidance was `darkbloom stop`, which stops the pair.
+            CheckGroup("soloServingOnBothMacsIsSaidBeforeAnythingStarts") { soloServingOnBothMacsIsSaidBeforeAnythingStarts() },
+            CheckGroup("soloServingIsLeftWithNothingStarted") { soloServingIsLeftWithNothingStarted() },
+            CheckGroup("soloServingFoundWhileWaitingIsNeverRetried") { soloServingFoundWhileWaitingIsNeverRetried() },
+            CheckGroup("soloServingNamesTheDevNetCommand") { soloServingNamesTheDevNetCommand() },
+            // 0.10.9 on a DevNet pair: the leader showed the block, the joining Mac said "registering with the
+            // coordinator" for minutes while its own part waited for its single-Mac provider (process 68099).
+            CheckGroup("soloServingOnTheJoiningMacIsSaidOnBothScreens") { soloServingOnTheJoiningMacIsSaidOnBothScreens() },
+            CheckGroup("theJoiningMacFollowsTheStartOnceSingleMacServingStops") { theJoiningMacFollowsTheStartOnceSingleMacServingStops() },
+            // 0.10.9 DevNet build C (R8-1): the joining Mac opened on a stopped pair while its own single-Mac provider blocked
+            // the leader's start, and said "Stopped … Close" with no ✗.
+            CheckGroup("theJoiningMacOnAStoppedPairSaysTheBlock") { theJoiningMacOnAStoppedPairSaysTheBlock() },
+            CheckGroup("stoppedLocalPairSwitchedToDarkbloomKeepsItsMode") { stoppedLocalPairSwitchedToDarkbloomKeepsItsMode() },
+        ]
+        return all
     }
 
     // MARK: - State machine
@@ -573,6 +595,7 @@ import Darwin
                            machines: [ClusterOnboardingMachine] = leaderHardware,
                            registerResult: Result<[String], ClusterOnboardingFailure> = .success([registeredLine]),
                            localNetwork: @escaping @Sendable (ClusterOnboardingLocalNetworkSubject) -> ClusterOnboardingLocalNetwork = { _ in .allowed },
+                           allowPollMilliseconds: Int = 1_000,
                            linkScript: String? = nil,
                            sudoSucceeds: Bool = true,
                            outlivesWindow: Bool = true,
@@ -748,6 +771,7 @@ import Darwin
         // The Mac that joined follows the start at a check's pace.
         made.followTiming = .init(seconds: followSeconds, pollSeconds: 0.02)
         made.pairHintSeconds = pairHintSeconds
+        made.localNetworkPollMilliseconds = allowPollMilliseconds
         return made
     }
 
@@ -843,7 +867,9 @@ import Darwin
         // `release()` may have closed them already: never twice, or a later run's terminal, reusing the numbers, closes.
         deinit { closeTerminal() }
 
-        func waitFor(_ needle: String, seconds: Double = 10, count: Int = 1) -> Bool {
+        /// 30 s: a wait returns as soon as the text shows, and a loaded CI runner once printed a prompt just past 10 s
+        /// (#2193's Cluster Focused Checks, 11-16: "local: the list" failed with the prompt already in the transcript).
+        func waitFor(_ needle: String, seconds: Double = 30, count: Int = 1) -> Bool {
             let deadline = Date().addingTimeInterval(seconds)
             func seen() -> Bool { text.components(separatedBy: needle).count - 1 >= count }
             while Date() < deadline { if seen() { return true }; usleep(10_000) }
@@ -918,7 +944,9 @@ import Darwin
 
         var text: String { lock.withLock { String(decoding: captured, as: UTF8.self) } }
 
-        func waitFor(_ needle: String, seconds: Double = 10, count: Int = 1) -> Bool {
+        /// 30 s: a wait returns as soon as the text shows, and a loaded CI runner once printed a prompt just past 10 s
+        /// (#2193's Cluster Focused Checks, 11-16: "local: the list" failed with the prompt already in the transcript).
+        func waitFor(_ needle: String, seconds: Double = 30, count: Int = 1) -> Bool {
             let deadline = Date().addingTimeInterval(seconds)
             func seen() -> Bool { text.components(separatedBy: needle).count - 1 >= count }
             while Date() < deadline { if seen() { return true }; usleep(10_000) }
@@ -1686,6 +1714,10 @@ import Darwin
         expect(U.reportPricesPlan(reportedAt: stoppedAt.addingTimeInterval(40), partsStoppedAt: stoppedAt),
                "update: a report taken after the stop prices the plan")
         expect(U.reportPricesPlan(reportedAt: stoppedAt, partsStoppedAt: nil), "update: without a stop, the report taken before the list prices it")
+        // A guided setup on a DevNet pair after both Macs were updated with their cluster services off: reading both Macs
+        // ran on one Mac and planning on the other, as control settled, and the list was "The other Mac has not answered
+        // yet." with only Start over or Quit. A process with no report asks the other Mac before it plans.
+        expect(!U.reportPricesPlan(reportedAt: nil, partsStoppedAt: nil), "update: no report at all is asked for before the plan")
         // A list planned again after the parts stopped (an update, or a model change of a serving cluster) is searched
         // by the model's id, not the earlier list's index (2026-10-29: `darkbloom cluster local` on a serving pair
         // adopted the pipeline listed while its tensor-parallel part still held the memory).
@@ -2184,6 +2216,10 @@ import Darwin
 
     static let codeQuestion = ClusterOnboardingPairing.codeQuestion
 
+    /// The pause between two probes while a flow waits for Allow, where no key is typed during the wait (the setup's 1 s
+    /// pause otherwise holds each refusal of `refusedThenAllowed` a second). A check that types during the wait keeps 1 s.
+    static let allowPollWithNoKeys = 50
+
     /// Local Network access while macOS's prompt is up: refused for each of `subjects` until it was probed `refusals`
     /// times, then allowed (the person clicked Allow); any other subject is allowed at once.
     static func refusedThenAllowed(_ refusals: Int, _ subjects: [ClusterOnboardingLocalNetworkSubject] = [.thisCommand])
@@ -2225,8 +2261,8 @@ import Darwin
 
     /// Over SSH the prompts are on the Mac's own screen: the lines say so, and name the program macOS shows.
     static func sshSessionsAreToldWhereThePromptIs() {
-        let run = TerminalRun(operations(Recorder(), pairEvents: [], pairResult: .failed([]), localNetwork: refusedThenAllowed(2), remote: true,
-            commandApp: "sshd-keygen-wrapper"))
+        let run = TerminalRun(operations(Recorder(), pairEvents: [], pairResult: .failed([]), localNetwork: refusedThenAllowed(2),
+            allowPollMilliseconds: allowPollWithNoKeys, remote: true, commandApp: "sshd-keygen-wrapper"))
         expect(run.waitFor(prompt(2)), "SSH: asked first whether to go on here"); run.type("2\r")
         expect(run.waitFor("  Allow macOS permissions here and on this Mac's screen (Screen Sharing if headless).\n"),
                "SSH: the approvals, where each is answered")
@@ -2272,7 +2308,7 @@ import Darwin
                "other Mac: unnamed")
         for (label, role, events) in [("member", ClusterOnboardingRole.member, memberEvents), ("leader", .leader, leaderEvents)] {
             let run = TerminalRun(operations(Recorder(), pairEvents: events, pairResult: .paired(role: role, peerName: "Apple M5 Ultra, 256 GB"),
-                localNetwork: refusedThenAllowed(2, [.service])), columns: 80)
+                localNetwork: refusedThenAllowed(2, [.service]), allowPollMilliseconds: allowPollWithNoKeys), columns: 80)
             expect(run.waitFor(codeQuestion), "other Mac, \(label): the code"); run.type("y")
             expect(run.waitFor("  " + D.localNetworkLine("Darkbloom") + " " + D.otherMacAllowLine("Apple M5 Ultra, 256 GB") + "\n", seconds: 20),
                    "other Mac, \(label): its screen, by name: \(run.text)")
@@ -2306,8 +2342,11 @@ import Darwin
     /// A service that does not report its probe (an older build) still gets the prompt's line, as an "if".
     static func serviceThatCannotTellStillGetsTheAsk() {
         let recorder = Recorder()
-        let run = TerminalRun(operations(recorder, pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB"),
-            localNetwork: { $0 == .service ? .unknown : .allowed }))
+        var made = operations(recorder, pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB"),
+            localNetwork: { $0 == .service ? .unknown : .allowed })
+        // It never reports: a second of its probes (every 250 ms) stands for the 10 s a setup gives it.
+        made.serviceReportSeconds = 1
+        let run = TerminalRun(made)
         expect(run.waitFor(codeQuestion), "unknown: the code"); run.type("y")
         expect(run.finish(seconds: 30) == 0, "unknown: the member's setup ends")
         expect(run.text.contains("  " + ClusterOnboardingDriver.localNetworkMaybeLine("Darkbloom") + " " + ClusterOnboardingDriver.otherMacAllowLine("Apple M5 Ultra, 256 GB") + "\n"),
@@ -2428,7 +2467,8 @@ import Darwin
     static func localNetworkAskedAtStatedMoments() {
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, pairEvents: memberEvents,
-            pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB"), localNetwork: refusedThenAllowed(2, [.thisCommand, .service])))
+            pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB"), localNetwork: refusedThenAllowed(2, [.thisCommand, .service]),
+            allowPollMilliseconds: allowPollWithNoKeys))
         expect(run.waitFor("  Click Allow on the Local Network prompt for Terminal.\n"), "local network: this command's prompt, in Connect")
         expect(run.waitFor("prompt for Terminal.\n  \u{2713} Allowed\n"), "local network: allowed, then pairing")
         expect(run.waitFor(codeQuestion), "local network: the code"); run.type("y")
@@ -3211,7 +3251,7 @@ import Darwin
         transcript("restart-after-registration-fails", text, keys: run.keys)
     }
 
-    /// The 0.10.8 candidate on pair-2 (c3, B13): the DevNet app's cluster screens told the person to run `darkbloom …`,
+    /// The 0.10.8 candidate on a DevNet pair: the DevNet app's cluster screens told the person to run `darkbloom …`,
     /// which on a Mac with both apps is the production command. Every command the screens print names the running
     /// identity's command.
     /// The refactor pass on the c3 fix (DevNet only): the command rename ran after a live row was fitted to the window, so a
@@ -3232,7 +3272,7 @@ import Darwin
                "dev row: named, then fitted to its room: \(named)")
     }
 
-    /// The pair-2 re-test of the DevNet build (round 3, R-8): a stopped local-only pair's status said "When it starts: Local
+    /// A DevNet re-test: a stopped local-only pair's status said "When it starts: Local
     /// only, on this Mac's networks; API key: `darkbloom local`." in the DevNet app, whose command is `darkbloom-dev local`.
     /// These lines reach `cluster status` as they are, never through the console's rename, so they name the running
     /// identity's command themselves: the scope's line, the API line of a pair the other Mac serves, and the missing-login
@@ -3332,7 +3372,24 @@ import Darwin
                    "words: \(reason)")
         }
         expect(N.words(reason: "memory_gate_refused", mac: other) == "The other Mac (Apple M3 Ultra, 256 GB) lacks free memory for its share", "words: memory")
-        expect(N.words(reason: "x\u{1B}[2J", mac: other) == "The coordinator didn't accept the pair (no reason given)", "words: never control characters")
+        expect(N.words(reason: "x\u{1B}[2J", mac: other) == "The pair stopped (no reason given)", "words: never control characters")
+        // A stopped start is the pair's own (the coordinator committed it): never "the coordinator didn't accept it".
+        expect(N.words(reason: "unknown_failure", mac: other) == "The pair stopped (unknown_failure)", "words: an unclassified stop")
+        // A rank's load-gate refusal with its figures (a DevNet pair: 73.57 GiB needed, 66.6-70.5 GiB admissible) names
+        // the Mac and both figures.
+        let short = R.memoryRefusal(rank: 1, said: "its owner exited with status 0: darkbloom-cluster-worker: Tensor-parallel shard load "
+            + "needs 73.57 GiB of admissible memory and has 68.20 GiB: 22.5 GiB free plus 45.7 GiB of file cache")
+        expect(short == "memory_gate_refused: rank 1 needs 73.57 GiB, has 68.20 GiB", "report: memory figures: \(String(describing: short))")
+        expect(R.memoryRefusal(rank: 1, said: "its owner exited with status 0") == nil, "report: no figures, no memory line")
+        expect(R.state(R.text(.stopped(short ?? ""))) == .stopped(short ?? ""), "report: the memory line reads back")
+        expect(N.words(reason: short ?? "", mac: other, viewerRank: 0)
+               == "The other Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, read on rank 0")
+        expect(N.words(reason: short ?? "", mac: other, viewerRank: 1)
+               == "This Mac doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, read on rank 1")
+        expect(N.words(reason: short ?? "", mac: "one of the Macs")
+               == "One of the Macs doesn't have enough free memory for its share (needs 73.6 GiB, has 68.2 GiB)", "words: memory figures, rank unknown")
+        expect(N.remedy(forReason: N.words(reason: short ?? "", mac: other, viewerRank: 0))?.hasPrefix("Quit apps") == true,
+               "remedy: memory figures")
         expect(N.notLoggedIn(["this Mac"]) == "This Mac isn't logged in to Darkbloom, so the coordinator won't pair it", "words: one Mac")
         expect(N.remedy(forReason: notVerified)?.contains("Retry") == true && N.remedy(forReason: "anything") == nil, "remedy")
         expect(N.isMissingLogin(N.notLoggedIn(["this Mac"])) && !N.isMissingLogin(notVerified), "words: a missing login is told apart")
@@ -3747,7 +3804,7 @@ import Darwin
         expect(!quick.text.contains(P.otherMacNotFoundLines[0]), "found: no hint")
     }
 
-    /// R-3 (the pair-2 re-test): the hint's firewall line said "Darkbloom" in the DevNet app, whose firewall entry is its own
+    /// A DevNet re-test: the hint's firewall line said "Darkbloom" in the DevNet app, whose firewall entry is its own
     /// name. It, and the line that asks to pair again after a reinstall, name the app as the Local Network lines do.
     static func pairingLinesNameTheApp() {
         ClusterOnboardingCommand.useApp("Darkbloom Dev")
@@ -4037,8 +4094,8 @@ import Darwin
         let predicted = fresh.enumerated().map { var option = $1; option.predictedTokensPerSecond = $0 == 0 ? 92 : 38; return option }
         expect(A.advise(predicted, throughDarkbloom: true, serving: false)?.reason == "faster here and serves up to 8 requests at once",
                "advice: the planner's prediction when nothing is measured, never quoted")
-        // The owner (2026-11-05): "it should not show tok/s". Pair-2's Gemma said "faster here (about 56 against 52
-        // tokens/s, predicted)"; the speeds still rank the modes, the words never quote them.
+        // The owner (2026-11-05): "it should not show tok/s". A DevNet pair's Gemma said "faster here (about 56 against
+        // 52 tokens/s, predicted)"; the speeds still rank the modes, the words never quote them.
         let gemmaPair2 = [A.Option(mode: tp, planned: true, fitsNow: true, predictedTokensPerSecond: 52, concurrentRequests: 1, publicTraffic: true),
                           A.Option(mode: pp, planned: true, fitsNow: true, predictedTokensPerSecond: 56, concurrentRequests: 1, publicTraffic: true)]
         let pair2 = A.advise(gemmaPair2, throughDarkbloom: true, serving: false)
@@ -4126,11 +4183,12 @@ import Darwin
                == "Recommended for Gemma 4 26B on these two Macs: Pipeline, the only one that fits these Macs now.", "line: the only one that fits")
     }
 
-    /// Pair-2 (an M3 Ultra and an M5 Max) on DevNet .118 (2026-11-06, capture A at 08:57Z, Qwen serving): Gemma had served
-    /// nothing with the new build, so the question compared the planner's predictions and said "Pipeline, faster here",
-    /// though these Macs had served its tensor parallel faster with every earlier build (pipeline 57.2 tok/s on .92;
-    /// tensor parallel 61.3 on .92 and 84 on .110). Until this build has served one of the modes, what these Macs served
-    /// with an earlier build ranks them; a prediction comes only after that. No mode, model or chip is preferred.
+    /// A DevNet pair (an M3 Ultra and an M5 Max) on .118 (2026-11-06, capture A at 08:57Z, Qwen serving): Gemma had
+    /// served nothing with the new build, so the question compared the planner's predictions and said "Pipeline, faster
+    /// here", though these Macs had served its tensor parallel faster with every earlier build (pipeline 57.2 tok/s on
+    /// .92; tensor parallel 61.3 on .92 and 84 on .110). Until this build has served one of the modes, what these Macs
+    /// served with an earlier build ranks them; a prediction comes only after that. No mode, model or chip is
+    /// preferred.
     static func modeAdviceFollowsTheseMacsMeasurementsAfterAnUpdate() {
         typealias A = ClusterOnboardingModeAdvice
         let tp = "tensor_parallel_v1", pp = "pipeline_v1"
@@ -4182,10 +4240,10 @@ import Darwin
     }
 
     /// The recommendation can rest on what an earlier build served while this build has measured nothing, and the
-    /// planner's first mode may be the other one (pair-2's Gemma right after an update: the pipeline first, tensor
-    /// parallel recommended). The list's order and a model named on the command line follow the recommendation too, so
-    /// the list never reads "pipeline or tensor parallel" while the question recommends tensor parallel. (A model started
-    /// again keeps the mode it served in, as before: `chooseAndServe`'s `keepMode`.)
+    /// planner's first mode may be the other one (a DevNet pair's Gemma right after an update: the pipeline first,
+    /// tensor parallel recommended). The list's order and a model named on the command line follow the recommendation
+    /// too, so the list never reads "pipeline or tensor parallel" while the question recommends tensor parallel. (A
+    /// model started again keeps the mode it served in, as before: `chooseAndServe`'s `keepMode`.)
     static func theListAndTheDefaultFollowTheRecommendation() {
         let tp = "tensor_parallel_v1", pp = "pipeline_v1"
         var gemma = ClusterOnboardingModelChoice(title: "Gemma 4 26B", lines: ["15.6 GB · pipeline · this Mac 6 layers / the other Mac 24 layers"],
@@ -4307,7 +4365,8 @@ import Darwin
     /// The list (team note: "Model selection should hide model that we don't allow them to be run there"): the model
     /// serving now marked, each model's modes by name, the measured one first; an approved model that cannot run is
     /// named with its reason, above the list. No speed, measured or not (owner, 2026-11-05: the model and mode choice
-    /// never quote tok/s; DevNet .118, pair-2: "Gemma 4 26B · tensor parallel 96 tok/s or pipeline (not measured …)").
+    /// never quote tok/s; a DevNet pair on .118: "Gemma 4 26B · tensor parallel 96 tok/s or pipeline (not measured
+    /// …)").
     static func modelListMarksTheCurrentModelAndQuotesNoSpeed() {
         let current = switchChoices[0].listLine(sameTitleElsewhere: false)
         expect(current == "Qwen 3.8 27B · 16.3 GB", "list: a model's line: \(current)")
@@ -4317,13 +4376,14 @@ import Darwin
         unmeasured.modes = unmeasured.modes!.map { var mode = $0; mode.measuredTokensPerSecond = nil; return mode }
         expect(unmeasured.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB",
                "list: none measured, the planner's first: \(unmeasured.listLine(sameTitleElsewhere: false))")
-        // Pair-2 on DevNet .118 (09:38Z, Qwen serving): Gemma's tensor parallel had served with this build, the pipeline not.
+        // A DevNet pair on .118 (09:38Z, Qwen serving): Gemma's tensor parallel had served with this build, the
+        // pipeline not.
         var pair2 = switchChoices[1]
         pair2.modes = [.init(mode: "pipeline_v1", split: ClusterOnboardingMode.decidedWhenItLoads, measuredTokensPerSecond: nil, concurrentRequests: 1),
                        .init(mode: "tensor_parallel_v1", split: ClusterOnboardingMode.decidedWhenItLoads, measuredTokensPerSecond: 96.4,
                              concurrentRequests: 1)]
         let pair2Line = pair2.listLine(sameTitleElsewhere: false)
-        expect(pair2Line == "Gemma 4 26B · 15.6 GB", "list: pair-2's Gemma: \(pair2Line)")
+        expect(pair2Line == "Gemma 4 26B · 15.6 GB", "list: the DevNet pair's Gemma: \(pair2Line)")
         let mimo = ClusterOnboardingModelChoice(title: "MiMo V2.6 Flash", lines: ["172.9 GB · pipeline"], blocker: nil, modelID: "mimo-v2.6-flash-mopd",
             validated: true, modes: [.init(mode: "pipeline_mtp_v1", split: nil, measuredTokensPerSecond: 58.7),
                                      .init(mode: "tensor_parallel_v1", split: nil, measuredTokensPerSecond: 52.2)])
@@ -4550,8 +4610,8 @@ import Darwin
         let late = [["Stopped."], ["Loading Qwen 3.8 27B: 1 of 2 parts ready."]] + Array(repeating: [offerPendingLine], count: 30)
             + [["Qwen 3.8 27B: registering both Macs with the coordinator for pairing."],
                [ClusterOnboardingNotServing.statusLine(model: "Qwen 3.8 27B", reason: notVerifiedTimed)]]
-        // f2 (0.10.9 DevNet, pair-2): Apple's verification clears by itself, so the joining Mac never judges by it; an older
-        // leader that publishes no outcome ends at the bound with what is known, never Retry it can't see.
+        // 0.10.9 on a DevNet pair: Apple's verification clears by itself, so the joining Mac never judges by it; an
+        // older leader that publishes no outcome ends at the bound with what is known, never Retry it can't see.
         let run = joining(recorder, statusSequence: late, pairServingResults: [.failure(.init(notVerifiedTimed))], followSeconds: 10)
         expect(run.waitFor(codeQuestion), "late offer: the code"); run.type("y")
         expect(run.finish(seconds: 30) == 1, "late offer: not serving is not success")
@@ -4674,7 +4734,7 @@ import Darwin
     static let localServingLine = "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 (local only)."
     static let leadersTestLine = "Test response in 0.61 s (the leading Mac's test)"
 
-    /// The pair-2 DevNet run (P2-1): the joining Mac's Local Network step passed (its service's broadcast probe said
+    /// A DevNet run: the joining Mac's Local Network step passed (its service's broadcast probe said
     /// allowed), then macOS refused its follower's dial once the leader started, and its window said nothing. It now says
     /// so, and what to do on that Mac.
     static func theJoiningMacSaysWhenItsServiceIsKeptOffTheLocalNetwork() {
@@ -4692,7 +4752,7 @@ import Darwin
         expect(run.text.contains(said) && run.text.components(separatedBy: said).count == 2, "P2-1, joining: said once, plainly: \(run.text)")
     }
 
-    /// The pair-2 DevNet run (P2-7): the joining Mac's window showed nothing while the leader sat at ✗. It says each new
+    /// A DevNet run: the joining Mac's window showed nothing while the leader sat at ✗. It says each new
     /// state of the leader's start, and where to choose Retry when a part keeps ending there.
     static func theJoiningMacShowsTheLeadersStateWhileItWaits() {
         let ending = "Loading Qwen 3.8 27B: 1 of 2 parts ready (this Mac's part ended (exit 1: boom) and starts again by itself)."
@@ -4705,7 +4765,7 @@ import Darwin
                && !run.text.contains("Choose Retry"), "P2-7: the leader's state, and no Retry mid-start: \(run.text)")
     }
 
-    /// The pair-2 DevNet run (P2-4): after the pair was stopped (`cluster stop --service` on the member), Retry in the ✗
+    /// A DevNet run: after the pair was stopped (`cluster stop --service` on the member), Retry in the ✗
     /// only waited for parts nothing would start, silently, for 5+ minutes, and q was ignored. Retry starts a stopped pair
     /// again and says so; q leaves the wait at once, with a line.
     static func retryStartsAStoppedPairAndQLeavesTheWait() {

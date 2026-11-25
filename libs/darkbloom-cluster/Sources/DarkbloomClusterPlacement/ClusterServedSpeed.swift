@@ -80,8 +80,8 @@ public struct ClusterServedSpeedRecords: Codable, Equatable, Sendable {
 
         /// Whether a plan that will serve `serving`, with Qwen's tensor assistant in tensor parallel when
         /// `tensorAssistant`, may take this setup's speeds: it was served the same way, and a tensor-parallel setup
-        /// decoded with the assistant exactly when the plan will. A speed served locally with the assistant (pair-2's
-        /// Qwen: 34-36 tok/s) says nothing of tensor parallel through Darkbloom without it (14-20), and the
+        /// decoded with the assistant exactly when the plan will. A speed served locally with the assistant (a DevNet
+        /// pair's Qwen: 34-36 tok/s) says nothing of tensor parallel through Darkbloom without it (14-20), and the
         /// served race reads each mode at its fastest setup (`ClusterServedModes.figures`). A record written
         /// before these were recorded is read as before: it is an earlier build's, which `servedBy` already leaves
         /// out of every plan of a build that records them.

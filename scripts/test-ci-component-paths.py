@@ -23,22 +23,20 @@ spec.loader.exec_module(workflow)
 
 class ComponentPathsTests(unittest.TestCase):
     def test_only_same_workflow_pr_revisions_share_cancellation_group(self):
-        # Pull request revisions cancel each other; every push has a group of
-        # its own (a push of a tested tree runs no test job, so none is skipped).
-        # CI (dev)'s dispatches (the hourly full run) share one group and
-        # cancel nothing.
-        key = "github.event.pull_request.number || github.run_id"
-        groups = {
-            "ci-master.yml": "${{ github.workflow }}-${{ github.event_name }}-${{ %s }}" % key,
-            "ci-dev.yml": "${{ github.event_name == 'workflow_dispatch' && 'ci-dev-hourly' || "
-                          "format('{0}-{1}-{2}', github.workflow, github.event_name, %s) }}" % key,
-        }
-        for filename, group in groups.items():
-            with self.subTest(workflow=filename):
-                source = (ROOT / ".github/workflows" / filename).read_text()
-                concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-                self.assertIn(f"  group: {group}\n", concurrency)
-                self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
+        # Pull request `run-ci` runs cancel earlier runs of the same PR, while
+        # unrelated label events get an isolated group so they never cancel an
+        # active `run-ci` run. Rapid dev pushes coalesce; master pushes stay
+        # independent.
+        dev_concurrency = (ROOT / ".github/workflows/ci-dev.yml").read_text().split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+        self.assertIn("(github.event_name == 'push' && 'ci-dev-push-dev')", dev_concurrency)
+        self.assertIn("(github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') && format('{0}-pull_request-{1}', github.workflow, github.event.pull_request.number)",
+                      dev_concurrency)
+        self.assertIn("  cancel-in-progress: ${{ github.event_name == 'push' || "
+                      "(github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci')) }}\n", dev_concurrency)
+        master_concurrency = (ROOT / ".github/workflows/ci-master.yml").read_text().split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+        self.assertIn("github.event.action == 'labeled' && github.event.label.name != 'run-ci' && github.event.label.name != 'run-gpu-ci'", master_concurrency)
+        self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' && "
+                      "(github.event.action != 'labeled' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}\n", master_concurrency)
         # The shared test workflow takes its callers' concurrency.
         self.assertNotIn("\nconcurrency:", (ROOT / ".github/workflows/provider-tests.yml").read_text())
 
@@ -100,7 +98,6 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/fixture_redirects.py": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
-            "scripts/swift_test_lock_retry.py": {"provider", "cluster"},
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
             "console-ui/package-lock.json": set(),
@@ -146,6 +143,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/test-provider-profiles-unprivileged.py", "scripts/test-qwen4-packaged-resources.py",
             "scripts/verify-prompt-parity.sh", "scripts/verify-nemotron-prompt-parity.sh",
             "scripts/install.sh", "scripts/test-install-atomic.sh", "scripts/test-desktop-api.py",
+            "scripts/report-provider-coverage.sh",
         ):
             self.assertTrue((ROOT / path).is_file(), path)
             self.assertTrue(routing.classify([path])["provider"], path)
@@ -276,9 +274,10 @@ class GitDiffTests(unittest.TestCase):
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
         self.assertTrue(all(self.run_detector("workflow_dispatch", {}).values()))
 
-    def test_master_pushes_and_pull_requests_into_master_select_every_component(self):
-        # Master is the release line: a docs-only change into master still
-        # runs every component, so a master record always covers them all.
+    def test_master_pushes_select_every_component_while_pull_requests_use_diff(self):
+        # Master pushes remain thorough (unless deduplicated via ci-tested-tree),
+        # while pull requests into master, dev or stacked branches respect path
+        # filtering so docs/landing/workflow PRs never force 14 macOS jobs.
         self.write("landing/new.ts")
         head = self.commit()
         everything = dict.fromkeys(routing.COMPONENTS, True)
@@ -286,15 +285,16 @@ class GitDiffTests(unittest.TestCase):
             with self.subTest(ref=ref):
                 self.assertEqual(self.run_detector("push", {"before": self.base, "after": head, "ref": ref}),
                                  everything)
-        for branch in ("master", "main"):
-            with self.subTest(base=branch):
-                event = {"pull_request": {"base": {"sha": self.base, "ref": branch}, "head": {"sha": head}}}
-                self.assertEqual(self.run_detector("pull_request", event), everything)
-        # Into dev or a stacked branch, the diff decides.
-        for branch in ("dev", "ci/stacked"):
+        for branch in ("master", "main", "dev", "ci/stacked"):
             with self.subTest(base=branch):
                 event = {"pull_request": {"base": {"sha": self.base, "ref": branch}, "head": {"sha": head}}}
                 self.assertFalse(any(self.run_detector("pull_request", event).values()))
+        # A provider-touching PR into master still selects provider.
+        self.write("provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift")
+        provider_head = self.commit()
+        event = {"pull_request": {"base": {"sha": head, "ref": "master"}, "head": {"sha": provider_head}}}
+        self.assertEqual(self.run_detector("pull_request", event),
+                         {"provider": True, "cluster": False, "mimo_audio": False})
 
     def test_missing_invalid_revisions_and_unsupported_events_fail_closed(self):
         for before in ("f" * 40, "--help", "", None):
@@ -324,22 +324,55 @@ class WorkflowRoutingTests(unittest.TestCase):
 
         dev, master = triggers("ci-dev.yml"), triggers("ci-master.yml")
         self.assertEqual(dev, {"push": {"branches": "[dev]"},
-                               "pull_request": {"branches-ignore": "[master, main]"},
+                               "pull_request": {"branches-ignore": "[master, main]", "types": "[labeled]"},
                                "workflow_dispatch": {}})
+        # Pull requests run on request only: a label or ready for review,
+        # never a push to the branch. A dispatch may name the commit to test.
         self.assertEqual(master, {"push": {"branches": "[master, main]"},
-                                  "pull_request": {"branches": "[master, main]"}})
+                                  "pull_request": {"branches": "[master, main]",
+                                                   "types": "[labeled, ready_for_review]"},
+                                  "workflow_dispatch": {}})
         # Both run the same plan and tests, whatever the base (Release
-        # Integrity alone reads the base, for the branch's build default).
+        # Integrity alone reads the base, for the branch's build default);
+        # pull-request macOS tests run only when opted in via `run-ci` or
+        # `run-gpu-ci`, which `unlabel` removes immediately on start.
+        run_ci_guard = "github.event_name != 'pull_request' || github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci'"
         for filename in ("ci-dev.yml", "ci-master.yml"):
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / filename).read_text().split("\njobs:\n", 1)[1])
             with self.subTest(workflow=filename):
                 self.assertNotIn("github.base_ref", jobs["plan"] + jobs["tests"])
                 self.assertIn("    uses: ./.github/workflows/provider-plan.yml\n", jobs["plan"])
                 self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", jobs["tests"])
-                self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", jobs["tests"])
+                self.assertIn("      cluster_gpu: ${{ needs.plan.outputs.cluster_gpu }}\n", jobs["tests"])
+                self.assertIn(f"    needs: plan\n    if: ${{{{ !cancelled() && ({run_ci_guard}) }}}}\n", jobs["tests"])
+                self.assertIn("    if: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-ci' || github.event.label.name == 'run-gpu-ci') }}\n",
+                              jobs["unlabel"])
+                self.assertIn("    runs-on: ubuntu-24.04\n", jobs["unlabel"])
+                self.assertIn('issues/$PR_NUMBER/labels/run-ci" >/dev/null 2>&1 || true', jobs["unlabel"])
+                self.assertIn('issues/$PR_NUMBER/labels/run-gpu-ci" >/dev/null 2>&1 || true', jobs["unlabel"])
+        self.assertFalse((ROOT / ".github/workflows/ci-dev-hourly.yml").exists())
+
+    def test_nightly_dispatch_runs_ci_dev_with_the_gpu_shards_on_dev(self):
+        # Pull requests run the Cluster GPU shards only with `run-gpu-ci`; a
+        # daily dispatch of CI (dev) on dev runs them (a dispatch selects every
+        # component, GPU included). GitHub runs the schedule from master only,
+        # so the file dispatches dev's copy of ci-dev.yml and runs nothing else.
+        text = (ROOT / ".github/workflows/ci-dev-nightly.yml").read_text()
+        header, body = text.split("\njobs:\n", 1)
+        self.assertEqual(header.split("\non:\n", 1)[1].split("\npermissions:", 1)[0],
+                         "  schedule:\n    - cron: '31 7 * * *'\n")
+        self.assertIn("\npermissions:\n  contents: read\n", header)
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_-]+):$", body), ["dispatch"])
+        self.assertIn("    runs-on: ubuntu-24.04\n", body)
+        self.assertIn("    permissions:\n      actions: write\n    steps:\n", body)
+        self.assertIn('        run: gh workflow run ci-dev.yml --repo "$REPOSITORY" --ref dev\n', body)
+        for forbidden in ("secrets.", "uses:", "checkout", "contents: write"):
+            self.assertNotIn(forbidden, body)
+        plan = (ROOT / ".github/workflows/provider-plan.yml").read_text()
+        self.assertIn("[ \"$EVENT_NAME\" = workflow_dispatch ] ||", plan)
 
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
-        for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "component-changes.yml",
+        for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "provider-plan.yml",
                          "provider-release-cache.yml",
                          "provider-signing-validation.yml", "release-swift.yml",
                          "release-provider.yml"):
@@ -352,7 +385,7 @@ class WorkflowRoutingTests(unittest.TestCase):
         for filename in ("integration.yml", "benchmarks.yml", "telemetry-archive.yml", "ci.yml"):
             self.assertFalse((ROOT / ".github/workflows" / filename).exists())
         for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "provider-release-cache.yml",
-                         "component-changes.yml"):
+                         "provider-plan.yml"):
             text = (ROOT / ".github/workflows" / filename).read_text()
             self.assertNotIn("secrets.", text)
             self.assertNotRegex(text, r"(?m)^\s+(environment:|id-token:|repository:)")
@@ -361,44 +394,93 @@ class WorkflowRoutingTests(unittest.TestCase):
         # The plan (provider-plan.yml) runs the classifier and the tree lookup,
         # then routes only the lanes of the components it chose; the test jobs
         # read those components as inputs, on pull requests and pushes alike.
+        # One job classifies, looks up and chooses; the route job follows it.
         plan = workflow.job_blocks((ROOT / ".github/workflows/provider-plan.yml").read_text().split("\njobs:\n", 1)[1])
-        self.assertIn("uses: ./.github/workflows/component-changes.yml", plan["changes"])
-        self.assertIn("contents: read", plan["changes"])
-        self.assertIn("    needs: [changes, tested]\n", plan["components"])
+        self.assertEqual(set(plan), {"commit", "components", "route"})
+        steps = workflow.step_blocks(plan["components"])
+        self.assertEqual([workflow.field(step, "name", indent=6) for step in steps],
+                         [None, "Classify complete base-to-head Git diff", "Name the change this run tests",
+                          "Look for a successful run that tested it", "Choose the components to test"])
+        checkout, classify, tree, lookup, choose = steps
+        self.assertEqual(workflow.uses(checkout), workflow.CHECKOUT)
+        self.assertIn("    permissions:\n      contents: read\n      actions: read\n    outputs:\n", plan["components"])
+        # Without run_tests, or when a dispatch's ref was refused, nothing is
+        # classified: changes_result is the classifier step's outcome
+        # (`skipped`) and every component is false or empty.
+        for step in (checkout, classify):
+            self.assertEqual(workflow.field(step, "if"), "${{ inputs.run_tests && needs.commit.result == 'success' }}")
+        self.assertEqual(workflow.field(classify, "id"), "paths")
+        self.assertEqual(workflow.continues_on_error(plan["components"]), ["Classify complete base-to-head Git diff"])
+        self.assertEqual(workflow.run_command(classify), "python3 scripts/ci-component-paths.py")
+        self.assertIn("      changes_result: ${{ steps.paths.outcome }}\n", plan["components"])
         # The lookup needs the classifier's components: a record must cover them.
-        self.assertIn("    needs: changes\n    if: ${{ !cancelled() && needs.changes.result == 'success' }}\n",
-                      plan["tested"])
-        self.assertIn("          SELECTED: provider=${{ needs.changes.outputs.provider }},"
-                      "cluster=${{ needs.changes.outputs.cluster }},"
-                      "mimo_audio=${{ needs.changes.outputs.mimo_audio }}\n", plan["tested"])
-        self.assertIn("    needs: [tested, components]\n", plan["route"])
+        for step in (tree, lookup):
+            self.assertEqual(workflow.field(step, "if"), "${{ steps.paths.outcome == 'success' }}")
+        self.assertIn("          SELECTED: provider=${{ steps.paths.outputs.provider }},"
+                      "cluster=${{ steps.paths.outputs.cluster }},"
+                      "mimo_audio=${{ steps.paths.outputs.mimo_audio }}\n", lookup)
+        # A dispatch's `ref` is resolved once (job `commit`); the classifier
+        # waits for it, so a refused ref tests nothing.
+        self.assertIn("    needs: commit\n    if: ${{ !cancelled() }}\n", plan["components"])
+        # The choice runs after any failure but cancellation: a failed or
+        # skipped lookup leaves skip empty, which tests.
+        self.assertEqual(workflow.field(choose, "if"), "${{ !cancelled() }}")
+        self.assertIn("          SKIP: ${{ steps.lookup.outputs.skip }}\n", choose)
+        self.assertIn("    needs: components\n", plan["route"])
         for name in routing.COMPONENTS:
             self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
         ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])
-        # Each test job needs only its lane's build job, which runs when the
-        # component is selected.
-        lanes = {"test-provider": ("provider", "build-provider"), "test-cluster": ("cluster", "build-cluster"),
-                 "test-cluster-focused": ("cluster", None), "test-cluster-gpu": ("cluster", "build-cluster"),
-                 "cluster-release-checks": ("cluster", None)}
-        for lane, (component, build) in lanes.items():
+        # No test job needs another job: each starts beside its lane's build
+        # job, which runs when the component is selected, and waits for its
+        # products (scripts/ci-test-products.py wait).
+        lanes = {"test-provider": ("provider", "build-provider", "provider"),
+                 "test-provider-gates": ("provider", "build-provider", "provider"),
+                 "test-cluster": ("cluster", "build-cluster", "cluster"),
+                 "test-cluster-focused": ("cluster", None, "cluster"),
+                 "test-cluster-gpu": ("cluster_gpu", "build-cluster", "cluster"),
+                 "cluster-release-checks": ("cluster", None, "cluster")}
+        for lane, (condition_input, build, build_input) in lanes.items():
             with self.subTest(job=lane):
+                self.assertNotRegex(ci[lane], r"(?m)^    needs:")
                 if build:
-                    self.assertIn(f"    needs: {build}\n", ci[lane])
-                    self.assertIn(f"    if: ${{{{ inputs.{component} == 'true' ||", ci[build])
-                else:
-                    self.assertNotRegex(ci[lane], r"(?m)^    needs:")
-                self.assertIn("    if: ${{ inputs." + component + " == 'true' }}\n", ci[lane])
+                    self.assertIn(f"    if: ${{{{ inputs.{build_input} == 'true' }}}}\n", ci[build])
+                self.assertIn("    if: ${{ inputs." + condition_input + " == 'true' }}\n", ci[lane])
                 if lane != "test-cluster-gpu":
                     self.assertEqual(workflow.continues_on_error(ci[lane]), [workflow.SAMPLER_STEPS[-1]])
-        # Pull requests and pushes run the same jobs: only cache saving and the
-        # build jobs' refresh of a tested tree on a push read the event.
+        # Pull requests and pushes run the same blocking jobs; only cache saving
+        # and the opt-in cluster_gpu gate in provider-plan.yml read the event.
         for name, job in ci.items():
-            if name not in workflow.BUILD_JOBS:
-                self.assertNotIn("github.event_name", job, name)
-        self.assertNotIn("github.event_name", "".join(plan[name] for name in ("changes", "components")))
+            self.assertNotIn("github.event_name", job, name)
+        self.assertNotIn("github.event_name", classify)
+        # Verify the components step gates cluster_gpu on run-gpu-ci / master push / dispatch.
+        choose_cmd = workflow.run_command(choose)
+        gpu_cases = [
+            # (event, ref, gpu_labeled, cluster, skip, expected_cluster_gpu)
+            ("pull_request", "refs/pull/1/merge", "false", "true", "false", "false"),
+            ("pull_request", "refs/pull/1/merge", "true", "true", "false", "true"),
+            ("pull_request", "refs/pull/1/merge", "true", "false", "false", "false"),
+            ("pull_request", "refs/pull/1/merge", "true", "true", "true", "false"),
+            ("push", "refs/heads/dev", "false", "true", "false", "false"),
+            ("push", "refs/heads/master", "false", "true", "false", "true"),
+            ("push", "refs/heads/master", "false", "true", "true", "false"),
+            ("workflow_dispatch", "refs/heads/dev", "false", "true", "false", "true"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for event_name, ref, gpu_labeled, cluster, skip, expected in gpu_cases:
+                out_file = Path(tmpdir) / "out"
+                out_file.write_text("")
+                res = subprocess.run(
+                    ["bash", "-e", "-c", choose_cmd], capture_output=True, text=True, timeout=5,
+                    env={**os.environ, "GITHUB_OUTPUT": str(out_file), "RUN_TESTS": "true",
+                         "SKIP": skip, "PROVIDER": cluster, "CLUSTER": cluster, "MIMO_AUDIO": "false",
+                         "EVENT_NAME": event_name, "REF": ref, "GPU_LABELED": gpu_labeled},
+                )
+                self.assertEqual(res.returncode, 0, res.stderr)
+                parsed = dict(line.split("=", 1) for line in out_file.read_text().splitlines())
+                self.assertEqual(parsed["cluster_gpu"], expected, (event_name, ref, gpu_labeled, cluster, skip))
         # The lookup reads the event only to bind a record to its change.
-        self.assertEqual(plan["tested"].count("github.event_name"), 1)
-        self.assertIn("          EVENT: ${{ github.event_name }}\n", plan["tested"])
+        self.assertEqual(lookup.count("github.event_name"), 1)
+        self.assertIn("          EVENT: ${{ github.event_name }}\n", lookup)
         # The Provider SDK Tests lane is gone (David, 2026-11-04): its suites run
         # in the SDK's own Fork Tests.
         self.assertNotIn("test-provider-sdk", ci)
@@ -414,28 +496,37 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", master[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", master["release-integrity"])
         dev = (ROOT / ".github/workflows/ci-dev.yml").read_text()
-        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"plan", "tests", "hourly-failures"})
+        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"unlabel", "plan", "tests"})
         self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", dev)
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
-        text = (ROOT / ".github/workflows/component-changes.yml").read_text()
-        self.assertIn("fetch-depth: 0", text)
+        text = (ROOT / ".github/workflows/provider-plan.yml").read_text()
+        job = workflow.job_blocks(text.split("\njobs:\n", 1)[1])["components"]
+        checkout = workflow.step_blocks(job)[0]
+        self.assertEqual(job.count("actions/checkout@"), 1)
+        self.assertIn("fetch-depth: 0", checkout)
         # Blobless: full commit and tree history, file contents on demand.
-        self.assertIn("filter: blob:none", text)
-        self.assertIn("persist-credentials: false", text)
-        self.assertIn("contents: read", text)
+        self.assertIn("filter: blob:none", checkout)
+        self.assertIn("persist-credentials: false", checkout)
+        self.assertNotIn("sparse-checkout", checkout)
+        self.assertIn("contents: read", job)
         self.assertNotIn("secrets.", text)
         self.assertNotIn("pull_request_target", text)
-        self.assertNotIn("gh api", text)
+        # The classifier reads the Git diff, never the API (no truncation).
+        classify = workflow.step_blocks(job)[1]
+        self.assertEqual(workflow.field(classify, "name", indent=6), "Classify complete base-to-head Git diff")
+        self.assertNotIn("gh api", classify)
+        self.assertNotIn("GITHUB_TOKEN", classify)
         for name in routing.COMPONENTS:
-            self.assertIn("value: ${{ jobs.changes.outputs." + name + " }}", text)
-            self.assertIn(name + ": ${{ steps.paths.outputs." + name + " }}", text)
+            self.assertIn("value: ${{ jobs.components.outputs." + name + " }}", text)
+            self.assertIn(name.upper() + ": ${{ steps.paths.outputs." + name + " }}", job)
+        self.assertFalse((ROOT / ".github/workflows/component-changes.yml").exists())
 
     def test_provider_aggregate_exhaustive_truth_table(self):
         jobs = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, "
-                      "ci-plan-checks]", gate)
+        self.assertIn("needs: [test-provider, test-provider-gates, test-cluster, test-cluster-focused, "
+                      "cluster-release-checks, ci-plan-checks]", gate)
         self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
@@ -444,6 +535,7 @@ class WorkflowRoutingTests(unittest.TestCase):
             "CHANGES_RESULT": "inputs.changes_result", "PROVIDER_CHANGED": "inputs.provider",
             "CLUSTER_CHANGED": "inputs.cluster", "SKIP": "inputs.skip", "TESTED_RUN": "inputs.tested_run",
             "UNIT_RESULT": "needs.test-provider.result",
+            "GATES_RESULT": "needs.test-provider-gates.result",
             "CLUSTER_RESULT": "needs.test-cluster.result",
             "CLUSTER_FOCUSED_RESULT": "needs.test-cluster-focused.result",
             "CLUSTER_RELEASE_RESULT": "needs.cluster-release-checks.result",
@@ -451,23 +543,37 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertIn(name + ": ${{ " + expression + " }}", step)
         command = workflow.run_command(step)
         results = ("success", "skipped", "failure", "cancelled")
-        # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
+        # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it;
+        # the gates that run once are Provider Gates', GATES_RESULT.
         self.assertNotIn("PARITY_RESULT", step)
-        names = ("UNIT_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT", "CLUSTER_RELEASE_RESULT")
+        names = ("UNIT_RESULT", "GATES_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT", "CLUSTER_RELEASE_RESULT")
         selections = ("true", "false", "")
 
         def passes(selected, lanes):
             return (selected == "true" and set(lanes) == {"success"}) or \
                    (selected == "false" and set(lanes) == {"skipped"})
 
-        for detector, changed, cluster, *lanes in itertools.product(
-                results, selections, selections, *[results] * len(names)):
+        def passing(selected):
+            return "skipped" if selected == "false" else "success"
+
+        # Every result of each job, against every plan: the shards and the
+        # cluster jobs in every combination, with Provider Gates at the result
+        # its plan needs, then Provider Gates' every result with the other jobs
+        # at theirs. The rule is a conjunction, so this is the full table
+        # without its 4x longer product.
+        cases = [(detector, changed, cluster, unit, passing(changed), *cluster_lanes)
+                 for detector, changed, cluster, unit, *cluster_lanes in itertools.product(
+                     results, selections, selections, *[results] * (len(names) - 1))]
+        cases += [(detector, changed, cluster, passing(changed), gates, *[passing(cluster)] * 3)
+                  for detector, changed, cluster, gates in itertools.product(
+                      results, selections, selections, results)]
+        for detector, changed, cluster, *lanes in cases:
             result = subprocess.run(["bash", "-e", "-c", command], capture_output=True, timeout=5,
                                     env={**os.environ, "CHANGES_RESULT": detector, "PROVIDER_CHANGED": changed,
                                          "CLUSTER_CHANGED": cluster, **dict(zip(names, lanes))})
             # A skipped cluster job passes only when the classifier did not
             # select the cluster jobs; a failed or cancelled one never passes.
-            expected = detector == "success" and passes(changed, lanes[:1]) and passes(cluster, lanes[1:])
+            expected = detector == "success" and passes(changed, lanes[:2]) and passes(cluster, lanes[2:])
             self.assertEqual(result.returncode == 0, expected, (detector, changed, cluster, *lanes))
 
 

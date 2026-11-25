@@ -8,9 +8,12 @@ import Testing
 struct DistributedHTTPTerminalIntegrationTests {
     @Test func roleOnlyDeadlineErrorSurvivesSessionInvalidationUntilActualRequestACK() async throws {
         let session = LocalHostTestSession()
+        // The pair's first-token allowance restored for its own API's requests (`DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0`),
+        // so the deadline fails this request.
         let host = DistributedLocalServer(session: session,
             config: .init(host: "127.0.0.1", port: 0, authToken: "fixture-token"),
             firstTokenBudgetPolicy: try .init(baseMilliseconds: 500, millisecondsPerInputToken: 100),
+            localFirstTokenWait: false,
             tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) })
         try await host.start()
         let port = try #require(await host.status.boundPort)

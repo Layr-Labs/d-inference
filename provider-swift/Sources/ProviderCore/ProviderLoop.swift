@@ -54,7 +54,7 @@ public final class SendHandle: @unchecked Sendable {
     /// terminal that overtook a chunk would make it drop the chunk's tail.
     public func send(_ message: OutboundMessage) {
         switch message {
-        case .inferenceComplete(_, _, _, _, _, let profile),
+        case .inferenceComplete(_, _, _, _, _, let profile, _),
             .inferenceError(_, _, let profile):
             if let profile {
                 let flushStart = SuspendingClock.now
@@ -553,6 +553,9 @@ public actor ProviderLoop {
     /// handler right after its cancellation token is registered, so a test
     /// can give way at that point and check the handler's exits.
     internal var afterTokenRegisteredForTesting: (@Sendable (String) async -> Void)?
+    /// How long shutdown waits for each slot's unload (`unloadAllModelsForShutdown`).
+    /// Production keeps `defaultShutdownUnloadWait`; only a test shortens it.
+    internal var shutdownUnloadWait: Duration = ProviderLoop.defaultShutdownUnloadWait
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
@@ -647,6 +650,8 @@ public actor ProviderLoop {
     /// Models remain tracked while their scheduler is tearing down so
     /// reentrant loads cannot start against memory that has not been freed yet.
     internal var modelsUnloading: Set<String> = []
+    /// A removed slot's survivors may still have their old, shared grants.
+    internal var pendingSurvivorRegrowth: [UUID: String] = [:]
     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     internal var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
     /// Set when a Nemotron Super slot retires: macOS returns its ~80 GB of
@@ -766,6 +771,9 @@ public actor ProviderLoop {
     /// The staged member control owner; installed only in member mode.
     /// `nativePairMemberStatus` stays nil in ordinary solo serving.
     internal var nativePairMemberControl: NativePairMemberControl?
+    /// How long a stopping member waits for its pair session's release
+    /// receipt (`releaseClusterMemberSessionBeforeClose`); checks shorten it.
+    internal var memberSessionReleaseTimeout: TimeInterval = ProviderLoop.memberSessionReleaseTimeoutSeconds
 
     // MARK: - Cluster member connection state
 
@@ -931,6 +939,35 @@ public actor ProviderLoop {
 
     /// Cached security posture from startup verification.
     internal var securityPosture: SecurityPosture?
+
+    #if DEBUG
+    /// Stand-ins for the boot-settings reading (its command results and the kernel
+    /// SIP value), set only by `setBootSettingsReadingForTesting`: startup then
+    /// runs the real collector on them (`applySecurityHardening`). Debug builds only.
+    internal var bootSettingsReadingOverride: (commands: SecurityCommandRunner, kernelSIP: SIPConfiguration?)?
+    #endif
+
+    /// When startup reads Secure Boot again after a failed read; tests shorten it.
+    internal var secureBootReadRetry = SecureBootReadRetry.service
+    /// The boot-settings refusals found before a connection, after startup:
+    /// they ended the coordinator client, serving ends as at a stop, and the
+    /// service then holds (`holdWithoutDarkbloomServing(_:afterServing:)`).
+    internal var refusalsBeforeConnecting: [BootSecurityIssue]?
+    /// No planned reconnect starts after such a refusal, including those an
+    /// update's or add-on's resume would request.
+    internal var registrationRefused: Bool { refusalsBeforeConnecting != nil }
+    /// Keeps the daemon-state stamp fresh from such a refusal until the hold
+    /// keeps it (`ProviderLoop+BootSecurityHold.swift`).
+    internal var refusalLiveness: Task<Void, Never>?
+    #if DEBUG
+    /// A test's stand-in for whether native owners are retired (`nativeOwnersRetired`).
+    internal var nativeOwnersRetiredForTesting: (@Sendable () async -> Bool)?
+    #endif
+
+    /// True while `holdWithoutDarkbloomServing` keeps serving off.
+    internal var bootSecurityHoldActive = false
+    /// The refusals it holds for, published in the daemon state meanwhile.
+    internal var bootSecurityHoldKinds: [String]?
 
     /// Cached binary hash for attestation responses.
     internal var binaryHash: String?

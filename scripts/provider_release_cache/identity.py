@@ -25,6 +25,7 @@ RECIPE_PATHS = (
     "scripts/prepare-prompt-fixtures.py",
     "scripts/fetch-metallib.sh",
     "scripts/build-cluster-helpers.sh",
+    "scripts/check-fixed-stack.sh",
     "libs/darkbloom-cluster-worker/build-native-worker.sh",
 )
 # Only build inputs, never arbitrary environment variables or credentials.

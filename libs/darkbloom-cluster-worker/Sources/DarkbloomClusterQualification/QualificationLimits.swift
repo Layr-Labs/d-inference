@@ -52,8 +52,17 @@ public struct QualificationLimits: Equatable, Sendable {
             maximumContextTokens: context, maximumChunkTokens: min(chunkTokens, prompt))
     }
 
+    /// Rows whose runtime serves more than the derivation above: their own limits, so a pair is qualified where it
+    /// serves. GLM-5.3-Flash: its native context and the registered output at its 2,048-token chunk
+    /// (`GLM5NextRegisteredSpecification.contextLimits`), which a tensor-parallel pair serves every request and a
+    /// pipeline pair its owner's up to 262,144 tokens (`ClusterRuntimeAdapter.pipelineOwnerContextTokens`).
+    public static let servedLimits: [String: QualificationLimits] = [
+        "registered_glm53_flash": .init(maximumPromptTokens: 1_048_575, maximumOutputTokens: 65_536,
+            maximumContextTokens: 1_048_576, maximumChunkTokens: 2048),
+    ]
+
     public static func forModel(_ modelID: String) -> QualificationLimits {
-        declaredContextTokens[modelID].map(derived(declaredContextTokens:)) ?? reservation
+        servedLimits[modelID] ?? declaredContextTokens[modelID].map(derived(declaredContextTokens:)) ?? reservation
     }
 
     /// Nil when the request fits; otherwise the sentence naming the bound it exceeds.

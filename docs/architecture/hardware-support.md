@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-24
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -158,15 +158,16 @@ its tower and projector bound; a video's largest, `videoMediaChargeBytes`, is
 13.9 GiB of the cap, so a 16-image request (25.6 GiB of media) does not fit
 beside it. A resident slot's media
 probe is quoted against the ledger room its reservation is admitted by.
-The [concurrent image path](inference.md#managed-nemotron-super-slot) (on by default)
-does not widen that ledger room or discount a reservation after vision encoding.
-Each admitted image retains its full media charge until native settlement;
-overlapping decodes therefore require both quotes to fit. A cancelled or
+The [concurrent media rows](inference.md#managed-nemotron-super-slot) (on by default;
+images, or one video per request) do not widen that ledger room or discount a
+reservation after vision encoding. Each admitted image or video retains its full
+media charge until native settlement; overlapping decodes therefore require both
+quotes to fit (two videos: at most twice `videoMediaChargeBytes`). A cancelled or
 failed video also keeps its charges until a frame read still decoding on its
 reader's queue returns ([video decode](inference.md#managed-nemotron-super-slot)). The owner's selected
 width remains authoritative (`NemotronSuperLocalBridgeBuilder.make`,
 `NemotronSuperLocalImageBinding`). The single-image measurements below do not
-measure concurrent images.
+measure concurrent media rows.
 At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
 machine at the earlier 65,536-token context (cap, OS-available memory and MLX
 limits of the smaller Mac, before the speculating admission split); prompts
@@ -280,7 +281,17 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 ```
 
 `ramPrefix` is always 0 in production — there is no RAM prefix-cache carve
-([`prefix-cache.md`](prefix-cache.md)).
+([`prefix-cache.md`](prefix-cache.md)). The RAM-only tier of `memory_only`
+requests takes nothing from any grant. Each entry is charged to the process
+ledger instead (`reserveHostBuffers`), and is admitted only while a whole
+budget of headroom remains beside it. When free system memory bounds the
+headroom, an entry's wired pages lower it too, so an entry can cost up to twice
+its size in admission headroom. A refused charge that the tier covers releases
+its least recently used entries and is retried once
+(`GlobalKVCacheBudget.yieldMemoryOnlyTier`); the tier is also released on
+memory pressure, before the Mac sleeps, and before a model load, which counts
+it as reclaimable
+([RAM-only tier](prefix-cache.md#ram-only-tier-for-memory_only-requests)).
 
 Fused causal prompt attention changes the prefill transient, not these
 constants. An eligible full-attention prompt chunk takes one `.causal` SDPA
@@ -647,7 +658,18 @@ through the measured free memory.
   is shut down before its slot escapes; native publication remains owned by its
   existing transaction. This does not replace the measured headroom checks.
 - For contiguous slots, the bridge reserves `prompt + maxTokens` bytes in
-  `GlobalKVCacheBudget` before submit ([`inference.md`](inference.md)).
+  `GlobalKVCacheBudget` before submit ([`inference.md`](inference.md)). When
+  that reservation is refused for a request on this Mac's local API, the
+  request waits for running requests to release theirs only while
+  `GlobalKVCacheBudget.holdsOnceRequestsRelease` says it would fit once every
+  request reservation is released (loads and other charges are not counted as
+  freeable); otherwise it is refused at once as larger than the Mac holds
+  (`EngineV2Bridge+OwnerMemoryWait.swift`).
+- A text request's prompt rendering and tokenization hold one share of the
+  whole-Mac service allowance (`WholeMacServiceBudget.acquirePreparation`), so
+  a full Mac refuses a request as capacity before preparing its prompt and
+  concurrent preparation counts against the serving width. Submission takes
+  the share over as the request's allowance.
 - Reservation age is diagnostic only. `GlobalKVCacheBudget.recordCommitRejection`
   logs sustained rejection and keeps every owner's charge until the caller
   releases it after its resources retire. The asynchronous allocator-cache
@@ -711,6 +733,15 @@ parameter bytes and retained assistant weights; the scanner's disk-size padding
 belongs to load admission, not this runtime grant. Default SSD streaming has no
 resident prefix-bank carve (`UnifiedMemoryCap.kvBudgetBytes`,
 `provider-swift/Sources/ProviderCore/Inference/Memory/SlotSizingSnapshot.swift`).
+
+Before a looped Inkling 2 Mini checkpoint loads, its pre-load rate counts one
+cache slot per layer application, not one per stored layer: 48 slots, of which
+the 8 full-attention slots grow 32,768 fp16 bytes per token, while its 40
+sliding slots plateau at their 1024-token window and each sequence carries
+short-convolution state (3,833,856 bytes in FP32, half that in BF16)
+(`provider-swift/Sources/ProviderCore/Inference/Memory/KVEstimation.swift`,
+`parseModelArchitecture`; `provider-swift/Sources/ProviderCoreFoundation/Inkling2ModelIdentity.swift`,
+`CacheLayout`; [contract reference](../reference/inkling2-mini-support.md#cache-layout)).
 
 One model slot receives the full fleet KV budget. With multiple slots,
 `EngineV2KVSizing.resliceGrants` divides it in proportion to each model's fp16
@@ -940,9 +971,13 @@ paged allowlist start at the legacy ceiling 8
 `machdep.cpu.brand_string`, not full detection). The width changes no KV grant,
 load quotation or activation reserve (already sized for B=8); it only raises how
 many admitted requests a slot may run at once, still bounded by fixed-workspace
-memory concurrency and the coordinator's per-model quality cap. Under Low Power
-Mode or a non-nominal thermal state the bridge serves and reports the configured
-width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
+memory concurrency and the coordinator's per-model quality cap. The automatic
+width stays at 8 at nominal or fair thermal state with Low Power Mode off.
+Low Power Mode, a serious or critical thermal state, or an unknown state returns
+the bridge to the configured width (`EngineV2Bridge.widthPostureAllowsExpansion`).
+A reviewed profile's expanded width requires nominal thermal state. The bridge
+reads Low Power Mode and the thermal state from `ProcessInfo` whenever admission
+or the reported width asks (`EngineV2Bridge.servingPosture`, which tests replace). Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
 
 The [prompt geometry](inference.md#prompt-geometry) likewise changes no KV
@@ -955,7 +990,7 @@ working set rides the unchanged activation reserve: the
 [2026-10-21 measurements](../reports/2026-10-21-mixed-step-prefill-geometry.md)
 put its KV-subtracted peak at eight concurrent 32k-token prompts at 3.73 GiB,
 inside the 5.5 GiB default. GPT-OSS and dense Qwen keep 512 / 2,048 by default
-because the same geometry lifted their peaks at that load further above their
+(except Qwen3.8-27B on an M5 Ultra, below) because the same geometry lifted their peaks at that load further above their
 floors, GPT-OSS from 3.50 to 3.62 GiB against 3.5 and Qwen3.5-9B from 5.73 to
 6.03 GiB against 5.5. The live KV gate grants KV up to the cap minus the
 reserve (`UnifiedMemoryCap.liveKVHeadroomBytes`), so a peak above the reserve
@@ -963,6 +998,17 @@ lands beyond the cap; even the previous geometry reaches both floors at that
 load, so they need a long-context re-measurement coordinated with platform
 admission. MoE Qwen's peak rose 2.1 GiB (`EngineV2Factory.usesWidePrefillChunk`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`).
+
+Qwen3.8-27B on an M5 Ultra takes a 1,024-token plain chunk with the unchanged
+2,048-token step budget (`EngineV2Factory.usesQwen38PrefillChunk`), so its
+pool, rings, quotation and floor are unchanged too. A mixed step can carry more
+prompt rows than at 512 (up to the same budget). Measured: the provider's whole-
+process footprint peak at eight concurrent 34-36k-token prompts on an M5 Ultra
+showed no systematic rise (512: 39.9 and 39.9 GB; 1,024: 36.9 and 41.0 GB; 1 GB
+sampling granularity, weights and KV included). Not measured: a KV-subtracted
+activation probe and a cap-limited KV fill, so a rise smaller than the
+footprint's run-to-run spread is not excluded; the 27B keeps the 5.5 GiB default
+floor.
 
 ### Deadline admission rates
 

@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-21
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -149,7 +149,10 @@ declares the link dead when no frame comes in for more than `deadAfter`
 busy stream whose pongs are late keeps its link. The ping task reads the
 continuous clock: a tick that is `suspensionGap` late (the Mac slept) reconnects
 once, and a shorter late tick restarts the silence window instead of counting
-as missed pongs.
+as missed pongs. Before the coordinator's first frame on a new connection the
+bound is `firstFrameGrace` instead of `deadAfter`: the coordinator answers a
+connection, and its pings, once it has registered the provider, which takes
+longer when many providers reconnect at once.
 
 When a connection attempt fails or a session ends with an error,
 `CoordinatorClient.runLoop` waits before the next attempt.
@@ -159,8 +162,13 @@ attempt ended, and `runLoop` draws the wait at random from that range.
 `register` frame. It also records the code of a close frame from the coordinator
 side. A session that stayed open for `stableSessionDuration` or more resets the
 backoff. A drop after a long session then does not pay the waits that earlier
-drops grew. A close frame with code `1012` (service restart) gives
-`serviceRestartDelayRange`, and the backoff does not grow. Any other end of a
+drops grew. A close frame with code `1001` (going away) or `1012` (service
+restart) gives `fleetCloseDelayRange`, and the backoff does not grow: the server
+side sends these codes to every provider at once, for example when a proxy
+reloads or a coordinator stops, and the spread keeps the reconnects of a fleet
+of up to about 1,400 providers below a coordinator that registers 95 per second;
+a larger fleet also relies on `firstFrameGrace` while it waits for its answer.
+Any other end of a
 stable session gives `stableSessionRetryRange`, so a dead link reconnects at
 once, and the backoff does not grow. Every other end takes the next
 `ExponentialBackoff` range and grows the backoff. The receive callback

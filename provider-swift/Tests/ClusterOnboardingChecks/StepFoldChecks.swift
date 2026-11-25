@@ -7,13 +7,13 @@ import Darwin
 /// whole. A step taller than the window never folds (scrolled-off rows can't be redrawn). Plain output is unchanged. The
 /// whole flow goes, line by line, to a log file whose path the end says ("Full log: …"), and a ✗ block too.
 extension OnboardingChecks {
-    static func stepFoldChecks() {
-        theLeadingMacsFinishedStepsFold()
-        theJoiningMacsFinishedStepsFold()
-        aStepTallerThanTheWindowNeverFolds()
-        plainOutputIsUnchangedAndWritesNoLog()
-        aCrossSaysWhereTheFullLogIs()
-    }
+    static var stepFoldGroups: [CheckGroup] { [
+        CheckGroup("theLeadingMacsFinishedStepsFold") { theLeadingMacsFinishedStepsFold() },
+        CheckGroup("theJoiningMacsFinishedStepsFold") { theJoiningMacsFinishedStepsFold() },
+        CheckGroup("aStepTallerThanTheWindowNeverFolds") { aStepTallerThanTheWindowNeverFolds() },
+        CheckGroup("plainOutputIsUnchangedAndWritesNoLog") { plainOutputIsUnchangedAndWritesNoLog() },
+        CheckGroup("aCrossSaysWhereTheFullLogIs") { aCrossSaysWhereTheFullLogIs() },
+    ] }
 
     /// The window's rows after `raw`, as a terminal of `columns` shows them: CR, LF, the cursor up (ESC [ n A), erase to
     /// the end (ESC [ J, ESC [ K), line wrap on or off (ESC [ ? 7 h/l); colours and the cursor's own codes ignored.

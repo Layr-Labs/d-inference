@@ -26,6 +26,12 @@ extension CoordinatorClient {
                 if memberRoleFailure { break }
                 policy.reset()
                 continue
+            } catch is RegistrationRefused {
+                // Not a connection failure: this Mac doesn't register at all.
+                // The loop ends, and with it the event stream: the provider
+                // loop ends serving and holds.
+                logger.warning(.coordinatorRegistrationRefused)
+                break
             } catch {
                 if shutdownRequested || memberRoleFailure { break }
 
@@ -34,6 +40,7 @@ extension CoordinatorClient {
                 let end = session.end()
                 let delay = nextMemberAwareReconnectDelay(
                     backoff: TimeInterval.random(in: policy.nextDelayRange(after: end)))
+                DecodeRateIdleAge.coordinatorDecays.reset()
                 eventContinuation?.yield(.disconnected)
                 let reachable = reachability.isReachable
                 let closeCode = end.closeCode.map { "\($0)" } ?? "none"
@@ -106,6 +113,15 @@ extension CoordinatorClient {
     private func connectAndRun(_ session: CoordinatorSessionRecorder) async throws {
         guard let url = URL(string: config.url) else {
             throw CoordinatorError.invalidURL(config.url)
+        }
+        // Before connecting, so the coordinator never waits on it: what this
+        // connection registers about the Mac (the provider loop reads Secure
+        // Boot again here while it is unread). A refusal ends the attempt, and
+        // a shutdown during it ends the attempt before any socket opens.
+        if let refresh = registrationPrivacyRefresh {
+            let refreshed = try await refresh()
+            guard !shutdownRequested else { throw CancellationError() }
+            if let refreshed { refreshedPrivacyCapabilities = refreshed }
         }
 
         // WebSocket REQUIRES a URL endpoint: Network.framework derives host, port,
@@ -184,6 +200,7 @@ extension CoordinatorClient {
         }
 
         logger.info(.coordinatorTransportReady)
+        coordinatorConnectionReport = CoordinatorServerPin.observe(connection, url: url, logger: logger)
 
         // A member registration carries this connection's fresh negotiation
         // nonce; the coordinator's acceptance must echo it within the
@@ -199,6 +216,7 @@ extension CoordinatorClient {
                 await self?.expireMemberNegotiation(nonce: negotiation.nonce)
             }
         }
+        guard !shutdownRequested else { throw CancellationError() }
         try await sendRegistration(connection: connection)
         logger.info(.coordinatorRegistrationSent)
         // Fresh capacity-seq session for this connection (routing v2): seq
@@ -252,7 +270,8 @@ extension CoordinatorClient {
         // Time of the last inbound frame: updated on connectionQueue by the pong
         // handler and the receive callback, read by the ping task. An unfair
         // lock is cheaper than an actor hop for a single Instant.
-        let activity = LinkActivityTracker()
+        let start = ContinuousClock.now
+        let activity = LinkActivityTracker(start: start)
         let pongQueue = self.connectionQueue
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -301,8 +320,7 @@ extension CoordinatorClient {
 
                 while true {
                     if self.shutdownRequested { break }
-                    let json = await self.buildHeartbeatJSON()
-                    self.sendTextFrame(json, on: connection, identifier: "heartbeat")
+                    await self.sendBaselineHeartbeat(on: connection)
                     try await taskSleep( .seconds(interval))
                 }
             }
@@ -312,15 +330,16 @@ extension CoordinatorClient {
             // whose node was hard-reset, ends with no close frame and no TCP
             // reset; this task is what notices it.
             group.addTask {
-                var watch = CoordinatorLinkWatch(liveness: liveness, start: .now)
+                var watch = CoordinatorLinkWatch(liveness: liveness, start: start)
                 while true {
                     try await taskSleep(liveness.pingInterval)
 
-                    switch watch.check(now: .now, lastInbound: activity.lastInbound) {
+                    let lastInbound = activity.lastInbound
+                    switch watch.check(now: .now, lastInbound: lastInbound) {
                     case .alive:
                         break
                     case .dead:
-                        throw CoordinatorError.pongTimeout(after: liveness.deadAfter)
+                        throw CoordinatorError.pongTimeout(after: watch.silenceBound(lastInbound: lastInbound))
                     case .suspended:
                         // Sleep or a long suspension: the coordinator has
                         // probably dropped the session, so reconnect once now.

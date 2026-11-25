@@ -213,6 +213,8 @@ struct RequestProfileBuilderTests {
         // The bridge-internal cancel snapshot never reaches the wire.
         #expect(object["tokens_at_cancel"] == nil)
         #expect(object["tokens_after_cancel"] as? Int64 == maxCount)
+        #expect(object["tool_calls"] as? Int64 == maxCount)
+        #expect(object["tool_calls_breaking_declaration"] as? Int64 == maxCount)
         #expect(object["mlx_peak_bytes"] as? Int64 == maxBytes)
         #expect(object["cancel_stage"] as? String == "post_terminal")
         #expect(object["engine"] == nil)

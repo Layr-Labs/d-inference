@@ -36,7 +36,7 @@ import Testing
 
         // An older coordinator's subsequent status must never retain the
         // previous coordinator's optional authorization object.
-        await loop.handleTrustStatus(trustLevel: "hardware", status: "online", reason: "MDM verification passed")
+        await loop.handleTrustStatus(trustLevel: "hardware", status: "online", reason: "recovered after transient deroute")
         #expect(DaemonStateFile.read(from: stateURL)?.trust?.authorization == nil)
     }
 }
@@ -135,7 +135,7 @@ import Testing
         #expect(!disconnected.connected && disconnected.connections == 1)
     }
 
-    /// A legacy (MDM-cohort) Mac on the current coordinator: its only status
+    /// A legacy-verification Mac on the current coordinator: its only status
     /// is the registration refusal, and none follows when legacy verification
     /// authorizes the connection. An idle provider must never re-register it,
     /// log that the coordinator is not routing it, or tell `status` it is

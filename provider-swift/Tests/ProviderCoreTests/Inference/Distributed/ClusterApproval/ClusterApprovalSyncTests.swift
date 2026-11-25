@@ -82,6 +82,40 @@ struct ClusterApprovalSyncTests {
         }
     }
 
+    /// A build-pinned entry that matches this Mac's installation but not its saved setup (the setup was re-adopted for
+    /// another build, as after a rollback and forward): the refusal names each pin that differs with both values, and
+    /// the refused approval is kept beside the note for the next comparison.
+    @Test func aRefusalNamesEachPinTheSavedSetupDiffersInAndKeepsTheApproval() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        try macs.readopt(runtime: ClusterApprovalMacs.hash("9"))
+        let before = try macs.macs.map(macs.bytes), sent = ClusterApprovalRecorder<ClusterServiceCommand>()
+        let result = macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts, sent: sent)
+        let runtime = "runtime (approval \(String(repeating: "a", count: 12)), setup \(String(repeating: "9", count: 12)))"
+        #expect(!result.changed && sent.values.isEmpty)
+        #expect(result.line?.contains("Saved pair approval differs from this setup in its " + runtime) == true,
+                "\(result.line ?? "")")
+        #expect(result.note == .some(result.line))
+        #expect(result.refused == approval)
+        #expect(try macs.macs.map(macs.bytes) == before)
+    }
+
+    /// The other Mac recorded a refusal while it led (leadership moves between the Macs). Its own refusal keeps that
+    /// note; once it saves the leader's approval, the note no longer says why the pair isn't offered and is cleared.
+    @Test func theOtherMacClearsItsRefusalNoteWhenItSavesTheLeadersApproval() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        let record = ClusterSetupStore(paths: .init(paths: macs.follower.paths))
+        let stale = "Not offered for pairing: this Mac's check refused it: Saved pair approval differs"
+        _ = try record.updateRecord { $0.approvalNote = stale }
+        let refused = macs.sync(.approvals([approval]), leaderFacts: facts,
+                                followerFacts: try macs.facts(differing: "metallib_sha256"))
+        #expect(!refused.changed)
+        #expect(try record.readRecord().approvalNote == stale)
+        #expect(macs.sync(.approvals([approval]), leaderFacts: facts, followerFacts: facts).changed)
+        #expect(try record.readRecord().approvalNote == nil)
+    }
+
     @Test func onlyTheEntryOfThisModelAndPrefillScheduleIsTaken() throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         let before = try macs.macs.map(macs.bytes), facts = try macs.facts()
@@ -294,5 +328,76 @@ struct ClusterApprovalSyncTests {
             chipClass: ClusterApprovalMacs.chip, facts: { _ in facts })
         #expect(!result.changed && result.line?.contains("the other Mac did not answer over the cable") == true)
         #expect(try macs.macs.map(macs.bytes) == before)
+    }
+
+    /// This Mac's device journal as a stop leaves it when it ends the owner before its worker's cleanup is published:
+    /// not empty, so every save of this Mac's setup is refused ("Unresolved native ownership journal").
+    private func strandJournal(_ mac: ClusterApprovalMacs.Mac) throws -> URL {
+        try FileManager.default.createDirectory(at: mac.paths.deviceDirectory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let journal = mac.paths.deviceLeaseFile
+        #expect(FileManager.default.createFile(atPath: journal.path, contents: Data("fixture: an earlier session\n".utf8),
+                                               attributes: [.posixPermissions: 0o600]))
+        return journal
+    }
+
+    private func run(_ macs: ClusterApprovalMacs, _ approval: ClusterRuntimeApproval, facts: ClusterRuntimeApprovalFacts,
+                     journalRecovery: ClusterApprovalJournalRecovery) -> ClusterApprovalSync.Result {
+        ClusterApprovalSync.run(fetched: .approvals([approval]), paths: macs.leader.paths, providerConfiguration: macs.leader.provider,
+            pairingStore: macs.leader.pairing, scratch: macs.leader.scratch, now: Date().timeIntervalSince1970,
+            sendToPeer: macs.cable(facts: facts), chipClass: ClusterApprovalMacs.chip, facts: { _ in facts },
+            journalRecovery: journalRecovery)
+    }
+
+    /// The guided setup's approval step saves right after its own stop, and a stop that lands seconds after the pair came
+    /// up can strand this Mac's device journal, which then refused that save: the pair served on its local API only
+    /// (a DevNet pair, 2026-11-19). The save runs the journal's recovery once and saves again: both Macs carry the
+    /// approval, and the line says what the recovery did first.
+    @Test func aSaveTheDeviceJournalRefusedRecoversItOnceAndSavesAgain() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        macs.recordLinkProbe()
+        let approval = macs.approval(), facts = try macs.facts()
+        let journal = try strandJournal(macs.leader)
+        let recoveries = ClusterApprovalRecorder<String>()
+        let result = run(macs, approval, facts: facts, journalRecovery: .init { paths in
+            recoveries.append(paths.deviceLeaseFile.path)
+            guard let handle = try? FileHandle(forWritingTo: paths.deviceLeaseFile) else { return nil }
+            try? handle.truncate(atOffset: 0); try? handle.close()
+            return "fixture: the journal is cleared"
+        })
+        #expect(result == .init(changed: true, line: "fixture: the journal is cleared; " + ClusterApprovalLifetime.offeredLine(approval),
+                                note: .some(nil)))
+        #expect(recoveries.values == [journal.path])
+        for mac in macs.macs { #expect(try attachment(macs, mac)?.clusterApproval == approval, "rank \(mac.rank)") }
+    }
+
+    /// A recovery that refuses (something of the earlier session still runs) changes nothing: the save is refused as
+    /// before, once, and neither Mac carries the approval.
+    @Test func aSaveWhoseJournalRecoveryRefusesSavesNothingAndSaysWhy() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        let journal = try strandJournal(macs.leader)
+        let recoveries = ClusterApprovalRecorder<String>()
+        let result = run(macs, approval, facts: facts, journalRecovery: .init { paths in
+            recoveries.append(paths.deviceLeaseFile.path)
+            return nil
+        })
+        #expect(!result.changed && result.line?.hasPrefix(
+            "Not offered for pairing: this Mac could not save its setup: Unresolved native ownership journal") == true,
+            "\(String(describing: result.line))")
+        #expect(recoveries.values.count == 1)
+        #expect(try Data(contentsOf: journal) == Data("fixture: an earlier session\n".utf8))
+        for mac in macs.macs { #expect(try attachment(macs, mac)?.clusterApproval == nil, "rank \(mac.rank)") }
+    }
+
+    /// With `DARKBLOOM_CLUSTER_JOURNAL_AUTO_RECOVER` off, a save the journal refused recovers nothing, as before.
+    @Test func withItsSwitchOffASaveTheJournalRefusedRecoversNothing() throws {
+        let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
+        let approval = macs.approval(), facts = try macs.facts()
+        let journal = try strandJournal(macs.leader)
+        let result = run(macs, approval, facts: facts, journalRecovery: .live(enabled: false))
+        #expect(!result.changed && result.line?.contains("Unresolved native ownership journal") == true, "\(String(describing: result.line))")
+        #expect(try Data(contentsOf: journal) == Data("fixture: an earlier session\n".utf8))
+        for mac in macs.macs { #expect(try attachment(macs, mac)?.clusterApproval == nil, "rank \(mac.rank)") }
     }
 }

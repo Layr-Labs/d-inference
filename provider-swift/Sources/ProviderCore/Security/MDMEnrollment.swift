@@ -1,5 +1,4 @@
 import Foundation
-import Logging
 
 /// MDM enrollment state of this Mac, as reported by
 /// `profiles status -type enrollment` — the authoritative, current source.
@@ -58,8 +57,6 @@ func mdmHost(of environment: BuildEnvironment) -> String? {
 /// host is never ours: that install owns it.
 let darkbloomMDMHostSuffixes = [".darkbloom.dev", ".darkbloom.ai"]
 let retiredDarkbloomMDMHosts = ["api.dev.darkbloom.xyz"]
-
-private let logger = Logger(label: "darkbloom.MDMEnrollment")
 
 /// Parse `profiles status -type enrollment` output into an enrollment state.
 ///
@@ -159,17 +156,13 @@ func checkMDMEnrollment(runner: SecurityCommandRunner) -> MDMEnrollmentState {
     do {
         result = try runner.run("/usr/bin/profiles", ["status", "-type", "enrollment"])
     } catch {
-        logger.debug("profiles status failed to launch: \(error)")
         return .checkFailed
     }
     let output = result.stdout
     if result.terminationStatus != 0
         && output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        logger.debug("profiles status exited \(result.terminationStatus) with no output")
         return .checkFailed
     }
 
-    let state = parseMDMEnrollmentStatus(output)
-    logger.debug("MDM enrollment state: \(state)")
-    return state
+    return parseMDMEnrollmentStatus(output)
 }

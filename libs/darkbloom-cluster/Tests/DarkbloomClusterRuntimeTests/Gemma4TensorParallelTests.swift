@@ -258,7 +258,7 @@ struct Gemma4TensorParallelTests {
     /// `Gemma4TensorShard.localConfiguration`) are one split; the per-rank KV
     /// geometry the SDK derives for the 26B is 4 sliding and 1 full head. For
     /// both QAT tables: a rank's model is built from the plan's local widths and
-    /// the SDK installs it only when its own are the same (DevNet pair-2,
+    /// the SDK installs it only when its own are the same (a DevNet pair,
     /// 2026-11-15: experts split in groups of 32 gave 352, the SDK 384, and rank
     /// 1 refused the load).
     @Test(arguments: ["june", "lattice"]) func planAndSDKShardAgreeOnGeometry(table: String) throws {

@@ -98,7 +98,9 @@ enum GLM5NextServingResources {
     /// The envelope of one rank: load capacity is the GPU's resident capacity
     /// (hardware, never transient free or file-cache memory); the request
     /// capacity is the quotation of the row's memory scope on this rank's
-    /// layers (`GLM5NextResidentDescriptor.memoryProfile`). The workspace
+    /// layers (`GLM5NextResidentDescriptor.memoryProfile`), or, on a rank that
+    /// admits requests on arrival, of the longest request it admits
+    /// (`arrivalProfile`), so its READY and the pair's capacity hold it. The workspace
     /// evidence covers the profile's whole scope, so a runtime that charges a
     /// longer request at its own context (tensor parallel) quotes it here too.
     /// `admitsRequestsOnArrival`, set only by the serving pipeline rank
@@ -137,8 +139,11 @@ enum GLM5NextServingResources {
                 }, hostAllocationBound: hostBound, calibrationOnly: false,
                 admitsRequestsOnArrival: admitsRequestsOnArrival)
         }
-        // First bound by the hardware, then held to this rank's whole-scope quotation.
-        let request = try make(requestCapacity: load).budget(descriptor: descriptor).reservedBytes
+        // First bound by the hardware, then held to this rank's quotation of the longest request it serves.
+        let bound = try make(requestCapacity: load)
+        let request = try (admitsRequestsOnArrival
+            ? bound.budget(descriptor: descriptor, contextTokens: descriptor.arrivalProfile.maximumContextTokens)
+            : bound.budget(descriptor: descriptor)).reservedBytes
         return try make(requestCapacity: request)
     }
 }

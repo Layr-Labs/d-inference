@@ -723,3 +723,93 @@ struct GLM5NextFrameLimitTests {
         #expect(try frameOutcome(.init(temporal: 1, height: 160, width: 200)) == "plans")
     }
 }
+
+/// The timestamp text after each frame pair `request`'s video renders, as
+/// the real GLM processor configured by `configuration` renders it.
+private func pairTimestamps(
+    _ request: OpenAIChatCompletionRequest, processor configuration: GLM5NextProcessorConfiguration
+) async throws -> [String] {
+    let input = try await EngineV2VisionPrefill.glm5NextUserInput(request: request, controls: .init())
+    let processor = try GLM5NextProcessor(configuration: configuration, tokenizer: GLMRenderTokenizer())
+    return try await Device.withDefaultDevice(.cpu) {
+        let tokens = try await processor.prepareDetailed(input: input).input.text.tokens
+            .asType(.int64).asArray(Int64.self).map(Int.init)
+        return tokens.indices.filter { tokens[$0] == 154831 }.map { end in
+            let text = tokens[(end + 1)...].prefix { $0 < 154830 }.compactMap { Unicode.Scalar($0) }
+            return String(String.UnicodeScalarView(text))
+        }
+    }
+}
+
+@Suite("GLM5Next long clips sampled to the decoded-frame cap")
+struct GLM5NextLongClipSamplingTests {
+    let textTokens = 15 / 3 + 12 / 3 + GLM5NextVisionBudget.templateTokens + 2 * GLM5NextVisionBudget.templateTokensPerMessage
+
+    /// A GLM Mac samples a clip past its 512 MiB decoded-frame cap (720p past
+    /// about 97 s) down to the frames the cap holds. A pair's leader does not:
+    /// rank 0 prepares the same bytes with the leader's wire budgets, which
+    /// carry no sampling option, so it would sample differently.
+    @Test func aMacSamplesLongClipsDownAndAPairsLeaderDoesNot() throws {
+        let processors = try productProcessors()
+        #expect(processors.map(\.fitsVideoSampleToDecodedBytes) == [true, false])
+        let mac = try #require(processors.first)
+        #expect(mac.maximumSampledVideoFrames(frameBytes: 1280 * 720 * 3) == 193)
+        #expect(mac.maximumSampledVideoFrames(frameBytes: 1920 * 1080 * 3) == 85)
+    }
+
+    /// End to end with the Mac's sampling and a decoded-frame cap of 8
+    /// frames of 320 x 180 (7 RGB8 frames and the last one's RGBA render):
+    /// 10 s at 2 FPS keeps 20 frames, past the cap, so the processor refuses
+    /// it without the sampling; with it, 8 frames spread over the clip render
+    /// 4 pairs whose timestamps run to its end, and the media quote covers
+    /// what renders.
+    @Test func aClipPastTheDecodedCapIsServedAcrossIt() async throws {
+        let mac = try #require(try productProcessors().first)
+        let cap = 7 * 320 * 180 * 3 + 320 * 180 * 4
+        let own = try GLM5NextProcessorConfiguration(maximumDecodedBytes: cap)
+        let sampled = try GLM5NextProcessorConfiguration(
+            maximumDecodedBytes: cap, fitsVideoSampleToDecodedBytes: mac.fitsVideoSampleToDecodedBytes)
+        let mp4 = try await NemotronSuperVideoClips.movie(frames: 20, fps: 2, width: 320, height: 180)
+        let clip = request([videoPart(mp4)])
+        do {
+            _ = try await rendered(clip, processor: own)
+            Issue.record("expected the decoded-frame refusal")
+        } catch {
+            #expect(error as? GLM5NextVisionError == .budgetExceeded("decoded image"))
+        }
+        let processed = try await rendered(clip, processor: sampled)
+        #expect(processed.spans == 4 && processed.grids == [[4, 14, 24]])
+        #expect(try await pairTimestamps(clip, processor: sampled)
+            == ["0.0 seconds", "2.5 seconds", "5.0 seconds", "8.0 seconds"])
+        let priced = try await quote(clip, processor: sampled)
+        #expect(priced.kvTokens - textTokens - 65_536 >= processed.tokens)
+        // Bytes: both reader passes' kept frames at the cap and three copies of
+        // the 4 pairs' prepared patches.
+        let patches: UInt64 = 4 * 14 * 24
+        let prepared: UInt64 = patches * 4704
+        let kept = 2 * UInt64(cap)
+        #expect(priced.bytes >= kept + 3 * prepared)
+    }
+
+    @Test(arguments: ["0", " OFF ", "false", "No"])
+    func theSwitchKeepsTheFullSampleAndTheRefusal(_ value: String) throws {
+        let environment = [GLM5NextVisionBudget.longVideoSamplingEnvironmentKey: value]
+        #expect(!GLM5NextVisionBudget.samplesLongVideos(environment: environment))
+        #expect(try productProcessors(environment: environment).map(\.fitsVideoSampleToDecodedBytes) == [false, false])
+        // The long-video fit is its own switch.
+        #expect(try productProcessors(environment: environment).map(\.videoMaximumTokens) == [28_532, 28_532])
+    }
+
+    @Test func theSwitchIsOnByDefaultAndReachesTheProviderJob() throws {
+        let key = GLM5NextVisionBudget.longVideoSamplingEnvironmentKey
+        #expect(GLM5NextVisionBudget.samplesLongVideos(environment: [:]))
+        #expect(GLM5NextVisionBudget.samplesLongVideos(environment: [key: "1"]))
+        let sampled = try GLM5NextVisionBudget.samplingLongVideos(.init(videoMaximumTokens: 28_532), environment: [:])
+        #expect(sampled.fitsVideoSampleToDecodedBytes && sampled.videoMaximumTokens == 28_532)
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        // The long-video fit keeps the sampling when it rebuilds a configuration.
+        let both = try GLM5NextVisionBudget.fittingLongVideos(
+            .init(fitsVideoSampleToDecodedBytes: true), environment: [:])
+        #expect(both.fitsVideoSampleToDecodedBytes && both.videoMaximumTokens == 28_532)
+    }
+}

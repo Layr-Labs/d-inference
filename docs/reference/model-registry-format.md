@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-23
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -118,6 +118,17 @@ their existing file-list policy is unchanged. Config inspection is bounded to
 one MiB and regular files, including ordinary HF blob symlinks. This file-list
 selection does not validate receipt contents or qualify the model for serving.
 
+Inkling 2 Mini (`inkling2_loop`) needs no model-specific entry: every file its
+load path reads is already selected, including its separate DSpark drafter
+`mtp.safetensors` (a weight, though its target index omits it) and
+`tiktoken/tokenizer.model` (by basename, through the recursive walk). Its
+`hf_quant_config.json` is not read and not selected; a loader that starts
+reading it must add it here and in the platform's manifest spec in the same
+change. Its media advertisement is still images only
+(`ModelMediaPolicy.advertisesVideo`), and its template self-check renders no
+video part (`TemplateRenderCheck.renderOK`); see the
+[contract reference](inkling2-mini-support.md).
+
 `aggregate_sha256` = hex(SHA-256(concat(raw 32-byte digest of each file, files
 sorted by `path` ascending))). Implemented identically in
 `AggregateManifestFileHashes` ([coordinator/internal/api/catalog/registration/registry_validation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/api/catalog/registration/registry_validation.go)),
@@ -144,7 +155,7 @@ so a publish holds one chunk for each file it hashes, not the files.
 | `<slug>` | `model_id` with every character outside `A-Z a-z 0-9 . _ -` (including `/`) replaced by `-`, leading/trailing `-` trimmed; `model` if empty | same |
 | Objects under the prefix | every `files[].path`, plus `manifest.json` (uploaded last) | `scripts/publish-model.sh` |
 | Public CDN | `https://models.darkbloom.ai` | `defaultModelRegistryCDNBaseURL` ([coordinator/api/catalog/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog)); `ModelDownloader.defaultR2CDNURL` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`) |
-| CDN override | coordinator `MODEL_REGISTRY_CDN_BASE_URL`; provider `DARKBLOOM_R2_CDN_URL` | `registryCDNBaseURL`; `ModelDownloader.init` |
+| CDN override | coordinator `MODEL_REGISTRY_CDN_BASE_URL`; provider `DARKBLOOM_R2_CDN_URL`, read only by a debug build (a release build downloads from its build's CDN) | `registryCDNBaseURL`; `ModelDownloader.init`, `LocationOverride.modelCDN` |
 
 Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 → `v2/mlx-community-gemma-4-26B-A4B-it-qat-4bit--<12hex>/2026-05-23-r1/manifest.json`.
@@ -168,7 +179,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `max_output_length` | integer | yes | > 0 |
 | `min_ram_gb` | integer | yes | > 0 |
 | `capabilities` | array of string | no | free-form OpenRouter-style feature names (`tools`, `reasoning`, …) |
-| `required_provider_capabilities` | array of string | no | each must be `apple_m5`, `mlx_nax` or `glm5_next_v1`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list `apple_m5` and `mlx_nax`. The provider and platform also require `apple_m5`, `mlx_nax` and `glm5_next_v1` for `glm-5.3-flash` whatever the row lists (`ModelRuntimeRequirements.glm5NextRequiredCapabilities`); platform sign-off on the catalog row is pending |
+| `required_provider_capabilities` | array of string | no | each must be `apple_m5`, `mlx_nax` or `glm5_next_v1`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `model_revisions_v1` and `cache_policy_v1` are protocol capabilities, never catalog requirements (a build serving alone reports both, a pair member `cache_policy_v1`); `EigenLabs/Qwen3.8-27B-4bit` must list `apple_m5` and `mlx_nax`. The provider and platform also require `apple_m5`, `mlx_nax` and `glm5_next_v1` for `glm-5.3-flash` whatever the row lists (`ModelRuntimeRequirements.glm5NextRequiredCapabilities`); platform sign-off on the catalog row is pending |
 | `description` | string | no | |
 | `runtime_parameters` | object | no | merged into provider requests at dispatch |
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |
@@ -445,7 +456,9 @@ build; aliases with neither are omitted).
 | `.github/workflows/register-model.yml`, default `publish_revision_only=false` | `model_id`, `version`, `display_name`, `quantization`, positive integer context/output limits, RAM and prices; other inputs mirror the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `hugging_face_artifact_json` is an artifact object or `null`) | validates registration-only inputs, builds the payload with `jq`, and POSTs to `/v1/admin/models/register` |
 | Same workflow, `publish_revision_only=true` | `model_id`, `version`, explicit `promote=true`, optional `hugging_face_artifact_json`; registration-only inputs are ignored | POSTs `{"version":"...","hugging_face_artifact":null}` (or the supplied artifact object) to `/v1/admin/models/{encoded_model_id}/publish-revision`; preserves metadata/prices and promotes the revision |
 
-Both workflow modes default `coordinator_url` to `https://api.darkbloom.dev` and
+In both workflow modes `coordinator_url` is a choice of `https://api.darkbloom.dev`
+(the default) and `https://api.dev.darkbloom.dev`; the job's first step,
+`Check coordinator URL`, stops any other value before a step reads the key. Both
 use `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}`. Neither
 uploads bytes or uses R2 credentials. The canonical manifest and all serving
 files must already be published. Only `model_id` and `version` are required by

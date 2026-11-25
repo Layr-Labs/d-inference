@@ -94,8 +94,8 @@ extension ProviderLoop {
     /// lines within the same event are joined with `\n` (P2 #1).
     /// Upstream currently never emits comments, `event:` lines, or
     /// multi-line `data:` payloads, but a future keepalive / named-
-    /// event / pretty-print addition must not silently corrupt our
-    /// `fullResponseText` accumulation.
+    /// event / pretty-print addition must not silently corrupt the
+    /// response text the handler gathers (`ResponseTextBuffer`).
     internal static func parseStreamChunk(_ frame: String) -> StreamChunkExtract? {
         guard let joined = joinedDataPayload(frame) else {
             // Frame contained no `data:` line. This is unexpected from
@@ -147,11 +147,8 @@ extension ProviderLoop {
     /// (content, reasoning content, or tool calls). Role/lifecycle/usage-only
     /// preamble frames are emitted to the coordinator but must not count as
     /// output for cancellation/error outcome counters.
-    internal static func hasVisibleStreamOutput(
-        contentFrameCount: Int,
-        fullResponseText: String
-    ) -> Bool {
-        contentFrameCount > 0 || !fullResponseText.isEmpty
+    internal static func hasVisibleStreamOutput(contentFrameCount: Int, hasResponseText: Bool) -> Bool {
+        contentFrameCount > 0 || hasResponseText
     }
 
     /// Inject `usage.completion_tokens_details.reasoning_tokens` into a

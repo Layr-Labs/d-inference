@@ -1,6 +1,6 @@
 # Fan control (experimental)
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-17
 
 Hold the fans of an Apple Silicon Mac at a fixed speed while the provider is
 serving and the GPU is hot, so thermal throttling does not cut decode
@@ -20,7 +20,9 @@ it.
 - The build advertises the capability: `scripts/install.sh` requires the CLI
   marker string, the file `Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1`
   and the nested helper (signed to `identifier "io.darkbloom.fan-helper"`,
-  Team `SLDQ2GJ6TL`, mode `0755`) to be present together
+  Team `SLDQ2GJ6TL`, by a listed
+  [signing certificate](../operations/provider-release.md#signing-certificates),
+  mode `0755`) to be present together
   (`verify_fan_helper_capability`).
 - A Mac with SMC-controllable fans and GPU temperature sensors; fanless
   machines (MacBook Air) report `unsupported`.
@@ -124,12 +126,19 @@ fresh provider lease before fans can engage. Discovery alone never takes manual
 control. This handles an unusable inventory returned at startup; an exception
 that prevents the helper process from starting still requires separate diagnosis.
 
-Only signed Darkbloom code can talk to the helper: the XPC service
-`io.darkbloom.fan` (`FanIPC.machServiceName`) checks the connecting process's
-Team ID against `FanIPC.teamID` = `SLDQ2GJ6TL`
-(`provider-swift/Sources/DarkbloomFanService/FanPeerAuthentication.swift`),
-and the helper itself is verified against the same Team-ID requirement before
-installation.
+Only Darkbloom-signed code can talk to the helper. The XPC service
+`io.darkbloom.fan` (`FanIPC.machServiceName`) accepts a connecting process only
+when it has the identifier `io.darkbloom.provider`, Team `SLDQ2GJ6TL` and a
+signature from a listed
+[signing certificate](../operations/provider-release.md#signing-certificates)
+(`FanCodeRequirements.providerRequirement` in
+`provider-swift/Sources/DarkbloomFanService/FanPeerAuthentication.swift`).
+The provider checks the helper the same way before it installs it and on every
+connection (`FanCodeRequirements.helperRequirement`).
+
+A helper before version 3 (`FanIPC.helperVersion`) accepts any certificate of
+the team. `darkbloom fan status` and `darkbloom doctor` report an older helper;
+`sudo darkbloom fan enable` replaces it.
 
 ## Verify
 
@@ -172,7 +181,7 @@ the new app bundle.
 | `fan: this operation requires administrator privileges; rerun it with sudo` | Not root | Prefix with `sudo` |
 | `fan: run this command through sudo from the provider account (SUDO_UID is required)` | Run from a root shell (`sudo -i`) or with `SUDO_UID` stripped | Run `sudo darkbloom fan …` from the provider user's shell |
 | `fan: signed fan helper was not found; reinstall Darkbloom` | CLI not running from `Darkbloom.app/Contents/MacOS`, or the helper is missing from the bundle | Reinstall with `scripts/install.sh`; use `~/.darkbloom/bin/darkbloom` |
-| `fan: fan helper signature verification failed` | Helper not signed by Team `SLDQ2GJ6TL` | Reinstall from the official release |
+| `fan: fan helper signature verification failed` | Helper not signed by Team `SLDQ2GJ6TL` with a listed [signing certificate](../operations/provider-release.md#signing-certificates) | Reinstall from the official release |
 | `fan: fan control is unavailable: …` / `supported: false` | No SMC fans or valid GPU sensors | Check `fan diagnose`; permanently unsupported hardware cannot use fan control. An enabled helper retries an unusable startup inventory every 30 seconds while awake. |
 | GPU runs hot under macOS automatic fan speed; `darkbloom status` shows `Fan control (experimental): off` | Fan control is opt-in and the helper was never enabled | `sudo darkbloom fan enable` |
 | Fans never engage although the GPU is hot | No provider lease (`fan status` shows `waiting_for_provider`): the daemon is not running, or fewer than 3 consecutive samples were above threshold | `darkbloom status`; `darkbloom restart` |

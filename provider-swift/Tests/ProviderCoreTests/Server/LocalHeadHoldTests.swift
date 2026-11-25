@@ -1,4 +1,5 @@
 import Foundation
+import HTTPTypes
 import Hummingbird
 import HummingbirdTesting
 import MLXLMCommon
@@ -8,21 +9,23 @@ import Testing
 
 /// A streamed request to this Mac's API sends its response head only once the engine has admitted it. One the engine
 /// queued and then couldn't admit, because its 120 s admission lease ran out or a full paged pool outlasted its
-/// requeues, gets the plain 503 with words about this Mac's memory, before any SSE header, as a refusal at submission
-/// does. Before, it got HTTP 200 and then "Response generation failed". The prompt progress comments start at admission,
-/// so a queued request says nothing. A request that isn't streamed says the same memory words after the lease. A
-/// request the engine admits at once isn't held back: its head goes out within a few milliseconds. The engine here
-/// is one queue the test opens or ends, or one that steps on its own; the clock is the test's.
+/// requeues, is submitted again: the owner's request waits as long as it takes unless the owner or the request bounds
+/// the wait. Past a bound it gets the plain busy 503 (with `Retry-After`), before any SSE header, as a refusal at
+/// submission does; a request that isn't streamed says the same words. The prompt progress comments start at
+/// admission, so a queued request says nothing. A request the engine admits at once isn't held back: its head goes out
+/// within a few milliseconds. The engine here is one queue the test opens or ends, or one that steps on its own; the
+/// clock is the test's.
 @Suite("This Mac's API holds a streamed response's head until the engine admits it", .timeLimit(.minutes(1)))
 struct LocalHeadHoldTests {
     private static let model = "head-hold/model"
     private static let key = "synthetic-head-hold-token"
-    private static let memoryWords = "This Mac's memory can't hold this request right now."
+    private static let memoryWords = memoryBusyWords
 
     /// This Mac's local API over a bridge on `engine`, its prompts commented on with `clock`, looking whether a request
     /// still waits every `pollInterval` (nil: the production interval).
     private static func app(_ engine: any CBv2Engine, clock: PrefillTestClock,
-                            pollInterval: Duration? = .milliseconds(5)) async -> LocalInferenceApplication {
+                            pollInterval: Duration? = .milliseconds(5),
+                            memoryWaitLimit: Duration? = nil) async -> LocalInferenceApplication {
         let tokenizer = TokenizerHandle(HeadHoldTokenizer())
         let bridge = EngineV2Bridge(engine: engine, modelId: model, tokenizer: tokenizer, eosTokenIds: [],
             defaultMaxTokens: 32_768, defaultMaxTokensContextLimit: 262_144, maxConcurrentRequests: 4,
@@ -40,10 +43,16 @@ struct LocalHeadHoldTests {
             },
             tokenizerProvider: { _ in .init(tokenizer: tokenizer, modelType: nil) },
             availableModels: { [model] }, mtpSlots: { [] },
-            prefillTicker: clock.ticker)
+            prefillTicker: clock.ticker, memoryWaitLimit: memoryWaitLimit)
     }
 
     private static let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer \(key)"]
+
+    private static func headers(maxWait: String) -> HTTPFields {
+        var fields = headers
+        fields[HTTPField.Name(OwnerMemoryWait.requestLimitHeaderName)!] = maxWait
+        return fields
+    }
 
     private static func chat(stream: Bool) -> ByteBuffer {
         ByteBuffer(string: #"{"model":"\#(model)","messages":[{"role":"user","content":"hi"}],"stream":\#(stream)}"#)
@@ -54,16 +63,25 @@ struct LocalHeadHoldTests {
         .error(CBv2KVError.capacityExhaustedFinishPrefix + "pool full"),
     ]
 
-    /// A streamed request the engine queues and then can't admit gets the memory 503, never a 200 SSE stream.
+    /// With the owner's wait off, a streamed request the engine queues and then can't admit gets the memory 503, never
+    /// a 200 SSE stream.
     @Test(arguments: queueEnds)
     func aStreamedRequestTheEngineCantAdmitIsA503BeforeAnySSEHeader(end: CBv2FinishReason) async throws {
         let engine = HeadHoldEngine(), clock = PrefillTestClock()
-        let response = try await Self.app(engine, clock: clock).test(.router) { client in
+        let response = try await Self.app(engine, clock: clock, memoryWaitLimit: .zero).test(.router) { client in
+            // Another request on the slot, still queued: the memory the test's request waits for.
+            async let other = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
+                                             body: Self.chat(stream: false))
+            #expect(await clock.eventually { _ in engine.submitted == 1 })
             async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
                                               body: Self.chat(stream: true))
-            #expect(await clock.eventually { _ in engine.submitted == 1 })
-            engine.end(end)
-            return try await answer
+            #expect(await clock.eventually { _ in engine.submitted == 2 })
+            engine.endLast(end)
+            let response = try await answer
+            engine.admit()
+            engine.answer()
+            _ = try await other
+            return response
         }
         #expect(response.status == .serviceUnavailable, "\(String(buffer: response.body))")
         #expect(response.headers[.contentType]?.hasPrefix("application/json") == true)
@@ -114,10 +132,11 @@ struct LocalHeadHoldTests {
         #expect(times.sorted()[times.count / 2] < .milliseconds(50), "each request's whole answer took \(times)")
     }
 
-    /// A request that isn't streamed and outlasts the admission lease in the queue says this Mac's memory too.
+    /// With the owner's wait off, a request that isn't streamed and outlasts the admission lease in the queue says
+    /// this Mac's memory too.
     @Test func aRequestThatIsNotStreamedAndOutlastsTheAdmissionLeaseSaysThisMacsMemory() async throws {
         let engine = HeadHoldEngine(), clock = PrefillTestClock()
-        let response = try await Self.app(engine, clock: clock).test(.router) { client in
+        let response = try await Self.app(engine, clock: clock, memoryWaitLimit: .zero).test(.router) { client in
             async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
                                               body: Self.chat(stream: false))
             #expect(await clock.eventually { _ in engine.submitted == 1 })
@@ -126,6 +145,84 @@ struct LocalHeadHoldTests {
         }
         #expect(response.status == .serviceUnavailable)
         #expect(String(buffer: response.body).contains(Self.memoryWords), "\(String(buffer: response.body))")
+    }
+
+    static let streamed: [Bool] = [false, true]
+
+    /// The owner's request the engine queued and couldn't admit within its admission lease (a short request behind
+    /// another request's prompt that takes longer than the lease to prefill), or after a full paged pool's requeues,
+    /// is submitted again and served once the engine admits it, streamed or not: no time limit binds its wait.
+    @Test(arguments: queueEnds, streamed)
+    func anOwnersRequestTheEngineCouldntAdmitIsSubmittedAgain(end: CBv2FinishReason, stream: Bool) async throws {
+        let engine = HeadHoldEngine(), clock = PrefillTestClock()
+        let response = try await Self.app(engine, clock: clock).test(.router) { client in
+            // Another request on the slot, still queued: the memory the test's request waits for.
+            async let other = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
+                                             body: Self.chat(stream: false))
+            #expect(await clock.eventually { _ in engine.submitted == 1 })
+            async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
+                                              body: Self.chat(stream: stream))
+            #expect(await clock.eventually { _ in engine.submitted == 2 })
+            engine.endLast(end)
+            #expect(await clock.eventually { _ in engine.submitted == 3 }, "submitted again")
+            engine.admit()
+            engine.answer()
+            #expect(try await other.status == .ok)
+            return try await answer
+        }
+        let body = String(buffer: response.body)
+        #expect(response.status == .ok, "\(body.prefix(300))")
+        #expect(body.contains("Hi"), "\(body.prefix(300))")
+    }
+
+    /// A held request the engine ends for KV with no other request on the slot can never fit (nothing could free
+    /// memory for it, as for a lone row whose step can't reserve its scratch): refused at once in the words that say
+    /// what to change, never submitted again.
+    @Test(arguments: streamed)
+    func aRequestTheEngineCantFitWithNothingElseRunningIsRefusedAtOnce(stream: Bool) async throws {
+        let engine = HeadHoldEngine(), clock = PrefillTestClock()
+        let response = try await Self.app(engine, clock: clock).test(.router) { client in
+            async let answer = client.execute(uri: "/v1/chat/completions", method: .post, headers: Self.headers,
+                                              body: Self.chat(stream: stream))
+            #expect(await clock.eventually { _ in engine.submitted == 1 })
+            engine.end(.error(CBv2KVError.capacityExhaustedFinishPrefix + "step scratch"))
+            return try await answer
+        }
+        let body = String(buffer: response.body)
+        #expect(response.status == .serviceUnavailable, "\(body.prefix(300))")
+        #expect(body.contains(memoryExceedsIdleWords) && !body.contains("data:"), "\(body.prefix(300))")
+        #expect(engine.submitted == 1, "never submitted again")
+    }
+
+    /// A request that names its own bound (`X-Darkbloom-Max-Wait`) and is still queued in the engine at that bound is
+    /// taken out of the engine's queue and answered busy, streamed or not, without waiting for the engine's lease.
+    @Test(arguments: streamed)
+    func aRequestsOwnBoundEndsItsWaitInTheEngineQueue(stream: Bool) async throws {
+        let engine = HeadHoldEngine(), clock = PrefillTestClock()
+        let leaseEnded = HeadHoldFlag()
+        let start = ContinuousClock.now
+        let response = try await Self.app(engine, clock: clock).test(.router) { client in
+            async let answer = client.execute(uri: "/v1/chat/completions", method: .post,
+                                              headers: Self.headers(maxWait: "1"), body: Self.chat(stream: stream))
+            #expect(await clock.eventually { _ in engine.submitted == 1 })
+            // The engine's own lease, well past the bound, if the request were still queued then. Whether it ended
+            // the request is recorded, not timed: the CI watchdog pauses the whole test process to sample it once
+            // the suite has run 900 s, which can stretch any real-time upper bound.
+            let lease = Task {
+                try await Task.sleep(for: .seconds(20))
+                leaseEnded.set()
+                engine.end(.terminal(cause: .admissionTimeout, message: "admission lease expired"))
+            }
+            defer { lease.cancel() }
+            return try await answer
+        }
+        let took = ContinuousClock.now - start
+        let body = String(buffer: response.body)
+        #expect(response.status == .serviceUnavailable, "\(body.prefix(300))")
+        #expect(body.contains(Self.memoryWords) && !body.contains("data:"), "\(body.prefix(300))")
+        #expect(took >= .seconds(1), "\(took)")
+        #expect(!leaseEnded.isSet, "the request's own bound ended its wait, not the engine's lease (\(took))")
+        #expect(engine.cancelled == 1, "taken out of the engine's queue")
     }
 }
 
@@ -158,6 +255,14 @@ final class HeadHoldEngine: CBv2Engine, @unchecked Sendable {
         }
     }
 
+    /// The last request submitted ends with `reason` and no token, as the engine ends one it couldn't admit.
+    func endLast(_ reason: CBv2FinishReason) {
+        guard let (request, events) = lock.withLock({ held.last }) else { return }
+        events.yield(.finished(reason: reason,
+                               usage: CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 0)))
+        events.finish()
+    }
+
     /// Each request ends with `reason` and no token, as the engine ends one it couldn't admit.
     func end(_ reason: CBv2FinishReason) {
         for (request, events) in lock.withLock({ held }) {
@@ -167,7 +272,21 @@ final class HeadHoldEngine: CBv2Engine, @unchecked Sendable {
         }
     }
 
-    func cancel(_ id: CBv2RequestID) {}
+    /// A request cancelled while held ends there, as the engine ends a cancelled request.
+    func cancel(_ id: CBv2RequestID) {
+        let ended = lock.withLock { () -> (CBv2Request, AsyncStream<CBv2Event>.Continuation)? in
+            guard let index = held.firstIndex(where: { $0.request.id == id }) else { return nil }
+            cancels += 1
+            return held[index]
+        }
+        guard let (request, events) = ended else { return }
+        events.yield(.finished(reason: .cancelled,
+                               usage: CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 0)))
+        events.finish()
+    }
+    private var cancels = 0
+    var cancelled: Int { lock.withLock { cancels } }
+
     func capacity() -> CBv2CapacitySnapshot {
         lock.withLock {
             steps += 1
@@ -225,6 +344,13 @@ final class SteppingHeadHoldEngine: CBv2Engine, @unchecked Sendable {
         }
     }
     func shutdown() async { stop() }
+}
+
+private final class HeadHoldFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
 }
 
 /// Renders every conversation to 8 tokens.

@@ -1,7 +1,10 @@
 name: Nightly Linear Package
 
 on:
+  # Pull requests run on request only: the `run-ci` label or ready for
+  # review (the `test` job's `if:`), never a push to the branch.
   pull_request:
+    types: [labeled, ready_for_review]
     paths:
       - 'automations/nightly-linear/**'
       - '.github/workflows/nightly-linear-package.yml'
@@ -14,17 +17,16 @@ on:
 permissions:
   contents: read
 
-jobs:
-  route:
-    uses: ./.github/workflows/darkbloom-route.yml
-    permissions: {}
-    with:
-      lanes: |
-        test linux_arm64 blacksmith-4vcpu-ubuntu-2404
+concurrency:
+  # Any other label runs in a group of its own, skips every job and cancels nothing.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'run-ci' && format('label-{0}', github.run_id)) || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
+jobs:
   test:
-    needs: route
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test'] }}
+    if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.label.name == 'run-ci' }}
+    # Blacksmith until d-inference's sandbox network template (darkbloom-sandbox deploy/gcp/templates/d-inference-ci.json) allows pypi.org and files.pythonhosted.org; routed, setup-python's pip gets 502 from the sandbox proxy.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

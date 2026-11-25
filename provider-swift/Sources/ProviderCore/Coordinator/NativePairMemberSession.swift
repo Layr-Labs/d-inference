@@ -5,8 +5,9 @@ import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 import Logging
 
-/// Why a committed session ended early. Errors only; no request payload.
-private let nativeMemberLog = Logger(label: "darkbloom.native-member")
+/// The member's session log: why a committed session ended, its owner's
+/// diagnostics, and what a stop or a free left. No request payload.
+let nativeMemberLog = Logger(label: "darkbloom.native-member")
 
 /// One actual committed owner obligation. Cancellation interrupts waits and
 /// requests native cleanup immediately; only observed owner proof permits release.
@@ -44,13 +45,19 @@ final class NativePairMemberSession: @unchecked Sendable {
     var lifetimeDeadline: UInt64 { condition.lock(); defer { condition.unlock() }; return leaseDeadline }
     var expiresUnixNanoseconds: Int64 { condition.lock(); defer { condition.unlock() }; return leaseExpiresUnix }
     /// Native cleanup has three seconds past the current grant.
-    var cleanupDeadline: UInt64 { lifetimeDeadline &+ 3_000_000_000 }
+    static let nativeCleanupNanoseconds: UInt64 = 3_000_000_000
+    var cleanupDeadline: UInt64 { lifetimeDeadline &+ Self.nativeCleanupNanoseconds }
     private var stopped = false, committed = false, launched = false
+    /// Set just before the owner's launch is attempted: from then on an owner
+    /// process may exist until its exit is observed.
+    private var launchAttempted = false
     private var peerBinding: Data?, peerConfirmation: Data?
     private var nextRound: UInt64 = 0
     private var endpoint: ClusterRemoteWorkerEndpoint?
     private var timer: DispatchSourceTimer?
     private var outcome: String = "preparing"
+    /// Why the session ends, as the first `cancel` named it; nil while it runs or when its owner ended cleanly.
+    private var endReason: String?
     /// Set once `runOwned` returned: the receipt was sent, or the session
     /// ended without one.
     private var ownedRunFinished = false
@@ -58,16 +65,45 @@ final class NativePairMemberSession: @unchecked Sendable {
     /// session to the key prelude and release, as before.
     private let servingHost: (any NativePairMemberServingHost)?
     private var serving = false
+    /// This session's steps for its one timeline line (`NativePairOwnerTimeline`); a record only.
+    private var ownerTimeline: NativePairOwnerTimeline
+    private var timelineLogged = false
     private let onFinished: @Sendable (NativePairMemberSession, Bool) -> Void
     var status: String { condition.lock(); defer { condition.unlock() }; return outcome }
     /// S16: nil unless this session's owner is launched and not stopped;
     /// then what its worker published in its readiness (both false before it
     /// is ready, or when its data plane is not keyed).
+    /// The first observation of the worker's readiness also closes this
+    /// session's timeline and logs it (`logTimeline`); nothing else changes.
     var dataPlaneObservation: (encrypted: Bool, peerVerified: Bool)? {
         condition.lock(); let live = launched && !stopped, endpoint = endpoint; condition.unlock()
         guard live, let endpoint else { return nil }
-        let plane = endpoint.readiness?.dataPlane
-        return (plane?.protection == ClusterWorkerDataPlane.encrypted, plane?.encryptedAndVerified == true)
+        let readiness = endpoint.readiness
+        let plane = readiness?.dataPlane
+        let value = (encrypted: plane?.protection == ClusterWorkerDataPlane.encrypted, peerVerified: plane?.encryptedAndVerified == true)
+        if readiness != nil {
+            let now = DispatchTime.now().uptimeNanoseconds
+            let first = condition.withLock { () -> Bool in
+                guard ownerTimeline.firstReady == nil else { return false }
+                ownerTimeline.firstReady = now; return true
+            }
+            if first { logTimeline(dataPlane: value) }
+        }
+        return value
+    }
+    /// This session's timeline so far (tests and the member log).
+    var timeline: NativePairOwnerTimeline { condition.withLock { ownerTimeline } }
+    /// Logs this session's timeline once: at its worker's first readiness, or
+    /// when its run ends without one after a launch was attempted.
+    private func logTimeline(dataPlane: (encrypted: Bool, peerVerified: Bool)?) {
+        let value = condition.withLock { () -> NativePairOwnerTimeline? in
+            guard !timelineLogged else { return nil }
+            timelineLogged = true; return ownerTimeline
+        }
+        guard let value else { return }
+        let line = value.line(epoch: start.common.epoch, generation: generation, rank: installation.rank,
+            modelID: installation.identity.modelID, dataPlane: dataPlane)
+        nativeMemberLog.info("\(line)")
     }
     /// Whether a dropped control connection leaves this session in its grace:
     /// committed, keys exchanged, owner launched, not stopped.
@@ -78,6 +114,7 @@ final class NativePairMemberSession: @unchecked Sendable {
     init(installation: NativePairMemberInstallation, connection: NativePairMemberConnection,
          message: NativePairMessage, receivedAt: UInt64, wallUnixNanoseconds: Int64,
          servingHost: (any NativePairMemberServingHost)? = nil,
+         previousCancelled: UInt64? = nil, previousFinished: UInt64? = nil,
          onFinished: @escaping @Sendable (NativePairMemberSession, Bool) -> Void) throws {
         let (policy, start) = try NativePairMemberPolicy.preparation(Data(base64Encoded: message.payload)!)
         try installation.requireStart(start)
@@ -90,12 +127,14 @@ final class NativePairMemberSession: @unchecked Sendable {
         // timer. Only a lease renewal moves the grant.
         let prepDelta = UInt64(prepare - wallUnixNanoseconds), lifetimeDelta = UInt64(expires - wallUnixNanoseconds)
         guard prepDelta <= 30_000_000_000, lifetimeDelta <= Self.leaseTimeToLiveNanoseconds + Self.clockAllowanceNanoseconds,
-              receivedAt <= UInt64.max - lifetimeDelta - 3_000_000_000 else { throw NativePairMemberError.deadline }
+              receivedAt <= UInt64.max - lifetimeDelta - Self.nativeCleanupNanoseconds else { throw NativePairMemberError.deadline }
         self.installation = installation; currentConnection = connection; self.start = start
         epoch = message.epoch; generation = message.generation
         prepareDeadline = receivedAt + prepDelta; leaseDeadline = receivedAt + lifetimeDelta
         prepareUnixNanoseconds = prepare; leaseExpiresUnix = expires
         self.servingHost = servingHost
+        ownerTimeline = .init(prepareReceived: receivedAt, previousCancelled: previousCancelled,
+            previousFinished: previousFinished)
         self.onFinished = onFinished
     }
     func run() {
@@ -115,7 +154,7 @@ final class NativePairMemberSession: @unchecked Sendable {
         }
         condition.unlock()
         nativeMemberLog.warning("committed session \(start.common.epoch): grant lease expired")
-        cancel(notify: true)
+        cancel(notify: true, reason: "the coordinator's grant expired")
     }
 
     /// Waits until the owned run returned (its release receipt sent, or the
@@ -129,16 +168,34 @@ final class NativePairMemberSession: @unchecked Sendable {
         return true
     }
 
+    /// Whether this session holds nothing any more at `now` (this Mac's uptime
+    /// clock) although it sent no release receipt: its owned run returned, its
+    /// grant and the native cleanup after it (`cleanupDeadline`) have passed,
+    /// and no owner process of it can still run (none was launched, or its
+    /// exit was observed). The uptime clock does not count sleep, so a Mac
+    /// that slept frees such a session later, not earlier, than the grant
+    /// allows. The coordinator holds the session's devices until its last
+    /// granted expiry plus 40 s, so it offers no new pair to this Mac before
+    /// this is true.
+    func endedPastCleanup(now: UInt64) -> Bool {
+        condition.lock()
+        let ended = ownedRunFinished && now >= leaseDeadline &+ Self.nativeCleanupNanoseconds
+        let mayHaveOwner = launchAttempted, owner = endpoint
+        condition.unlock()
+        guard ended else { return false }
+        return !mayHaveOwner || owner?.ownerTermination != nil
+    }
+
     /// A dropped control connection: an established session keeps its owner
     /// for the disconnect grace (and never past its grant); anything else
     /// ends now.
     func detached(now: UInt64 = DispatchTime.now().uptimeNanoseconds) -> Bool {
-        guard survivesDisconnect else { cancel(notify: false); return false }
+        guard survivesDisconnect else { cancel(notify: false, reason: "its connection to the coordinator closed"); return false }
         condition.lock(); detachedAt = now; condition.unlock()
         DispatchQueue.global().asyncAfter(deadline: .init(uptimeNanoseconds: now + Self.disconnectGraceNanoseconds)) { [weak self] in
             guard let self else { return }
             self.condition.lock(); let away = self.detachedAt == now; self.condition.unlock()
-            if away { self.cancel(notify: false) }
+            if away { self.cancel(notify: false, reason: "its connection to the coordinator stayed closed past the grace") }
         }
         return true
     }
@@ -181,7 +238,7 @@ final class NativePairMemberSession: @unchecked Sendable {
         case "native_pair_owner_start":
             guard !committed, outcome == "prepared", receivedAt < prepareDeadline,
                   payload == start.canonicalBytes else { throw NativePairMemberError.binding }
-            committed = true; outcome = "committed"
+            committed = true; outcome = "committed"; ownerTimeline.committed = receivedAt
         case "native_pair_binding":
             guard committed, nextRound == 0, peerBinding == nil else { throw NativePairMemberError.binding }
             let value = try ClusterNativeKeyBinding(encoded: payload)
@@ -194,16 +251,19 @@ final class NativePairMemberSession: @unchecked Sendable {
         }
         condition.broadcast()
     }
-    func cancel(notify: Bool) {
+    /// `reason`: why the session ends, in words the serving host passes on (the follower's fence of the leader's
+    /// session says it). The first reason stands.
+    func cancel(notify: Bool, reason: String = "it was cancelled") {
         condition.lock()
         if stopped || outcome == "released" || outcome == "releasing" { condition.unlock(); return }
         stopped = true; if outcome != "released" { outcome = committed ? "quarantined" : "cancelled" }
+        if endReason == nil { endReason = reason }
         if notify { cancellationPublication.enter() }
-        let endpoint = endpoint, host = serving ? servingHost : nil; condition.broadcast(); condition.unlock()
+        let endpoint = endpoint, host = serving ? servingHost : nil, why = endReason ?? reason; condition.broadcast(); condition.unlock()
         // Close the served slot's admission now; the owner's cleanup below
         // ends a request still running, and `runOwned` waits for the slot's
         // retirement before any receipt.
-        if let host { let epoch = start.common.epoch; Task.detached { await host.stopServingCommittedStart(epoch: epoch) } }
+        if let host { let epoch = start.common.epoch; Task.detached { await host.stopServingCommittedStart(epoch: epoch, reason: why) } }
         endpoint?.requestNativeCleanup() // Independent of SE signing and WebSocket writes.
         if notify { DispatchQueue.global().async {
             defer { self.cancellationPublication.leave() }
@@ -231,7 +291,7 @@ final class NativePairMemberSession: @unchecked Sendable {
             condition.lock()
             do { try requireLive(); guard DispatchTime.now().uptimeNanoseconds < prepareDeadline else { throw NativePairMemberError.deadline } }
             catch { condition.unlock(); throw error }
-            outcome = "prepared"; condition.unlock()
+            outcome = "prepared"; ownerTimeline.prepared = DispatchTime.now().uptimeNanoseconds; condition.unlock()
             try send("native_pair_prepared", start.canonicalBytes)
             condition.lock()
             while !stopped && !committed && DispatchTime.now().uptimeNanoseconds < prepareDeadline {
@@ -265,7 +325,9 @@ final class NativePairMemberSession: @unchecked Sendable {
             }
             // The committed obligation is retained even if launch throws or a
             // concurrent cancel wins between this check and actual Process.run.
-            condition.lock(); let allowed = !stopped && committed; condition.unlock()
+            condition.lock(); let allowed = !stopped && committed
+            if allowed { launchAttempted = true; ownerTimeline.launchBegan = DispatchTime.now().uptimeNanoseconds }
+            condition.unlock()
             guard allowed else { throw NativePairMemberError.inactive }
             // S16: a roster member keys its worker's data plane with a
             // credential its own Secure Enclave key certifies, pinned to the
@@ -276,6 +338,7 @@ final class NativePairMemberSession: @unchecked Sendable {
                     dataPlaneTrust: trust, owner: owner) }
                 ?? installation.launch(start: start, until: firstGrant, relay: relay!, owner: owner)
             condition.lock(); endpoint = created; launched = true; let cancelled = stopped
+            ownerTimeline.launched = DispatchTime.now().uptimeNanoseconds
             if !cancelled, servingHost != nil { serving = true }
             condition.unlock()
             if cancelled { created.requestNativeCleanup() }
@@ -298,10 +361,12 @@ final class NativePairMemberSession: @unchecked Sendable {
             condition.lock(); outcome = "released"; condition.unlock()
         } catch {
             nativeMemberLog.warning("committed session \(start.common.epoch) rank \(installation.rank) ended (launched \(condition.withLock { launched })): \(error)")
-            cancel(notify: true)
+            cancel(notify: true, reason: "it ended early: \(error)")
             stopServing()
             condition.lock(); if outcome != "released" { outcome = committed ? "quarantined" : "cancelled" }; condition.unlock()
         }
+        // A launched session whose worker never became ready logs its timeline here.
+        if condition.withLock({ launchAttempted }) { logTimeline(dataPlane: nil) }
         // The owner's own diagnostics (its worker's stderr tail) are the only
         // record of why a pair did not form or a worker ended: keep them.
         if let tail = condition.withLock({ endpoint })?.diagnosticTail, !tail.isEmpty {
@@ -333,7 +398,7 @@ final class NativePairMemberSession: @unchecked Sendable {
         Task.detached { [weak self] in
             do { try await host.serveCommittedStart(value) } catch {
                 nativeMemberLog.warning("committed session \(value.start.common.epoch): serving host failed: \(String(reflecting: error))")
-                self?.cancel(notify: true)
+                self?.cancel(notify: true, reason: "this Mac could not serve it: \(error)")
             }
         }
     }
@@ -341,10 +406,10 @@ final class NativePairMemberSession: @unchecked Sendable {
     /// Waits, bounded by the cleanup deadline, until the host retired what it
     /// served for this start. Called before every receipt and every finish.
     private func stopServing() {
-        let host = condition.withLock { serving ? servingHost : nil }
+        let (host, why) = condition.withLock { (serving ? servingHost : nil, endReason ?? "its owner ended cleanly") }
         guard let host else { return }
         let done = DispatchSemaphore(value: 0), epoch = start.common.epoch
-        Task.detached { await host.stopServingCommittedStart(epoch: epoch); done.signal() }
+        Task.detached { await host.stopServingCommittedStart(epoch: epoch, reason: why); done.signal() }
         _ = done.wait(timeout: .init(uptimeNanoseconds: cleanupDeadline))
         condition.withLock { serving = false }
     }
@@ -353,7 +418,7 @@ final class NativePairMemberSession: @unchecked Sendable {
         condition.lock(); let completedPrelude = nextRound == 3; condition.unlock()
         if !completedPrelude {
             nativeMemberLog.warning("committed session \(start.common.epoch): owner invalidated before the prelude completed")
-            cancel(notify: true)
+            cancel(notify: true, reason: "its owner was invalidated before the prelude completed")
         }
     }
     private func exchange(_ round: UInt64, _ bytes: Data) throws -> Data {

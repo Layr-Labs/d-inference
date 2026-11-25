@@ -2,12 +2,31 @@
 # GitHub Release. It reuses the CLI release's Developer ID (Eigen Labs, SLDQ2GJ6TL)
 # and notarization secrets (release-provider.yml); no other credentials are needed.
 #
-#   - Tag desktop-vX.Y.Z (must equal desktop-app/package.json "version"): build, sign,
+#   - Tag desktop-vX.Y.Z: a signed annotated tag whose commit is on reviewed master
+#     and whose version equals desktop-app/package.json "version". Build, sign,
 #     notarize, verify and publish Release desktop-vX.Y.Z with the DMG, zip and
 #     SHA256SUMS. The release is not marked Latest, so CLI releases keep that slot.
 #     Then point the update feed (Release desktop-latest) at it.
-#   - Manual dispatch: the same build and verification, attached to the run as an
-#     artifact instead of being published (dry run).
+#   - Manual dispatch on master: the same build, signing and verification, attached
+#     to the run as an artifact instead of being published (dry run).
+#
+# Six jobs, so that each kind of code runs with only what it needs:
+#   source        master's source gate, the version and the CLI compatibility check.
+#   build         npm ci (install scripts off) and npm run dist. No secret.
+#   sign          codesign and notarytool on the unsigned app. The signing key and
+#                 the notarization credentials; no npm code, and nothing the build
+#                 produced is executed.
+#   package       electron-builder packages the signed app (--prepackaged) into the
+#                 DMG, the zip and the update feed. No secret.
+#   sign-dmg      checks that the DMG and the zip carry the signed app unchanged,
+#                 then signs and notarizes the DMG and verifies the release. The
+#                 key and the notarization credentials; no npm code.
+#   publish       the GitHub Release and the update feed. The only job that can
+#                 write repository contents; tags only.
+# Each job takes the previous job's output by artifact id and digest.
+# sign, sign-dmg and publish name the GitHub environment prod: its branch and tag
+# policy and its reviewers apply before each of them starts, and the signing and
+# notarization secrets are that environment's.
 #
 # The app installs the latest published CLI on first run and drives it through the
 # `darkbloom desktop` API, so a release is refused while that CLI predates it.
@@ -18,14 +37,17 @@ on:
     tags: ['desktop-v*']
   workflow_dispatch:
 
+# Read-only for every job; publish alone raises contents to write.
 permissions:
-  contents: write # gh release create
+  contents: read
+  actions: read # download this run's artifacts by id
 
 concurrency:
   group: release-desktop-${{ github.ref }}
   cancel-in-progress: false
 
 env:
+  DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
   # The CLI release the app's bundled installer will download (the same endpoint it uses).
   CLI_RELEASE_URL: 'https://api.darkbloom.dev/v1/releases/latest'
@@ -35,136 +57,420 @@ env:
   FEED_URL: 'https://github.com/Layr-Labs/d-inference/releases/download/desktop-latest'
 
 jobs:
-  release:
-    runs-on: blacksmith-12vcpu-macos-27
-    timeout-minutes: 90
+  source:
+    name: Verify the release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.trust.outputs.source_sha }}
+      publish: ${{ steps.trust.outputs.publish }}
+      version: ${{ steps.version.outputs.version }}
+      cli_version: ${{ steps.cli.outputs.cli_version }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          # Never run a candidate ref's own policy to authorize credentials.
+          ref: master
+          persist-credentials: false
+      # A signed annotated desktop-vX.Y.Z tag whose commit is verified and on
+      # master's ancestry, or a dispatch on the current master commit
+      # (scripts/provider_release_resume/api.py, verify_desktop_source).
+      - name: Verify reviewed source before any signing credential
+        id: trust
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/provider-release-resume.py verify-desktop-source
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.trust.outputs.source_sha }}
           fetch-depth: 0 # CLI release tags, for the compatibility check
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: desktop-app/package-lock.json
-
+          persist-credentials: false
       - name: Resolve the version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH: ${{ steps.trust.outputs.publish }}
         run: |
           set -euo pipefail
-          version=$(node -p "require('./desktop-app/package.json').version")
-          publish=false
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
+          version=$(python3 -c 'import json; print(json.load(open("desktop-app/package.json"))["version"])')
+          # Later jobs put the version into file names and shell commands.
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::desktop-app/package.json version must be X.Y.Z (got $version)"
+            exit 1
+          fi
+          if [ "$PUBLISH" = true ]; then
             if [ "$GITHUB_REF_NAME" != "desktop-v$version" ]; then
               echo "::error::Tag $GITHUB_REF_NAME does not match desktop-app/package.json version $version (expected desktop-v$version)"
               exit 1
             fi
-            publish=true
-            if gh release view "desktop-v$version" >/dev/null 2>&1; then
+            if gh release view "desktop-v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               echo "::error::Release desktop-v$version already exists"
               exit 1
             fi
           fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "PUBLISH=$publish" >> "$GITHUB_ENV"
-          echo "Desktop $version (publish: $publish)"
-        env:
-          GH_TOKEN: ${{ github.token }}
-
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Desktop $version (publish: $PUBLISH)"
       - name: Require a published CLI with the desktop API
+        id: cli
+        env:
+          PUBLISH: ${{ steps.trust.outputs.publish }}
         run: |
           set -euo pipefail
           cli=$(curl -fsSL "$CLI_RELEASE_URL" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+          if [[ ! "$cli" =~ ^[0-9A-Za-z.+-]+$ ]]; then
+            echo "::error::Unexpected CLI version from $CLI_RELEASE_URL"
+            exit 1
+          fi
           echo "Latest published CLI: $cli"
           if git cat-file -e "v$cli:provider-swift/Sources/darkbloom/Desktop/DesktopCommand.swift" 2>/dev/null; then
             echo "CLI v$cli includes the desktop API."
-            echo "CLI_VERSION=$cli" >> "$GITHUB_ENV"
           elif [ "$PUBLISH" = true ]; then
             echo "::error::The latest published CLI (v$cli) has no 'darkbloom desktop' command; new installs could not finish setup. Release a CLI from master first."
             exit 1
           else
             echo "::warning::The latest published CLI (v$cli) has no 'darkbloom desktop' command; a release would be refused."
-            echo "CLI_VERSION=$cli" >> "$GITHUB_ENV"
           fi
+          echo "cli_version=$cli" >> "$GITHUB_OUTPUT"
 
-      - name: Import the Developer ID certificate
+  build:
+    name: Build the unsigned app
+    needs: source
+    runs-on: blacksmith-12vcpu-macos-27
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.unsigned.outputs.artifact-id }}
+      artifact_digest: ${{ steps.unsigned.outputs.artifact-digest }}
+    env:
+      VERSION: ${{ needs.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.source.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      # The locked packages, verified against package-lock.json, and none of
+      # their install scripts.
+      - name: Install dependencies without install scripts
+        working-directory: desktop-app
+        run: npm ci --ignore-scripts
+      # A release build embeds the update feed and is never signed here
+      # (desktop-app/electron-builder.ts).
+      - name: Build the unsigned app
+        working-directory: desktop-app
+        env:
+          DARKBLOOM_DESKTOP_RELEASE: '1'
+          DARKBLOOM_DESKTOP_UPDATE_URL: ${{ env.FEED_URL }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist
+      - name: Check the unsigned app
+        working-directory: desktop-app/release/mac-arm64
+        run: |
+          set -euo pipefail
+          APP="Darkbloom.app"
+          [ "$(defaults read "$PWD/$APP/Contents/Info" CFBundleShortVersionString)" = "$VERSION" ]
+          [ "$(defaults read "$PWD/$APP/Contents/Info" CFBundleIdentifier)" = io.darkbloom.desktop ]
+          bash -n "$APP/Contents/Resources/bootstrap/install-runtime.sh"
+          # The app checks the feed it embeds.
+          grep -qxF "url: $FEED_URL" "$APP/Contents/Resources/app-update.yml" \
+            || { echo "::error::The app does not embed the update feed $FEED_URL"; exit 1; }
+      # The signing job signs with scripts/sign-desktop-app.py. Here, without any
+      # key, the same script and electron-builder's own signer each sign a copy
+      # of this app ad hoc, and every signed path must get the same signature.
+      - name: Check the release signer against electron-builder's on this app
+        env:
+          DARKBLOOM_DESKTOP_UNSIGNED_APP: ${{ github.workspace }}/desktop-app/release/mac-arm64/Darkbloom.app
+        run: python3 scripts/test-sign-desktop-app.py
+      - name: Pack the unsigned app
+        run: COPYFILE_DISABLE=1 tar czf "$RUNNER_TEMP/desktop-unsigned.tar.gz" -C desktop-app/release/mac-arm64 Darkbloom.app
+      - name: Hand the unsigned app to the signing job
+        id: unsigned
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: desktop-unsigned-${{ needs.source.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-unsigned.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign and notarize the app
+    needs: [source, build]
+    runs-on: blacksmith-12vcpu-macos-27
+    environment: prod
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.signed.outputs.artifact-id }}
+      artifact_digest: ${{ steps.signed.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.source.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Install pinned GitHub CLI
+        run: ./scripts/install-macos-github-cli.sh
+      - name: Fetch the unsigned app by artifact id and digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/unsigned"
+          mkdir "$RUNNER_TEMP/app"
+          /usr/bin/tar -xzf "$RUNNER_TEMP/unsigned/desktop-unsigned.tar.gz" -C "$RUNNER_TEMP/app"
+          [[ -d "$RUNNER_TEMP/app/Darkbloom.app" && ! -L "$RUNNER_TEMP/app/Darkbloom.app" ]]
+          echo "APP=$RUNNER_TEMP/app/Darkbloom.app" >> "$GITHUB_ENV"
+      # The signing key exists from here to the step 'Remove the signing
+      # keychain'. Between them the identity is looked up and codesign runs on
+      # the app as data; nothing the build produced is executed in this job.
+      - name: Import Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "$P12_BASE64" ] || [ -z "$P12_PASSWORD" ]; then
-            echo "::error::APPLE_CERTIFICATE_P12 / APPLE_CERTIFICATE_PASSWORD are not configured"
-            exit 1
-          fi
-          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/desktop-build.keychain-db"
-          KEYCHAIN_PASSWORD=$(uuidgen)
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          KEYCHAINS=("$KEYCHAIN_PATH")
-          while read -r keychain; do
-            keychain="${keychain#\"}"
-            KEYCHAINS+=("${keychain%\"}")
-          done < <(security list-keychains -d user)
-          security list-keychains -d user -s "${KEYCHAINS[@]}"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" \
-            -P "$P12_PASSWORD" -T /usr/bin/codesign -f pkcs12
-          rm -f "$RUNNER_TEMP/cert.p12"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
-          # Sign with exactly the Eigen Labs Developer ID Application identity, by fingerprint.
+          KEYCHAIN_PATH="$RUNNER_TEMP/desktop-signing.keychain-db"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          ./scripts/import-signing-certificate.sh "$KEYCHAIN_PATH"
+      - name: Sign the app
+        run: |
+          set -euo pipefail
+          # Exactly the Eigen Labs Developer ID Application identity, by fingerprint.
           identity=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
             | awk -v team="($APPLE_TEAM_ID)" '/Developer ID Application/ && index($0, team) { print $2; exit }')
           if [ -z "$identity" ]; then
             echo "::error::No Developer ID Application identity for team $APPLE_TEAM_ID in the imported certificate"
             exit 1
           fi
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          echo "CSC_NAME=$identity" >> "$GITHUB_ENV"
+          python3 scripts/sign-desktop-app.py "$APP" --identity "$identity" \
+            --keychain "$KEYCHAIN_PATH" --entitlements desktop-app/resources/entitlements.mac.plist
+      - name: Remove the signing keychain
+        run: ./scripts/remove-signing-keychain.sh "$KEYCHAIN_PATH" "$DEVELOPER_ID"
+      - name: Check the signature and prepare the notarization input
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          team=$(codesign -dv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          [ "$team" = "$APPLE_TEAM_ID" ] || { echo "::error::App signed by team $team, expected $APPLE_TEAM_ID"; exit 1; }
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/app-notarize.zip"
+      # The notarization credentials are in this step alone.
+      - name: Notarize the app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: ./scripts/notarize-artifact.sh "$RUNNER_TEMP/app-notarize.zip" "$RUNNER_TEMP/notary-app.json"
+      - name: Staple and verify the notarized app
+        run: |
+          set -euo pipefail
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          spctl --assess --type execute --verbose=2 "$APP" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
+          grep -q "source=Notarized Developer ID" "$RUNNER_TEMP/spctl.txt"
+          COPYFILE_DISABLE=1 tar czf "$RUNNER_TEMP/desktop-signed.tar.gz" -C "$RUNNER_TEMP/app" Darkbloom.app
+      - name: Hand the signed app to the packaging job
+        id: signed
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: desktop-signed-${{ needs.source.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-signed.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+      # Only a run that failed between the import and the removal step still
+      # has a keychain here.
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
 
-      - name: Build, sign and notarize the app
+  package:
+    name: Package the signed app
+    needs: [source, sign]
+    runs-on: blacksmith-12vcpu-macos-27
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.packaged.outputs.artifact-id }}
+      artifact_digest: ${{ steps.packaged.outputs.artifact-digest }}
+    env:
+      VERSION: ${{ needs.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.source.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Install pinned GitHub CLI
+        run: ./scripts/install-macos-github-cli.sh
+      - name: Install dependencies without install scripts
+        working-directory: desktop-app
+        run: npm ci --ignore-scripts
+      - name: Fetch the signed app by artifact id and digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.sign.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.sign.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/signed"
+          mkdir "$RUNNER_TEMP/app"
+          /usr/bin/tar -xzf "$RUNNER_TEMP/signed/desktop-signed.tar.gz" -C "$RUNNER_TEMP/app"
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/app/Darkbloom.app"
+          xcrun stapler validate "$RUNNER_TEMP/app/Darkbloom.app"
+      # electron-builder packages the app it is given and signs nothing
+      # (--prepackaged). The icon assets it reads are generated first.
+      - name: Package the DMG, the zip and the update feed
         working-directory: desktop-app
         env:
           DARKBLOOM_DESKTOP_RELEASE: '1'
           DARKBLOOM_DESKTOP_UPDATE_URL: ${{ env.FEED_URL }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           set -euo pipefail
-          npm ci
-          npm run dist
+          node scripts/assets.mjs
+          ./node_modules/.bin/electron-builder --config electron-builder.ts \
+            --prepackaged "$RUNNER_TEMP/app/Darkbloom.app" --mac --publish never
+          mkdir "$RUNNER_TEMP/packaged"
+          for file in "Darkbloom-$VERSION-arm64.dmg" "Darkbloom-$VERSION-arm64.zip" \
+            "Darkbloom-$VERSION-arm64.zip.blockmap" latest-mac.yml; do
+            [ -f "release/$file" ] || { echo "::error::missing $file"; exit 1; }
+            cp "release/$file" "$RUNNER_TEMP/packaged/$file"
+          done
+      - name: Hand the packages to the disk image signing job
+        id: packaged
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: desktop-packaged-${{ needs.source.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/packaged/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Sign, notarize and staple the DMG
-        working-directory: desktop-app/release
+  sign-dmg:
+    name: Sign and notarize the disk image
+    needs: [source, sign, package]
+    runs-on: blacksmith-12vcpu-macos-27
+    environment: prod
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.release.outputs.artifact-id }}
+      artifact_digest: ${{ steps.release.outputs.artifact-digest }}
+    env:
+      VERSION: ${{ needs.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.source.outputs.source_sha }}
+          persist-credentials: false
+      # Node runs desktop-app/scripts/update-feed.mjs, which imports nothing
+      # from npm; this job installs no package.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Install pinned GitHub CLI
+        run: ./scripts/install-macos-github-cli.sh
+      - name: Fetch the signed app and the packages by artifact id and digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED_ID: ${{ needs.sign.outputs.artifact_id }}
+          SIGNED_DIGEST: ${{ needs.sign.outputs.artifact_digest }}
+          PACKAGED_ID: ${{ needs.package.outputs.artifact_id }}
+          PACKAGED_DIGEST: ${{ needs.package.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$SIGNED_ID" --artifact-digest "$SIGNED_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/signed"
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$PACKAGED_ID" --artifact-digest "$PACKAGED_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/release"
+          mkdir "$RUNNER_TEMP/app"
+          /usr/bin/tar -xzf "$RUNNER_TEMP/signed/desktop-signed.tar.gz" -C "$RUNNER_TEMP/app"
+      # Before the key exists: the zip and the disk image must hold the app the
+      # signing job signed, unchanged, and nothing else.
+      - name: Check that the packages carry the signed app unchanged
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          "$GITHUB_WORKSPACE/scripts/check-desktop-packages.sh" "$RUNNER_TEMP/app/Darkbloom.app" \
+            "Darkbloom-$VERSION-arm64.zip" "Darkbloom-$VERSION-arm64.dmg" "$RUNNER_TEMP/checked"
+      # The signing key exists from here to the step 'Remove the signing
+      # keychain', for one codesign call on the disk image.
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/desktop-signing.keychain-db"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          ./scripts/import-signing-certificate.sh "$KEYCHAIN_PATH"
+      - name: Sign the disk image
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          set -euo pipefail
+          # Exactly the Eigen Labs Developer ID Application identity, by fingerprint.
+          identity=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk -v team="($APPLE_TEAM_ID)" '/Developer ID Application/ && index($0, team) { print $2; exit }')
+          if [ -z "$identity" ]; then
+            echo "::error::No Developer ID Application identity for team $APPLE_TEAM_ID in the imported certificate"
+            exit 1
+          fi
+          # electron-builder leaves the DMG unsigned; Gatekeeper wants the container
+          # signed by the same Developer ID before it's notarized.
+          codesign --sign "$identity" --keychain "$KEYCHAIN_PATH" --timestamp "Darkbloom-$VERSION-arm64.dmg"
+      - name: Remove the signing keychain
+        run: ./scripts/remove-signing-keychain.sh "$KEYCHAIN_PATH" "$DEVELOPER_ID"
+      # The notarization credentials are in this step alone.
+      - name: Notarize the disk image
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: ./scripts/notarize-artifact.sh "$RUNNER_TEMP/release/Darkbloom-$VERSION-arm64.dmg" "$RUNNER_TEMP/notary-dmg.json"
+      - name: Staple the disk image and restamp the feed
+        working-directory: ${{ runner.temp }}/release
         run: |
           set -euo pipefail
           DMG="Darkbloom-$VERSION-arm64.dmg"
-          # electron-builder leaves the DMG unsigned; Gatekeeper wants the container
-          # signed by the same Developer ID before it's notarized.
-          codesign --sign "$CSC_NAME" --keychain "$KEYCHAIN_PATH" --timestamp "$DMG"
-          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" --wait --output-format json > "$RUNNER_TEMP/notary.json"
-          status=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/notary.json")
-          if [ "$status" != Accepted ]; then
-            id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' "$RUNNER_TEMP/notary.json")
-            echo "::error::DMG notarization $id finished with status $status"
-            xcrun notarytool log "$id" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" || true
-            exit 1
-          fi
           xcrun stapler staple "$DMG"
-          # Signing and stapling changed the DMG after the build described it in the feed.
-          node ../scripts/update-feed.mjs restamp latest-mac.yml "$DMG"
-
+          # Signing and stapling changed the DMG after packaging described it in the feed.
+          node "$GITHUB_WORKSPACE/desktop-app/scripts/update-feed.mjs" restamp latest-mac.yml "$DMG"
       - name: Verify the release
-        working-directory: desktop-app/release
+        working-directory: ${{ runner.temp }}/release
         run: |
           set -euo pipefail
-          APP="mac-arm64/Darkbloom.app"
+          APP="$RUNNER_TEMP/checked/from-zip/Darkbloom.app"
           DMG="Darkbloom-$VERSION-arm64.dmg"
           ZIP="Darkbloom-$VERSION-arm64.zip"
           for file in "$DMG" "$ZIP" "$ZIP.blockmap" latest-mac.yml; do
@@ -173,8 +479,8 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           team=$(codesign -dv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')
           [ "$team" = "$APPLE_TEAM_ID" ] || { echo "::error::App signed by team $team, expected $APPLE_TEAM_ID"; exit 1; }
-          [ "$(defaults read "$PWD/$APP/Contents/Info" CFBundleShortVersionString)" = "$VERSION" ]
-          [ "$(defaults read "$PWD/$APP/Contents/Info" CFBundleIdentifier)" = io.darkbloom.desktop ]
+          [ "$(defaults read "$APP/Contents/Info" CFBundleShortVersionString)" = "$VERSION" ]
+          [ "$(defaults read "$APP/Contents/Info" CFBundleIdentifier)" = io.darkbloom.desktop ]
           spctl --assess --type execute --verbose=2 "$APP" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
           grep -q "source=Notarized Developer ID" "$RUNNER_TEMP/spctl.txt"
           xcrun stapler validate "$APP"
@@ -189,24 +495,61 @@ jobs:
           # The app checks the feed, and the feed offers exactly these files.
           grep -qxF "url: $FEED_URL" "$APP/Contents/Resources/app-update.yml" \
             || { echo "::error::The app does not embed the update feed $FEED_URL"; exit 1; }
-          node ../scripts/update-feed.mjs check latest-mac.yml "$VERSION" "$ZIP"
+          node "$GITHUB_WORKSPACE/desktop-app/scripts/update-feed.mjs" check latest-mac.yml "$VERSION" "$ZIP"
           shasum -a 256 "$DMG" "$ZIP" > SHA256SUMS
           cat SHA256SUMS
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - name: Retain the verified release
+        id: release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: darkbloom-desktop-${{ env.VERSION }}
+          name: darkbloom-desktop-${{ needs.source.outputs.version }}-${{ github.run_attempt }}
           path: |
-            desktop-app/release/Darkbloom-*-arm64.dmg
-            desktop-app/release/Darkbloom-*-arm64.zip
-            desktop-app/release/Darkbloom-*-arm64.zip.blockmap
-            desktop-app/release/latest-mac.yml
-            desktop-app/release/SHA256SUMS
+            ${{ runner.temp }}/release/Darkbloom-*-arm64.dmg
+            ${{ runner.temp }}/release/Darkbloom-*-arm64.zip
+            ${{ runner.temp }}/release/Darkbloom-*-arm64.zip.blockmap
+            ${{ runner.temp }}/release/latest-mac.yml
+            ${{ runner.temp }}/release/SHA256SUMS
+          compression-level: 0
           if-no-files-found: error
+      # Only a run that failed between the import and the removal step still
+      # has a keychain here.
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
 
+  publish:
+    name: Publish the release and the update feed
+    needs: [source, sign-dmg]
+    if: needs.source.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    environment: prod
+    timeout-minutes: 30
+    permissions:
+      contents: write # gh release create; no other job of this workflow writes
+      actions: read
+    env:
+      VERSION: ${{ needs.source.outputs.version }}
+      CLI_VERSION: ${{ needs.source.outputs.cli_version }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.source.outputs.source_sha }}
+          persist-credentials: false
+      - name: Fetch the verified release by artifact id and digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.sign-dmg.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.sign-dmg.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/release"
+          cd "$RUNNER_TEMP/release"
+          sha256sum --check --strict SHA256SUMS
       - name: Publish the GitHub Release
-        if: env.PUBLISH == 'true'
-        working-directory: desktop-app/release
+        working-directory: ${{ runner.temp }}/release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -226,17 +569,16 @@ jobs:
             "Darkbloom-$VERSION-arm64.dmg" "Darkbloom-$VERSION-arm64.zip" SHA256SUMS \
             --title "Darkbloom for Mac $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
             --verify-tag --latest=false
-
       - name: Publish the update feed
-        if: env.PUBLISH == 'true'
-        working-directory: desktop-app/release
+        working-directory: ${{ runner.temp }}/release
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.source.outputs.source_sha }}
         run: |
           set -euo pipefail
           ZIP="Darkbloom-$VERSION-arm64.zip"
           if ! gh release view "$FEED_TAG" >/dev/null 2>&1; then
-            gh release create "$FEED_TAG" --target "$GITHUB_SHA" --prerelease --latest=false \
+            gh release create "$FEED_TAG" --target "$SOURCE_SHA" --prerelease --latest=false \
               --title "Darkbloom for Mac: update feed" \
               --notes "Installed Darkbloom apps check \`latest-mac.yml\` here for updates. \`Darkbloom-arm64.dmg\` is always the newest app. Each version is a \`desktop-vX.Y.Z\` release."
           fi
@@ -244,8 +586,3 @@ jobs:
           cp "Darkbloom-$VERSION-arm64.dmg" Darkbloom-arm64.dmg
           gh release upload "$FEED_TAG" "$ZIP" "$ZIP.blockmap" Darkbloom-arm64.dmg --clobber
           gh release upload "$FEED_TAG" latest-mac.yml --clobber
-
-      - name: Remove the signing keychain
-        if: always()
-        run: |
-          if [ -n "${KEYCHAIN_PATH:-}" ]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi

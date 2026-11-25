@@ -61,7 +61,9 @@ struct BuildEnvironmentTests {
     /// the dev branch, where a plain build is a dev build.
     @Test func installDefaultsFollowTheBuildEnvironment() {
         let current = BuildEnvironment.current
-        #expect(KeychainWrappedKEKStorage.defaultService == "\(current.keychainServicePrefix).kv.kek.v1")
+        // The SSD cache key's second generation: no release from 0.10.15 on
+        // opens or keeps a key stored by an earlier one (`retiredServices`).
+        #expect(KeychainWrappedKEKStorage.defaultService == "\(current.keychainServicePrefix).kv.kek.v2")
         #expect(PersistentEnclaveKey.defaultLabel == "\(current.keychainServicePrefix).provider.attestation-signing.v2")
         #expect(LaunchAgent.label == current.launchAgentLabel)
         #expect(WatchdogAgent.label == current.watchdogAgentLabel)

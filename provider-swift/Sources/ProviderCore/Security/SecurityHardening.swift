@@ -15,8 +15,9 @@
 ///   - Bundle signature verification: validates .app code signature
 ///
 /// These protections work with macOS Hardened Runtime (applied at code signing
-/// time) and SIP to prevent the provider (machine owner) from inspecting
-/// inference data in flight.
+/// time) and SIP. They limit the usual ways of inspecting this process
+/// (debugger attachment, core files, injected libraries); they are not a
+/// guarantee that its memory cannot be read.
 
 import CryptoKit
 import Darwin
@@ -52,16 +53,30 @@ public enum SecurityError: Error, CustomStringConvertible, Sendable {
 
 // MARK: - SIP Check
 
-/// Signed SIP self-report. Preserve the existing wire meaning (enabled includes
-/// Custom Configuration) while local posture warns unless protection is full;
-/// the coordinator's App Attest policy is authoritative for trust.
-public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+/// Signed SIP self-report (`sip_enabled`): true only for Apple's default
+/// configuration, never for a custom configuration with any protection off.
+public func checkSIPEnabled(
+    runner: SecurityCommandRunner = .live,
+    configuration: SIPConfiguration? = SIPConfigurationReader.current()
+) -> Bool {
+    if let configuration {
+        if configuration.isDefault {
+            logger.info("SIP check: System Integrity Protection is at its default configuration")
+        } else {
+            let value = configuration.hexString
+            let off = configuration.relaxedProtections.joined(separator: ", ")
+            logger.error(
+                "SIP check: not at the default configuration (\(value, privacy: .public)); off: \(off, privacy: .public)"
+            )
+        }
+        return configuration.isDefault
+    }
     let status = SIPStatusChecker(runner: runner).status()
     switch status {
     case .enabled:
         logger.info("SIP check: System Integrity Protection is fully enabled")
     case .enabledWithCustomConfiguration:
-        logger.error("SIP check: System Integrity Protection is only partially enabled (Custom Configuration)")
+        logger.error("SIP check: System Integrity Protection has a custom configuration")
     case .disabled:
         logger.error("SIP check: System Integrity Protection is DISABLED")
     case .unavailable(let reason):
@@ -69,7 +84,7 @@ public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     case .unrecognized:
         logger.error("SIP check: could not interpret csrutil output")
     }
-    return status.reportsEnabled
+    return sipAtDefaultConfiguration(nil, status: status)
 }
 
 // MARK: - RDMA Check
@@ -151,6 +166,34 @@ public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bo
         }
     }
 
+    return nil
+}
+
+/// The serving posture's reading. Only `csrutil authenticated-root status`'s
+/// exact answer decides: a zero exit, an empty stderr, and stdout that is
+/// exactly `Authenticated Root status: enabled` or `... disabled` (an optional
+/// final period, then at most one newline); output that doesn't decode is empty. Any other answer is unread from
+/// csrutil; then `diskutil info /` can only confirm a seal (`Sealed: Yes`),
+/// since macOS can say "Broken" for a healthy one. Unread is nil, so a Mac
+/// whose reading is unclear is never refused, only warned. The older signed
+/// readings (`authenticatedRootStatus`) keep their own contract.
+public func authenticatedRootPolicy(runner: SecurityCommandRunner = BootSecuritySnapshot.liveRunner) -> Bool? {
+    if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
+       result.terminationStatus == 0, !result.wroteToStderr {
+        let answer = result.stdout.hasSuffix("\n") ? String(result.stdout.dropLast()) : result.stdout
+        switch answer {
+        case "Authenticated Root status: enabled", "Authenticated Root status: enabled.": return true
+        case "Authenticated Root status: disabled", "Authenticated Root status: disabled.": return false
+        default: break
+        }
+    }
+    if let result = try? runner.run("/usr/sbin/diskutil", ["info", "/"]), result.terminationStatus == 0 {
+        for line in result.stdout.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("Sealed:") else { continue }
+            return trimmed.dropFirst("Sealed:".count).trimmingCharacters(in: .whitespaces) == "Yes" ? true : nil
+        }
+    }
     return nil
 }
 
@@ -287,38 +330,140 @@ public struct SecurityPosture: Sendable {
     public let envScrubbed: Bool
     public let bundleSignatureValid: Bool
     public let binaryHash: String?
+    /// The boot security serving depends on: the exact SIP configuration and
+    /// the Secure Boot policy, reported to the coordinator.
+    public let bootSecurity: BootSecuritySnapshot
 
+    /// This posture with a later Secure Boot reading (`BootSecuritySnapshot.rereadingSecureBoot`).
+    public func rereadingSecureBoot(_ reading: SecureBootReading) -> SecurityPosture {
+        let bootSecurity = bootSecurity.rereadingSecureBoot(reading)
+        return SecurityPosture(
+            sipEnabled: sipEnabled,
+            rdmaDisabled: rdmaDisabled,
+            secureBootEnabled: bootSecurity.secureBoot == .full,
+            authenticatedRootEnabled: authenticatedRootEnabled,
+            hardenedRuntimeEnabled: hardenedRuntimeEnabled,
+            antiDebugEnabled: antiDebugEnabled,
+            coreDumpsDisabled: coreDumpsDisabled,
+            envScrubbed: envScrubbed,
+            bundleSignatureValid: bundleSignatureValid,
+            binaryHash: binaryHash,
+            bootSecurity: bootSecurity
+        )
+    }
 }
 
-/// Collect startup posture. Failures are reported to the coordinator, which
-/// owns the routing trust decision; local startup remains warning-only.
-public func collectSecurityPosture() -> SecurityPosture {
-    let sipEnabled = checkSIPEnabled()
-    if !sipEnabled {
-        logger.warning("SIP is not fully enabled; coordinator trust verification will decide routing")
+/// Collect startup posture. Boot security that refuses Darkbloom serving is
+/// enforced by the serve loop; the other failures are reported to the
+/// coordinator, which owns the routing trust decision.
+/// The serve loop's startup posture, with the process hardened. `bootSettingsCommands`
+/// and `kernelSIP` stand in for the boot-settings reading's commands and kernel
+/// value (the collector fixture); production passes neither. A failed Secure
+/// Boot read is read again on `secureBootRetry`'s schedule before the posture
+/// is returned, so the serve loop's gate sees the result. `secureBootStop` is
+/// asked before the first read, between the waits' steps and after the reads:
+/// once it says stop, nothing more is read or hardened, and the result is nil.
+public func collectSecurityPosture(
+    bootSettingsCommands: SecurityCommandRunner? = nil,
+    kernelSIP: () -> SIPConfiguration? = { SIPConfigurationReader.current() },
+    secureBootRetry: SecureBootReadRetry = .service,
+    secureBootStop: @Sendable () async -> Bool = { false }
+) async -> SecurityPosture? {
+    await collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP,
+                         secureBootRetry: secureBootRetry, secureBootStop: secureBootStop, hardenProcess: true)
+}
+
+#if DEBUG
+/// The serve loop's test seam: the same collection without the process-wide steps
+/// (debugger denial, the core limit, the environment scrub), which take no part in
+/// the boot-settings decision, so a shared test host stays as it was. Debug builds only.
+func collectSecurityPostureWithoutHardening(
+    bootSettingsCommands: SecurityCommandRunner?,
+    kernelSIP: () -> SIPConfiguration?,
+    secureBootRetry: SecureBootReadRetry,
+    secureBootStop: @Sendable () async -> Bool
+) async -> SecurityPosture? {
+    await collectPosture(bootSettingsCommands: bootSettingsCommands, kernelSIP: kernelSIP,
+                         secureBootRetry: secureBootRetry, secureBootStop: secureBootStop, hardenProcess: false)
+}
+#endif
+
+/// The service's Secure Boot reading (`SecureBootPolicy.readRetrying`), logging
+/// why each failed read failed (the collector logs how it ended, unless a stop
+/// ended it). `commands` stands in for `system_profiler` (tests and the
+/// collector fixture).
+func readSecureBootRetrying(commands: SecurityCommandRunner?, retry: SecureBootReadRetry,
+                            stop: @Sendable () async -> Bool) async -> SecureBootReading {
+    await SecureBootPolicy.readRetrying(retry, shouldStop: stop, read: { timeout in
+        SecureBootPolicy.read(runner: commands ?? SecureBootPolicy.liveRunner(timeout: timeout))
+    }, onFailure: { failed, next in
+        let then = next.map { String(format: "reading it again in %.0f s", $0) } ?? "not reading it again"
+        logger.warning(
+            "Secure Boot read \(failed.attempts) failed: \(failed.failure?.rawValue ?? "", privacy: .public) (\(failed.detail, privacy: .public); \(failed.privateDetail, privacy: .private)); \(then, privacy: .public)"
+        )
+    })
+}
+
+/// One line for how a Secure Boot reading ended: why it is unknown, or the
+/// policy when it took more than one read. `when` names the reading
+/// ("at startup", "before connecting"). Text from the tool is private.
+func logSecureBootReading(_ reading: SecureBootReading, when: String) {
+    if let failure = reading.failure {
+        logger.error(
+            "Secure Boot could not be read \(when, privacy: .public) after \(reading.attempts) reads: \(failure.rawValue, privacy: .public) (\(reading.detail, privacy: .public); \(reading.privateDetail, privacy: .private)); it is reported as unknown"
+        )
+    } else if reading.attempts > 1 {
+        logger.notice(
+            "Secure Boot read \(when, privacy: .public) on read \(reading.attempts): \(reading.policy.summary, privacy: .public)"
+        )
+    }
+}
+
+private func collectPosture(
+    bootSettingsCommands: SecurityCommandRunner?,
+    kernelSIP: () -> SIPConfiguration?,
+    secureBootRetry: SecureBootReadRetry,
+    secureBootStop: @Sendable () async -> Bool,
+    hardenProcess: Bool
+) async -> SecurityPosture? {
+    // A stop before or during the Secure Boot reads ends the collection there: no later probe runs, and the caller
+    // adopts nothing.
+    if await secureBootStop() { return nil }
+    let secureBoot = await readSecureBootRetrying(commands: bootSettingsCommands, retry: secureBootRetry,
+                                                  stop: secureBootStop)
+    if await secureBootStop() { return nil }
+    logSecureBootReading(secureBoot, when: "at startup")
+    let bootSecurity = BootSecuritySnapshot.live(runner: bootSettingsCommands, kernelSIP: kernelSIP, secureBoot: secureBoot)
+    let sipEnabled = bootSecurity.sipAtDefault
+    for refusal in bootSecurity.servingRefusals {
+        logger.error("\(refusal.name, privacy: .public): \(refusal.detail, privacy: .public)")
     }
 
     let rdmaDisabled = checkRDMADisabled()
 
-    // Anti-debug: PT_DENY_ATTACH + P_TRACED check
-    var antiDebugOk = true
-    do {
-        try denyDebuggerAttachment()
-    } catch {
-        logger.warning("PT_DENY_ATTACH failed (may already be set): \(error)")
-        // Not fatal on retry -- PT_DENY_ATTACH returns EPERM if already set
-        antiDebugOk = !checkDebuggerAttached()
-    }
+    var antiDebugOk = false
+    var coreDumpsOk = false
+    if hardenProcess {
+        // Anti-debug: PT_DENY_ATTACH + P_TRACED check
+        antiDebugOk = true
+        do {
+            try denyDebuggerAttachment()
+        } catch {
+            logger.warning("PT_DENY_ATTACH failed (may already be set): \(error)")
+            // Not fatal on retry -- PT_DENY_ATTACH returns EPERM if already set
+            antiDebugOk = !checkDebuggerAttached()
+        }
 
-    var coreDumpsOk = true
-    do {
-        try disableCoreDumps()
-    } catch {
-        logger.warning("Failed to disable core dumps: \(error)")
-        coreDumpsOk = false
-    }
+        coreDumpsOk = true
+        do {
+            try disableCoreDumps()
+        } catch {
+            logger.warning("Failed to disable core dumps: \(error)")
+            coreDumpsOk = false
+        }
 
-    scrubDangerousEnvironment()
+        scrubDangerousEnvironment()
+    }
 
     var bundleOk = true
     do {
@@ -331,14 +476,17 @@ public func collectSecurityPosture() -> SecurityPosture {
     return SecurityPosture(
         sipEnabled: sipEnabled,
         rdmaDisabled: rdmaDisabled,
-        secureBootEnabled: checkSecureBootEnabled(),
-        authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
+        // The signed attestation reads its own values (AttestationBuilder); these two
+        // come from the bounded reading, so startup runs no duplicate unbounded probe.
+        secureBootEnabled: bootSecurity.secureBoot == .full,
+        authenticatedRootEnabled: bootSecurity.authenticatedRoot == true,
         hardenedRuntimeEnabled: checkHardenedRuntimeEnabled(),
         antiDebugEnabled: antiDebugOk,
         coreDumpsDisabled: coreDumpsOk,
-        envScrubbed: true,
+        envScrubbed: hardenProcess,
         bundleSignatureValid: bundleOk,
-        binaryHash: selfBinaryHash()
+        binaryHash: selfBinaryHash(),
+        bootSecurity: bootSecurity
     )
 }
 
@@ -354,9 +502,30 @@ public func computeResponseAttestation(
     completionTokens: UInt64,
     responseBody: String
 ) -> (hash: String, signature: String?) {
-    let signData = "\(requestId):\(completionTokens):\(responseBody)"
-    let responseHash = sha256Hex(Data(signData.utf8))
+    let signData = responseHashPrefix(requestId: requestId, completionTokens: completionTokens) + responseBody
+    return signedResponseHash(sha256Hex(Data(signData.utf8)), identity: identity)
+}
 
+/// The same hash and signature as the `responseBody:` form, computed from the
+/// response text the handler gathered, without a second copy of it.
+func computeResponseAttestation(
+    identity: (any AttestationSigner)?,
+    requestId: String,
+    completionTokens: UInt64,
+    response: ResponseTextBuffer
+) -> (hash: String, signature: String?) {
+    let prefix = responseHashPrefix(requestId: requestId, completionTokens: completionTokens)
+    return signedResponseHash(response.sha256(after: prefix).hexString, identity: identity)
+}
+
+/// What the response hash covers before the response text.
+private func responseHashPrefix(requestId: String, completionTokens: UInt64) -> String {
+    "\(requestId):\(completionTokens):"
+}
+
+private func signedResponseHash(
+    _ responseHash: String, identity: (any AttestationSigner)?
+) -> (hash: String, signature: String?) {
     var signature: String?
     if let identity {
         if let sigData = try? identity.sign(Data(responseHash.utf8)) {

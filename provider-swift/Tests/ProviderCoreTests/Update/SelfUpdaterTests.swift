@@ -4,6 +4,13 @@ import Testing
 
 @Suite("SelfUpdater")
 struct SelfUpdaterTests {
+    @Test("the updater's requirements carry the listed signing certificate")
+    func updaterRequirementsPinTheCertificate() {
+        let clause = "certificate leaf = H\"95b67556e04653f56ba5411d20d33dd263ef6e2a\""
+        #expect(DarkbloomCodeSignature.designatedRequirement.contains(clause))
+        #expect(DarkbloomCodeSignature.fanHelperDesignatedRequirement.contains(clause))
+    }
+
     @Test("production public init always verifies code signatures")
     func productionInitVerifiesSignatures() {
         // The only way to disable the signature pin is the internal

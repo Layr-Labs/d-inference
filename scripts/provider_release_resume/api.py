@@ -29,8 +29,13 @@ class GitHub:
                            stdout=stream, check=True)
 
 
-def tag_source(api, tag):
-    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+PROVIDER_TAG = r"v[0-9]+\.[0-9]+\.[0-9]+"
+DESKTOP_TAG = r"desktop-v[0-9]+\.[0-9]+\.[0-9]+"
+
+
+def tag_source(api, tag, pattern=PROVIDER_TAG):
+    """The commit of a signed annotated release tag whose name matches `pattern`."""
+    if not re.fullmatch(pattern, tag):
         raise ValueError("Release requires a stable production release tag")
     ref = api.get("git/ref/tags/" + tag)["object"]
     if ref["type"] != "tag":
@@ -65,18 +70,54 @@ def verify_source(api, source, branch="master"):
     return head
 
 
+def verify_validation_source(api, env, source):
+    """Signing validation signs a commit on reviewed master, with master's tooling."""
+    if env.get("GITHUB_EVENT_NAME") != "workflow_dispatch" or env.get("GITHUB_REF") != "refs/heads/master":
+        raise ValueError("Signing validation must be dispatched on master")
+    verify_source(api, env["GITHUB_SHA"])
+    verify_source(api, source)
+    return source
+
+
+def verify_desktop_source(api, env):
+    """The source of a desktop app run, and whether the run publishes.
+
+    A release is a signed annotated desktop-vX.Y.Z tag whose commit is verified
+    and on reviewed master. A dry run is a dispatch on the current master
+    commit; it signs and verifies and publishes nothing.
+    """
+    source = env["GITHUB_SHA"]
+    event = env.get("GITHUB_EVENT_NAME")
+    ref = env.get("GITHUB_REF")
+    master = verify_source(api, source)
+    if event == "push" and env.get("GITHUB_REF_TYPE") == "tag":
+        tag = env["GITHUB_REF_NAME"]
+        if ref != "refs/tags/" + tag:
+            raise ValueError("Release tag ref mismatch")
+        if tag_source(api, tag, DESKTOP_TAG) != source:
+            raise ValueError("Desktop release tag does not identify the workflow commit")
+        return source, True
+    if event == "workflow_dispatch":
+        if ref != "refs/heads/master" or source != master:
+            raise ValueError("A desktop dry run must be dispatched on the current reviewed master commit")
+        return source, False
+    raise ValueError("A desktop release requires a signed desktop-v tag on master or a dispatch on master")
+
+
 def verify_workflow_source(api, env):
     source = env["GITHUB_SHA"]
     event = env.get("GITHUB_EVENT_NAME")
     ref_type = env.get("GITHUB_REF_TYPE")
     ref = env.get("GITHUB_REF")
-    if event == "push" and ref_type == "branch" and ref == "refs/heads/dev":
-        # A dev push signs and publishes a dev release only, never staging or
-        # prod. The commit must be GitHub-verified and on dev ancestry; dev may
-        # already have moved on.
+    if event in ("push", "workflow_dispatch") and ref_type == "branch" and ref == "refs/heads/dev":
+        # A dev push or dev-branch dispatch signs and publishes a dev release
+        # only, never staging or prod. The commit must be GitHub-verified and on
+        # dev ancestry; a dispatched dev release must be the current dev head.
         if env.get("RELEASE_ENVIRONMENT") != "dev":
             raise ValueError("Dev branch push releases require environment dev")
-        verify_source(api, source, "dev")
+        dev_head = verify_source(api, source, "dev")
+        if event == "workflow_dispatch" and source != dev_head:
+            raise ValueError("Dispatched dev branch releases must be the current dev commit")
         return source
     master = verify_source(api, source)
     if event == "push" and ref_type == "tag":

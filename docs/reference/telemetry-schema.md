@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-18
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -20,7 +20,11 @@ separately, without introducing a backend build into the public provider suite.
 The terminal-profile [prediction decision fields](prediction-decision-telemetry.md)
 use the separate Go/Swift profiler protocol, not this event shape or its
 TypeScript mirror. Their optional `unbounded_reason` is a closed engine cause
-folded by the coordinator before storage; it adds no event fields.
+folded by the coordinator before storage; it adds no event fields. So do the
+profile's optional tool-call counts, `tool_calls` and
+`tool_calls_breaking_declaration` ([profile counts](protocol-messages.md)):
+counts only, absent when a response returned no call, and ignored by a
+coordinator that does not read them.
 
 Durable cache statistics use optional typed heartbeat objects, not event
 `fields`: [`slots[].prefix_cache`](protocol-messages.md#slotsprefix_cache) and

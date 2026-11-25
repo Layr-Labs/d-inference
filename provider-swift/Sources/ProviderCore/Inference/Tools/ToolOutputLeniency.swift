@@ -59,7 +59,35 @@ enum StrictToolCallPolicy {
     }
 }
 
-private enum ToolOutputLeniencySwitch {
+/// A streamed call that fails after its fragments started to leave (its
+/// frame does not parse, parses differently from what already left, or is
+/// still open when generation stops before the token limit) is refused with
+/// its `tool_check`, never closed as a finished call. Its arguments are only
+/// the part already sent, so no client can run it: a `tool_calls` finish
+/// with arguments that do not parse is what OpenRouter's validator counts
+/// against the endpoint (InvalidJson), and the coordinator refuses the next
+/// turn whose history carries them (`tool_arguments_not_object`). A refused
+/// response is a failed response, which the client can retry. A call the
+/// token limit cut still ends `length` (`TokenLimitCutPolicy`), and calls
+/// that parse still return as generated.
+///
+/// `DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS`: unset or any other value keeps it
+/// on; `0`, `off`, `false` or `no` restores closing such a call with the
+/// arguments it sent (`auto` without `strict`, or `strict` once the response
+/// started). Read once per process.
+enum FailedStreamedCallPolicy {
+    static let environmentKey = "DARKBLOOM_REFUSE_FAILED_STREAMED_CALLS"
+
+    static let refuses = enabled(environment: ProcessInfo.processInfo.environment)
+
+    static func enabled(environment: [String: String]) -> Bool {
+        !ToolOutputLeniencySwitch.isOff(environment[environmentKey])
+    }
+}
+
+/// The off words of the tool-output switches, trimmed and in any case: `0`,
+/// `off`, `false`, `no`. Unset or anything else is on.
+enum ToolOutputLeniencySwitch {
     static func isOff(_ raw: String?) -> Bool {
         guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
         return ["0", "off", "false", "no"].contains(value)

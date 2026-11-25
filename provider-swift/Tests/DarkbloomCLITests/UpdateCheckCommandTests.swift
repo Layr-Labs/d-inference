@@ -63,7 +63,7 @@ struct UpdateCheckCommandTests {
         #expect(failed == header)
     }
 
-    /// pair-2's MacBook (DevNet, 2026-11-07): "download failed: update check failed: The request timed out", twice, a
+    /// A DevNet MacBook (2026-11-07): "download failed: update check failed: The request timed out", twice, a
     /// minute each. The check of both forms of the command now tries 3 times, 15 s each, and says what failed, that
     /// nothing changed, and what to do. `update` gets an install root in the sandbox (`Update.updaterForTesting`).
     @Test("a check that gets no answer is tried 3 times, 15 s each, then said plainly with what to do")

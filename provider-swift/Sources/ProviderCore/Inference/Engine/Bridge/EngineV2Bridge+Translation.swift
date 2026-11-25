@@ -301,11 +301,14 @@ enum EngineV2Translation {
         admissionErrorMessage(for: error, distributedProfile: nil)
     }
 
-    static func admissionErrorMessage(for error: Error, distributedProfile: DistributedResidentExecutionProfile?) -> String {
+    /// `ownerRequest`: the owner's request on a pair's own API, whose refusal names the limits the pair serves it.
+    static func admissionErrorMessage(for error: Error, distributedProfile: DistributedResidentExecutionProfile?,
+                                      ownerRequest: Bool = false) -> String {
         if let distributed = error as? DistributedEngineError {
             switch distributed {
             case .refused(let refusal):
-                return distributedRefusalMessage(refusal, text: refusal.message(distributedProfile))
+                return distributedRefusalMessage(refusal, text: refusal.message(distributedProfile,
+                                                                                ownerRequest: ownerRequest))
             case .unavailable:
                 return distributedUnavailableMessage
             case .shuttingDown:
@@ -391,6 +394,30 @@ enum EngineV2Translation {
         // retried) — surface as a generic generation failure (500).
         return "engine_v2 submit failed: \(error.localizedDescription)"
     }
+
+    /// The figures of a capacity refusal in `admissionErrorMessage`'s words:
+    /// what the request needs and what the slot gives it. A single Mac's
+    /// engine says its whole capacity (`pair` false); a pair says the context
+    /// its Macs' memory holds with nothing else running, re-derived while idle.
+    /// Nil for any other message.
+    static func capacityRefusalFigures(_ message: String) -> (needed: Int, available: Int, pair: Bool)? {
+        let prefix = "token_budget_exhausted: request requires "
+        guard message.hasPrefix(prefix) else { return nil }
+        let scanner = Scanner(string: String(message.dropFirst(prefix.count)))
+        scanner.charactersToBeSkipped = nil
+        guard let needed = scanner.scanInt() else { return nil }
+        let pair: Bool
+        if scanner.scanString(" context tokens but only ") != nil {
+            pair = true
+        } else if scanner.scanString(" tokens but only ") != nil {
+            pair = false
+        } else {
+            return nil
+        }
+        guard let available = scanner.scanInt(), scanner.scanString(" available") != nil,
+              pair ? scanner.scanString(" on this cluster pair now (") != nil : scanner.isAtEnd else { return nil }
+        return (needed, available, pair)
+    }
 }
 
 extension EngineV2Bridge {
@@ -417,12 +444,15 @@ extension EngineV2Bridge {
     ///   so a client that sizes `max_tokens` from the list is served.
     /// Resolving the result again for the same prompt gives the same value, so
     /// the text path can name it on the request before the bridge resolves it.
-    nonisolated func outputTokens(requested: Int?, promptTokens: Int) -> Int {
+    /// `ownerRequest`: the owner's request on the pair's own API, which a pair cuts to what it serves the owner
+    /// (`pairOwnerLimits`).
+    nonisolated func outputTokens(requested: Int?, promptTokens: Int, ownerRequest: Bool = false) -> Int {
+        let pair = ownerRequest ? pairOwnerLimits : pairServedLimits
         guard let requested else {
             return EngineV2Translation.defaultOutputTokens(defaultMaxTokens, promptTokens: promptTokens,
-                contextLimit: defaultOutputContextLimit)
+                contextLimit: ownerRequest ? pair?.contextTokens ?? defaultOutputContextLimit : defaultOutputContextLimit)
         }
-        guard let limits = pairServedLimits ?? modelWindowTokens.map({ (outputTokens: $0, contextTokens: $0) }),
+        guard let limits = pair ?? modelWindowTokens.map({ (outputTokens: $0, contextTokens: $0) }),
               promptTokens < limits.contextTokens else { return requested }
         return min(requested, limits.outputTokens, limits.contextTokens - promptTokens)
     }

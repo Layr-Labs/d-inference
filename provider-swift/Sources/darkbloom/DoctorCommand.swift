@@ -1,5 +1,6 @@
 import Foundation
 import ArgumentParser
+import DarkbloomProcessHardening
 import ProviderCore
 
 struct Doctor: AsyncParsableCommand {
@@ -48,7 +49,11 @@ struct Doctor: AsyncParsableCommand {
         let localAPI = await DoctorLocalAPI.live(config: snapshot.config, daemonState: daemonState,
                                                  daemonRunning: daemonRunning, pair: pair)
         let networkChecks = localAPI.runsNetworkChecks(coordinatorOverride: coordinator)
-        var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity)
+        var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity, servesDarkbloom: networkChecks)
+        // The running service's own hold (a sandbox is per process, so it can differ from this command's checks).
+        let serviceHold = serviceBootSecurityHold(
+            Status.liveBootSecurityHold(daemonState, now: Date().timeIntervalSince1970))
+        if let hold = serviceHoldCheck(serviceHold, servesDarkbloom: networkChecks) { checks.append(hold) }
         if networkChecks {
             checks.append(contentsOf: await buildCoordinatorDoctorChecks(
                 snapshot: snapshot,
@@ -119,9 +124,9 @@ struct Doctor: AsyncParsableCommand {
             print("  \(DoctorTerminalStyle.marker(check.status, color: color)) \(check.name): \(check.detail)")
         }
 
-        if let guide = bootSecurityActionGuide(bootSecurity) {
+        if let guide = bootSecurityActionGuide(bootSecurity, serviceHold: serviceHold) {
             print("")
-            print("BOOT SECURITY — ACTION REQUIRED")
+            print(bootSecurityActionHeading(bootSecurity, serviceHold: serviceHold, servesDarkbloom: networkChecks))
             print(guide)
         }
         if let guide = glmWiredLimit?.actionGuide {
@@ -134,7 +139,6 @@ struct Doctor: AsyncParsableCommand {
             print("Support")
             print("  coordinator: \(coordinatorHTTPBase(coordinatorURL))")
             print("  auth token: \(AuthTokenStore.load() == nil ? "missing" : "present")")
-            print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment()))")
             print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
         }
 
@@ -227,6 +231,7 @@ extension DiagnosticLevel {
         switch verdict {
         case .pass: self = .pass
         case .warn: self = .warn
+        case .fail: self = .fail
         }
     }
 }
@@ -237,18 +242,52 @@ struct DoctorCheck {
     let detail: String
 }
 
-func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
-    let fixes = bootSecurity.issues.map { "\($0.name): \($0.fix)" }
+func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot,
+                             serviceHold: [BootSecurityIssue.Kind] = []) -> String? {
+    var fixes = bootSecurity.issues.map { "\($0.name): \($0.fix)" }
+    // Only this command's own refusal makes the service's remedy redundant; an advisory of the same kind doesn't.
+    let ownRefusals = Set(bootSecurity.servingRefusals.map(\.kind))
+    fixes += serviceHold.filter { !ownRefusals.contains($0) }
+        .map { "\($0.displayName) (the running service): \($0.fix)" }
     return fixes.isEmpty ? nil : fixes.joined(separator: "\n")
 }
 
+/// ACTION REQUIRED only where a refusal keeps Darkbloom serving off (this command's own, or the running service's hold)
+/// on a Mac that serves Darkbloom; otherwise the guide is advisory.
+func bootSecurityActionHeading(_ bootSecurity: BootSecuritySnapshot, serviceHold: [BootSecurityIssue.Kind],
+                               servesDarkbloom: Bool) -> String {
+    let refused = !bootSecurity.servingRefusals.isEmpty || !serviceHold.isEmpty
+    return servesDarkbloom && refused ? "BOOT SECURITY — ACTION REQUIRED" : "BOOT SECURITY — ADVISORY"
+}
+
+/// The kinds a running service holds for, from its state (unknown values are dropped).
+func serviceBootSecurityHold(_ kinds: [String]?) -> [BootSecurityIssue.Kind] {
+    (kinds ?? []).compactMap(BootSecurityIssue.Kind.init(rawValue:))
+}
+
+/// A row for the running service's own hold: it fails on a Mac that serves Darkbloom, and warns on an Only me Mac.
+func serviceHoldCheck(_ kinds: [BootSecurityIssue.Kind], servesDarkbloom: Bool) -> DoctorCheck? {
+    guard !kinds.isEmpty else { return nil }
+    return DoctorCheck(
+        name: "service boot security",
+        status: servesDarkbloom ? .fail : .warn,
+        detail: "the running service holds Darkbloom serving off: \(kinds.map(\.displayName).joined(separator: ", "))")
+}
+
+/// `servesDarkbloom` false (Only me): a boot-security refusal is a warning,
+/// since it keeps only Darkbloom serving off.
 func buildDoctorChecks(
     snapshot: RuntimeSnapshot,
     bootSecurity: BootSecuritySnapshot = .live(),
     contention: LocalContentionSnapshot = .live(),
-    fanHelperVersion: () -> String? = Fan.runningHelperVersion
+    startupHardening: ProcessStartupHardening.Outcome? = ProcessStartupHardening.outcome,
+    fanHelperVersion: () -> String? = Fan.runningHelperVersion,
+    servesDarkbloom: Bool = true
 ) -> [DoctorCheck] {
     var checks: [DoctorCheck] = []
+    func servingStatus(_ verdict: BootSecurityVerdict) -> CheckStatus {
+        verdict == .fail && !servesDarkbloom ? .warn : CheckStatus(verdict)
+    }
 
     if let hardware = snapshot.hardware {
         checks.append(.init(
@@ -305,8 +344,21 @@ func buildDoctorChecks(
 
     checks.append(.init(
         name: "sip",
-        status: CheckStatus(bootSecurity.sipVerdict),
-        detail: bootSecurity.sip.summary
+        status: servingStatus(bootSecurity.sipVerdict),
+        detail: bootSecurity.sipSummary
+    ))
+
+    checks.append(.init(
+        name: "secure boot",
+        status: servingStatus(bootSecurity.secureBootVerdict),
+        detail: bootSecurity.secureBootSummary
+    ))
+
+    // Per process: this command's own; a running service reports its own hold (`Status.bootSecurityHoldLine`).
+    checks.append(.init(
+        name: "process sandbox",
+        status: servingStatus(bootSecurity.processSandboxVerdict),
+        detail: "this command: \(bootSecurity.processSandboxSummary)"
     ))
 
     let rdmaDisabled = checkRDMADisabled()
@@ -316,11 +368,10 @@ func buildDoctorChecks(
         detail: rdmaDisabled ? "disabled" : "enabled; allowed for RDMA-aware runtimes"
     ))
 
-    let authenticatedRoot = checkAuthenticatedRootEnabled()
     checks.append(.init(
         name: "authenticated root",
-        status: authenticatedRoot ? .pass : .warn,
-        detail: authenticatedRoot ? "enabled" : "not confirmed"
+        status: servingStatus(bootSecurity.authenticatedRootVerdict),
+        detail: bootSecurity.authenticatedRootSummary
     ))
 
     let hardenedRuntime = checkHardenedRuntimeEnabled()
@@ -336,6 +387,7 @@ func buildDoctorChecks(
         status: debuggerAttached ? .fail : .pass,
         detail: debuggerAttached ? "attached" : "not attached"
     ))
+    checks.append(StartupHardeningGate.doctorCheck(startupHardening))
 
     if let binaryHash = selfBinaryHash() {
         checks.append(.init(
@@ -383,7 +435,7 @@ func buildCoordinatorDoctorChecks(
         detail: !linked ? "not logged in; run \(BuildEnvironment.current.cliName) login" : "auth token present"
     ))
 
-    checks.append(retiredMDMProfileCheck(checkMDMEnrollment()))
+    if let profile = retiredMDMProfileCheck(checkMDMEnrollment()) { checks.append(profile) }
 
     do {
         _ = try await doctorFetch(urlString: "\(base)/health", timeout: 5)
@@ -480,34 +532,10 @@ private func doctorFetch(urlString: String, timeout: TimeInterval) async throws 
 }
 
 
-/// The detailed `doctor` row for MDM: the retired Darkbloom profile is
-/// informational, never a failure; a foreign profile is the owner's to keep.
-func retiredMDMProfileCheck(_ state: MDMEnrollmentState) -> DoctorCheck {
-    switch state {
-    case .enrolledDarkbloom:
-        return .init(name: "darkbloom mdm profile", status: .info,
-                     detail: "installed but no longer used; to remove it, \(RetiredMDMProfile.removalStep)")
-    case .enrolledOtherMDM(let serverURL):
-        return .init(name: "darkbloom mdm profile", status: .pass,
-                     detail: state.otherInstall != nil
-                        ? "none for this install; \(describeOtherMDM(state))"
-                        : "none; this Mac is managed by another MDM (\(serverURL)), keep that profile installed")
-    case .notEnrolled:
-        return .init(name: "darkbloom mdm profile", status: .pass,
-                     detail: "none (not needed: Darkbloom verifies Macs with App Attest)")
-    case .checkFailed:
-        return .init(name: "darkbloom mdm profile", status: .info,
-                     detail: "could not determine (profiles tool failed)")
-    }
-}
-
-/// One-line human description of the MDM enrollment state for `doctor --support`.
-func describeMDMEnrollment(_ state: MDMEnrollmentState) -> String {
-    switch state {
-    case .enrolledDarkbloom: return "yes (darkbloom, retired: no longer used)"
-    case .enrolledOtherMDM(let serverURL):
-        return state.otherInstall != nil ? "other install: \(describeOtherMDM(state))" : "other MDM (\(serverURL))"
-    case .notEnrolled: return "no"
-    case .checkFailed: return "unknown (profiles tool failed)"
-    }
+/// The detailed `doctor` row for the retired Darkbloom profile: shown only
+/// while this install's profile is installed, and never a failure.
+func retiredMDMProfileCheck(_ state: MDMEnrollmentState) -> DoctorCheck? {
+    guard state.isDarkbloom else { return nil }
+    return .init(name: "darkbloom mdm profile", status: .info,
+                 detail: "installed but no longer used; to remove it, \(RetiredMDMProfile.removalStep)")
 }

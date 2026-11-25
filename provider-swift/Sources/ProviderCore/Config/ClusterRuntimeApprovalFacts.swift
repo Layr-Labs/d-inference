@@ -277,7 +277,7 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         let inputModalities = try files.catalog.map { try catalogInputModalities($0, model: artifact.modelID) } ?? []
         let bytes = try DistributedCapabilityProbe.run(executable: try canonical(worker), arguments: ["--describe-runtime",
             "--config", configuration.path, "--manifest", manifest.path, "--expected-executable-sha256", workerSHA256],
-            deadline: deadline)
+            deadline: deadline, helper: .worker)
         let capability = try ClusterCapabilityRecord.decode(bytes, writtenBy: "the cluster worker \(worker.path)")
         guard capability.runtimeBinarySHA256 == workerSHA256, capability.artifactSHA256 == artifact.aggregateSHA256,
               !capability.hasPrivateImages else {

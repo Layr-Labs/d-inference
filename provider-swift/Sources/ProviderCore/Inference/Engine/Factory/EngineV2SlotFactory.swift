@@ -279,7 +279,7 @@ enum EngineV2SlotFactory {
         let assistantHandle = prepared.assistant
         let mtpStatus = prepared.mtpStatus
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
-            environment: environment)
+            environment: environment, modelID: modelId)
         let mtpVerification = providerMTPVerificationPolicy(
             for: assistantHandle?.drafter,
             automaticRectangularTokens: automaticRectangularTokens)
@@ -304,15 +304,55 @@ enum EngineV2SlotFactory {
             enabled: assistantHandle != nil,
             maxDraftTokens: draftDepth.maximum,
             fixedDraftTokens: draftDepth.fixed,
+            fixedDraftTokensByDecodeRows: MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+                modelID: modelId,
+                hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil),
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
-            acceptance: mtpAcceptance.acceptance)
+            acceptance: mtpAcceptance.acceptance,
+            maxDraftPromptTokens: MTPAutomaticVerificationPolicy.maxDraftPromptTokens(
+                modelID: modelId,
+                hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil))
+        if assistantHandle != nil, let limit = mtpConfig.maxDraftPromptTokens {
+            logInfo("engine_v2: \(modelId) MTP drafts only for prompts of at most \(limit) tokens")
+        }
+        if assistantHandle?.drafter is Inkling2DSparkDrafter {
+            // The drafter's own engine profile: up to 7 drafts, up to 8
+            // speculating rows, adaptive depth down to plain decode. The
+            // operator's acceptance setting still applies,
+            // DARKBLOOM_INKLING_MTP_MAX_DRAFT may lower the cap and
+            // DARKBLOOM_INKLING_MTP_COUPLED sets coupled drafting.
+            let maxDraft = Inkling2MTPProfilePolicy.maxDraftTokens(environment: environment)
+            if let unrecognized = maxDraft.unrecognized {
+                logWarning(
+                    "engine_v2: unrecognized \(Inkling2MTPProfilePolicy.maxDraftKey) value "
+                        + "\"\(unrecognized)\" for \(modelId) — using \(maxDraft.tokens)")
+            } else if maxDraft.tokens != Inkling2MTPProfilePolicy.defaultMaxDraftTokens {
+                logInfo("engine_v2: \(modelId) MTP max draft tokens \(maxDraft.tokens)")
+            }
+            let coupled = Inkling2MTPProfilePolicy.coupledProposals(
+                modelID: modelId, environment: environment)
+            if coupled {
+                logInfo("engine_v2: \(modelId) MTP coupled drafting on")
+            }
+            mtpConfig = Inkling2MTPProfilePolicy.engineConfig(maxDraft: maxDraft, coupled: coupled)
+            mtpConfig.acceptance = mtpAcceptance.acceptance
+        }
         // Per-build SDK switches this release turns on where they were measured;
         // the operator's value (read above by the SDK) wins.
         let sdkDefaults = SDKFeatureDefaults.applyMTPDefaults(
             to: &mtpConfig, modelId: modelId, environment: environment)
         if !sdkDefaults.isEmpty, mtpConfig.enabled {
             logInfo("engine_v2: \(modelId) SDK feature defaults on: \(sdkDefaults.joined(separator: ", "))")
+        }
+        if mtpConfig.logprobSpeculation, mtpConfig.enabled {
+            // As the round driver runs it: the drafter's required mode replaces
+            // the declared one, and the SDK takes the opt-in only on an exact
+            // verify path (`CBv2MTPConfig.effectiveLogprobSpeculation`).
+            logInfo(
+                "engine_v2: \(modelId) MTP logprob rows: "
+                    + SDKFeatureDefaults.logprobRowsSummary(
+                        mtpConfig, drafterMode: assistantHandle?.drafter?.requiredVerificationMode))
         }
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
@@ -392,7 +432,9 @@ enum EngineV2SlotFactory {
                     hybridPrefixCache: hybridPrefixCache,
                     nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
                         layerKinds: (servingModel as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
-                        gemmaAssistantActive: assistantHandle?.drafter != nil && mtpConfig.effectiveEnabled),
+                        gemmaAssistantActive: EngineV2KVQuantizationPolicy.gemmaAssistantAccessExpected(
+                            assistantAttached: assistantHandle?.drafter != nil,
+                            mtpEnabled: mtpConfig.effectiveEnabled, status: mtpStatus)),
                     pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(
@@ -621,9 +663,23 @@ enum EngineV2SlotFactory {
             residentPrefixCacheEvidence: residentEvidence,
             prefixCacheStatus: prefixCacheStatus,
             prefixCacheConstructionFailure: attentionPreparation.status.failure,
+            // GPT-OSS's `vocab_size`: its `auto` tool grammar admits every id
+            // below the vocabulary's size (`GPTOSSAutoToolGrammar`).
+            logitsWidth: (servingModel as? GPTOSSModel)?.vocabularySize,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
         await bridge.installGLM5NextStepSetup(bytes: glm5NextStepSetupBytes)
+        if Inkling2PromptContract.applies(modelType: modelType) {
+            // Per-depth warm-up engines on scratch pools (`Inkling2DepthWarmup`);
+            // nil for a scripted engine or a slot off the segmented paged pool.
+            let depthWarmup = makeEngineOverride != nil ? nil : preparedBackend.flatMap { served in
+                EngineV2Factory.inkling2DepthWarmup(
+                    model: servingModel, tokenizer: tokenizer.inner, servedBackend: served,
+                    drafter: mtpConfig.effectiveEnabled ? assistantHandle?.drafter : nil,
+                    servedRows: effectiveMaxConcurrentRequests, kvBudget: kvBudget)
+            }
+            await bridge.adoptInkling2ShapeWarmup(depthWarmup: depthWarmup)
+        }
 
         do {
             try await bridge.requireServiceableOrdinaryGrant()

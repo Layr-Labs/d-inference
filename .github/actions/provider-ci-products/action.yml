@@ -53,6 +53,15 @@ runs:
       if: inputs.direction == 'download'
       shell: bash
       run: ./scripts/prepare-provider-release-toolchain.sh
+    # The test jobs start beside their build job; the products exist once it
+    # has ended. Fails when the build did not succeed.
+    - name: Wait for the build job
+      if: inputs.direction == 'download'
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: python3 scripts/ci-test-products.py wait "$LANE"
     - name: Start the download clock
       if: inputs.direction == 'download'
       shell: bash

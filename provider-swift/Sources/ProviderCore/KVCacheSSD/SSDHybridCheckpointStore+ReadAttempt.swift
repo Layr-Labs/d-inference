@@ -22,7 +22,7 @@ extension SSDHybridCheckpointStore {
         requestID: CBv2RequestID, request: CBv2Request, candidate: ReadCandidate,
         access: SSDCheckpointFileCoordinator.Access, epoch: String?,
         lease: SSDCheckpointStageReservation, readScratch: CBv2CompleteCheckpointIOLease,
-        budget: SSDCheckpointReadBudget,
+        budget: SSDCheckpointReadBudget, parallel: Bool,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async -> ReadAttemptResult {
         let check: () throws -> Void = {
@@ -46,7 +46,7 @@ extension SSDHybridCheckpointStore {
             }
             let loaded = try await readCheckpoint(
                 candidate: candidate, request: request, access: access, lease: lease,
-                readScratch: readScratch, budget: budget, check: check, countRead: countRead,
+                readScratch: readScratch, budget: budget, parallel: parallel, check: check, countRead: countRead,
                 blame: { failing = $0 }, makeImportPlan: makeImportPlan)
             let staged = loaded.staged
             lease.finishIO()
@@ -69,7 +69,7 @@ extension SSDHybridCheckpointStore {
                 return true
             }
             guard installed else { staged.close(); return .init(.skippedPolicy) }
-            index.touch(tags16: candidate.chain, now: config.nowSeconds())
+            if config.ttlMode.refreshesOnHit { index.touch(tags16: candidate.chain, now: config.nowSeconds()) }
             statsBox.update { $0.stages += 1 }
             return .init(.staged(matchedTokens: candidate.position, expectedPrefillTokensSaved: candidate.position,
                                 shortenedByCorruption: false), deviceBytes: loaded.destinationBytes)
@@ -130,6 +130,7 @@ extension SSDHybridCheckpointStore {
     /// persists the last hit (`SSDOwnedEntryRetirement.remove`), but a restart
     /// scan before that sweep ages the file from the old mtime.
     private func persistRecency(of candidate: ReadCandidate, access: SSDCheckpointFileCoordinator.Access) {
+        guard config.ttlMode.refreshesOnHit else { return }
         let now = config.nowSeconds()
         for tag in candidate.chain where !recencyIsCurrent(at: fileURL(tag), now: now) {
             whileSoleHolder(of: tag, in: candidate, access: access) {
@@ -158,14 +159,15 @@ extension SSDHybridCheckpointStore {
     private func readCheckpoint(
         candidate: ReadCandidate, request: CBv2Request, access: SSDCheckpointFileCoordinator.Access,
         lease: SSDCheckpointStageReservation, readScratch: CBv2CompleteCheckpointIOLease,
-        budget: SSDCheckpointReadBudget, check: () throws -> Void, countRead: @escaping (Int) -> Void,
-        blame: (Data) -> Void,
+        budget: SSDCheckpointReadBudget, parallel: Bool, check: () throws -> Void,
+        countRead: @escaping (Int) -> Void, blame: (Data) -> Void,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async throws -> LoadedCheckpoint {
         var importer: SSDCheckpointImport?
         defer { importer?.close() }
         statsBox.update { $0.filesRead += candidate.chain.count }
-        let manifest = try openChain(candidate, tracksIdentity: false, check: check, beforeRead: budget.beforeRead,
+        let manifest = try openChain(candidate, promptTokens: request.promptTokens, tracksIdentity: false,
+                                     check: check, beforeRead: budget.beforeRead,
                                      countRead: countRead, blame: blame).last!.link.manifest
         guard manifest.position == candidate.position, manifest.identity == identity,
             manifest.backendLayout == config.backendLayout,
@@ -178,14 +180,28 @@ extension SSDHybridCheckpointStore {
         catch { throw ReadControl.policy }
         let usesProcessMemoryOwner = plan.usesProcessMemoryOwner
         guard !usesProcessMemoryOwner || kvBudget != nil else { throw ReadControl.capacity }
+        var parallel = parallel
         if !usesProcessMemoryOwner {
-            let (destinationAndScratch, overflow1) = plan.nativeDestinationBytes.addingReportingOverflow(plan.scratchBytes)
-            let (peak, overflow2) = destinationAndScratch.addingReportingOverflow(
-                Self.ioScratchBytes(files: candidate.chain.count))
-            guard !overflow1, !overflow2 else { throw ReadControl.capacity }
-            guard await lease.resize(to: peak) else {
-                try check()
-                throw ReadControl.retryableCapacity
+            func peak(_ parallel: Bool) throws -> Int {
+                let (destinationAndScratch, overflow1) = plan.nativeDestinationBytes.addingReportingOverflow(plan.scratchBytes)
+                let (peak, overflow2) = destinationAndScratch.addingReportingOverflow(
+                    Self.ioScratchBytes(files: candidate.chain.count, parallel: parallel))
+                guard !overflow1, !overflow2 else { throw ReadControl.capacity }
+                return peak
+            }
+            // Without ledger room for the destination on top of the read-ahead,
+            // stage sequentially rather than ask for it.
+            if parallel, let kvBudget, kvBudget.processLedger.snapshot().remainingBytes
+                < UInt64(try peak(true) - Self.ioScratchBytes(files: candidate.chain.count, parallel: true)) {
+                parallel = false
+            }
+            if !(await lease.resize(to: try peak(parallel))) {
+                // Without room for the read-ahead, the sequential stage's peak decides.
+                guard parallel, await lease.resize(to: try peak(false)) else {
+                    try check()
+                    throw ReadControl.retryableCapacity
+                }
+                parallel = false
             }
         }
         try check()
@@ -206,10 +222,11 @@ extension SSDHybridCheckpointStore {
         // Any touch precedes the identity this second open records.
         persistRecency(of: candidate, access: access)
         statsBox.update { $0.filesRead += candidate.chain.count }
-        var files = try openChain(candidate, tracksIdentity: true, check: check, beforeRead: budget.beforeRead,
+        var files = try openChain(candidate, promptTokens: request.promptTokens, tracksIdentity: true,
+                                  check: check, beforeRead: budget.beforeRead,
                                   countRead: countRead, blame: blame)
         guard files.last?.link.manifest == manifest else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
-        let authenticatedFile = try streamChain(&files, check: check, blame: blame) {
+        let authenticatedFile = try streamChain(&files, parallel: parallel, check: check, blame: blame) {
             try filling.appendSegment(tensorIndex: $0, byteOffset: $1, data: $2)
         }
         try check()

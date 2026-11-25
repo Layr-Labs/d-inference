@@ -170,14 +170,16 @@ extension ProviderLoop {
         guard let request = try? templateControls.rawMiMoTools.restoring(request, modelType: modelType),
             let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
         if modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType)
-            || (TemplateJSONOrder.asks(templateControls.templateJSON) && !MediaIngest.hasMedia(request))
+            || ((TemplateJSONOrder.asks(templateControls.templateJSON)
+                || TemplateJSONOrder.rendersCallerArguments(modelType: modelType)) && !MediaIngest.hasMedia(request))
             || GemmaPromptContract.rendersParts(request, modelType: modelType, controls: templateControls) {
             return (try? ProviderPromptContractPipeline.tokenize(
                 prepared: prepared, request: request, tokenizer: tokenizer.inner,
                 modelType: modelType, templateControls: templateControls).count) ?? 0
         }
         let messages = prepared.messages.map { $0.templateMessageDict() }
-        let toolSpecs = prepared.tools?.map { $0.toolSpec() }
+        let toolSpecs = GPTOSSToolSchemaRender.renderedTools(prepared.tools, declared: templateControls.declaredTools,
+            modelId: request.model, modelType: modelType)?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType,
             hasMedia: MediaIngest.hasMedia(request),
@@ -189,7 +191,8 @@ extension ProviderLoop {
             modelId: request.model, modelType: modelType)
         guard let ids = try? tokenizer.inner.applyChatTemplate(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
-            tools: ChatTemplateFixes.normalizeTools(toolSpecs, context: fixContext),
+            tools: ChatTemplateFixes.normalizeTools(
+                toolSpecs, context: fixContext, declared: templateControls.declaredTools),
             additionalContext: additionalContext
         ) else { return 0 }
         return ids.count
@@ -252,6 +255,11 @@ struct InboundChatExtensions {
     private(set) var templateControls = ChatTemplateControls()
     private(set) var logprobsSpec: (topLogprobs: Int?, requested: Bool)?
     private(set) var samplingOverrides: EngineV2SamplingOverrides?
+    /// The coordinator's sealed copy of the attempt's prefix-cache identity;
+    /// it applies only with the frame's matching receipt nonce.
+    private(set) var sealedPrefixCache: SealedPrefixCacheMetadata?
+    /// The sealed member's `cache_policy`, whatever its nonce or scope.
+    private(set) var cachePolicy: RequestCachePolicy = .default
 
     init(from data: Data) {
         struct Whole: Decodable {
@@ -280,5 +288,8 @@ struct InboundChatExtensions {
         if bias != nil || seed != nil {
             samplingOverrides = EngineV2SamplingOverrides(logitBias: bias, seed: seed)
         }
+        let cacheProbe = try? SealedPrefixCacheMetadata.BodyProbe(from: decoder)
+        sealedPrefixCache = cacheProbe?.value
+        cachePolicy = cacheProbe?.cachePolicy ?? .default
     }
 }

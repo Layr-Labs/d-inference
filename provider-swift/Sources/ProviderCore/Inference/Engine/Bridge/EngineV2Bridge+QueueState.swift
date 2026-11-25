@@ -1,5 +1,5 @@
-// Whether a request still waits in the engine's queue: what me first (`EngineV2Bridge+OwnerWait.swift`) and a streamed
-// local request's held head (`EngineV2Bridge+HeadHold.swift`) read.
+// Whether a request still waits in the engine's queue: what me first (`EngineV2Bridge+OwnerWait.swift`) and a local
+// request's held head (`EngineV2Bridge+HeadHold.swift`) read.
 
 import Foundation
 

@@ -3,7 +3,7 @@ import Foundation
 import Darwin
 #endif
 
-/// A cluster service left on an earlier release after an update, restarted once from its part (0.10.12 W1-D2).
+/// A cluster service left on an earlier release after an update, restarted once from its part (0.10.12).
 ///
 /// `darkbloom update` installs a release and asks the cluster service's supervisor to restart into it together with
 /// the other Mac (`ClusterPairUpdateCycle`). A pair that serves only on its local API, or a Mac whose service serves

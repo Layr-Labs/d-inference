@@ -102,9 +102,8 @@ public final class LocalRouter: Sendable {
             response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
             return response
         }
-        var local = try await inner.respond(to: request, context: context)
-        local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
-        guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }
+        var (local, reachedDeadline) = try await answerHere(request, context: context, inner: inner)
+        guard LocalRouterPolicy.passesOn(localStatus: local.status), !reachedDeadline else { return local }
         // Only a request this Mac can't take reads the saved route (one `stat` of the config file) and the account key;
         // without a key, this Mac's answer stands, saying why when a route asked for your other Macs.
         let effective = config.effectiveRoute()
@@ -115,8 +114,8 @@ public final class LocalRouter: Sendable {
         let saved = effective.route
         if local.status == .notFound,
            let answer = try await answerAliasHere(request, body: body, context: context, inner: inner) {
-            local = answer
-            guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }
+            (local, reachedDeadline) = answer
+            guard LocalRouterPolicy.passesOn(localStatus: local.status), !reachedDeadline else { return local }
         }
         let route = LocalRouterPolicy.route(saved, fromAnotherMachine: LocalHTTPClient.fromAnotherMachine)
         if route != saved { log("the request came from another machine, which never uses the paid network") }
@@ -129,7 +128,7 @@ public final class LocalRouter: Sendable {
     /// names the owner's builds by their aliases, and would otherwise send it back here.) Read only after this Mac's
     /// 404, with a route that dials out: the catalog is a coordinator read.
     private func answerAliasHere<Inner: HTTPResponder>(_ request: Request, body: ByteBuffer, context: Inner.Context,
-                                                      inner: Inner) async throws -> Response? {
+                                                      inner: Inner) async throws -> (Response, reachedDeadline: Bool)? {
         guard let model = Self.model(in: body), let catalog = await catalog() else { return nil }
         let local = Set(await localModels())
         guard !local.contains(model), let build = catalog.aliasBuilds[model]?.first(where: local.contains),
@@ -137,9 +136,19 @@ public final class LocalRouter: Sendable {
         log("this Mac serves the requested alias as one of its own builds; answering here")
         var retry = request
         retry.body = RequestBody(buffer: renamed)
-        var answer = try await inner.respond(to: retry, context: context)
+        return try await answerHere(retry, context: context, inner: inner)
+    }
+
+    /// This Mac's answer, and whether the request ran to its overall deadline here (`LocalDeadlineOutcome`): such a
+    /// request is this Mac's answer, never passed on, where it would start over.
+    private func answerHere<Inner: HTTPResponder>(_ request: Request, context: Inner.Context, inner: Inner)
+        async throws -> (Response, reachedDeadline: Bool) {
+        let deadline = LocalDeadlineOutcome()
+        var answer = try await LocalDeadlineOutcome.$current.withValue(deadline) {
+            try await inner.respond(to: request, context: context)
+        }
         answer.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
-        return answer
+        return (answer, deadline.reached)
     }
 
     private func passOn(body: ByteBuffer, clientHeaders: HTTPFields, upstreamPath: String,
@@ -238,6 +247,29 @@ public final class LocalRouter: Sendable {
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
         else { return nil }
         return ByteBuffer(data: data)
+    }
+
+    /// Whether a request for `model` this Mac can't start now, for the memory requests already running hold, waits
+    /// here for them (`OwnerMemoryWait`) rather than being refused at once for this router to pass on: unless the
+    /// route reaches Macs that may take it now (the network, with `my-macs-first`; another of the owner's Macs
+    /// serving the model, with `my-macs`). Read only when such a request would wait, so a request this Mac serves
+    /// still never reads the config file or the Keychain.
+    func waitsHereForMemory(model: String) async -> Bool {
+        let effective = config.effectiveRoute()
+        guard let key = effective.accountKey else { return true }
+        switch LocalRouterPolicy.route(effective.route, fromAnotherMachine: LocalHTTPClient.fromAnotherMachine) {
+        case .thisMac:
+            return true
+        case .myMacsFirst:
+            return false
+        case .myMacs:
+            if await selfHopWouldReturnHere(model: model, key: key) { return true }
+            // A Mac that takes coordinator work and serves the model counts itself, so a `self` hop that wouldn't
+            // return here has another Mac to go to. One that doesn't (`--local`, `cluster local`) waits unless the
+            // owner has a Mac serving it at all (a count the coordinator can't give counts as none).
+            if config.takesCoordinatorWork { return false }
+            return (await ownedProviderCount(model: model, key: key) ?? 0) == 0
+        }
     }
 
     /// Whether a `self` request could land on this Mac: it takes coordinator work, it serves the model (or a build of

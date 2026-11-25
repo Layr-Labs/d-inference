@@ -87,6 +87,8 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     /// it cannot create an assistant or bypass native head/owner validation.
     static let automaticEmbeddedModelTypes: Set<String> = [
         "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "mimo_v2",
+        // Inkling 2 Mini's DSpark drafter beside its checkpoint (`mtp.safetensors`).
+        "inkling2_loop",
     ]
 
     static func isAutomaticExternalTarget(modelType: String?, modelID: String?) -> Bool {

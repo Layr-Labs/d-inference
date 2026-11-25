@@ -373,6 +373,12 @@ public enum ProviderMessage: Sendable, Equatable {
         /// Why `status` is `draining` while an add-on holds the Mac
         /// (`busy_reason`, `busy_since_ms`, `busy_addon`). Omitted otherwise.
         public var busy: ProviderBusy?
+        /// How this connection compares with the build's coordinator host and
+        /// certificate authorities (`coordinator_connection_check`: `matches`,
+        /// `host_differs`, `certificate_differs`, `host_and_certificate_differ`).
+        /// Omitted until the comparison ends, and when none runs (a connection
+        /// without TLS, or a debug build pinned to a local test coordinator).
+        public var coordinatorConnectionCheck: String?
 
         public init(
             status: ProviderStatus,
@@ -391,10 +397,12 @@ public enum ProviderMessage: Sendable, Equatable {
             idleUnloadMins: UInt64? = nil,
             modelAutopilot: ModelAutopilotSnapshot? = nil,
             clusterSession: ClusterSessionStatus? = nil,
-            busy: ProviderBusy? = nil
+            busy: ProviderBusy? = nil,
+            coordinatorConnectionCheck: String? = nil
         ) {
             self.clusterSession = clusterSession
             self.busy = busy
+            self.coordinatorConnectionCheck = coordinatorConnectionCheck
             self.status = status
             self.activeModel = activeModel
             self.warmModels = warmModels
@@ -433,6 +441,11 @@ public enum ProviderMessage: Sendable, Equatable {
     public struct InferenceComplete: Sendable, Equatable {
         public var requestId: String
         public var usage: UsageInfo
+        /// `usage` and the response's frame count, sealed after the last
+        /// response frame in the same sequence (`ResponseFrameSealer`).
+        /// `usage` stays for coordinators that read only the plaintext copy.
+        /// Omitted on the wire when nil.
+        public var encryptedUsage: EncryptedPayload?
         public var stopSequence: String?
         public var seSignature: String?
         public var responseHash: String?
@@ -445,6 +458,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public init(
             requestId: String,
             usage: UsageInfo,
+            encryptedUsage: EncryptedPayload? = nil,
             stopSequence: String? = nil,
             seSignature: String? = nil,
             responseHash: String? = nil,
@@ -452,6 +466,7 @@ public enum ProviderMessage: Sendable, Equatable {
         ) {
             self.requestId = requestId
             self.usage = usage
+            self.encryptedUsage = encryptedUsage
             self.stopSequence = stopSequence
             self.seSignature = seSignature
             self.responseHash = responseHash
@@ -997,6 +1012,7 @@ extension ProviderMessage: Codable {
         case backendCapacity = "backend_capacity"
         case idleUnloadMins = "idle_unload_mins"
         case clusterSession = "cluster_session"
+        case coordinatorConnectionCheck = "coordinator_connection_check"
         // Register + Heartbeat (add-on hold)
         case busyReason = "busy_reason"
         case busySinceMs = "busy_since_ms"
@@ -1008,6 +1024,7 @@ extension ProviderMessage: Codable {
         case encryptedData = "encrypted_data"
         // InferenceComplete
         case usage
+        case encryptedUsage = "encrypted_usage"
         case stopSequence = "stop_sequence"
         case seSignature = "se_signature"
         case responseHash = "response_hash"
@@ -1160,6 +1177,7 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
             try container.encodeIfPresent(h.clusterSession, forKey: .clusterSession)
             try Self.encodeBusy(h.busy, into: &container)
+            try container.encodeIfPresent(h.coordinatorConnectionCheck, forKey: .coordinatorConnectionCheck)
 
         case .serviceReservationReleased(let id):
             try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
@@ -1181,6 +1199,7 @@ extension ProviderMessage: Codable {
             try container.encode(TypeValue.inferenceComplete, forKey: .type)
             try container.encode(c.requestId, forKey: .requestId)
             try container.encode(c.usage, forKey: .usage)
+            try container.encodeIfPresent(c.encryptedUsage, forKey: .encryptedUsage)
             try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
             try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
             try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
@@ -1443,7 +1462,9 @@ extension ProviderMessage: Codable {
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins),
                 modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
                 clusterSession: try container.decodeIfPresent(ClusterSessionStatus.self, forKey: .clusterSession),
-                busy: try Self.decodeBusy(from: container)
+                busy: try Self.decodeBusy(from: container),
+                coordinatorConnectionCheck: try container.decodeIfPresent(
+                    String.self, forKey: .coordinatorConnectionCheck)
             ))
 
         case .serviceReservationReleased:
@@ -1465,6 +1486,7 @@ extension ProviderMessage: Codable {
             self = .inferenceComplete(InferenceComplete(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
+                encryptedUsage: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedUsage),
                 stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
                 seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
                 responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash),
@@ -1720,6 +1742,13 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// template's text-parts render; nil (an older coordinator, or a
         /// coordinator that has not switched the model on) keeps version 1.
         public var gemmaPromptContract: Int?
+        /// The coordinator's signature over this request; nil from a
+        /// coordinator that does not sign (`CoordinatorRequestVerifier`).
+        public var coordinatorSignature: CoordinatorRequestSignature?
+        /// A `cache_policy` on the plaintext frame. Coordinators never send
+        /// one (the policy is sealed in `_darkbloom_cache`); when present it
+        /// can only narrow the sealed policy (`RequestCachePolicy.narrowed`).
+        public var frameCachePolicy: RequestCachePolicy
 
         public init(
             requestId: String,
@@ -1733,9 +1762,13 @@ public enum CoordinatorMessage: Sendable, Equatable {
             toolSchemaMetadataProtocol: Int? = nil,
             serviceReservationID: String? = nil,
             promptWork: PromptWork? = nil,
-            gemmaPromptContract: Int? = nil
+            gemmaPromptContract: Int? = nil,
+            coordinatorSignature: CoordinatorRequestSignature? = nil,
+            frameCachePolicy: RequestCachePolicy = .default
         ) {
             self.gemmaPromptContract = gemmaPromptContract
+            self.coordinatorSignature = coordinatorSignature
+            self.frameCachePolicy = frameCachePolicy
             self.requestId = requestId
             self.encryptedBody = encryptedBody
             self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
@@ -1894,12 +1927,18 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var status: String
         public var reason: String
         public var authorization: ProviderAuthorizationStatus?
+        /// Optional coordinator behaviours the provider may rely on
+        /// (`coordinator_features`); nil from a coordinator that sends none.
+        /// Unknown names are ignored.
+        public var coordinatorFeatures: [String]?
         public init(trustLevel: String, status: String, reason: String = "",
-                    authorization: ProviderAuthorizationStatus? = nil) {
+                    authorization: ProviderAuthorizationStatus? = nil,
+                    coordinatorFeatures: [String]? = nil) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
             self.authorization = authorization
+            self.coordinatorFeatures = coordinatorFeatures
         }
     }
 }
@@ -1942,6 +1981,8 @@ extension CoordinatorMessage: Codable {
         case cacheRepeatedPrefixTokens = "cache_repeated_prefix_tokens"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case gemmaPromptContract = "gemma_prompt_contract"
+        case coordinatorSignature = "coordinator_signature"
+        case cachePolicy = "cache_policy"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload
@@ -1950,6 +1991,7 @@ extension CoordinatorMessage: Codable {
         case priority
         case trustLevel = "trust_level"
         case status, reason, authorization
+        case coordinatorFeatures = "coordinator_features"
         case paid
         case models
         // CapacityProbe
@@ -1997,6 +2039,10 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.serviceReservationID, forKey: .serviceReservationID)
             try container.encodeIfPresent(r.promptWork, forKey: .promptWork)
             try container.encodeIfPresent(r.gemmaPromptContract, forKey: .gemmaPromptContract)
+            try container.encodeIfPresent(r.coordinatorSignature, forKey: .coordinatorSignature)
+            if r.frameCachePolicy != .default {
+                try container.encode(r.frameCachePolicy.rawValue, forKey: .cachePolicy)
+            }
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -2059,6 +2105,7 @@ extension CoordinatorMessage: Codable {
             try container.encode(t.trustLevel, forKey: .trustLevel)
             try container.encode(t.status, forKey: .status)
             try container.encodeIfPresent(t.authorization, forKey: .authorization)
+            try container.encodeIfPresent(t.coordinatorFeatures, forKey: .coordinatorFeatures)
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
@@ -2120,7 +2167,15 @@ extension CoordinatorMessage: Codable {
                 // ordinary observed-rate deadline admission authoritative.
                 promptWork: try? container.decodeIfPresent(PromptWork.self, forKey: .promptWork),
                 // A malformed value renders version 1, never refuses the request.
-                gemmaPromptContract: try? container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract)
+                gemmaPromptContract: try? container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract),
+                // A malformed signature reads as none: the request is then
+                // served or refused like an unsigned one, never dropped unanswered.
+                coordinatorSignature: try? container.decodeIfPresent(
+                    CoordinatorRequestSignature.self, forKey: .coordinatorSignature),
+                // The policy belongs in the sealed body only. A plaintext key,
+                // which no signature covers, may only narrow the request: any
+                // value but "default", a malformed one included, is memory_only.
+                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy)
             ))
 
         case .cancel:
@@ -2201,7 +2256,8 @@ extension CoordinatorMessage: Codable {
                 trustLevel: try container.decode(String.self, forKey: .trustLevel),
                 status: try container.decode(String.self, forKey: .status),
                 reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? "",
-                authorization: try container.decodeIfPresent(ProviderAuthorizationStatus.self, forKey: .authorization)
+                authorization: try container.decodeIfPresent(ProviderAuthorizationStatus.self, forKey: .authorization),
+                coordinatorFeatures: try? container.decodeIfPresent([String].self, forKey: .coordinatorFeatures)
             ))
 
         case .clusterMemberAccepted:

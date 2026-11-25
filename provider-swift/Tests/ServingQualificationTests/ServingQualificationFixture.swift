@@ -100,7 +100,8 @@ final class ServingQualificationFixture: @unchecked Sendable {
             prepared.assistant?.release()
             throw error
         }
-        let automatic = MTPAutomaticVerificationPolicy.maxRectangularTokens(environment: environment)
+        let automatic = MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: environment, modelID: job.modelID)
         let verification = providerMTPVerificationPolicy(for: prepared.assistant?.drafter,
                                                         automaticRectangularTokens: automatic)
         let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
@@ -108,7 +109,10 @@ final class ServingQualificationFixture: @unchecked Sendable {
             modelID: job.modelID, hasBenchmarkVerificationOverride: false)
         let mtp = ServingMTPConfiguration.resolve(config: CBv2MTPConfig(
             enabled: prepared.assistant != nil, maxDraftTokens: depth.maximum,
-            fixedDraftTokens: depth.fixed, verificationMode: verification.mode,
+            fixedDraftTokens: depth.fixed,
+            fixedDraftTokensByDecodeRows: MTPAutomaticVerificationPolicy.fixedDraftTokensByDecodeRows(
+                modelID: job.modelID),
+            verificationMode: verification.mode,
             maxAutomaticRectangularTokens: verification.automaticRectangularTokens), artifact: prepared.mtpArtifact)
         return ServingQualificationFixture(job: job, bundle: bundle, container: container,
             tokenizer: tokenizer, sizing: sizing,

@@ -106,9 +106,10 @@ struct ServeLoopFixture: Sendable {
         return Task { try await loop.run() }
     }
 
-    /// Waits for the first registration of the running loop.
+    /// Waits for the first registration of the running loop. The bound is a liveness bound only: startup's real
+    /// posture collector verifies the test host's bundle signature, which took past 15 s on 4- and 8-vCPU CI Macs.
     func awaitRegistration() async throws -> ProviderMessage.Register {
-        let register = try await mock.awaitFirstRegister(timeout: .seconds(15))
+        let register = try await mock.awaitFirstRegister(timeout: .seconds(60))
         return try #require(register)
     }
 

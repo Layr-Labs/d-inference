@@ -1,15 +1,14 @@
+import DarkbloomSigningIdentity
 import Foundation
 
 enum DarkbloomCodeSignature {
-    static let teamID = "SLDQ2GJ6TL"
+    static let teamID = DarkbloomSigningIdentity.teamID
     static let bundleIdentifier = "io.darkbloom.provider"
     static let designatedRequirement =
-        "anchor apple generic and identifier \"\(bundleIdentifier)\" "
-        + "and certificate leaf[subject.OU] = \"\(teamID)\""
+        DarkbloomSigningIdentity.requirement(identifier: bundleIdentifier)
     static let fanHelperIdentifier = "io.darkbloom.fan-helper"
     static let fanHelperDesignatedRequirement =
-        "anchor apple generic and identifier \"\(fanHelperIdentifier)\" "
-        + "and certificate leaf[subject.OU] = \"\(teamID)\""
+        DarkbloomSigningIdentity.requirement(identifier: fanHelperIdentifier)
 
     enum Policy: Sendable, Equatable {
         case darkbloomProduction

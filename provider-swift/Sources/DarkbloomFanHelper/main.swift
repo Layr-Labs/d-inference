@@ -1,11 +1,16 @@
 import DarkbloomFanCore
 import DarkbloomFanService
+import DarkbloomProcessHardening
 import Foundation
 import OSLog
 
 #if canImport(Darwin)
 import Darwin
 #endif
+
+// Before anything else, as in every Darkbloom executable (ProcessStartupHardening).
+ProcessStartupHardening.applyAtLaunch()
+ProcessStartupHardening.reportIfRequested()
 
 private let logger = Logger(subsystem: "io.darkbloom.fan", category: "main")
 

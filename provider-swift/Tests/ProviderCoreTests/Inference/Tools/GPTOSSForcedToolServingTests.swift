@@ -65,11 +65,16 @@ private final class HarmonyScriptedEngine: CBv2Engine, @unchecked Sendable {
 }
 
 /// What a client receives: the Harmony analysis as reasoning, visible content,
-/// the calls, the terminal info, and the error that ended the stream, if any.
+/// the calls (whole, or completed by their last streamed fragment), the
+/// streamed fragments, the terminal info, and the error that ended the
+/// stream, if any.
 private struct HarmonyOutcome {
     var reasoning = ""
     var content = ""
     var calls: [ToolCall] = []
+    /// Calls that arrived whole (the complete-call path).
+    var wholeCalls = 0
+    var deltas: [ServerToolCallDelta] = []
     var info: ServerGenerationInfo?
     var error: (any Error)?
     private var parser = StreamingReasoningParser(format: .harmony)
@@ -78,9 +83,14 @@ private struct HarmonyOutcome {
         switch event {
         case .content(let text): parser.parse(text).forEach { apply($0) }
         case .parsed(let parsed): apply(parsed)
-        case .toolCall(let call): calls.append(call)
+        case .toolCall(let call):
+            calls.append(call)
+            wholeCalls += 1
+        case .toolCallDelta(let delta):
+            deltas.append(delta)
+            if let completed = delta.completed { calls.append(completed) }
         case .info(let info): self.info = info
-        case .toolCallDelta, .logprobs: break
+        case .logprobs: break
         }
     }
 
@@ -99,18 +109,30 @@ struct GPTOSSForcedToolServingTests {
     /// One handle, so its vocabulary is built once for the suite.
     private static let tokenizer = TokenizerHandle(HarmonyByteTestTokenizer())
 
-    private func serve(_ engine: HarmonyScriptedEngine, choice: Any?, maxTokens: Int = 400) async throws
-        -> HarmonyOutcome {
+    /// `clientStreams`: served as the coordinator serves a request, as a
+    /// stream that renders fragments, with the body's own `stream`.
+    private func serve(_ engine: HarmonyScriptedEngine, choice: Any?, maxTokens: Int = 400,
+                       clientStreams: Bool? = nil) async throws -> HarmonyOutcome {
         let bridge = EngineV2Bridge(engine: engine, modelId: "gpt-oss-20b", tokenizer: Self.tokenizer,
-            eosTokenIds: T.stops, defaultMaxTokens: maxTokens, maxConcurrentRequests: 1)
+            eosTokenIds: T.stops, defaultMaxTokens: maxTokens, maxConcurrentRequests: 1,
+            logitsWidth: JSONAnswerProfile.gptOSS.vocabularySize)
         let tokenizer = Self.tokenizer
+        var request = try F.request(choice: choice, maxTokens: maxTokens)
+        var controls = ChatTemplateControls()
+        if let clientStreams {
+            request.stream = true
+            request.streamToolCallDeltas = true
+            var body = try #require(try JSONSerialization.jsonObject(
+                with: F.body(choice: choice, maxTokens: maxTokens)) as? [String: Any])
+            body["stream"] = clientStreams
+            controls = ProviderLoop.extractChatTemplateControls(from: try JSONSerialization.data(withJSONObject: body))
+        }
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             ["gpt-oss-20b": .init(tokenizer: tokenizer, modelType: "gpt_oss", engineV2Bridge: bridge)]
-        })
+        }, templateControls: controls)
         var outcome = HarmonyOutcome()
         do {
-            for try await event in try await scheduler.streamChatCompletion(
-                request: F.request(choice: choice, maxTokens: maxTokens)) {
+            for try await event in try await scheduler.streamChatCompletion(request: request) {
                 outcome.record(event)
             }
         } catch { outcome.error = error }
@@ -136,6 +158,34 @@ struct GPTOSSForcedToolServingTests {
         }
     }
 
+    /// The coordinator serves every request as a stream; the body's own
+    /// `stream` decides whether a forced call streams (`Prepared.clientStreams`).
+    /// To a client that streams, the call's name leaves first, then its
+    /// arguments, under the same grammar; one that does not gets it whole.
+    @Test("a forced call streams only to a client that streams", arguments: [true, false])
+    func forcedCallStreamsOnlyToAClientThatStreams(clientStreams: Bool) async throws {
+        for choice in ["required", F.namedWeather] as [Any] {
+            let engine = HarmonyScriptedEngine(script: F.analysis("The user wants Paris.")
+                + F.call("get_weather", #"{"city":"Paris","unit":"c"}"#) + "<|call|>")
+            let outcome = try await serve(engine, choice: choice, clientStreams: clientStreams)
+            #expect(engine.submitted.first?.tokenConstraint is GPTOSSForcedToolConstraint)
+            #expect(outcome.error == nil, "\(String(describing: outcome.error))")
+            #expect(outcome.calls.map(\.function.name) == ["get_weather"])
+            #expect(outcome.calls.first?.function.arguments == ["city": .string("Paris"), "unit": .string("c")])
+            #expect(outcome.reasoning == "The user wants Paris.")
+            #expect(outcome.content.isEmpty)
+            #expect(outcome.info?.stopReason == "stop")
+            if clientStreams {
+                #expect(outcome.wholeCalls == 0)
+                #expect(outcome.deltas.first?.name == "get_weather" && outcome.deltas.first?.completed == nil)
+                #expect(outcome.deltas.count > 2, "the name, argument fragments, the completion")
+                #expect(outcome.deltas.map(\.arguments).joined() == #"{"city":"Paris","unit":"c"}"#)
+            } else {
+                #expect(outcome.wholeCalls == 1 && outcome.deltas.isEmpty)
+            }
+        }
+    }
+
     @Test("a forced response that stops in the call header fails closed, showing nothing")
     func stopBeforeTheCallFailsClosed() async throws {
         let engine = HarmonyScriptedEngine(script: F.analysis("No tool is needed.")
@@ -146,12 +196,13 @@ struct GPTOSSForcedToolServingTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
-    @Test("auto submits no constraint")
+    @Test("auto submits only the auto grammar, which leaves an answer free")
     func autoIsUnconstrained() async throws {
         let engine = HarmonyScriptedEngine(script: "<|channel|>final<|message|>Sunny.<|return|>")
         let outcome = try await serve(engine, choice: "auto")
         let submitted = try #require(engine.submitted.first)
-        #expect(submitted.tokenConstraint == nil)
+        #expect((submitted.tokenConstraint is GPTOSSAutoToolConstraint) == GPTOSSAutoToolGrammar.enabled)
+        #expect(!(submitted.tokenConstraint is GPTOSSForcedToolConstraint))
         #expect(outcome.error == nil && outcome.content == "Sunny.")
     }
 }
@@ -164,8 +215,13 @@ struct GPTOSSForcedToolServingTests {
 struct GPTOSSForcedToolCutTests {
     private typealias F = GPTOSSForcedFixture
 
-    private func serve(_ output: String, endsAtLength: Bool) async throws -> HarmonyOutcome {
-        let request = try F.request(choice: "required")
+    private func serve(_ output: String, endsAtLength: Bool, streamed: Bool = false) async throws
+        -> HarmonyOutcome
+    {
+        var request = try F.request(choice: "required")
+        // A client that streams, on a surface that renders fragments.
+        request.stream = streamed
+        request.streamToolCallDeltas = streamed
         var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gpt_oss")
         prepared.cutAnswersEndAtLength = endsAtLength
         let handler = try #require(try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
@@ -200,14 +256,19 @@ struct GPTOSSForcedToolCutTests {
         GPTOSSForcedFixture.analysis("Paris.") + GPTOSSForcedFixture.call("get_weather", #"{"city":"Par"#),
     ])
     func cutCallEndsAsLength(output: String) async throws {
-        let cut = try await serve(output, endsAtLength: true)
-        #expect(cut.error == nil, "\(String(describing: cut.error))")
-        #expect(cut.info?.stopReason == "length")
-        #expect(cut.calls.isEmpty && cut.content.isEmpty)
-        #expect(cut.reasoning == "Paris.")
-        let refused = try await serve(output, endsAtLength: false)
-        #expect(refused.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422)
-        #expect(refused.calls.isEmpty && refused.content.isEmpty)
+        // Streamed, a call whose name left stays open (the response ends
+        // `length`); it is never completed.
+        for streamed in [false, true] {
+            let cut = try await serve(output, endsAtLength: true, streamed: streamed)
+            #expect(cut.error == nil, "streamed \(streamed): \(String(describing: cut.error))")
+            #expect(cut.info?.stopReason == "length", "streamed \(streamed)")
+            #expect(cut.calls.isEmpty && cut.content.isEmpty, "streamed \(streamed)")
+            #expect(cut.deltas.allSatisfy { $0.completed == nil }, "streamed \(streamed)")
+            #expect(cut.reasoning == "Paris.", "streamed \(streamed)")
+            let refused = try await serve(output, endsAtLength: false, streamed: streamed)
+            #expect(refused.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422, "streamed \(streamed)")
+            #expect(refused.calls.isEmpty && refused.content.isEmpty, "streamed \(streamed)")
+        }
     }
 }
 #endif

@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-10-15
+> Last updated: 2026-11-25
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -82,7 +82,7 @@ version with identical bytes.
    a download source and does not replace the catalog ID.
 
    ```bash
-   REVISION_COORDINATOR=https://api.dev.darkbloom.xyz
+   REVISION_COORDINATOR=https://api.dev.darkbloom.dev
    REVISION_MODEL_ID=nvidia-nemotron-3.5-lightning
    curl --fail --silent --show-error \
      "${REVISION_COORDINATOR}/v1/models/catalog/${REVISION_MODEL_ID}" \
@@ -154,7 +154,11 @@ version with identical bytes.
 
 4. Let eligible providers download while serving their existing revisions.
    Providers then stagger their model-scoped drains, switch snapshots and
-   announce the new hash through `models_update`. No per-model binary release,
+   announce the new hash through `models_update`. While a download or switch
+   holds a model's write lease, a start's verification of that model reports
+   `SelectedModelBusy` ("being downloaded, updated or verified by another
+   process"); an Autopilot `darkbloom start` keeps such a recorded model and
+   starts. No per-model binary release,
    alias edit or manual fleet download command is needed after support is installed.
 
 5. If this model participates in cache routing, qualify and derive the new

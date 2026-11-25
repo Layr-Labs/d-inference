@@ -1,6 +1,6 @@
 # Third-party acknowledgements
 
-> Last updated: 2026-11-14
+> Last updated: 2026-11-18
 
 Darkbloom builds on the work of third-party library authors, maintainers, and
 contributors. Thank you for the software that makes this project possible.
@@ -51,8 +51,7 @@ original projects and their contributors for the foundations of these forks.
 | [Google UUID](https://github.com/google/uuid) | Unique identifiers. |
 | [goose](https://github.com/pressly/goose) | Versioned PostgreSQL schema migrations. |
 | [pgx](https://github.com/jackc/pgx) | PostgreSQL access. |
-| [Smallstep PKCS7](https://github.com/smallstep/pkcs7) | Signing enrollment profiles. |
-| [Go PKCS12](https://github.com/SSLMate/go-pkcs12) | Loading signing certificates and keys. |
+| [Smallstep PKCS7](https://github.com/smallstep/pkcs7) | Verifying App Attest receipts. |
 | [WebSocket](https://github.com/coder/websocket) | Provider WebSocket connections, using the `nhooyr.io/websocket` module. |
 | [Go Cryptography](https://go.googlesource.com/crypto) | Request encryption and cryptographic primitives. |
 | [Go Modules](https://go.googlesource.com/mod) | Release-version comparison. |

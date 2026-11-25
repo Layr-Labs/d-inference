@@ -16,7 +16,8 @@ import zipfile
 from provider_release_resume.identity import select, BUILD_JOB, QUALIFY_JOB, SIGN_JOB
 from provider_release_resume.artifact import extract_transport
 from provider_release_resume import main
-from provider_release_resume.api import verify_workflow_source
+from provider_release_resume.api import (tag_source, verify_desktop_source, verify_validation_source,
+                                         verify_workflow_source)
 
 ROOT = Path(__file__).resolve().parent.parent
 SHA = "a" * 40
@@ -45,10 +46,13 @@ class FakeAPI:
         if path == "git/tags/" + "c"*40:return self.tag
         if path == "commits/" + SHA:return self.commit
         if path == "commits/" + "d"*40:return self.commit
+        if path == "commits/" + "f"*40:return self.commit
         if path == "git/ref/heads/master":return {"object":{"sha":"d"*40}}
         if path == f"compare/{SHA}..." + "d"*40:return self.comparison
         if path == "git/ref/heads/dev":return {"object":{"sha":"f"*40}}
         if path == f"compare/{SHA}..." + "f"*40:return self.dev_comparison
+        if path == "compare/" + "f"*40 + "..." + "f"*40:
+            return {"status":"identical","merge_base_commit":{"sha":"f"*40}}
         if path == "compare/" + "d"*40 + "..." + "d"*40:
             return {"status":"identical","merge_base_commit":{"sha":"d"*40}}
         if path.startswith("contents/"):
@@ -157,11 +161,22 @@ class RecoveryTests(unittest.TestCase):
             mutate(api)
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 verify_workflow_source(api, env)
+        # A dev-branch workflow_dispatch is admitted ONLY for environment dev
+        # and ONLY at the current dev HEAD commit.
+        dev_dispatch = dict(env, GITHUB_EVENT_NAME="workflow_dispatch")
+        dev_dispatch_head = dict(dev_dispatch, GITHUB_SHA="f" * 40)
+        self.assertEqual(verify_workflow_source(FakeAPI(), dev_dispatch_head), "f" * 40)
+        with self.assertRaisesRegex(ValueError, "current dev commit"):
+            verify_workflow_source(FakeAPI(), dev_dispatch)
+        for environment in ("prod", "staging", ""):
+            with self.subTest(dispatch_env=environment), \
+                    self.assertRaisesRegex(ValueError, "require environment dev"):
+                verify_workflow_source(FakeAPI(), dict(dev_dispatch_head, RELEASE_ENVIRONMENT=environment))
         # Dev from any other branch or trigger is refused: another branch push,
-        # a dispatch on dev, and a pull request.
+        # schedule directly calling release-provider, and a pull request.
         for key, value, message in [("GITHUB_REF", "refs/heads/candidate", "require master or dev"),
                                     ("GITHUB_REF", "refs/heads/devx", "require master or dev"),
-                                    ("GITHUB_EVENT_NAME", "workflow_dispatch", "current reviewed master"),
+                                    ("GITHUB_EVENT_NAME", "schedule", "trusted tag push"),
                                     ("GITHUB_EVENT_NAME", "pull_request", "trusted tag push")]:
             with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, message):
                 verify_workflow_source(FakeAPI(), dict(env, **{key: value}))
@@ -171,6 +186,138 @@ class RecoveryTests(unittest.TestCase):
         master_push = dict(env, GITHUB_REF_NAME="master", GITHUB_REF="refs/heads/master")
         with self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
             verify_workflow_source(api, master_push)
+
+    def test_signing_validation_requires_master_tooling_and_a_master_source(self):
+        master = "d" * 40
+        env = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/master", "GITHUB_SHA": master}
+        # The current master and an earlier commit on its ancestry both pass.
+        self.assertEqual(verify_validation_source(FakeAPI(), env, SHA), SHA)
+        self.assertEqual(verify_validation_source(FakeAPI(), env, master), master)
+        # Dispatched anywhere else, or started by another event, it stops
+        # before any commit is looked up.
+        for key, value in [("GITHUB_REF", "refs/heads/dev"), ("GITHUB_REF", "refs/heads/candidate"),
+                           ("GITHUB_REF", "refs/tags/v0.9.13"), ("GITHUB_EVENT_NAME", "push"),
+                           ("GITHUB_EVENT_NAME", "pull_request")]:
+            api = FakeAPI()
+            with self.subTest(key=key, value=value), patch.object(api, "get", side_effect=AssertionError("read")), \
+                    self.assertRaisesRegex(ValueError, "dispatched on master"):
+                verify_validation_source(api, dict(env, **{key: value}), SHA)
+        # A verified commit that is not on master's ancestry is refused: a
+        # branch commit, and one that master has diverged from.
+        for status in ("diverged", "behind"):
+            api = FakeAPI()
+            api.comparison.update(status=status)
+            with self.subTest(status=status), self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
+                verify_validation_source(api, env, SHA)
+        api = FakeAPI()
+        api.comparison.update(merge_base_commit={"sha": "e" * 40})
+        with self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
+            verify_validation_source(api, env, SHA)
+        # An unverified commit, and anything but a full SHA, are refused.
+        api = FakeAPI()
+        api.commit = {"commit": {"verification": {"verified": False}}}
+        with self.assertRaisesRegex(ValueError, "not verified"):
+            verify_validation_source(api, env, SHA)
+        for source in ("master", SHA[:12], SHA.upper(), ""):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "Invalid release source commit"):
+                verify_validation_source(FakeAPI(), env, source)
+
+    def test_signing_validation_command_requires_a_source_and_writes_no_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "output"
+            env = {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_OUTPUT": str(output),
+                   "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/master", "GITHUB_SHA": "d" * 40}
+            with patch.dict(os.environ, env, clear=True), patch("provider_release_resume.GitHub", return_value=FakeAPI()):
+                with patch("sys.argv", ["resume", "verify-validation-source", "--source", SHA]):
+                    main()
+                with patch("sys.argv", ["resume", "verify-validation-source"]), self.assertRaises(SystemExit):
+                    main()
+                with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/candidate"}), \
+                        patch("sys.argv", ["resume", "verify-validation-source", "--source", SHA]), \
+                        self.assertRaises(ValueError):
+                    main()
+            self.assertFalse(output.exists())
+
+    def desktop_api(self, tag="desktop-v0.2.0", lightweight=False):
+        """FakeAPI with one more tag, named `tag`, on the same commit: annotated unless `lightweight`."""
+        api = FakeAPI()
+        get = api.get
+        ref = {"type": "commit", "sha": SHA} if lightweight else {"type": "tag", "sha": "c" * 40}
+        api.get = lambda path: {"object": ref} if path == "git/ref/tags/" + tag else get(path)
+        return api
+
+    def test_desktop_release_requires_a_signed_annotated_desktop_tag_on_master(self):
+        env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "desktop-v0.2.0",
+               "GITHUB_REF": "refs/tags/desktop-v0.2.0", "GITHUB_SHA": SHA}
+        self.assertEqual(verify_desktop_source(self.desktop_api(), env), (SHA, True))
+        # A lightweight tag, an unsigned tag and a tag on another object are refused.
+        with self.assertRaisesRegex(ValueError, "signed annotated tag"):
+            verify_desktop_source(self.desktop_api(lightweight=True), env)
+        for mutate, message in [
+                (lambda api: api.tag.update(verification={"verified": False}), "signature or commit target"),
+                (lambda api: api.tag.update(object={"type": "tree", "sha": SHA}), "signature or commit target"),
+                (lambda api: api.tag.update(object={"type": "commit", "sha": "e" * 40}), "does not identify the workflow commit")]:
+            api = self.desktop_api()
+            mutate(api)
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                verify_desktop_source(api, env)
+        # The tagged commit must be verified and on master's ancestry.
+        api = self.desktop_api()
+        api.comparison.update(status="diverged")
+        with self.assertRaisesRegex(ValueError, "not on reviewed master ancestry"):
+            verify_desktop_source(api, env)
+        api = self.desktop_api()
+        api.commit = {"commit": {"verification": {"verified": False}}}
+        with self.assertRaisesRegex(ValueError, "not verified"):
+            verify_desktop_source(api, env)
+        # Only desktop-vX.Y.Z names a desktop release; a provider tag does not.
+        for tag in ("desktop-v0.2", "desktop-v0.2.0-rc1", "desktop-latest", "desktop-v0.2.0.1", "v0.9.13", "xdesktop-v0.2.0"):
+            named = dict(env, GITHUB_REF_NAME=tag, GITHUB_REF="refs/tags/" + tag)
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "stable production release tag"):
+                verify_desktop_source(self.desktop_api(tag), named)
+        with self.assertRaisesRegex(ValueError, "ref mismatch"):
+            verify_desktop_source(self.desktop_api(), dict(env, GITHUB_REF="refs/tags/desktop-v0.2.1"))
+        # And a desktop tag never names a provider release.
+        with self.assertRaisesRegex(ValueError, "stable production release tag"):
+            tag_source(self.desktop_api(), "desktop-v0.2.0")
+
+    def test_desktop_dry_run_requires_a_dispatch_on_the_current_master_commit(self):
+        master = "d" * 40
+        env = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF_TYPE": "branch", "GITHUB_REF": "refs/heads/master",
+               "GITHUB_SHA": master}
+        self.assertEqual(verify_desktop_source(FakeAPI(), env), (master, False))
+        # Another branch, or an older master commit, signs nothing.
+        for changed in ({"GITHUB_REF": "refs/heads/dev"}, {"GITHUB_REF": "refs/heads/candidate"}, {"GITHUB_SHA": SHA}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "current reviewed master commit"):
+                verify_desktop_source(FakeAPI(), dict(env, **changed))
+        # No other event starts a desktop run, on a branch or on a tag.
+        for changed in ({"GITHUB_EVENT_NAME": "push"}, {"GITHUB_EVENT_NAME": "pull_request"},
+                        {"GITHUB_EVENT_NAME": "schedule"}, {"GITHUB_EVENT_NAME": "create", "GITHUB_REF_TYPE": "tag"}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "signed desktop-v tag on master"):
+                verify_desktop_source(FakeAPI(), dict(env, **changed))
+
+    def test_desktop_source_command_writes_the_source_and_whether_it_publishes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "output"
+            env = {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_OUTPUT": str(output), "GITHUB_EVENT_NAME": "push",
+                   "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "desktop-v0.2.0", "GITHUB_REF": "refs/tags/desktop-v0.2.0",
+                   "GITHUB_SHA": SHA}
+            with patch.dict(os.environ, env, clear=True), patch("sys.argv", ["resume", "verify-desktop-source"]):
+                with patch("provider_release_resume.GitHub", return_value=self.desktop_api()):
+                    main()
+                self.assertEqual(output.read_text(), f"source_sha={SHA}\npublish=true\n")
+                output.unlink()
+                dispatch = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF_TYPE": "branch",
+                            "GITHUB_REF": "refs/heads/master", "GITHUB_SHA": "d" * 40}
+                with patch.dict(os.environ, dispatch), patch("provider_release_resume.GitHub", return_value=FakeAPI()):
+                    main()
+                self.assertEqual(output.read_text(), "source_sha=" + "d" * 40 + "\npublish=false\n")
+                output.unlink()
+                # A refused source writes nothing for later jobs to read.
+                with patch.dict(os.environ, {"GITHUB_REF": "refs/tags/other"}), \
+                        patch("provider_release_resume.GitHub", return_value=self.desktop_api()), self.assertRaises(ValueError):
+                    main()
+            self.assertFalse(output.exists())
 
     def test_failed_source_verification_emits_no_trusted_outputs(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -285,17 +432,22 @@ class RecoveryTests(unittest.TestCase):
         sign=source.split("  build-and-release:\n",1)[1].split("    #",1)[0]
         expression=sign.split("${{",1)[1].split("}}",1)[0]
         variables={"needs.resolve-env.result":"resolve", "needs.resolve-env.outputs.resume":"resume",
-                   "needs.build-provider.result":"build", "needs.qualify-sdk.result":"qualify"}
+                   "needs.build-provider.result":"build"}
         for old,new in variables.items():expression=expression.replace(old,new)
         expression=expression.replace("!cancelled()","not cancelled").replace("&&","and").replace("||","or")
         expression=" ".join(expression.split())
-        for cancelled,resolve,resume,build,qualify in itertools.product([False,True],["success","failure"],["true","false","bad"],["success","failure","skipped"],["success","failure","skipped"]):
+        for cancelled,resolve,resume,build in itertools.product([False,True],["success","failure"],["true","false","bad"],["success","failure","skipped"]):
             actual=eval(expression,{"__builtins__":{}},locals())
-            expected=not cancelled and resolve=="success" and ((resume=="true" and build==qualify=="skipped") or (resume=="false" and build==qualify=="success"))
+            expected=not cancelled and resolve=="success" and ((resume=="true" and build=="skipped") or (resume=="false" and build=="success"))
             self.assertEqual(actual,expected)
-        for name in ["build-provider","qualify-sdk-shard","qualify-sdk"]:
-            body=source.split("  "+name+":\n",1)[1].split("    runs-on:",1)[0]
-            self.assertIn("if: needs.resolve-env.outputs.resume != 'true'",body)
+        body=source.split("  build-provider:\n",1)[1].split("    runs-on:",1)[0]
+        self.assertIn("if: needs.resolve-env.outputs.resume != 'true'",body)
+        # Qualification (release-qualify.yml) runs before this workflow; the
+        # caller skips it only for a resume, whose retained run passed it.
+        caller=(ROOT/".github/workflows/release-swift.yml").read_text()
+        qualify=caller.split("\n  qualify:\n",1)[1].split("\n  dev:\n",1)[0]
+        self.assertIn("${{ !inputs.resume_run_id &&",qualify)
+        self.assertNotIn("qualify-sdk",source)
 
 
 if __name__=="__main__":unittest.main()

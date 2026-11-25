@@ -247,11 +247,19 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
     /// The gate's decision for a requirement, by the gate's own comparisons:
     /// a judged sample, the truly-free floor, the requirement after the floor
     /// against physical memory and against admissible memory.
-    public func admits(_ requiredBytes: Int) -> Bool {
+    public func admits(_ requiredBytes: Int) -> Bool { admits(requiredBytes, having: admissibleNowBytes) }
+
+    /// The same decision once the gate counts no file cache, as it does above normal pressure and, mid-load, once
+    /// the load has compressed or swapped out past its limits (`QwenDenseStageLoadPolicy.decide`): free pages alone.
+    /// No sample foresees that withdrawal, so a plan made again after the gate refused a share asks this of each
+    /// rank first (`ClusterPlacementPolicy.freePagesFirst`). It is this sample's answer: the gate still decides each
+    /// load, and free pages can fall while it runs.
+    public func admitsOnFreePages(_ requiredBytes: Int) -> Bool { admits(requiredBytes, having: actualFreeBytes) }
+
+    private func admits(_ requiredBytes: Int, having admissible: Int) -> Bool {
         guard judged, requiredBytes >= 0 else { return false }
         let required = max(minimumAdmissibleBytes, requiredBytes)
-        return actualFreeBytes >= minimumTrulyFreeBytes && required <= physicalMemoryBytes
-            && admissibleNowBytes >= required
+        return actualFreeBytes >= minimumTrulyFreeBytes && required <= physicalMemoryBytes && admissible >= required
     }
 
     /// Free pages plus the file cache above the kernel's minimum: what this

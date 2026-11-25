@@ -12,8 +12,11 @@ public struct ClusterOnboardingFollowTiming: Sendable {
     public var seconds: Double
     /// Between two looks at the cluster's status over the cable.
     public var pollSeconds: Double
-    public init(seconds: Double = 900, pollSeconds: Double = 1) {
-        self.seconds = seconds; self.pollSeconds = pollSeconds
+    /// The clock the follow reads for its bound, its look cadence and the times it shows: the wall clock. A check that
+    /// scripts the leading Mac's minutes sets the scripted clock, so the follow sees those minutes without waiting them.
+    public var now: @Sendable () -> Date
+    public init(seconds: Double = 900, pollSeconds: Double = 1, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.seconds = seconds; self.pollSeconds = pollSeconds; self.now = now
     }
 }
 
@@ -130,7 +133,8 @@ extension ClusterOnboardingDriver {
         /// never a wait for a coordinator that doesn't have the pair.
         case notOffered
         /// Single-Mac serving blocks the pair (`ClusterOnboardingSoloServing`): never a wait for the coordinator (0.10.9
-        /// DevNet, pair-2: this window said "registering with the coordinator" for minutes while its own part waited).
+        /// on a DevNet pair: this window said "registering with the coordinator" for minutes while its own part
+        /// waited).
         case soloBlocked
     }
 
@@ -166,7 +170,7 @@ extension ClusterOnboardingDriver {
     /// live line says what the leading Mac waits on and how long of the bound, and each new state is said once, so a
     /// plain transcript has it too.
     static func followStart(leader: String?, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
-        let timing = operations.followTiming
+        let timing = operations.followTiming, now = timing.now
         console.say("  " + waitingForStartLine(leader))
         let looks = ClusterOnboardingMailbox<ClusterOnboardingLeaderStatus>()
         // Single-Mac serving on either Mac, read before each look of the leading Mac: this Mac's own block wins over the
@@ -174,7 +178,7 @@ extension ClusterOnboardingDriver {
         let solos = ClusterOnboardingMailbox<[ClusterOnboardingSoloServing]>()
         var soloShown: [ClusterOnboardingSoloServing]?
         var asking = false, asked = Date.distantPast
-        var begun = Date()
+        var begun = now()
         var started: Date?, latest: String?, stage = 0, step: ClusterOnboardingLeaderStep?, lastStatus: String?
         // Each line once: a status that goes back and forth between two lines never repeats them.
         var said = Set<String>(), saidBlocked = false
@@ -187,7 +191,7 @@ extension ClusterOnboardingDriver {
         // The start's progress as the leading Mac publishes it (`ClusterOnboardingStartProgress`): its own heading, then
         // its step, a bar of the real bytes and each Mac's part as the live rows; each step done said once. Its time
         // counts from when this Mac first saw the step (the two Macs' clocks may differ).
-        var start: ClusterOnboardingStartProgress?, startHeading = false, stepSeen = Date(), lastBytes: Int64?
+        var start: ClusterOnboardingStartProgress?, startHeading = false, stepSeen = now(), lastBytes: Int64?
         var startLog = ClusterOnboardingStartLog(viewerLeads: false, viewerRank: operations.thisRank())
         let darkbloom = operations.servesThroughDarkbloom()
         func sayOnce(_ line: String) {
@@ -203,8 +207,8 @@ extension ClusterOnboardingDriver {
         // there too, or at its first progress or started status.
         var stops = ClusterOnboardingFollowedStop(), startBegan = false
         while true {
-            if !splitAsking, Date().timeIntervalSince(splitAsked) >= timing.pollSeconds {
-                (splitAsking, splitAsked) = (true, Date())
+            if !splitAsking, now().timeIntervalSince(splitAsked) >= timing.pollSeconds {
+                (splitAsking, splitAsked) = (true, now())
                 Thread.detachNewThread { splits.post(operations.versionSplit()) }
             }
             if let read = splits.take().last {
@@ -217,9 +221,9 @@ extension ClusterOnboardingDriver {
                     return 1
                 }
             }
-            if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
+            if !asking, now().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true
-                asked = Date()
+                asked = now()
                 Thread.detachNewThread {
                     solos.post(operations.soloServing())
                     looks.post(operations.leaderStatus?() ?? .init(lines: operations.status(), step: nil))
@@ -238,7 +242,7 @@ extension ClusterOnboardingDriver {
                 }
             }
             // Nothing starts while it runs, so no bound runs out meanwhile: each bound starts again once it stopped.
-            if soloShown != nil { begun = Date(); if started != nil { started = Date() } }
+            if soloShown != nil { begun = now(); if started != nil { started = now() } }
             if let look = looks.take().last {
                 asking = false
                 let status = look.lines
@@ -252,10 +256,10 @@ extension ClusterOnboardingDriver {
                         console.heading("4/4 Start")
                     }
                     // A new step has the whole bound again, and a copy that moves is no silence.
-                    if published.phase != start?.phase { stepSeen = Date(); if started != nil { started = Date() } else { begun = Date() } }
-                    if let done = published.done, done != lastBytes { lastBytes = done; if started == nil { begun = Date() } }
+                    if published.phase != start?.phase { stepSeen = now(); if started != nil { started = now() } else { begun = now() } }
+                    if let done = published.done, done != lastBytes { lastBytes = done; if started == nil { begun = now() } }
                     start = published
-                    for line in startLog.update(published, now: Date().timeIntervalSince1970, plain: console.liveWidth == nil) {
+                    for line in startLog.update(published, now: now().timeIntervalSince1970, plain: console.liveWidth == nil) {
                         console.settle()
                         console.say("  " + line)
                     }
@@ -272,7 +276,7 @@ extension ClusterOnboardingDriver {
                     return followRefused(refused, leader: leader, thisVersion: operations.thisVersion, console)
                 }
                 let seen = followed(status)
-                if started == nil, seen != .notStarted { started = Date() }
+                if started == nil, seen != .notStarted { started = now() }
                 // A stop from anywhere once the start began ends the wait at once, as on the leading Mac. Its status
                 // reading "Stopped" is none: it reads so through a download or copy of the model, until both parts start,
                 // and while the start stops them to register.
@@ -284,7 +288,7 @@ extension ClusterOnboardingDriver {
                 }
                 // Each stage has the whole bound, as on the leading Mac (its load, its test and check, its restart).
                 let next = followStage(status, after: stage)
-                if started != nil, next > stage { stage = next; started = Date() }
+                if started != nil, next > stage { stage = next; started = now() }
                 if started != nil, let first = status.first { latest = first.hasSuffix(".") ? String(first.dropLast()) : first }
                 // macOS keeps this Mac's follower off the local network (the probe passed, the dial didn't): said once,
                 // plainly; the start goes on by itself once it's on (P2-1).
@@ -337,14 +341,14 @@ extension ClusterOnboardingDriver {
                     offeredWait = nil
                 }
             }
-            if let started, Date().timeIntervalSince(started) >= timing.seconds {
+            if let started, now().timeIntervalSince(started) >= timing.seconds {
                 console.settle()
                 console.result(false, ClusterOnboardingNotServing.title(reason: noOutcomeReason(leader, seconds: timing.seconds)),
                                (latest.map { ["Last: " + $0 + "."] } ?? []) + [noOutcomeLine])
                 console.waitForExit()
                 return 1
             }
-            if started == nil, Date().timeIntervalSince(begun) >= timing.seconds {
+            if started == nil, now().timeIntervalSince(begun) >= timing.seconds {
                 console.settle()
                 console.result(false, ClusterOnboardingNotServing.title(reason: notStartedReason(leader, seconds: timing.seconds)),
                                notStartedLines(leader, step: step, status: lastStatus))
@@ -354,19 +358,19 @@ extension ClusterOnboardingDriver {
             if soloShown != nil {
                 console.progress({ _ in ClusterOnboardingSoloServing.followWaitingLine }, logged: false)
             } else if let offeredWait, let started {
-                let waited = Date().timeIntervalSince(started)
+                let waited = now().timeIntervalSince(started)
                 console.progress({ width in fitted([offeredWait + " \u{00B7} " + waitedWords(waited, of: timing.seconds) + " (q leaves)",
                                                     offeredWait + " \u{00B7} " + waitedWords(waited, of: timing.seconds)], width: width) },
                                  logged: false)
             } else if let start, let width = console.liveWidth {
                 console.workingRows(ClusterOnboardingStartWords.liveRows(start, viewerLeads: false, viewerRank: operations.thisRank(),
-                    darkbloom: darkbloom, elapsed: Date().timeIntervalSince(stepSeen), width: width))
+                    darkbloom: darkbloom, elapsed: now().timeIntervalSince(stepSeen), width: width))
             } else if let started, let latest {
-                let waited = ClusterOnboardingLoadRows.elapsed(Date().timeIntervalSince(started))
+                let waited = ClusterOnboardingLoadRows.elapsed(now().timeIntervalSince(started))
                 console.progress({ width in fitted([latest + " \u{00B7} " + waited + " (q leaves)", latest + " \u{00B7} " + waited], width: width) },
                                  logged: false)
             } else {
-                let (waited, shown) = (Date().timeIntervalSince(begun), step)
+                let (waited, shown) = (now().timeIntervalSince(begun), step)
                 console.progress({ width in followWaitingLine(leader, step: shown, waited: waited, bound: timing.seconds, width: width) },
                                  logged: false)
             }

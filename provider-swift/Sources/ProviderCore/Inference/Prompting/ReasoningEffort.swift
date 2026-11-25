@@ -126,8 +126,8 @@ extension ReasoningEffort {
 
     /// GPT-OSS's Harmony levels are `low`, `medium` (its default) and `high`.
     /// Harmony can't switch its reasoning off, so `none` gets `low`. The
-    /// coordinator caps OpenRouter's traffic at `medium` (#703); a direct
-    /// caller's `high` renders `high`.
+    /// coordinator passes every effort as sent, OpenRouter's included, so
+    /// `high`, `xhigh` and `max` render `high` for every caller.
     var harmonyLevel: ReasoningEffort {
         switch self {
         case .none, .minimal, .low: .low
@@ -173,6 +173,7 @@ enum ReasoningEffortPolicy {
         "qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35", "qwen4_exp", "qwen4_exp_text",
         "gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma", "gpt_oss",
         "nemotron_h", "nemotron_h_omni", "mimo_v2", "glm5_next", "glm5_next_text", "glm5_next_mtp", "flint",
+        "inkling2_loop",
     ]
 
     /// The Qwen 3.5 template family's model types.
@@ -223,14 +224,18 @@ enum ReasoningEffortPolicy {
 
     /// The `reasoning_effort` a template receives for `effort`: while
     /// thinking, Qwen 3.8's level for it where the model takes those levels;
-    /// GPT-OSS's Harmony level, thinking or not; otherwise the effort as sent
-    /// (a Qwen template ignores it with thinking off). A value that is none of
-    /// the names is passed as sent: `validate` refuses it for a model that
-    /// reasons.
+    /// GPT-OSS's Harmony level, thinking or not; Inkling 2's own name for it,
+    /// `none` with thinking off (`Inkling2PromptContract`); otherwise the
+    /// effort as sent (a Qwen template ignores it with thinking off). A value
+    /// that is none of the names is passed as sent: `validate` refuses it for
+    /// a model that reasons.
     static func templateEffort(
         _ effort: String, modelID: String, modelType: String?, thinking: Bool?
     ) -> String {
         guard let named = ReasoningEffort(clientValue: effort) else { return effort }
+        if Inkling2PromptContract.applies(modelType: modelType) {
+            return Inkling2PromptContract.templateEffort(named.rawValue, thinking: thinking) ?? effort
+        }
         if thinking != false, takesQwen38Levels(modelID: modelID, modelType: modelType) {
             return named.qwen38Level.rawValue
         }

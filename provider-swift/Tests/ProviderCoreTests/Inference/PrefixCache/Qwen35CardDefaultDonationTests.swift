@@ -8,7 +8,8 @@ import Testing
 
 @testable import ProviderCore
 
-/// A Qwen 3.5/3.6 request with the model card's presence penalty (1.5) cannot speculate: on
+/// A Qwen 3.5/3.6 request with the model card's presence penalty (1.5) speculates (exact
+/// acceptance; `DARKBLOOM_MTP_PENALTY_ROWS`) unless it also sets `stop` or logprobs: on
 /// `qwen3.5-35b-a3b` and `Qwen3.5-9B` alike that is the provider's default for a request that
 /// sends no sampling field (`EngineV2SamplingDefaults.qwen35CardDefaults`; 0.10.12 had none on
 /// the 9B). On the production paged assembly, with the inline MTP assistant and the encrypted
@@ -155,8 +156,9 @@ struct Qwen35CardDefaultDonationTests {
         }
 
         /// The production assembly the slot factory builds for these IDs: native paged KV,
-        /// native checkpoints, the provider's MTP policy shape for them (adaptive depth, typical
-        /// acceptance) and the card's sampling defaults. The
+        /// native checkpoints, the provider's MTP policy shape for them (adaptive depth, exact
+        /// acceptance, penalty rows speculating: `SDKFeatureDefaults.penaltyRowBuilds`) and the
+        /// card's sampling defaults. The
         /// grant clears the bridge's 1 GiB load floor (`UnifiedMemoryCap.minimumLoadKVBytes`);
         /// paged storage allocates only what the requests use.
         func makeBridge(store: SSDHybridCheckpointStore?) throws -> (EngineV2Bridge, EngineV2) {
@@ -170,7 +172,7 @@ struct Qwen35CardDefaultDonationTests {
                 mtpConfig: .init(
                     enabled: true, maxDraftTokens: CBv2MTPConfig.testedMaxDraftTokens,
                     verificationMode: .automatic, maxAutomaticRectangularTokens: 8,
-                    acceptance: .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta)),
+                    acceptance: .exact, penaltySpeculation: true),
                 kvBackend: .paged, checkpointQuantization: .native, environment: environment)
             try #require(build.kvBackendKind == .paged && build.kvBackendFallbackReason == nil)
             let engine = try #require(build.engine as? EngineV2)
@@ -251,6 +253,16 @@ struct Qwen35CardDefaultDonationTests {
         engine.mtpMetricsSnapshot()?.draftedTokens ?? 0
     }
 
+    /// A plain card request (presence 1.5) speculates; `stop` strings and logprobs keep a
+    /// request target-only.
+    static func expectDrafting(_ engine: EngineV2, _ extra: Extra, _ phase: String) {
+        if extra == .none, CBv2MTPConfig.envPenaltySpeculation {
+            #expect(drafted(engine) > 0, "\(phase): the card-penalty request speculates")
+        } else {
+            #expect(drafted(engine) == 0, "\(phase): the request never drafts")
+        }
+    }
+
     static func idle(_ bridge: EngineV2Bridge) async throws {
         let deadline = ContinuousClock.now + .seconds(30)
         while true {
@@ -284,7 +296,7 @@ struct Qwen35CardDefaultDonationTests {
             #expect(cold.hit == 0)
             #expect(!cold.text.isEmpty)
             #expect(extra != .logprobs || !cold.logprobBits.isEmpty)
-            #expect(Self.drafted(coldEngine) == 0, "the card request never drafts")
+            Self.expectDrafting(coldEngine, extra, "cold")
             try await Self.idle(coldBridge)
             await coldBridge.shutdown()
 
@@ -292,7 +304,7 @@ struct Qwen35CardDefaultDonationTests {
             let (donorBridge, donorEngine) = try fixture.makeBridge(store: donorStore)
             let donor = try await Self.serve(donorBridge, request, id: "donor")
             #expect(donor == cold, "capture does not change the answer")
-            #expect(Self.drafted(donorEngine) == 0, "the donor never speculates")
+            Self.expectDrafting(donorEngine, extra, "donor")
             try await Self.idle(donorBridge)
             await donorStore.waitForWritesForTesting()
             let written = donorStore.stats().filesWritten
@@ -351,7 +363,7 @@ struct Qwen35CardDefaultDonationTests {
             let second = try await Self.serve(
                 secondBridge, request, id: "second", tokens: Self.secondTurn)
             #expect(second.hit == 2 * Self.stripe, "the second turn restores the first turn's 2,048")
-            #expect(Self.drafted(secondEngine) == 0, "the restored card request never drafts")
+            Self.expectDrafting(secondEngine, .none, "second")
             try await Self.idle(secondBridge)
             await secondStore.waitForWritesForTesting()
             #expect(secondStore.stats().filesWritten >= 1,

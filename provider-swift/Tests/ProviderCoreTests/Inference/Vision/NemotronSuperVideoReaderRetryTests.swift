@@ -9,12 +9,17 @@ import Testing
 @testable import ProviderCore
 
 /// Every failed reader pass, in order.
-private final class FailedPasses: @unchecked Sendable {
+private final class FailedPasses: @unchecked Sendable, CustomStringConvertible {
     private let lock = NSLock()
     private var recorded: [VideoReaderFailure] = []
     private var retries: [Bool] = []
     var retrying: [Bool] { lock.withLock { retries } }
     var failures: [VideoReaderFailure] { lock.withLock { recorded } }
+    /// Report only: each failed pass with its status and the domain and code of every error in its chain, so a
+    /// reader that AVFoundation failed by itself says why.
+    var description: String {
+        lock.withLock { zip(recorded, retries).map { "\($0) (retrying: \($1))" }.joined(separator: "; ") }
+    }
     var observer: VideoReaderRetry.Observer {
         { [self] failure, retrying in
             lock.withLock {
@@ -75,9 +80,10 @@ struct NemotronSuperVideoReaderRetryTests {
         let ender = ReaderEnder(ending: [1], atRead: 40)
         let passes = FailedPasses()
         let plan = try await Self.reading(through: ender.hook, observing: passes) { try await Self.inspect(data) }
-        #expect(ender.ended == 1)
-        #expect(passes.retrying == [true])
-        #expect(passes.failures.map(\.status) == [AVAssetReader.Status.cancelled.rawValue])
+        let report = "failed passes: [\(passes)]; reads per reader: \(ender.readsPerReader)"
+        #expect(ender.ended == 1, "\(report)")
+        #expect(passes.retrying == [true], "\(report)")
+        #expect(passes.failures.map(\.status) == [AVAssetReader.Status.cancelled.rawValue], "\(report)")
         #expect(plan.sourceFrames == baseline.sourceFrames && plan.sourceFPS == baseline.sourceFPS)
         #expect(plan.frameIndices == baseline.frameIndices && plan.labels == baseline.labels)
     }
@@ -90,9 +96,11 @@ struct NemotronSuperVideoReaderRetryTests {
         let ender = ReaderEnder(ending: [1], atRead: 40)
         let passes = FailedPasses()
         let frames = try await Self.reading(through: ender.hook, observing: passes) { try await Self.frames(plan) }
-        #expect(ender.ended == 1)
-        #expect(passes.retrying == [true])
-        #expect(passes.failures.map(\.status) == [AVAssetReader.Status.cancelled.rawValue])
+        // Report only: on 2026-11-18 the first reader ended `.failed` by itself before read 40, with no record of why.
+        let report = "failed passes: [\(passes)]; reads per reader: \(ender.readsPerReader)"
+        #expect(ender.ended == 1, "\(report)")
+        #expect(passes.retrying == [true], "\(report)")
+        #expect(passes.failures.map(\.status) == [AVAssetReader.Status.cancelled.rawValue], "\(report)")
         #expect(frames == baseline)
     }
 

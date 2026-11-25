@@ -259,34 +259,15 @@ struct QwenTensorParallelBatchMTPWindowTests {
         }
     }
 
-    /// MLX's vector limit as mirrored for shared verify calls: the M3 Ultra
-    /// (family 15, Ultra) switches to QMM at 12 rows of Qwen27's widths and
-    /// the M5 Max (family 17) at 13. Off the GPU, outside affine mode and for
-    /// the 64/128-wide quad kernel every window keeps its own call.
-    @Test func vectorLimitMirrorsMLXPerArchitectureAndSharesOnlyOnTheGPU() throws {
-        let big = (inputs: 5120, outputs: 6144), medium = (inputs: 4096, outputs: 4096), small = (inputs: 2048, outputs: 2048)
-        let expected: [(String, [Int])] = [
-            ("applegpu_g15d", [12, 18, 32]), ("applegpu_g17s", [13, 25, 33]), ("applegpu_g16s", [13, 15, 13]),
-            ("applegpu_g14s", [6, 10, 14]), ("applegpu_g14d", [12, 18, 32]), ("applegpu_g12x", [10, 12, 18]),
-            ("", [10, 12, 18])]
-        for (architecture, limits) in expected {
-            let got = [big, medium, small].map {
-                Qwen35QuantizedVectorLimit.limit(inputs: $0.inputs, outputs: $0.outputs, architecture: architecture)
-            }
-            #expect(got == limits, "\(architecture)")
+    /// The SDK's Qwen35BatchDecodeProjectionTests check the per-family vector
+    /// limits and where windows share a call. This keeps what they do not: an
+    /// unknown architecture gets MLX's default limits, and `rows` applies its
+    /// body in groups and keeps every row in place.
+    @Test func vectorLimitDefaultsForAnUnknownArchitectureAndRowsKeepTheirOrder() {
+        let got = [(5120, 6144), (4096, 4096), (2048, 2048)].map {
+            Qwen35QuantizedVectorLimit.limit(inputs: $0.0, outputs: $0.1, architecture: "")
         }
-        Device.withDefaultDevice(.cpu) {
-            #expect(Qwen35QuantizedVectorLimit.sharedWindows(MLXArray.zeros([8, 3, 5120]), outputs: 6144, mode: .affine) == 1)
-        }
-        Device.withDefaultDevice(.gpu) {
-            for columns in 2...5 {
-                let shared = Qwen35QuantizedVectorLimit.sharedWindows(MLXArray.zeros([8, columns, 5120]),
-                    outputs: 6144, mode: .affine)
-                #expect(shared >= 1 && shared * columns < Qwen35QuantizedVectorLimit.limit(inputs: 5120, outputs: 6144))
-            }
-            #expect(Qwen35QuantizedVectorLimit.sharedWindows(MLXArray.zeros([8, 3, 128]), outputs: 6144, mode: .affine) == 1)
-            #expect(Qwen35QuantizedVectorLimit.sharedWindows(MLXArray.zeros([8, 3, 5120]), outputs: 6144, mode: .mxfp4) == 1)
-        }
+        #expect(got == [10, 12, 18])
         let rows = Qwen35QuantizedVectorLimit.rows(MLXArray((0..<30).map { Float($0) }, [10, 3, 1]), by: 4) { $0 * 2 }
         #expect(rows.shape == [10, 3, 1] && rows.asArray(Float.self) == (0..<30).map { Float($0 * 2) })
     }
@@ -322,20 +303,6 @@ struct QwenTensorParallelBatchMTPWindowTests {
                 }
             }
         }
-    }
-
-    /// Each GPU family gets the layout measured faster than MLX's own calls
-    /// and byte-equal there; unmeasured families keep MLX's calls.
-    @Test func wideKernelLayoutFollowsTheMeasuredFamilies() {
-        typealias Kernel = Qwen35WideQuantizedKernel
-        let one = Kernel.Layout(rowsPerThread: 1, maximumVectors: 8), two = Kernel.Layout(rowsPerThread: 2, maximumVectors: 8)
-        #expect(Kernel.layout(input: .bfloat16, architecture: "applegpu_g17s") == one)
-        #expect(Kernel.layout(input: .float32, architecture: "applegpu_g17s") == one)
-        #expect(Kernel.layout(input: .float32, architecture: "applegpu_g15d") == two)
-        #expect(Kernel.layout(input: .bfloat16, architecture: "applegpu_g15d") == nil)
-        #expect(Kernel.layout(input: .float32, architecture: "applegpu_g16s") == nil)
-        #expect(Kernel.layout(input: .float32, architecture: "applegpu_g14d") == nil)
-        #expect(Kernel.layout(input: .float32, architecture: "") == nil)
     }
 
     /// The wide verify kernel at Qwen27's projection shapes, in both layouts

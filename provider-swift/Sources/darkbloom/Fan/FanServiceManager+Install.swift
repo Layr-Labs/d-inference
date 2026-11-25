@@ -85,15 +85,11 @@ extension FanServiceManager {
     }
 
     func verifyBundledApp(app: URL, executable: URL, helper: URL) throws {
-        let appRequirement = FanCodeRequirements.requirement(
-            identifier: FanIPC.providerIdentifier,
-            teamID: FanIPC.teamID
-        )
         let signature = runProcess(
             "/usr/bin/codesign",
             arguments: [
                 "--verify", "--deep", "--strict", "--verbose=2",
-                "-R=\(appRequirement)", app.path,
+                "-R=\(FanCodeRequirements.providerRequirement())", app.path,
             ]
         )
         guard signature.succeeded else {

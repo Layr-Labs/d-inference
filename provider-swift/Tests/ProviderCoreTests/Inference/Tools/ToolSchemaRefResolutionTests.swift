@@ -52,18 +52,19 @@ private enum RefFixture {
     /// The render-safe repair applied to every schema home, as the coordinator
     /// does after resolution (`normalizeToolEntry`).
     static func repaired(_ tools: [Any]) -> [Any] {
-        tools.map { tool -> Any in
+        var budget = ToolSchemaNormalization.maxNormalizedNodes
+        return tools.map { tool -> Any in
             guard var dict = tool as? [String: Any] else { return tool }
             if var function = dict["function"] as? [String: Any] {
                 if let parameters = function["parameters"] {
-                    function["parameters"] = ToolSchemaNormalization.injectDefaultTypes(parameters)
+                    function["parameters"] = ToolSchemaNormalization.injectDefaultTypes(parameters, budget: &budget)
                 }
                 dict["function"] = function
             } else if let parameters = dict["parameters"] {
-                dict["parameters"] = ToolSchemaNormalization.injectDefaultTypes(parameters)
+                dict["parameters"] = ToolSchemaNormalization.injectDefaultTypes(parameters, budget: &budget)
             }
             if let schema = dict["input_schema"] {
-                dict["input_schema"] = ToolSchemaNormalization.injectDefaultTypes(schema)
+                dict["input_schema"] = ToolSchemaNormalization.injectDefaultTypes(schema, budget: &budget)
             }
             return dict
         }
@@ -161,7 +162,9 @@ struct ToolSchemaRefResolutionTests {
 
     @Test func policyParsesTheCoordinatorsSyntax() {
         let def = ToolSchemaRefPolicy.default
-        #expect(def.rules == [.init(pattern: "gemma-4-26b", mode: .inline), .init(pattern: "qwen3.8-27b", mode: .inline)])
+        // The coordinator's list, and every GPT-OSS build while its `auto` grammar is on (`GPTOSSAutoToolGrammar`).
+        #expect(def.rules == [.init(pattern: "gemma-4-26b", mode: .inline), .init(pattern: "qwen3.8-27b", mode: .inline)]
+            + (GPTOSSAutoToolGrammar.enabled ? [.init(pattern: "gpt-oss", mode: .inline)] : []))
         let cases: [(String?, [ToolSchemaRefPolicy.Rule], Bool)] = [
             (nil, def.rules, true),
             ("  ", def.rules, true),
@@ -205,7 +208,7 @@ struct ToolSchemaRefResolutionTests {
             (def, "gemma-4-26b-8bit", "gemma4", .inline),
             (def, "GEMMA-4-26B-QAT-4BIT", nil, .inline),
             (def, "EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5", .inline),
-            (def, "gpt-oss-20b", "gpt_oss", .off),
+            (def, "gpt-oss-20b", "gpt_oss", GPTOSSAutoToolGrammar.enabled ? .inline : .off),
             (def, "Qwen3.5-9B", "qwen3_5", .off),
             (def, "mimo-v2.6-flash-mopd", "mimo_v2", .off),
             (def, "", "gemma4", .off),
@@ -241,7 +244,7 @@ struct ToolSchemaRefResolutionTests {
         let gotTools = try RefFixture.canonical(try #require(decoded["tools"]))
         #expect(gotTools == inlineWant)
 
-        let gpt = try body("gpt-oss-20b")
+        let gpt = try body("Qwen3.5-9B")
         let untouched = await ToolSchemaRefResolution.resolveLocalBody(gpt, batch: false, modeFor: modeFor)
         #expect(untouched == gpt)
 

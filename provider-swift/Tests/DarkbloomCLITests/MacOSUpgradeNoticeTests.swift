@@ -16,7 +16,7 @@ private final class UpgradeNoticeBundleAnchor {}
         #expect(message.contains("macOS \(major).5.2 and cannot serve"))
         #expect(message.contains("Update to macOS 27 or later"))
         #expect(message.contains("App Attest only"))
-        #expect(message.contains("Darkbloom MDM is retired"))
+        #expect(!message.contains("MDM"))
         #expect(!message.contains("Keep your Darkbloom profile installed"))
         #expect(!message.contains("remains supported during the transition"))
     }

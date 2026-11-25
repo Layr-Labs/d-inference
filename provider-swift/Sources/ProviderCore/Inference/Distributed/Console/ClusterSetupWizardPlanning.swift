@@ -161,20 +161,23 @@ enum ClusterSetupPlanning {
     /// plan: the installed session is started from rank 0, over the pinned
     /// route only this Mac holds. `coordinator`: the setup will serve through
     /// the coordinator, so tensor parallel is planned with equal shares only
-    /// (`ClusterPlacementFlow.decide`). It plans on a stack of its own
-    /// (`ClusterPlanningStack`): its caller's stack holds only the wait.
+    /// (`ClusterPlacementFlow.decide`). `freePagesFirst`: planned again after a
+    /// Mac's load gate refused its share (`ClusterPlacementPolicy.freePagesFirst`).
+    /// It plans on a stack of its own (`ClusterPlanningStack`): its caller's
+    /// stack holds only the wait.
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
                        measurements: [ClusterSpeedMeasurement], leader: String?? = .none,
                        served: [ClusterServedSpeedRecords.Entry] = [], link: ClusterLinkCosts = .unmeasured,
                        shareProbes: ClusterShareProbeHistory? = nil, now: Double = Date().timeIntervalSince1970,
                        peerMayReceive: Bool = false, keeping: [String: ClusterGenerationMode] = [:],
-                       coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:]) -> [Decision] {
+                       coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:],
+                       freePagesFirst: Bool = false) -> [Decision] {
         ClusterPlanningStack.run {
             decideOnPlanningStack(readings: readings, description: description, localMemberID: localMemberID,
                 localProfile: localProfile, peerProfile: peerProfile, peerModels: peerModels, measurements: measurements,
                 leader: leader, served: served, link: link, shareProbes: shareProbes, now: now, peerMayReceive: peerMayReceive,
-                keeping: keeping, coordinator: coordinator, chosenModes: chosenModes)
+                keeping: keeping, coordinator: coordinator, chosenModes: chosenModes, freePagesFirst: freePagesFirst)
         }
     }
 
@@ -186,7 +189,7 @@ enum ClusterSetupPlanning {
                                               served: [ClusterServedSpeedRecords.Entry], link: ClusterLinkCosts,
                                               shareProbes: ClusterShareProbeHistory?, now: Double, peerMayReceive: Bool,
                                               keeping: [String: ClusterGenerationMode], coordinator: Bool,
-                                              chosenModes: [String: ClusterForcedMode]) -> [Decision] {
+                                              chosenModes: [String: ClusterForcedMode], freePagesFirst: Bool) -> [Decision] {
         // The wizard's own steps lead from this Mac; the onboarding and the service's re-plans pass the Mac the cluster
         // was set up on (`ClusterControlDerivation.planLeader`). A `nil` leader leaves rank 0 to the planner.
         let sessionLeader: String? = leader ?? localMemberID
@@ -253,7 +256,7 @@ enum ClusterSetupPlanning {
                             localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements,
                             tensorAssistantQuote: quote, tensorWideningQuote: widening(quote), tensorWidthQuotes: widths(quote),
                             leader: sessionLeader, served: served, link: link, shareProbes: probes, incumbentMode: incumbent,
-                            chosenMode: family, coordinator: coordinator)
+                            chosenMode: family, coordinator: coordinator, freePagesFirst: freePagesFirst)
                     }
                     var decided = selected.decision
                     let assistantQuote = selected.quote, fellBack = discovered != nil && selected.quote != discovered
@@ -264,7 +267,7 @@ enum ClusterSetupPlanning {
                             measurements: measurements, tensorAssistantQuote: assistantQuote,
                             tensorWideningQuote: widening(assistantQuote), tensorWidthQuotes: widths(assistantQuote),
                             leader: sessionLeader, served: served, link: link, shareProbes: probes, incumbentMode: incumbent,
-                            chosenMode: family, coordinator: coordinator)
+                            chosenMode: family, coordinator: coordinator, freePagesFirst: freePagesFirst)
                         if fellBack { decided.lines = [assistantDoesNotFit] + decided.lines }
                     }
                     return (decided, assistantQuote)
@@ -473,10 +476,10 @@ enum ClusterSetupPlanning {
     /// serve (`ClusterServedSpeedRecords.Setup.servedAs`: `serving`, and tensor parallel with Qwen's tensor assistant
     /// exactly when `tensorAssistant`). `servedAs` alone reads a record that does not say how it was served as served
     /// either way, which suits a plan only because such a record is an earlier build's, and `servedBy` keeps those out
-    /// of it; here it may have been served the other way (pair-2's Qwen decoded 34-36 tok/s locally with the assistant,
-    /// 14-20 through Darkbloom without it). A mode's rate is that of the latest earlier build (by its newest request)
-    /// that served it, read as one build's records are (`ClusterServedModes.figures`), so two modes' rates can come
-    /// from different builds.
+    /// of it; here it may have been served the other way (a DevNet pair's Qwen decoded 34-36 tok/s locally with the
+    /// assistant, 14-20 through Darkbloom without it). A mode's rate is that of the latest earlier build (by its newest
+    /// request) that served it, read as one build's records are (`ClusterServedModes.figures`), so two modes' rates can
+    /// come from different builds.
     static func earlierFigures(_ entries: [ClusterServedSpeedRecords.Entry], builds: [String: String], serving: ClusterServedScope,
                                tensorAssistant: Bool, promptTokens: Int, outputTokens: Int) -> [ClusterGenerationMode: Double] {
         let earlier = entries.filter { entry in

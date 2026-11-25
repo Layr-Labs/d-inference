@@ -175,7 +175,7 @@ enum ClusterPairCommands {
         return await serve(actions, config: config, say: say)
     }
 
-    /// The pair's own look, nil unless it serves: a start then asks nothing of either Mac (journey 2a on pair-2, J2-b: a
+    /// The pair's own look, nil unless it serves: a start then asks nothing of either Mac (seen on a DevNet pair: a
     /// script's start on a serving pair said "starting the pair"). Only that look, the status `cluster status` reads (on
     /// the Mac that follows, the leading Mac's answer), says the pair serves; this Mac's own view decides only whether to
     /// ask: while the pair runs here and the other Mac answers, so a start whose other Mac is away goes on at once, as
@@ -234,7 +234,7 @@ enum ClusterPairCommands {
     private enum Started: Sendable { case asked, serviceFailed([String]), notEverywhere([String]) }
 
     private static func serve(_ actions: ClusterPairActions, config: String?, say: Say) async -> Int32 {
-        // Says what the service step does before it does it (the pair-2 run, P2-3: a start with no terminal stopped the
+        // Says what the service step does before it does it (a DevNet run: a start with no terminal stopped the
         // session service and installed its login agent without a word).
         if ClusterService.running(), !ClusterServiceAgent.installedLabels().contains(where: { ClusterServiceAgent.isLoaded(label: $0) }) {
             say("  This Mac's cluster service runs from a terminal session: replacing it with its login agent, which starts at "

@@ -154,13 +154,15 @@ final class JinjaSanitizationTests: XCTestCase {
         let sanitized = sanitizeJinjaMessages([raw])[0]
         XCTAssertFalse(containsUnrepresentableLeaf(sanitized))
 
-        // Non-null argument survives; the null `unit` key is dropped.
+        // Both arguments survive: the null `unit` is the call the model made,
+        // so it stays as Jinja's null (the bridge converts it) instead of
+        // being dropped.
         let toolCalls = sanitized["tool_calls"] as? [any Sendable]
         let firstCall = toolCalls?.first as? [String: any Sendable]
         let function = firstCall?["function"] as? [String: any Sendable]
         let arguments = function?["arguments"] as? [String: any Sendable]
         XCTAssertEqual(arguments?["city"] as? String, "SF")
-        XCTAssertNil(arguments?["unit"])
+        XCTAssertEqual(arguments?["unit"] as? Jinja.Value, .null)
     }
 
     // MARK: - (b) Tool schema with null values

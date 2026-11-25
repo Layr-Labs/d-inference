@@ -22,9 +22,11 @@
 // Relay channel: a model whose entries also ride the reasoning chunks that
 // carry their tokens, as vLLM-style servers attach them (GLM5-Next and
 // Nemotron Super, `ProviderLoop.logprobsCoverReasoning`), keeps an
-// `EngineV2LogprobsChannel` on the coordinator relay. The scheduler (GLM) or
-// the Super owner appends the entries there before the text they precede,
-// and the frames loop splices them into the next content or reasoning frame
+// `EngineV2LogprobsChannel` on the coordinator relay. The scheduler (GLM)
+// appends the entries there before the text they precede; the Super owner
+// appends those its output shows, before the chunk that shows them
+// (`NemotronSuperCarriedLogprobs`). The frames loop splices them into the next
+// content or reasoning frame
 // (`ProviderLoop.injectLogprobs`), so a response that ends while reasoning
 // still returns them. A raw-body owner (Super) on the local API returns them
 // the same way through `LocalChatUploadResponder`.

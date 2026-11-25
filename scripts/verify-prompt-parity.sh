@@ -27,13 +27,11 @@ export PROMPT_PARITY_REQUIRED=1
 export PROMPT_PARITY_VECTORS="$ROOT/fixtures/prompt-contract/v1/production_vectors.json"
 export PROMPT_PARITY_ARTIFACT_ROOT="$ARTIFACT_ROOT"
 # CI runs this against the test build it already made (PROMPT_PARITY_SKIP_BUILD=1).
-skip_build=()
-[[ "${PROMPT_PARITY_SKIP_BUILD:-0}" == 0 ]] || skip_build=(--skip-build)
-swift test --package-path "$ROOT/provider-swift" --configuration "$CONFIGURATION" \
-  ${skip_build[@]+"${skip_build[@]}"} --filter ProductionPromptParityTests 2>&1 | tee "$WORK/swift.log"
-# A renamed or skipped suite must never turn qualification into a silent pass.
-grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' "$WORK/swift.log"
-if grep -qE '^[^A-Za-z0-9]*(Test|Suite) .+ skipped[.:]|with [1-9][0-9]* tests? skipped|skipped [1-9][0-9]* test' "$WORK/swift.log"; then
-  echo "Public prompt qualification skipped tests" >&2
-  exit 1
-fi
+[[ "${PROMPT_PARITY_SKIP_BUILD:-0}" != 0 ]] ||
+  swift build --package-path "$ROOT/provider-swift" --configuration "$CONFIGURATION" --build-tests
+# A renamed or skipped suite must never turn qualification into a silent pass:
+# run-nested-suite.sh fails a run that executes no test or skips one.
+(
+  cd "$ROOT/provider-swift"
+  ../scripts/run-nested-suite.sh ProductionPromptParityTests --configuration "$CONFIGURATION"
+)

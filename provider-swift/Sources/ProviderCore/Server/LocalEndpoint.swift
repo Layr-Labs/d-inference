@@ -22,7 +22,7 @@ public enum LocalEndpoint {
     // MARK: - Directory
 
     static func directory() -> URL {
-        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"], !override.isEmpty {
+        if let override = LocationOverride.localDirectory.value() {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
         return BuildEnvironment.current.installDirectory()

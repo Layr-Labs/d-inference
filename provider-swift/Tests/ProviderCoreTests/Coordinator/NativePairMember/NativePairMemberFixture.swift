@@ -25,6 +25,8 @@ final class MemberFixtureSigner: AttestationSigner, @unchecked Sendable {
     private var pauseAt: Int?, calls = 0
     init() { entered.enter() }
     func pause(onCall number: Int) { lock.withLock { pauseAt = number } }
+    /// The `sign` calls so far, including one that is paused.
+    var callCount: Int { lock.withLock { calls } }
     var isPaused: Bool { entered.wait(timeout: .now()) == .success }
     func resume() { release.signal() }
     var publicKeyBase64: String { Data(key.publicKey.x963Representation.dropFirst()).base64EncodedString() }
@@ -47,7 +49,24 @@ final class NativePairMemberFixture: @unchecked Sendable {
     let policy: Data
     let starts: [ClusterNativeAuthorizationStart]
     let installations: [NativePairMemberInstallation]
-    let prepareUnix, expiresUnix: Int64
+    /// The session's wall-clock windows, fixed on first read, as a coordinator
+    /// stamps them when it reserves the pair, just before its prepare.
+    var prepareUnix: Int64 { sessionWindows.prepare }
+    var expiresUnix: Int64 { sessionWindows.expires }
+    private let preparationNanoseconds, lifetimeNanoseconds: Int64
+    private let windowsLock = NSLock()
+    private var fixedWindows: (prepare: Int64, expires: Int64)?
+    private var sessionWindows: (prepare: Int64, expires: Int64) {
+        windowsLock.withLock {
+            if let fixedWindows { return fixedWindows }
+            let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+            let windows = (prepare: now + preparationNanoseconds, expires: now + lifetimeNanoseconds)
+            fixedWindows = windows
+            return windows
+        }
+    }
+    /// Builds the starts' common part for a membership epoch.
+    private let makeCommon: (UUID) throws -> ClusterNativeAuthorizationCommon
     var directories: [URL] { (0..<2).map { root.appendingPathComponent("rank-\($0)") } }
 
     /// The helper built beside this test bundle.
@@ -77,8 +96,8 @@ final class NativePairMemberFixture: @unchecked Sendable {
         let helperBytes = try Self.helper()
         root = try Self.privateRoot()
         let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
-        prepareUnix = now + preparationSeconds * 1_000_000_000
-        expiresUnix = now + lifetimeSeconds * 1_000_000_000
+        preparationNanoseconds = preparationSeconds * 1_000_000_000
+        lifetimeNanoseconds = lifetimeSeconds * 1_000_000_000
         let native = Data(SHA256.hash(data: helperBytes))
         var hashes = (0..<8).map { memberDigest("member-fixture-hash-\($0)") }
         hashes[2] = native
@@ -94,14 +113,18 @@ final class NativePairMemberFixture: @unchecked Sendable {
         integer(UInt32(4136)); integer(UInt32(4096)); integer(UInt64(64)); integer(UInt64(262144))
         integer(UInt64(now + 3_600_000_000_000)); integer(UInt32(1)); string("Apple M4")
         policy = p
-        let common = try ClusterNativeAuthorizationCommon(epoch: UUID(), membershipGeneration: 7, nativePolicyGeneration: 11,
-            membershipTranscriptSHA256: memberDigest("fixture-membership-only"),
-            approvedNativeBindingSHA256: Data(SHA256.hash(data: p)), planSHA256: hashes[0], artifactSHA256: hashes[1],
-            nativeRuntimeSHA256: hashes[2], capabilitySHA256: hashes[5], resourcePolicySHA256: hashes[6], profileSHA256: hashes[7],
-            schedule: .oneChunkLookahead, maximumTransportFrameBytes: 4136,
-            limits: .init(maximumPlaintextBytes: 4096, maximumRecordsPerDirection: 64, maximumCumulativePlaintextBytesPerDirection: 262144))
-        starts = try (0..<2).map { rank in try .init(common: common, rank: rank,
-            ownerIncarnation: UUID(), leaseID: UUID(), launchID: UUID()) }
+        let approval = p, digests = hashes
+        let makeCommon: (UUID) throws -> ClusterNativeAuthorizationCommon = { epoch in
+            try ClusterNativeAuthorizationCommon(epoch: epoch, membershipGeneration: 7, nativePolicyGeneration: 11,
+                membershipTranscriptSHA256: memberDigest("fixture-membership-only"),
+                approvedNativeBindingSHA256: Data(SHA256.hash(data: approval)), planSHA256: digests[0], artifactSHA256: digests[1],
+                nativeRuntimeSHA256: digests[2], capabilitySHA256: digests[5], resourcePolicySHA256: digests[6], profileSHA256: digests[7],
+                schedule: .oneChunkLookahead, maximumTransportFrameBytes: 4136,
+                limits: .init(maximumPlaintextBytes: 4096, maximumRecordsPerDirection: 64, maximumCumulativePlaintextBytesPerDirection: 262144))
+        }
+        self.makeCommon = makeCommon
+        let common = try makeCommon(UUID())
+        starts = try NativePairMemberFixture.pairStarts(common)
         // These must equal what the helper's MemberFixtureConfiguration builds.
         let configurationSHA256 = memberHex(memberDigest("fixture-config"))
         let identity = ClusterWorkerIdentity(membershipEpoch: common.epoch, modelID: "fixture-model",
@@ -137,15 +160,29 @@ final class NativePairMemberFixture: @unchecked Sendable {
 
     deinit { try? FileManager.default.removeItem(at: root) }
 
-    /// A coordinator-to-member frame exactly as the coordinator builds it.
-    func message(_ type: String, rank: Int, nonce: String, sequence: UInt64, payload: Data? = nil) throws -> NativePairMessage {
+    /// The next pair session's starts: the same approval under a new epoch.
+    func nextStarts() throws -> [ClusterNativeAuthorizationStart] {
+        try Self.pairStarts(makeCommon(UUID()))
+    }
+
+    /// Both ranks' starts of one pair session.
+    private static func pairStarts(_ common: ClusterNativeAuthorizationCommon) throws -> [ClusterNativeAuthorizationStart] {
+        try (0..<2).map { rank in try .init(common: common, rank: rank,
+            ownerIncarnation: UUID(), leaseID: UUID(), launchID: UUID()) }
+    }
+
+    /// A coordinator-to-member frame exactly as the coordinator builds it,
+    /// for `start` (default: this fixture's start of `rank`).
+    func message(_ type: String, rank: Int, nonce: String, sequence: UInt64, payload: Data? = nil,
+                 start: ClusterNativeAuthorizationStart? = nil) throws -> NativePairMessage {
+        let start = start ?? starts[rank]
         var preparation = Data([68, 66, 78, 80, 82, 1])
         let n = UInt32(policy.count)
         for shift in stride(from: 24, through: 0, by: -8) { preparation.append(UInt8(truncatingIfNeeded: n >> shift)) }
-        preparation.append(policy); preparation.append(starts[rank].canonicalBytes)
-        let body = payload ?? (type == "native_pair_prepare" ? preparation : starts[rank].canonicalBytes)
+        preparation.append(policy); preparation.append(start.canonicalBytes)
+        let body = payload ?? (type == "native_pair_prepare" ? preparation : start.canonicalBytes)
         return try .init(type: type, memberNonce: nonce,
-            epoch: withUnsafeBytes(of: starts[rank].common.epoch.uuid) { memberHex(Data($0)) },
+            epoch: withUnsafeBytes(of: start.common.epoch.uuid) { memberHex(Data($0)) },
             generation: 7, sequence: sequence, payload: body,
             prepareBeforeUnixNano: prepareUnix, expiresAtUnixNano: expiresUnix)
     }
@@ -194,9 +231,14 @@ final class MemberFixturePeer: @unchecked Sendable {
     var client: CoordinatorClient!
     var nonce = ""
     var context: NativePairMemberConnection!
-    init(installation: NativePairMemberInstallation) {
+    convenience init(installation: NativePairMemberInstallation) {
         let signer = MemberFixtureSigner()
-        self.signer = signer; control = .init(installation: installation, signer: signer)
+        self.init(control: .init(installation: installation, signer: signer), signer: signer)
+    }
+    /// A member whose control already exists (a member loop's, or one that
+    /// outlived an earlier connection); `signer` is the control's.
+    init(control: NativePairMemberControl, signer: MemberFixtureSigner) {
+        self.control = control; self.signer = signer
     }
     /// With `installProductionGate` the control is installed the way the serve
     /// loop installs it and nothing bypasses the TLS requirement.

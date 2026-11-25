@@ -68,14 +68,18 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
         guard expected == identity, profileID == profile.id, readiness() != nil else { throw DistributedEngineError.unavailable }
         // Stop strings stay in the provider. Sampling goes to the decoding
         // rank; a stochastic request carries its resolved seed.
-        if let refusal = profile.refusal(for: request) { throw DistributedEngineError.refused(refusal) }
+        if let refusal = profile.refusal(for: request, ownerRequest: deadlineContext.ownerRequest) {
+            throw DistributedEngineError.refused(refusal)
+        }
         let sampling = DistributedSampling.wire(for: request, vocabularySize: profile.vocabularySize)
         guard sampling == nil || request.sampling.seed != nil else { throw DistributedEngineError.refused(.invalidSampling) }
         let uptime = DispatchTime.now().uptimeNanoseconds
         // The workers have no lifetime: their rank leases are renewed while
-        // the request runs, so only the request's own budget bounds it.
+        // the request runs, so only the request's own budget bounds it. The
+        // engine sets it (the setup's request timeout, or the protocol's hour
+        // for the owner's request on the pair's local API).
         let deadlines = try deadlineContext.localDeadlines(at: ContinuousClock.now,
-            uptimeBeforeNow: uptime, maximumRemaining: profile.requestTimeout,
+            uptimeBeforeNow: uptime, maximumRemaining: DistributedRequestDeadlineContext.protocolMaximum,
             lifetimeDeadline: .max)
         // The faster way for this request: the pair is chosen only when it is
         // predicted faster than the member alone beyond the tie tolerance, so

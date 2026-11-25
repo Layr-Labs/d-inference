@@ -28,13 +28,15 @@ scratch_path="$worker_package_dir/.build-native-worker"
 jobs="${DARKBLOOM_CLUSTER_WORKER_BUILD_JOBS:-2}"
 # Both compilation and final linker deployment are 26.2. The shared library
 # package and normal ProviderCore retain macOS 14; no Mach-O rewriting is used.
+# Every product links a fixed 8 MiB main-thread stack (scripts/check-fixed-stack.sh).
 swift build --package-path "$worker_package_dir" --scratch-path "$scratch_path" \
   -c release --jobs "$jobs" --disable-automatic-resolution --skip-update --disable-build-manifest-caching \
   --product "$product" --triple arm64-apple-macosx26.2 \
-  -Xcc -target -Xcc arm64-apple-macosx26.2 >&2
+  -Xcc -target -Xcc arm64-apple-macosx26.2 -Xlinker -stack_size -Xlinker 0x800000 >&2
 binary_dir="$(swift build --package-path "$worker_package_dir" --scratch-path "$scratch_path" \
   -c release --show-bin-path --triple arm64-apple-macosx26.2)"
 binary="$binary_dir/$product"
+"$(cd "$(dirname "$0")/../.." && pwd)/scripts/check-fixed-stack.sh" "$binary"
 # The pair driver is control only: it must link no MLX at all, so it has no
 # JACCL backend to verify and needs no Metal library beside it.
 case "$product" in

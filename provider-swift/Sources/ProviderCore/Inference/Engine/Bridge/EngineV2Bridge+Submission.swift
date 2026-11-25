@@ -53,6 +53,7 @@ extension EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
+        cachePolicy: RequestCachePolicy = .default,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
         mimoClusterImages: Data? = nil,
@@ -74,6 +75,7 @@ extension EngineV2Bridge {
                 requestId: requestId,
                 cacheScope: cacheScope,
                 cacheEnabled: cacheEnabled,
+                cachePolicy: cachePolicy,
                 usageSignal: usageSignal,
                 multimodal: multimodal,
                 mimoClusterImages: mimoClusterImages,
@@ -133,12 +135,90 @@ extension EngineV2Bridge {
     /// once at coordinator-frame receipt and converted to a remaining
     /// monotonic duration only at atomic engine admission. Existing local/test
     /// callers use the non-throwing overload.
+    ///
+    /// The owner's request on the local API (`OwnerMemoryWait.current`, no
+    /// coordinator deadline, not a loop exit's continuation) waits for the
+    /// memory requests already running hold instead of a refusal at once
+    /// (`submittingOwnerRequest`), and on a pair for its first token, with no
+    /// first-token allowance (`OwnerMemoryWait.waitsForFirstToken`); every
+    /// other request is submitted once, with the pair's allowance.
     public func submitTokenized(
         promptTokens: [Int],
         request: ChatCompletionRequest,
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
+        cachePolicy: RequestCachePolicy = .default,
+        usageSignal: EngineV2RequestUsageSignal? = nil,
+        multimodal: CBv2MultimodalInput? = nil,
+        mimoClusterImages: Data? = nil,
+        clusterStillImages: Data? = nil,
+        clusterGLMMedia: Data? = nil,
+        clusterQwenMedia: Data? = nil,
+        qwenMediaLifetime: DistributedQwenMediaLifetime? = nil,
+        positionState: CBv2PositionState? = nil,
+        hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
+        mediaKind: EngineV2MediaKind? = nil,
+        tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        stopStringScope: CBv2StopStringScope? = nil,
+        donationDemand: SSDCheckpointDonationDemand? = nil,
+        firstContentDeadline: FirstContentDeadline?,
+        profile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil,
+        promptWork: PromptWork? = nil,
+        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
+        distributedRequestOrigin: ContinuousClock.Instant? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving,
+        loopGuard: GenerationLoopGuard? = nil
+    ) async throws -> AsyncStream<GenerationEvent> {
+        // The owner's request on the local API, its continuations included; only a first submission waits.
+        let ownerRequest = OwnerMemoryWait.servesOwnerRequest(firstContentDeadline: firstContentDeadline)
+        let ownerWait = OwnerMemoryWait.current.flatMap { wait in
+            ownerRequest && EngineAdmissionPriority.current == 0 ? wait : nil
+        }
+        var earlierAttempt = false
+        func attempt(_ origin: ContinuousClock.Instant?, _ waitEnd: ContinuousClock.Instant?) async throws
+            -> AsyncStream<GenerationEvent> {
+            if earlierAttempt {
+                // The earlier attempt, ended before admission, reuses this request id and usage signal: its pump
+                // finishes, its task's cleanup included, before this one starts.
+                if let earlier = pumpTasks[Self.normalizedRequestId(requestId)] { await earlier.value }
+                await usageSignal?.awaitEarlierAttempt()
+            }
+            earlierAttempt = true
+            return try await submitTokenizedAttempt(
+                promptTokens: promptTokens, request: request, requestId: requestId, cacheScope: cacheScope,
+                cacheEnabled: cacheEnabled, cachePolicy: cachePolicy, usageSignal: usageSignal, multimodal: multimodal,
+                mimoClusterImages: mimoClusterImages, clusterStillImages: clusterStillImages,
+                clusterGLMMedia: clusterGLMMedia, clusterQwenMedia: clusterQwenMedia,
+                qwenMediaLifetime: qwenMediaLifetime, positionState: positionState,
+                hybridPrefixIdentity: hybridPrefixIdentity, mediaKind: mediaKind, tokenConstraint: tokenConstraint,
+                stopStringScope: stopStringScope, donationDemand: donationDemand,
+                firstContentDeadline: firstContentDeadline, profile: profile,
+                serviceReservationID: serviceReservationID, serviceReservation: serviceReservation,
+                promptWork: promptWork, distributedDeadlineContext: distributedDeadlineContext,
+                distributedRequestOrigin: origin,
+                appliesDistributedFirstTokenBudget: ownerWait?.waitsForFirstToken != true,
+                ownerRequest: ownerRequest, holdsOwnerHead: ownerWait != nil, ownerWaitEnd: waitEnd,
+                measurementPurpose: measurementPurpose, loopGuard: loopGuard)
+        }
+        guard let wait = ownerWait else { return try await attempt(distributedRequestOrigin, nil) }
+        let (worstCaseTokens, overflow) = promptTokens.count.addingReportingOverflow(
+            outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count, ownerRequest: ownerRequest))
+        return try await submittingOwnerRequest(
+            wait, model: request.model, worstCaseTokens: overflow ? Int.max : worstCaseTokens,
+            origin: distributedRequestOrigin, attempt: attempt)
+    }
+
+    /// One submission of `submitTokenized`.
+    private func submitTokenizedAttempt(
+        promptTokens: [Int],
+        request: ChatCompletionRequest,
+        requestId: String? = nil,
+        cacheScope: String = "",
+        cacheEnabled: Bool = true,
+        cachePolicy: RequestCachePolicy = .default,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
         mimoClusterImages: Data? = nil,
@@ -163,6 +243,14 @@ extension EngineV2Bridge {
         promptWork: PromptWork? = nil,
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
+        appliesDistributedFirstTokenBudget: Bool = true,
+        /// The owner's request (`OwnerMemoryWait`), a loop exit's continuation included: on a pair, the
+        /// protocol's hour.
+        ownerRequest: Bool = false,
+        /// The owner's first submission, which may wait: held until admission, streamed or not.
+        holdsOwnerHead: Bool = false,
+        /// The owner's wait's end (`submittingOwnerRequest`): still queued then, it leaves as busy; nil, no end.
+        ownerWaitEnd: ContinuousClock.Instant? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving,
         /// Stops the row as `length` once its answer repeats verbatim
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
@@ -226,9 +314,14 @@ extension EngineV2Bridge {
             try media.validate(prompt:promptTokens)
             imageBoundCacheScope = cacheScope.isEmpty ? "" : cacheScope + "|mimo=" + media.fingerprint
         } else { imageBoundCacheScope = cacheScope }
+        let submissionPolicy = PrefixCacheSubmissionPolicy(
+            cachePolicy: cachePolicy,
+            memoryOnlyTierAvailable: ssdHybridCheckpointStore?.memoryOnlyTier?.isAvailable == true && multimodal == nil
+                && !servesDistributedPair && ownedEngine is EngineV2)
         // Never manufacture an authenticated scope from an image digest.
-        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil && clusterQwenMedia == nil
-            && (mimoClusterImages == nil || !cacheScope.isEmpty)
+        let imageCacheEnabled = submissionPolicy.cacheEnabled(
+            cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil && clusterQwenMedia == nil
+                && (mimoClusterImages == nil || !cacheScope.isEmpty))
         // This is our frame-receipt clock when available, never an upstream wall
         // timestamp. Local engines are unaffected by the distributed-only context.
         let httpResponse = DistributedHTTPResponseScope.current
@@ -308,7 +401,8 @@ extension EngineV2Bridge {
         }
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
-        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)
+        let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count,
+                                           ownerRequest: ownerRequest)
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
             serviceReservation: serviceReservation, promptTokens: promptTokens.count,
             maxOutputTokens: max(0, maxOutputTokens),
@@ -499,16 +593,16 @@ extension EngineV2Bridge {
         if imageCacheEnabled, (multimodal == nil || mediaHybridCacheEligible),
             ssdPrefixCache != nil || ssdHybridCheckpointStore != nil || residentPrefixCacheEvidence != nil
         {
-            let receiptID = mintPrefixCacheReceiptID()
+            let receiptID = mintPrefixCacheReceiptID(memoryOnly: !submissionPolicy.usesSSDTier)
             prefixCacheReceiptID = receiptID
-            if let ssd = ssdPrefixCache, let callback = usageSignal?.onCacheReady {
+            if submissionPolicy.usesSSDTier, let ssd = ssdPrefixCache, let callback = usageSignal?.onCacheReady {
                 ssd.registerReadyReceipt(requestID: receiptID, callback: callback)
                 readyReceiptRegistered = true
             }
             // Native media keys address exact encoder boundaries, not the
             // coordinator's fixed-block hash contract. Do not advertise a
             // fabricated aligned holder; actual engine reuse still reports usage.
-            if !nativeMediaCacheEligible, let store = ssdHybridCheckpointStore,
+            if submissionPolicy.usesSSDTier, !nativeMediaCacheEligible, let store = ssdHybridCheckpointStore,
                 let callback = usageSignal?.onCacheReady {
                 store.registerReadyReceipt(requestID: receiptID, promptTokens: promptTokens,
                                            cacheScope: checkpointScope, callback: callback)
@@ -518,7 +612,7 @@ extension EngineV2Bridge {
             // demand hint rides the receipt ID. It survives an abandoned stage
             // (the same receipt retries cold) and clears at terminal or when the
             // request ends in error below.
-            if let donationDemand, let store = ssdHybridCheckpointStore {
+            if submissionPolicy.usesSSDTier, let donationDemand, let store = ssdHybridCheckpointStore {
                 store.registerDonationDemand(donationDemand, requestID: receiptID)
             }
             if multimodal == nil, let evidence = residentPrefixCacheEvidence, let usageSignal,
@@ -555,6 +649,22 @@ extension EngineV2Bridge {
             usageSignal?.finalizeLookup(
                 failure: .policy,
                 fallbackTier: prefixCacheFallbackTier)
+        } else if submissionPolicy.usesMemoryOnlyTier, let tier = ssdHybridCheckpointStore?.memoryOnlyTier,
+            let prefixCacheReceiptID, let liveEngine = ownedEngine as? EngineV2
+        {
+            let importRequest = cbv2Request
+            let stageResult = await tier.stage(requestID: prefixCacheReceiptID, request: importRequest,
+                reserveReadScratch: { try liveEngine.reserveCompleteCheckpointReadScratch() }) {
+                try liveEngine.planCompleteCheckpointImport(manifest: $0, request: importRequest)
+            }
+            ssdStaged = stageResult.staged
+            ssdReuseAttempted = stageResult.staged
+            usageSignal?.record(stageResult: stageResult)
+            if case .skippedCapacity = stageResult.disposition {
+                emitPrefixCacheColdFallback(requestId: id, reason: "stage_capacity", capacityRefusal: true)
+            }
+        } else if !submissionPolicy.usesSSDTier {
+            // No SSD stage: the engine's RAM-tier lookup settles the receipt.
         } else if let store = ssdHybridCheckpointStore, let prefixCacheReceiptID,
             let liveEngine = ownedEngine as? EngineV2
         {
@@ -722,9 +832,10 @@ extension EngineV2Bridge {
                 // stream that fails at once. Nonthrowing callers still get the
                 // message in-band.
                 continuation.finish()
+                OwnerMemoryAttempt.current?.sharedKVRefusedBytes =
+                    nativeRequestBytes ?? requestReservationBytes(tokenCount: worstCaseTokens)
                 throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
-                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
-                        + "but the shared KV budget has no headroom")
+                    "token_budget_exhausted: request requires \(worstCaseTokens) tokens " + Self.sharedKVNoHeadroom)
             }
         }
 
@@ -857,6 +968,9 @@ extension EngineV2Bridge {
         var engineAdmittedAt = ContinuousClock.now
         // A pair's first-token allowance as its engine arms it, also for a
         // request without a coordinator budget (the wedge monitor's backstop).
+        // The owner's local request has none (`appliesDistributedFirstTokenBudget`):
+        // its request deadline bounds it, and the pair's collective progress
+        // limit still ends a stalled rank.
         var distributedFirstTokenAllowance: ContinuousClock.Instant?
         guard canSubmitWithNativeOwner(), let engine = ownedEngine else {
             await releasePreSubmitResources(
@@ -878,12 +992,17 @@ extension EngineV2Bridge {
                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
                 : nil)
         let distributed = engine as? DistributedCBv2Engine
+        // The owner's request on a pair runs for the worker protocol's hour, not the setup's request timeout.
+        let distributedRequestTimeout = ownerRequest ? DistributedCBv2Engine.ownerRequestTimeout : nil
         let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
-                                                         firstTokenDeadline: firstContentDeadline?.instant)
+                                                         firstTokenDeadline: firstContentDeadline?.instant,
+                                                         requestTimeout: distributedRequestTimeout,
+                                                         ownerRequest: ownerRequest)
+        let firstTokenPolicy = appliesDistributedFirstTokenBudget ? distributedFirstTokenBudgetPolicy : nil
         do {
             let selectedContext = try originContext.map { original in
                 let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
-                return try distributedFirstTokenBudgetPolicy.map { policy in
+                return try firstTokenPolicy.map { policy in
                     try policy.restricting(bounded, receivedAt: distributedOrigin,
                                            inputTokenCount: promptTokens.count)
                 } ?? bounded
@@ -1039,7 +1158,7 @@ extension EngineV2Bridge {
                     // reservations run one after another, each for up to 30 s,
                     // and cancels and capacity reads need this actor meanwhile.
                     let submitted = try await distributed.submitAwaitingQueue(
-                        engineRequest, deadlineContext: selectedContext)
+                        engineRequest, deadlineContext: selectedContext, requestTimeout: distributedRequestTimeout)
                     events = submitted.events
                     if clusterQwenMedia != nil { nativeRetirement = submitted.retirement }
                 } else {
@@ -1130,12 +1249,13 @@ extension EngineV2Bridge {
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributed?.profile)
+            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributed?.profile,
+                                                                    ownerRequest: ownerRequest)
             let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
             // Refusals are typed, as on one Mac: thrown before any stream
             // exists, so a streamed request gets its status rather than a 200
             // that fails at once ("Response generation failed": a long prompt
-            // to a Gemma 4 pair on the leader's local API, pair-2 2026-11-08).
+            // to a Gemma 4 pair on the leader's local API, a DevNet pair, 2026-11-08).
             // - Memory: the 503, on this Mac (a paged slot's only memory gate,
             //   a request that can never fit its grant) and on a pair (both
             //   Macs' memory now).
@@ -1178,11 +1298,13 @@ extension EngineV2Bridge {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }
 
-        // A streamed request on this Mac's API sends its response head only once the engine admits it, so an end
-        // before admission for this Mac's memory is answered with the memory 503 (`holdHeadUntilAdmitted`). Its
-        // prompt progress starts there too. A pair's API, whose queue is before its engine, says its prompt now.
+        // A streamed request on this Mac's API, and the owner's streamed or not, returns (and sends its response
+        // head) only once the engine admits it, so an end before admission for this Mac's memory is answered with
+        // the memory 503, or, for the owner's, waits and is submitted again (`holdHeadUntilAdmitted`,
+        // `submittingOwnerRequest`). Its prompt progress starts there too. A pair's API, whose queue is before its
+        // engine, says its prompt now.
         // Held before the pump starts, so the pump's terminal finds it (`recordHeadHoldRefusal`).
-        let holdsHead = prefillProgress != nil && distributed == nil && LocalHeadHold.enabled
+        let holdsHead = (prefillProgress != nil || holdsOwnerHead) && distributed == nil && LocalHeadHold.enabled
         if holdsHead {
             heldHeads[id] = .waiting
         } else {
@@ -1216,7 +1338,14 @@ extension EngineV2Bridge {
             }
         }
         if holdsHead {
-            try await holdHeadUntilAdmitted(id: id)
+            do {
+                try await holdHeadUntilAdmitted(id: id, until: ownerWaitEnd)
+            } catch {
+                // The hold's own end (the engine's, its bound, or the client leaving) already settled the request: the
+                // dropped stream's termination must not cancel a later attempt under the same id.
+                continuation.onTermination = nil
+                throw error
+            }
             // The engine has admitted the prompt: it says so until its first token.
             prefillProgress?.accept(promptTokens: promptTokens.count)
         }

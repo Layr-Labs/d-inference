@@ -47,11 +47,12 @@ struct LocalStreamingFailureTests {
     /// A GLM slot refusal thrown before the stream exists is answered as a
     /// 503 JSON error before any SSE header, for streaming and non-streaming
     /// requests alike, with fixed words that name this Mac's memory instead of
-    /// the marker.
-    @Test(arguments: [true, false])
-    func glmSlotRefusalIs503BeforeHeaders(stream: Bool) async throws {
+    /// the marker: busy, with `Retry-After`, while held requests take the room;
+    /// a smaller request asked for only when it can never fit.
+    @Test(arguments: [(true, false), (false, false), (true, true), (false, true)])
+    func glmSlotRefusalIs503BeforeHeaders(stream: Bool, neverFits: Bool) async throws {
         let router = Router<BasicRequestContext>()
-        let service = MLXOpenAIService(engine: LocalCapacityRefusalFixture())
+        let service = MLXOpenAIService(engine: LocalCapacityRefusalFixture(neverFits: neverFits))
         let upload = LocalChatUploadResponder(inner: router.buildResponder(), service: service)
         let app = Application(responder: CORSResponder(inner: upload),
             configuration: .init(address: .hostname("127.0.0.1", port: 0)))
@@ -62,26 +63,26 @@ struct LocalStreamingFailureTests {
                 headers: [.contentType: "application/json"], body: body) { response in
                 #expect(response.status == .serviceUnavailable)
                 #expect(response.headers[.contentType] == "application/json")
+                #expect(response.headers[.retryAfter] == (neverFits ? nil : "10"))
                 let text = String(buffer: response.body)
                 #expect(!text.contains("data: "))
                 #expect(!text.contains("token_budget_exhausted"))
                 let envelope = try #require(JSONSerialization.jsonObject(
                     with: Data(text.utf8)) as? [String: Any])
                 let error = try #require(envelope["error"] as? [String: Any])
-                #expect(error["message"] as? String == "This Mac's memory can't hold this request right now. "
-                    + "Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other "
-                    + "requests finish.")
+                #expect(error["message"] as? String == (neverFits ? memoryExceedsIdleWords : memoryBusyWords))
             }
         }
     }
 }
 
 private struct LocalCapacityRefusalFixture: MLXServerEngine {
+    var neverFits = false
     func availableModels() async throws -> [MLXServerModel] { [.init(id: "fixture")] }
     func streamChatCompletion(request: OpenAIChatCompletionRequest) async throws
         -> AsyncThrowingStream<MLXServerGenerationEvent, Error>
     {
-        throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: false, reservedTokens: 61_440)
+        throw EngineV2Bridge.glm5NextSlotRefusal(neverFits: neverFits, reservedTokens: 61_440)
     }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { .init(tokens: [1]) }
     func detokenize(_ request: DetokenizeRequest) async throws -> DetokenizeResponse { .init(text: "ok") }

@@ -62,15 +62,23 @@ final class NemotronSuperSlotOwner: Sendable {
                     trustsSchemaMetadata: Bool, logprobs: EngineV2LogprobsChannel? = nil,
                     usageSignal: EngineV2RequestUsageSignal? = nil,
                     donationDemand: SSDCheckpointDonationDemand? = nil,
-                    firstContentDeadline: FirstContentDeadline? = nil) -> any MLXServerEngine {
+                    cachePolicy: RequestCachePolicy = .default,
+                    firstContentDeadline: FirstContentDeadline? = nil,
+                    cancelCause: (@Sendable () -> InferenceEarlyEndCause?)? = nil) -> any MLXServerEngine {
         chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
                     trustsSchemaMetadata: trustsSchemaMetadata, logprobs: logprobs, usageSignal: usageSignal,
-                    donationDemand: donationDemand, firstContentDeadline: firstContentDeadline)
+                    donationDemand: donationDemand, cachePolicy: cachePolicy,
+                    firstContentDeadline: firstContentDeadline, cancelCause: cancelCause)
     }
 
     /// The reference prompt length; see `NemotronSuperLocalImageHTTP`.
     func promptTokenCount(body: Data, trustsSchemaMetadata: Bool) -> Int {
         chat.promptTokenCount(body: body, trustsSchemaMetadata: trustsSchemaMetadata)
+    }
+
+    /// Test seam: the owner the chat route admits requests on.
+    func localOwnerForTesting() async -> NemotronSuperLocalBridgeBuilder.Owner? {
+        await transaction.ownerForTesting
     }
 
     /// Rejects new chat work and joins it, then closes the owner: bindings,

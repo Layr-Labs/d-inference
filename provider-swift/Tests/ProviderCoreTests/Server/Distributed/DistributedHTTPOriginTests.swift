@@ -10,13 +10,16 @@ import Testing
 @Suite(.timeLimit(.minutes(1)))
 struct DistributedHTTPOriginTests {
     private let publicModelID = "local/Verified-Example"
+    /// With the pair's first-token allowance restored for local requests (`DARKBLOOM_LOCAL_FIRST_TOKEN_WAIT=0`), it is
+    /// selected from the request's receipt, across its body, acquisition and tokenization. The local request's own
+    /// deadline is the worker protocol's hour from its receipt, not the setup's request timeout (30 s here).
     @Test func streamingHandlerRetainsReceiptAcrossBodyAcquireAndTokenization() async throws {
         let policy = try DistributedFirstTokenBudgetPolicy(
             baseMilliseconds: 10_000, millisecondsPerInputToken: 1)
-        let result = try await runHTTP(policy: policy, bodyDelay: .milliseconds(25))
+        let result = try await runHTTP(policy: policy, bodyDelay: .milliseconds(25), firstTokenWait: false)
         let origin = try #require(result.capture.receivedAt)
         let context = try #require(result.context)
-        #expect(context.generationDeadline == origin.advanced(by: .seconds(30)))
+        #expect(context.generationDeadline == origin.advanced(by: .seconds(3600)))
         #expect(context.firstTokenDeadline == origin.advanced(by: .milliseconds(10_003)))
         #expect(origin <= result.capture.instant("body")!)
         #expect(result.capture.instant("bodyReady")! <= result.capture.instant("acquire")!)
@@ -30,7 +33,7 @@ struct DistributedHTTPOriginTests {
     @Test func delayedBodyExhaustsExplicitBudgetWithoutNativeReservation() async throws {
         let policy = try DistributedFirstTokenBudgetPolicy(
             baseMilliseconds: 20, millisecondsPerInputToken: 0)
-        let result = try await runHTTP(policy: policy, bodyDelay: .milliseconds(60))
+        let result = try await runHTTP(policy: policy, bodyDelay: .milliseconds(60), firstTokenWait: false)
         #expect(result.status == .serviceUnavailable)
         #expect(result.reservations == 0 && result.context == nil)
         #expect(result.capture.output.contains("error"))
@@ -39,11 +42,25 @@ struct DistributedHTTPOriginTests {
         #expect(DistributedRequestOrigin.current == nil)
     }
 
+    /// The local API's own request on a pair carries no first-token deadline, and its request deadline is the worker
+    /// protocol's hour, not the setup's request timeout (30 s here): a body that takes longer than the pair's
+    /// first-token budget is served.
+    @Test func aLocalRequestCarriesNoFirstTokenDeadline() async throws {
+        let policy = try DistributedFirstTokenBudgetPolicy(baseMilliseconds: 20, millisecondsPerInputToken: 0)
+        let result = try await runHTTP(policy: policy, bodyDelay: .milliseconds(60))
+        let context = try #require(result.context)
+        #expect(context.firstTokenDeadline == nil)
+        #expect(context.generationDeadline == (try #require(result.capture.receivedAt)).advanced(by: .seconds(3600)))
+        #expect(result.status == .ok && result.reservations == 1)
+        #expect(result.capture.output.contains("t4") && result.capture.output.contains("[DONE]"))
+        #expect(result.capture.releaseCount == 1)
+    }
+
     @Test func absentPolicyKeepsFirstTokenDeadlineAbsent() async throws {
         let result = try await runHTTP(policy: nil, bodyDelay: .milliseconds(40))
         let context = try #require(result.context)
         #expect(context.firstTokenDeadline == nil)
-        #expect(context.generationDeadline == result.capture.receivedAt!.advanced(by: .seconds(30)))
+        #expect(context.generationDeadline == result.capture.receivedAt!.advanced(by: .seconds(3600)))
         #expect(result.status == .ok && result.capture.releaseCount == 1)
     }
 
@@ -118,7 +135,8 @@ struct DistributedHTTPOriginTests {
                   maxOutputTokens: 2, maxContextTokens: 18, requestTimeout: .seconds(30))
     }
 
-    private func runHTTP(policy: DistributedFirstTokenBudgetPolicy?, bodyDelay: Duration) async throws
+    private func runHTTP(policy: DistributedFirstTokenBudgetPolicy?, bodyDelay: Duration,
+                         firstTokenWait: Bool = true) async throws
         -> (capture: HTTPOriginCapture, context: DistributedRequestDeadlineContext?,
             status: HTTPResponse.Status, reservations: Int) {
         let publicModelID = self.publicModelID
@@ -145,7 +163,7 @@ struct DistributedHTTPOriginTests {
                     container: nil, isVLM: false, engineV2Bridge: bridge)
             },
             tokenizerProvider: { _ in .init(tokenizer: entry.tokenizer, modelType: nil) },
-            availableModels: { [publicModelID] }, mtpSlots: { [] })
+            availableModels: { [publicModelID] }, mtpSlots: { [] }, firstTokenWait: firstTokenWait)
         let json = "{\"model\":\"\(publicModelID)\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"temperature\":0,\"max_tokens\":2}"
         let request = Request(
             head: .init(method: .post, scheme: "http", authority: "localhost", path: "/v1/chat/completions"),

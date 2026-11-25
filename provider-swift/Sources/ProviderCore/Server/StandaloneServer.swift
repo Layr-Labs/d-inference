@@ -248,6 +248,9 @@ public actor StandaloneServer {
     /// `ProviderLoop.EngineV2SlotHooks`; nil in production.
     struct V2TestHooks: Sendable {
         let physicalMemoryBytes: UInt64?
+        /// Overrides the process-wide GLM retained-owner charge in the fleet budget (nil ⇒ the live charge). Tests
+        /// pin it: a charge another test in the same process left retained would otherwise shrink their budget.
+        let retainedResidentBytes: UInt64?
         let measuredKVHeadroomBytes: UInt64?
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
         let beforeWeightLoad: (@Sendable (String) async throws -> Void)?
@@ -265,6 +268,7 @@ public actor StandaloneServer {
 
         init(
             physicalMemoryBytes: UInt64? = nil,
+            retainedResidentBytes: UInt64? = nil,
             measuredKVHeadroomBytes: UInt64? = nil,
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             beforeWeightLoad: (@Sendable (String) async throws -> Void)? = nil,
@@ -278,6 +282,7 @@ public actor StandaloneServer {
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
+            self.retainedResidentBytes = retainedResidentBytes
             self.measuredKVHeadroomBytes = measuredKVHeadroomBytes
             self.emitTelemetry = emitTelemetry
             self.beforeWeightLoad = beforeWeightLoad
@@ -339,6 +344,9 @@ public actor StandaloneServer {
     /// KV/activation buffers accumulate in MLX's cache under sustained local
     /// serving and are only returned to the OS on unload/shutdown.
     private var kvSweepTask: Task<Void, Never>?
+    /// Releases the RAM-only prefix tier on an OS memory-pressure warning or
+    /// critical, as the provider loop's monitor does.
+    private(set) var memoryPressureMonitor: MemoryPressureMonitor?
     /// Sweep cadence. Fixed (ProviderLoop derives its cadence from
     /// heartbeat/2; there is no heartbeat here); the reclaimer itself
     /// rate-limits and threshold-gates, so this only bounds reaction
@@ -589,6 +597,12 @@ public actor StandaloneServer {
                 kvBudget.proactiveReclaimSweep()
             }
         }
+        memoryPressureMonitor?.cancel()
+        let monitor = MemoryPressureMonitor(
+            clearCache: { [memoryOnlyPool = kvBudget.memoryOnlyPool] in memoryOnlyPool.releaseAll(reason: .pressure) },
+            writeMarker: { _ in }, emit: { _, _ in })
+        monitor.start()
+        memoryPressureMonitor = monitor
         lifecycleState = .running
         startMTPUpgradeMonitor()
     }
@@ -682,6 +696,9 @@ public actor StandaloneServer {
     }
 
     func finishShutdown(serviceTask: Task<Void, Never>?) async {
+        kvBudget.memoryOnlyPool.releaseAll(reason: .shutdown)
+        memoryPressureMonitor?.cancel()
+        memoryPressureMonitor = nil
         let originalServiceTask = stoppingServiceTask ?? serverTask ?? serviceTask
         stoppingServiceTask = originalServiceTask
         lifecycleControlTask?.cancel()
@@ -1036,10 +1053,11 @@ public actor StandaloneServer {
     /// `activationReserveBytes` overrides the live serving-set reserve for a
     /// PROSPECTIVE set (a `setModels` preflight); nil reads live.
     func fleetKVBudgetBytes(
-        extraWeightBytes: Int, activationReserveBytes: UInt64? = nil
+        extraWeightBytes: Int, activationReserveBytes: UInt64? = nil,
+        excludingModelIDs: Set<String> = []
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
-        for (_, slot) in slots {
+        for (id, slot) in slots where !excludingModelIDs.contains(id) {
             let (sum, overflow) = totalWeights
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
@@ -1048,7 +1066,9 @@ public actor StandaloneServer {
             ?? ProcessInfo.processInfo.physicalMemory
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
-            residentWeightBytes: GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
+            residentWeightBytes: v2TestHooks?.retainedResidentBytes
+                .map { GLM5NextLoadFaultState.saturatingSum([totalWeights, $0]) }
+                ?? GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
             activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
             configReserveBytes: 0)
     }
@@ -1260,6 +1280,7 @@ public actor StandaloneServer {
                 fleetKVBudgetBytes: fleetBudget,
                 minimumGrantBytes: minimumGrants)
         }
+        kvBudget.memoryOnlyPool.updateBudget(fleetKVHeadroomBytes: fleetBudget)
         guard Self.resliceKeepsSlotsServiceable(targets, existing: existing)
         else {
             let floorGb = String(
@@ -1369,7 +1390,16 @@ public actor StandaloneServer {
             }
         }
 
+        if bundle.bridge.isGLM5NextManaged {
+            await bundle.bridge.installGLMSoloGrant { [weak self] in await self?.glmSoloGrant(for: modelId) }
+        }
         return SlotBuild(bundle: bundle, sizing: sizing)
+    }
+
+    private func glmSoloGrant(for id: String) -> UInt64? {
+        let peers = Set(slots.keys).union(modelsLoading).union(evictingModels).subtracting([id])
+        guard slots[id] != nil, !peers.isEmpty else { return nil }
+        return fleetKVBudgetBytes(extraWeightBytes: 0, excludingModelIDs: peers)
     }
 
     /// Post-bridge-guard failure unwind (mirrors
@@ -1405,6 +1435,8 @@ public actor StandaloneServer {
     /// from the eviction path, i.e. inside `isLoadingAny`. The floors keep
     /// a slot a load funded to its floor from being shrunk back below it.
     func resliceGrowSurvivors() async {
+        // Host memory: the RAM-only tier follows the serving set whatever native MiMo owns.
+        kvBudget.memoryOnlyPool.updateBudget(fleetKVHeadroomBytes: fleetKVBudgetBytes(extraWeightBytes: 0))
         guard nativeMiMoReclaimAllowed else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
         guard !survivors.isEmpty else { return }
@@ -1581,6 +1613,7 @@ public actor StandaloneServer {
         // retained free KV segments, so drop both once before evicting a
         // cached model for room.
         var poolDropped = !GlobalKVCacheBudget.busyEnginesKeepReclaimableMemory()
+        var tierReleased = false
         while await availableMemoryGb() < requiredGb {
             try Task.checkCancellation()
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
@@ -1588,6 +1621,13 @@ public actor StandaloneServer {
             if !poolDropped {
                 poolDropped = true
                 await releaseReclaimableMemoryForLoad()
+                continue
+            }
+            // With both rollbacks set the pool is never dropped, but the
+            // RAM-only prefix tier still yields before any model does.
+            if !tierReleased, kvBudget.memoryOnlyPool.bytesInUse > 0 {
+                tierReleased = true
+                kvBudget.memoryOnlyPool.releaseAll(reason: .load)
                 continue
             }
             guard allowEviction, await evictLRUIdleSlot() else {
@@ -1598,10 +1638,12 @@ public actor StandaloneServer {
         }
     }
 
-    /// Drops what a load reclaims without evicting: retained free KV
-    /// segments (engines drop them at their next step; this waits briefly),
-    /// then MLX's buffer cache, which device-filled segments return to.
+    /// Drops what a load reclaims without evicting: the RAM-only prefix tier,
+    /// retained free KV segments (engines drop them at their next step; this
+    /// waits briefly), then MLX's buffer cache, which device-filled segments
+    /// return to.
     func releaseReclaimableMemoryForLoad() async {
+        kvBudget.memoryOnlyPool.releaseAll(reason: .load)
         await GlobalKVCacheBudget.releaseRetainedKVSegments()
         if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
     }

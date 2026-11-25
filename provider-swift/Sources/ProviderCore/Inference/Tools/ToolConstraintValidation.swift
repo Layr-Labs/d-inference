@@ -116,6 +116,66 @@ enum ToolConstraintValidation {
         }
     }
 
+    /// Whether a call returned as generated breaks the request's declaration:
+    /// a function it did not declare, or arguments its schema (as the caller
+    /// sent it, when known) refuses, with its local `$ref`s inlined as
+    /// OpenRouter's validator resolves them. An approximation of OpenRouter's
+    /// UnknownName and SchemaMismatch with this validator. When the inliner
+    /// refuses the schema, a reference with a `type` beside it (the
+    /// coordinator keeps a cycle so) reads as that type and the rest inline;
+    /// a schema that still does not inline is checked as written, blind to
+    /// its references. Telemetry only: it refuses nothing.
+    static func breaksDeclaration(_ call: ToolCall, prepared: ToolChoicePromptPolicy.Prepared) -> Bool {
+        guard prepared.allowedToolNames.contains(call.function.name),
+            let tool = (prepared.declaredTools ?? prepared.tools)?
+                .first(where: { $0.function.name == call.function.name })
+        else { return true }
+        guard let declared = tool.function.parameters else { return false }
+        return !validateJSONSchema(.object(call.function.arguments), schema: inlined(declared), depth: 0)
+    }
+
+    private static func inlined(_ schema: MLXLMCommon.JSONValue) -> MLXLMCommon.JSONValue {
+        var budget = QwenStrictToolSchema.maximumInlinedNodes
+        if let inlined = try? QwenStrictToolSchema.inlineReferences(schema, budget: &budget) { return inlined }
+        let hinted = typedReferencesRead(schema, depth: 0)
+        budget = QwenStrictToolSchema.maximumInlinedNodes
+        return (try? QwenStrictToolSchema.inlineReferences(hinted, budget: &budget)) ?? hinted
+    }
+
+    /// `schema` with each reference node's `$ref` dropped when a type stands
+    /// beside it (a string pointer and a type name or list of names), so the
+    /// node reads as that type; a map that merely has such keys (properties
+    /// named `$ref` and `type`, enum data) is kept.
+    private static func typedReferencesRead(_ schema: MLXLMCommon.JSONValue, depth: Int) -> MLXLMCommon.JSONValue {
+        guard depth < 64 else { return schema }
+        switch schema {
+        case .object(var object):
+            if case .string? = object["$ref"], isTypeName(object["type"]) { object.removeValue(forKey: "$ref") }
+            return .object(object.mapValues { typedReferencesRead($0, depth: depth + 1) })
+        case .array(let items):
+            return .array(items.map { typedReferencesRead($0, depth: depth + 1) })
+        default:
+            return schema
+        }
+    }
+
+    private static func isTypeName(_ value: MLXLMCommon.JSONValue?) -> Bool {
+        switch value {
+        case .string?: true
+        case .array(let names)?: !names.isEmpty && names.allSatisfy { if case .string = $0 { true } else { false } }
+        default: false
+        }
+    }
+
+    /// How many of `calls` break the declaration when the request returns
+    /// them as generated; a request that validates its calls breaks none.
+    static func countBreakingDeclaration(
+        _ calls: [ToolCall], prepared: ToolChoicePromptPolicy.Prepared, responseStarted: Bool
+    ) -> Int {
+        guard prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted) else { return 0 }
+        return calls.filter { breaksDeclaration($0, prepared: prepared) }.count
+    }
+
     /// Calls withheld until the end of generation. When the token limit cut
     /// the answer (`cutAtLimit`, `TokenLimitCutPolicy`), a set that fails is
     /// checked one call at a time and a call that fails is dropped: forced
@@ -425,7 +485,13 @@ enum ToolConstraintValidation {
         {
             return true
         }
-        if !unionAsserted, !finiteMatched, !refBearing {
+        // A render type the ingress repair wrote beside a mixed `enum`, a `not`
+        // of that type or an `if`/`then`/`else` typed otherwise (and beside a
+        // union) does not hold a non-null value the node admits, as the call
+        // parser reads it (`QwenParserLiteralReading.rendersSiblingType`, the
+        // SDK's `ToolArgumentNormalization.rendersSiblingType`).
+        let renderHint = value != .null && QwenParserLiteralReading.rendersSiblingType(object)
+        if !unionAsserted, !finiteMatched, !refBearing, !renderHint {
             let types = schemaTypes(object["type"])
             if !types.isEmpty,
                 !types.contains(where: { matches(value, type: $0) })
@@ -791,7 +857,7 @@ enum ToolConstraintValidation {
         return true
     }
 
-    private static let renderOnlyAnnotationKeys: Set<String> = [
+    static let renderOnlyAnnotationKeys: Set<String> = [
         "$anchor", "$comment", "$id", "$schema", "default", "deprecated",
         "description", "examples", "readOnly", "title", "writeOnly",
     ]

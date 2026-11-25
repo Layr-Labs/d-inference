@@ -144,6 +144,10 @@ extension ClusterConsoleCheck {
         // An empty journal: with one that is not empty the approval this check asks for would be refused, not asked.
         let operations = ScriptedOperations([ConsoleFixtures.snapshot(link: ConsoleFixtures.bridgedLink, saved: ConsoleFixtures.savedSetup(),
             candidate: ConsoleFixtures.candidate(), journal: .emptyJournal)])
+        // The link it reads agrees with the snapshot's. With the scripted default (a ready link) each reading
+        // differed from the bridged link shown, so the screen refreshed itself every few ticks for the whole check,
+        // and a screen read at any moment could land in a frame still being written.
+        operations.link = ConsoleFixtures.bridgedLink
         // What each signal did before the screen opened, to compare with afterwards.
         func disposition(_ number: Int32) -> Int {
             var action = sigaction()
@@ -188,12 +192,24 @@ extension ClusterConsoleCheck {
         expect(resized(60, 10) { $0.count == 10 }, "smaller while scrolled")
         expect(resized(132, 300) { $0.count == 300 && $0[1].hasPrefix("Readiness") }, "a window that shows everything starts at the top: \(pty.screen.prefix(2))")
         // A window change repaints even when the frame is the same: the terminal may have redrawn or clipped it.
-        let painted = pty.output.utf8.count
+        // Every frame starts at the cursor's home, so the output split there lists the frames written. The console
+        // writes one frame at a time and writes a frame twice in a row only after a window change, so a frame begun
+        // after `written` that equals the one before it is that repaint, written whole.
+        func frames() -> [String] { pty.output.components(separatedBy: "\u{1B}[H") }
+        func repaintedWhole(after written: Int) -> Bool {
+            pty.wait { _ in
+                let all = frames()
+                return (written..<max(written, all.count)).contains { all[$0] == all[$0 - 1] }
+            }
+        }
+        var written = frames().count
         kill(getpid(), SIGWINCH)
-        expect(pty.wait { _ in pty.output.utf8.count > painted }, "the same frame is written again after a window change")
-        // A terminal that reports no size at all keeps the last size it had.
+        expect(repaintedWhole(after: written), "the same frame is written again, whole, after a window change")
+        // A terminal that reports no size at all keeps the last size it had. The window change is handled once its
+        // repaint is written; the screen is read after that, not after a guess at how long the repaint takes.
+        written = frames().count
         pty.resize(columns: 0, rows: 0); kill(getpid(), SIGWINCH)
-        usleep(200_000)
+        expect(repaintedWhole(after: written), "an unsized terminal is repainted with the frame it had")
         expect(pty.screen.count == 300 && run.isRunning, "an unsized terminal leaves the screen as it was: \(pty.screen.count) rows")
         // A burst of changes ends on the last size.
         for (columns, rows) in [(40, 12), (200, 5), (3, 3), (90, 28), (0, 0), (64, 20)] { pty.resize(columns: columns, rows: rows); kill(getpid(), SIGWINCH) }

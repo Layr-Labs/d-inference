@@ -1,4 +1,5 @@
 import DarkbloomFanProtocol
+import DarkbloomSigningIdentity
 import Foundation
 import Security
 
@@ -56,31 +57,15 @@ public enum FanCodeRequirements {
         return dictionary[kSecCodeInfoTeamIdentifier as String] as? String
     }
 
-    public static func requirement(identifier: String, teamID: String?) -> String {
-        guard let teamID, !teamID.isEmpty else {
-            // Local ad-hoc builds have no Team ID. NSXPCConnection still
-            // validates the peer's signature and exact signing identifier.
-            return "identifier \"\(identifier)\""
-        }
-        return "anchor apple generic and identifier \"\(identifier)\" "
-            + "and certificate leaf[subject.OU] = \"\(teamID)\""
-    }
-
     public static var ownIdentityIsProduction: Bool {
         ownTeamID() == FanIPC.teamID
     }
 
     public static func providerRequirement() -> String {
-        return requirement(
-            identifier: FanIPC.providerIdentifier,
-            teamID: FanIPC.teamID
-        )
+        DarkbloomSigningIdentity.requirement(identifier: FanIPC.providerIdentifier)
     }
 
     public static func helperRequirement() -> String {
-        return requirement(
-            identifier: FanIPC.helperIdentifier,
-            teamID: FanIPC.teamID
-        )
+        DarkbloomSigningIdentity.requirement(identifier: FanIPC.helperIdentifier)
     }
 }

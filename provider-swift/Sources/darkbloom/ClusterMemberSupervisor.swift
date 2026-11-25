@@ -80,6 +80,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var gpuHold: @Sendable () -> String? = { ClusterGPUHold.now() }
         /// How often a member held back by another build's hold on the GPU looks again.
         var gpuHoldPollSeconds: Double = 2
+        /// Real seconds per second of the restart budget's backoff, whose
+        /// limits are whole seconds. 1 in production; a test shortens it.
+        var backoffSecondScale: Double = 1
     }
 
     private let configuration: Configuration
@@ -204,8 +207,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                     log("member ended after \(Int(runSeconds)) s (\(detail)); restarting in \(wait) s "
                         + "(quick failures \(budget.quickFailures)/\(budget.limits.maxQuickFailures), "
                         + "guard teardowns \(budget.guardTeardowns)/\(budget.limits.maxGuardTeardowns))")
-                    update(phase: .backoff, detail: detail, restartAt: Date().timeIntervalSince1970 + Double(wait))
-                    await sleepInterruptibly(seconds: Double(wait))
+                    await backOff(seconds: wait, detail: detail)
                     continue
                 case .exhausted(let reason):
                     log("member ended after \(Int(runSeconds)) s (\(detail)); \(reason). Nothing runs until "
@@ -247,8 +249,14 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         }
         let wait = budget.limits.initialBackoffSeconds
         log("member ended after \(Int(runSeconds)) s (\(detail)); starting it again in \(wait) s, not counted")
-        update(phase: .backoff, detail: detail, restartAt: Date().timeIntervalSince1970 + Double(wait))
-        await sleepInterruptibly(seconds: Double(wait))
+        await backOff(seconds: wait, detail: detail)
+    }
+
+    /// One backoff of the restart budget, in the backoff phase until it ends.
+    private func backOff(seconds: Int, detail: String) async {
+        let wait = Double(seconds) * configuration.backoffSecondScale
+        update(phase: .backoff, detail: detail, restartAt: Date().timeIntervalSince1970 + wait)
+        await sleepInterruptibly(seconds: wait)
     }
 
     // MARK: - Orphan sweep

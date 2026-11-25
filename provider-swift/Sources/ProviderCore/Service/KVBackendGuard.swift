@@ -86,11 +86,14 @@ public struct KVBackendGuard: Codable, Equatable, Sendable {
 /// its `environment:` parameter (the kill switch reads through the same
 /// seam), and a store that peeked at the real process environment would
 /// punch a hole in it. Production callers pass the process environment and
-/// get the default path.
+/// get the default path. Only a debug build reads the dictionary's value; a
+/// location the process assigned (`LocationOverride.assign`) wins over it.
 public enum KVBackendGuardStore {
 
-    /// Path override, resolved from the CALLER's environment (see above).
-    public static let pathEnvKey = "DARKBLOOM_KV_BACKEND_GUARD"
+    /// Path override's variable, read from the CALLER's environment (see above)
+    /// by a debug build only; a location the process assigned wins in every
+    /// build (`LocationOverride.kvBackendGuard`).
+    public static let pathEnvKey = LocationOverride.kvBackendGuard.environmentKey
 
     /// Only an ABSOLUTE override is honored. A relative path would resolve
     /// against each process's own working directory — the launchd-spawned
@@ -102,7 +105,7 @@ public enum KVBackendGuardStore {
     public static func path(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
-        if let override = environment[pathEnvKey], !override.isEmpty,
+        if let override = LocationOverride.kvBackendGuard.value(environment: environment),
             override.hasPrefix("/")
         {
             return URL(fileURLWithPath: override)

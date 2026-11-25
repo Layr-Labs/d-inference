@@ -1,0 +1,34 @@
+name: CI (dev) nightly
+
+# Once a day, dispatch CI (dev) (.github/workflows/ci-dev.yml) on `dev`. A
+# dispatch selects every component, the non-blocking Cluster GPU shards
+# included, and never skips a tested tree, so the GPU shards run every day
+# although pull requests run them only with the `run-gpu-ci` label.
+#
+# GitHub runs schedules only from the default branch, so this file runs on
+# `master` and dispatches the `dev` copy of ci-dev.yml; it starts once it is
+# on `master`. It holds no secrets and only `actions: write`, to dispatch.
+on:
+  schedule:
+    - cron: '31 7 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-dev-nightly
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch CI (dev) on dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch CI (dev) on dev
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh workflow run ci-dev.yml --repo "$REPOSITORY" --ref dev

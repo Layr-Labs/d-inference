@@ -4,7 +4,7 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 @testable import ProviderCore
 
-/// The local API's queued-demand replacement on a pair (pair-2, Gemma 4 26B
+/// The local API's queued-demand replacement on a pair (a DevNet pair, Gemma 4 26B
 /// tensor parallel served locally, 2026-11-05): Gemma has no tensor-parallel
 /// batch quote, so queued demand priced an 8-lane pipeline, which the local
 /// server cannot swap in for a tensor-parallel generation (committed-token

@@ -143,6 +143,15 @@ public struct ClusterPlacementPolicy: Sendable {
     /// pair's own recorded keyed link and invents no rate (`DistributedAutomaticBatchPlanner`): without one it
     /// keeps the running setup.
     public var tensorParallelAssumesUnmeasuredLink = false
+    /// Planning again after a Mac's load gate refused its share (`memory_gate_refused`): within each hardware group
+    /// the candidates whose every rank's need fits its Mac's free pages alone (`ClusterDeviceMemory.admitsOnFreePages`)
+    /// go first. A rank's live fit counts the file cache, as the gate does on one sample at normal pressure, but the
+    /// gate withdraws that cache mid-load once the load has compressed or swapped out past its limits, which a Mac
+    /// short of free pages beside other programs' memory does: on a DevNet pair (2026-11-15) the MacBook's 29 Gemma
+    /// layers fitted its 12.8 GiB free plus its file cache, the gate refused them on 3.09 GiB free "plus no file
+    /// cache", and every re-plan chose the same split again. Free pages are what the gate admits on whatever happens
+    /// to the cache. When no candidate fits them, the order is as without it. False, the default.
+    public var freePagesFirst = false
     /// Why the mode is kept, in plain words: the plan's reason line when the hold decides the choice.
     public var keptModeReason: String?
     /// Feature parity (owner, 2026-11-01: a mode may be chosen only if it keeps every feature and caching behavior
@@ -243,6 +252,11 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     public let smallestHeadroomShare: Double
     /// The first cut; 0 for tensor parallel, which cuts no layer range.
     public var cut: Int { cuts.first ?? 0 }
+    /// Every rank's need within its Mac's free pages alone (`ClusterDeviceMemory.admitsOnFreePages`), as the load gate
+    /// admits once it counts no file cache: what `ClusterPlacementPolicy.freePagesFirst` puts first.
+    public func fitsOnFreePages(_ devices: [ClusterPlacementDevice]) -> Bool {
+        ranks.allSatisfy { rank in devices.first { $0.label == rank.device }?.profile.memory.admitsOnFreePages(rank.needBytes) ?? false }
+    }
     /// Tensor parallel with unequal shares: each rank's share weight (rank
     /// order); nil for equal shards and every other mode.
     public var tensorShares: [Int]? = nil
@@ -663,9 +677,18 @@ public enum ClusterPlacementPlanner {
         // applications), and a split that loads now goes first (`hardwareGroup`): said as such, never as a
         // qualification refusal (2026-10-22: a tensor-parallel share 6 GB short on a Mac whose old part still
         // held its memory read "the policy admits no tensor_parallel_v1 shape").
-        if let chosen = ranked.first, fastest.hardwareGroup > chosen.hardwareGroup {
-            let short = fastest.ranks.filter { $0.fit != .now }.map {
+        if let chosen = ranked.first, context.hardwareGroup(fastest) > context.hardwareGroup(chosen) {
+            var short = fastest.ranks.filter { $0.fit != .now }.map {
                 "\($0.device) needs \(ClusterPlacementExplanation.gibText($0.needBytes)) and admits \(ClusterPlacementExplanation.gibText($0.admissibleNowBytes)) now"
+            }
+            // Behind only for free pages (`policy.freePagesFirst`): the ranks those don't hold.
+            if short.isEmpty {
+                short = fastest.ranks.compactMap { rank in
+                    guard let memory = devices.first(where: { $0.label == rank.device })?.profile.memory,
+                          !memory.admitsOnFreePages(rank.needBytes) else { return nil }
+                    return "\(rank.device) needs \(ClusterPlacementExplanation.gibText(rank.needBytes)) and has "
+                        + "\(ClusterPlacementExplanation.gibText(memory.actualFreeBytes)) free, which a load its gate refused needs"
+                }
             }
             return make(.doesNotFit, String(format: "predicted %.2f s against %.2f s for the chosen placement, but it does not fit as these Macs are now (%@)",
                 time, chosen.prediction(regime).requestSeconds, short.joined(separator: "; ")), restingOn: fastest)
@@ -1488,7 +1511,12 @@ public enum ClusterPlacementPlanner {
         /// group: a faster split that needs applications closed first is chosen
         /// only when no split starts on the Macs as they are, so the pair starts
         /// at the fastest split that loads instead of refusing (owner, 2026-10-19).
-        func hardwareGroup(_ c: ClusterPlacementCandidate) -> Int { c.hardwareGroup }
+        /// With `policy.freePagesFirst`, each group is split in two: the
+        /// candidates every Mac's free pages hold
+        /// (`ClusterPlacementCandidate.fitsOnFreePages`) first.
+        func hardwareGroup(_ c: ClusterPlacementCandidate) -> Int {
+            policy.freePagesFirst ? 2 * c.hardwareGroup + (c.fitsOnFreePages(devices) ? 0 : 1) : c.hardwareGroup
+        }
 
         /// The share of its own hardware capacity (what it keeps resident for
         /// the GPU and admits at rest, never what is free now) the tightest

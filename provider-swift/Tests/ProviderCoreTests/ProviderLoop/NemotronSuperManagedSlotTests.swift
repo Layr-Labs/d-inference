@@ -29,7 +29,7 @@ struct NemotronSuperManagedSlotTests {
         func terminal(_ id: String) -> OutboundMessage? {
             snapshot.first {
                 switch $0 {
-                case .inferenceComplete(let request, _, _, _, _, _), .inferenceError(let request, _, _):
+                case .inferenceComplete(let request, _, _, _, _, _, _), .inferenceError(let request, _, _):
                     request == id
                 default: false
                 }
@@ -78,12 +78,14 @@ struct NemotronSuperManagedSlotTests {
     /// `environment` is the provider process environment the plan reads.
     /// `checkpointQuantizationByModel` is the `[backend]` per-model checkpoint
     /// precision table. `tokenizer` replaces the scripted three-token prompt tokenizer.
+    /// `engineShutdownTimeout` replaces the engine's shutdown bound (nil keeps the default).
     static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, physicalGiB: UInt64? = nil,
                         memory: ReturningMemory? = nil, probe: InstallationProbe? = nil,
                         decodeGate: DecodeGate? = nil,
                         environment: [String: String] = [:],
                         checkpointQuantizationByModel: [String: String] = [:],
-                        tokenizer makeTokenizer: ((SuperOutputScript) -> any MLXLMCommon.Tokenizer)? = nil)
+                        tokenizer makeTokenizer: ((SuperOutputScript) -> any MLXLMCommon.Tokenizer)? = nil,
+                        engineShutdownTimeout: TimeInterval? = nil)
         async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: totalGiB << 30, active: 0, cache: 0,
@@ -118,7 +120,8 @@ struct NemotronSuperManagedSlotTests {
             ?? directory.appendingPathComponent("prefix-cache", isDirectory: true).path
         await loop.setNemotronSuperSlotLoaderForTesting(
             loader(tokenizer: TokenizerHandle(tokenizer), template: template,
-                   physicalBytes: (physicalGiB ?? totalGiB) << 30, probe: probe),
+                   physicalBytes: (physicalGiB ?? totalGiB) << 30, probe: probe,
+                   engineShutdownTimeout: engineShutdownTimeout),
             environment: environment)
         try Data(#"{"model_type":"nemotron_h_omni"}"#.utf8).write(to: directory.appendingPathComponent("config.json"))
         return Fixture(loop: loop, budget: budget, script: script, directory: directory)
@@ -129,15 +132,18 @@ struct NemotronSuperManagedSlotTests {
     /// `pinned` plans and gates the load as the pinned checkpoint's; the
     /// fixture is still what loads.
     static func loader(tokenizer: TokenizerHandle, template: Data, physicalBytes: UInt64,
-                       probe: InstallationProbe? = nil, pinned: Bool = false) -> NemotronSuperSlotLoader {
+                       probe: InstallationProbe? = nil, pinned: Bool = false,
+                       engineShutdownTimeout: TimeInterval? = nil) -> NemotronSuperSlotLoader {
         NemotronSuperSlotLoader(pinned: pinned, physicalBytes: physicalBytes,
                                 kvBytesPerToken: { _ in 64 }) { request in
-            try await load(request, tokenizer: tokenizer, template: template, probe: probe)
+            try await load(request, tokenizer: tokenizer, template: template, probe: probe,
+                           engineShutdownTimeout: engineShutdownTimeout)
         }
     }
 
     private static func load(_ request: NemotronSuperSlotLoader.Request, tokenizer: TokenizerHandle,
-                             template: Data, probe: InstallationProbe?) async throws -> NemotronSuperSlotOwner {
+                             template: Data, probe: InstallationProbe?,
+                             engineShutdownTimeout: TimeInterval?) async throws -> NemotronSuperSlotOwner {
         let fixture = try SuperMTPInstalledFixture(
             radioDimensions: SuperMTPInstalledFixture.encodedImageTower).staging()
         let staging = NemotronSuperLocalLoad.Staging(source: fixture.source, install: {
@@ -168,7 +174,8 @@ struct NemotronSuperManagedSlotTests {
             completeCheckpointIdentity: request.modelAggregateHash.map {
                 CBv2CompleteCheckpointIdentity(modelAggregateHash: $0, promptContractID: fixturePromptContractID,
                     buildID: "super-managed-fixture", numericsFingerprint: "super-managed-fixture")
-            })
+            },
+            engineShutdownTimeout: engineShutdownTimeout)
         return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
             tokenizer: tokenizer, sizing: sizing, templateBytes: template)
     }
@@ -217,7 +224,7 @@ struct NemotronSuperManagedSlotTests {
     }
 
     static func usage(_ terminal: OutboundMessage) -> UsageInfo? {
-        if case .inferenceComplete(_, let usage, _, _, _, _) = terminal { return usage }
+        if case .inferenceComplete(_, let usage, _, _, _, _, _) = terminal { return usage }
         return nil
     }
 

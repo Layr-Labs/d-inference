@@ -66,28 +66,40 @@ public struct DistributedResidentExecutionProfile: Sendable {
     /// within the limits above (`ClusterModelFeaturePolicy.servedProfile`):
     /// all of them in tensor parallel and in a Gemma 4 pipeline, the memory
     /// plan's request in every other mode. The one source of what the pair
-    /// advertises (its slot's `SlotRequestLimits`, `LocalModelLimits(served:)`)
-    /// and of what it holds a request to: a `max_tokens` past them is cut to
-    /// fit (`EngineV2Bridge.pairServedLimits`), and a prompt past them is
-    /// refused before any rank is asked (`refusal(for:)`).
+    /// reports (its slot's `SlotRequestLimits`) and of what it holds a request
+    /// through Darkbloom to: a `max_tokens` past them is cut to fit
+    /// (`EngineV2Bridge.pairServedLimits`), and a prompt past them is refused
+    /// before any rank is asked (`refusal(for:)`). The owner's own requests and
+    /// the local `/v1/models` lists read `ownerServed`.
     public let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
+    /// What the selected mode serves the owner's own requests (the leader's local API, `darkbloom cluster local`):
+    /// `served`, or more where its ranks charge each longer request at its own context
+    /// (`ClusterModelFeaturePolicy.ownerServedProfile`). Both local `/v1/models` lists, the bridge's cut of an owner's
+    /// `max_tokens` and the refusals of an owner's request read it (`limits(ownerRequest:)`); everything the pair
+    /// reports, and every request through Darkbloom, keeps `served`.
+    public let ownerServed: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     public let requestTimeout: Duration
     /// Whether the selected resident runtime emits committed-token logprobs.
     /// Numeric sampling limits do not imply that the runtime captures them.
     public let supportsLogprobs: Bool
 
-    /// `served` defaults to the whole profile.
+    /// `served` defaults to the whole profile, `ownerServed` to `served`.
     public init(
         id: String, vocabularySize: Int, maxPromptTokens: Int, maxOutputTokens: Int,
         maxContextTokens: Int, requestTimeout: Duration, supportsLogprobs: Bool = false,
-        served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil
+        served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil,
+        ownerServed: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil
     ) throws {
         let served = served ?? (maxPromptTokens, maxOutputTokens, maxContextTokens)
+        let ownerServed = ownerServed ?? served
         guard !id.isEmpty, vocabularySize > 0, maxPromptTokens > 0, maxOutputTokens > 0,
             maxContextTokens >= maxPromptTokens, requestTimeout > .zero,
             requestTimeout <= .seconds(3600),
             (1...maxPromptTokens).contains(served.promptTokens), (1...maxOutputTokens).contains(served.outputTokens),
-            (served.promptTokens...maxContextTokens).contains(served.contextTokens)
+            (served.promptTokens...maxContextTokens).contains(served.contextTokens),
+            (1...maxPromptTokens).contains(ownerServed.promptTokens),
+            (1...maxOutputTokens).contains(ownerServed.outputTokens),
+            (ownerServed.promptTokens...maxContextTokens).contains(ownerServed.contextTokens)
         else { throw DistributedEngineError.invalidConfiguration("invalid bounded execution profile") }
         self.id = id
         self.vocabularySize = vocabularySize
@@ -95,8 +107,14 @@ public struct DistributedResidentExecutionProfile: Sendable {
         self.maxOutputTokens = maxOutputTokens
         self.maxContextTokens = maxContextTokens
         self.served = served
+        self.ownerServed = ownerServed
         self.requestTimeout = requestTimeout
         self.supportsLogprobs = supportsLogprobs
+    }
+
+    /// What the pair serves `ownerRequest`'s kind: `ownerServed` for the owner's request, else `served`.
+    func limits(ownerRequest: Bool) -> (promptTokens: Int, outputTokens: Int, contextTokens: Int) {
+        ownerRequest ? ownerServed : served
     }
 
     /// The installed-session and member-pair paths use the same selected-mode
@@ -107,11 +125,13 @@ public struct DistributedResidentExecutionProfile: Sendable {
          requestTimeout: Duration) throws {
         let wire = capability.profile
         let served = ClusterModelFeaturePolicy.servedProfile(capability, mode: generationMode)
+        let owner = ClusterModelFeaturePolicy.ownerServedProfile(capability, mode: generationMode)
         try self.init(id: wire.id, vocabularySize: wire.vocabularySize,
             maxPromptTokens: wire.maximumPromptTokens, maxOutputTokens: wire.maximumOutputTokens,
             maxContextTokens: wire.maximumContextTokens, requestTimeout: requestTimeout,
             supportsLogprobs: ClusterModelFeaturePolicy.capturesLogprobs(capability, mode: generationMode),
-            served: (served.maximumPromptTokens, served.maximumOutputTokens, served.maximumContextTokens))
+            served: (served.maximumPromptTokens, served.maximumOutputTokens, served.maximumContextTokens),
+            ownerServed: (owner.maximumPromptTokens, owner.maximumOutputTokens, owner.maximumContextTokens))
     }
 }
 
@@ -356,19 +376,20 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
         [.contextLengthExceeded, .promptTooLong, .outputTooLong, .contextTooLong].contains(self)
     }
 
-    /// The client-facing text. With the profile it names the model's limits.
-    public func message(_ profile: DistributedResidentExecutionProfile?) -> String {
-        let limit = Self.limit
+    /// The client-facing text. With the profile it names the model's limits, the owner's for the owner's request
+    /// (`DistributedResidentExecutionProfile.limits(ownerRequest:)`).
+    public func message(_ profile: DistributedResidentExecutionProfile?, ownerRequest: Bool = false) -> String {
+        let limit = Self.limit, served = profile?.limits(ownerRequest: ownerRequest)
         switch self {
         case .emptyPrompt: return "The prompt is empty."
-        case .contextLengthExceeded: return Self.contextLengthExceededMessage(contextTokens: profile?.served.contextTokens)
+        case .contextLengthExceeded: return Self.contextLengthExceededMessage(contextTokens: served?.contextTokens)
         case .promptTooLong:
-            return "The prompt is longer than this model's limit\(limit(profile?.served.promptTokens)) on this cluster."
+            return "The prompt is longer than this model's limit\(limit(served?.promptTokens)) on this cluster."
         case .invalidMaxTokens: return "max_tokens must be at least 1."
         case .outputTooLong:
-            return "max_tokens is above this model's output limit\(limit(profile?.served.outputTokens)) on this cluster."
+            return "max_tokens is above this model's output limit\(limit(served?.outputTokens)) on this cluster."
         case .contextTooLong:
-            return "The prompt plus max_tokens is above this model's context\(limit(profile?.served.contextTokens)) on this cluster."
+            return "The prompt plus max_tokens is above this model's context\(limit(served?.contextTokens)) on this cluster."
         case .tokenOutsideVocabulary: return "A token is outside this model's vocabulary."
         case .logprobsUnsupported:
             return "top_logprobs is above this cluster's limit of \(ClusterWorkerSampling.maximumTopLogprobs)."
@@ -404,8 +425,9 @@ extension DistributedResidentExecutionProfile {
     /// The first rule a request breaks on this pair, or nil when the pair can
     /// serve it. The engine refuses with it before any reservation; the owner
     /// checks it again before anything reaches a worker. Sizes are held to
-    /// what the selected mode serves (`served`).
-    func refusal(for request: CBv2Request) -> DistributedRequestRefusal? {
+    /// what the selected mode serves (`served`), the owner's request to what it serves the owner (`ownerServed`).
+    func refusal(for request: CBv2Request, ownerRequest: Bool = false) -> DistributedRequestRefusal? {
+        let served = limits(ownerRequest: ownerRequest)
         let p = request.sampling
         if request.multimodal != nil || request.positionState != nil { return .mediaUnsupported }
         if let wire = request.clusterStillImages {

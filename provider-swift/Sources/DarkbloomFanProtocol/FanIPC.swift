@@ -2,13 +2,16 @@ import Foundation
 
 public enum FanIPC {
     public static let machServiceName = "io.darkbloom.fan"
-    /// XPC message format. Unchanged by version 2 of the helper, so providers
-    /// and helpers of both versions still talk to each other.
+    /// XPC message format. Unchanged by versions 2 and 3 of the helper, so
+    /// providers and helpers of every version still talk to each other.
     public static let protocolVersion = 1
-    /// Integer helper release. Version 2 keeps one lease per provider session,
-    /// so a dev and a production provider on one Mac do not replace each
-    /// other's lease. Version 1 kept one lease for the whole Mac.
-    public static let helperVersion = "2"
+    /// Integer helper release. Version 3 accepts a provider only when a
+    /// certificate in `DarkbloomSigningIdentity.certificateSHA1s` signed it;
+    /// versions 1 and 2 accepted any certificate of the team. Version 2 keeps
+    /// one lease per provider session, so a dev and a production provider on
+    /// one Mac do not replace each other's lease. Version 1 kept one lease for
+    /// the whole Mac.
+    public static let helperVersion = "3"
     public static let helperIdentifier = "io.darkbloom.fan-helper"
     public static let providerIdentifier = "io.darkbloom.provider"
     public static let teamID = "SLDQ2GJ6TL"

@@ -167,7 +167,7 @@ struct DistributedAutomaticBatchPlanner {
             .appendingPathComponent(ClusterPlacementFlow.toolName)
         func run(_ arguments: [String], maximum: Int) throws -> Data {
             try DistributedCapabilityProbe.run(executable: tool, arguments: arguments,
-                deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000, maximumOutputBytes: maximum)
+                deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000, maximumOutputBytes: maximum, helper: .planner)
         }
         let profile = try Self.deviceProfile(tool: tool, deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000,
             homeDirectory: paths.homeDirectory, modelLoaded: ClusterService.modelLoaded())

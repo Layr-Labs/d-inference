@@ -1,6 +1,6 @@
 # Set provider cache writes and storage
 
-> Last updated: 2026-10-24
+> Last updated: 2026-11-23
 
 Set a persistent write limit and optionally store encrypted inference caches on
 a separate disk. These commands affect cache payloads; use
@@ -51,6 +51,13 @@ a separate disk. These commands affect cache payloads; use
    previously selected disks. Cleanup needs the selected volume mounted and accessible;
    see the [retention limits](../architecture/security/encryption.md#provider-cache-storage).
 
+   To stop a cache hit from extending an entry's 30 minutes of reuse, set
+   `DARKBLOOM_SSD_KV_TTL_MODE=fixed` in the provider's environment: no entry is
+   then reused more than 30 minutes (or the configured TTL) after it was written.
+   Its file is removed later, by maintenance that can reach it on the selected
+   volume, so removal has no fixed time
+   ([TTL](../reference/ssd-kv-cache.md#size-and-eviction-rules)).
+
 3. Restart the provider to load the saved settings:
 
    ```sh
@@ -84,8 +91,10 @@ from the same Secure Enclave-rooted key the single-Mac tier uses, so no new
 keychain item or permission is involved. The key reaches the rank processes
 on an input pipe, never in their environment or arguments. Records are scoped
 to the model, plan, rank and Mac, so another model, plan, rank or Mac cannot
-load them. A development build without the keychain entitlement uses an
-owner-only key file instead.
+load them. When that key is unavailable (a development build without the
+keychain entitlement, or a key that does not load in time) the pair's ranks
+use a key that lasts one session and is never written, so their records do not
+outlive that session; a key file an earlier version wrote is deleted.
 
 ## Troubleshooting
 

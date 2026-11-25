@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-23
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -33,16 +33,34 @@ lifetime; that key and the transmitted ephemeral public keys can decrypt
 recorded requests from the same lifetime
 (`provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `NodeKeyPair.generate`;
 [coordinator/internal/e2e/e2e.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/e2e/e2e.go), `SessionKeys`).
+Nothing stores or restores that key: every process generates a fresh one in
+memory, so a later process (after a restart or an update) never registers an
+earlier one's key. The byte-restoring initializer is internal and used only by
+fixed test vectors (`provider-swift/Tests/ProviderCoreTests/Crypto/EndpointKeyLifecycleTests.swift`).
 
 Hardened Runtime and debugger restrictions protect the provider process;
 they do not guarantee that every prompt, response or model buffer is zeroed
-after inference. The `secureZero` and `secureZeroData` helpers in
-`provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift` are not
-invoked by the inference path. Consumer-facing verification copy therefore
-describes process protections. Legacy device-certificate claims use the separate
-`mda_verified` proof described in [`attestation.md`](./attestation.md).
+after inference. `NodeKeyPair` zeroes the buffers it creates with `secureZero`
+(`memset_s`, `provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift`):
+the decrypted request body, which the inference handler releases only after
+the request's response has been sent, on every path including refusals,
+cancellation and errors, and which a background queue then zeroes and frees,
+off the request's path; the copy it makes of each response chunk to seal it,
+zeroed right after sealing; and its copies of the endpoint secret and of the
+request's shared key
+(`provider-swift/Tests/ProviderCoreTests/Crypto/RequestBufferWipeTests.swift`
+reads the test process's memory after each step). The response text the
+inference handler gathers while it streams (the output the response hash covers,
+the delivered text for the cancelled-stream billing floor and the reasoning it
+counts) is held in storage it owns (`ResponseTextBuffer`), zeroed as it grows
+and when the request ends; the response hash is computed from it without
+another copy. Counting reasoning tokens (and, for a cancelled stream, the
+delivered text) hands the tokenizer a string copy, which is not zeroed. Only
+these buffers are zeroed; copies made by other layers are not.
+Consumer-facing verification copy therefore describes process protections.
 [Qualified App Attest serving authorization](../../reference/provider-authorization.md)
-is an independent path and never implies legacy MDA/APNs verification.
+is an independent path and never implies legacy APNs verification; see
+[`attestation.md`](./attestation.md).
 
 ## Mechanism
 
@@ -52,10 +70,46 @@ key. The provider decrypts in-process and encrypts response chunks to that sessi
 Optional consumer sealing terminates at the coordinator; it does not hide content
 from either endpoint. See the immutable [platform transport contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/security/encryption.md).
 
+Each response chunk of a request is sealed under a nonce that numbers it: a
+16-byte prefix drawn at random for the request, then the chunk's number as a
+big-endian `UInt64`, from 0. `inference_complete` carries `encrypted_usage`:
+the usage and the chunk count, sealed the same way under the number after the
+last chunk. The box authenticates its nonce, so the coordinator can tell from
+the numbers whether it received every chunk once and in order, and settle
+from the sealed usage. The plaintext `usage` stays for coordinators that read
+only it, and every chunk is still an ordinary NaCl box
+(`provider-swift/Sources/ProviderCore/Crypto/ResponseFrameSealer.swift`).
+
 Provider cryptography is implemented by
 `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` and the provider loop.
 Authentication, code identity and encrypted transport are distinct properties.
 No inference result is proven correct merely by attesting its executable.
+
+### Coordinator connection
+
+A release build connects to its coordinator only over TLS
+(`CoordinatorTransportPolicy`) and accepts the certificate the system's trust
+evaluation accepts. Once that connection is ready, the provider also compares it
+with what the build expects (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorServerPin.swift`):
+
+- the URL's host is the build's coordinator host (`api.darkbloom.dev` for
+  production builds, `api.dev.darkbloom.dev` for dev builds,
+  `api.staging.darkbloom.dev` for staging builds);
+- the chain the system builds for that host contains an issuing certificate
+  whose SubjectPublicKeyInfo SHA-256 is one of `CoordinatorServerPin.authorityKeys`:
+  the ISRG roots the coordinators' certificates chain to, and the Sectigo and
+  USERTrust roots of a second ACME authority kept as a backup. The keys name
+  certificate authorities, not the coordinator's own key, which changes when its
+  certificate is renewed.
+
+A difference is logged as a public warning (`coordinatorHostNotPinned`,
+`coordinatorCertificateNotPinned`) with the host in a private line, once per
+process for each kind, and the connection continues: nothing is refused on this
+comparison. Each heartbeat of the connection reports the result
+(`coordinator_connection_check`, [protocol messages](../../reference/protocol-messages.md#heartbeat)),
+so the coordinator can count it by provider version. The comparison runs off
+the connection's path, one connection at a time. A debug build given a local
+test coordinator's certificate (`CoordinatorDebugCertificatePin`) skips it.
 
 ### Provider-bound field minimization
 
@@ -96,7 +150,8 @@ This table is the privacy statement. [../../consumer/privacy-expectations.md](ht
 | Token counts, latency, request/trace IDs, selected provider | yes (headers, usage) | yes; stored and logged | own requests only |
 | Consumer identity, API key, Privy DID, balance | own | yes | not forwarded as authentication/billing context; caller content can still disclose identity |
 | Provider identity: SE public key, chip, model | yes (`X-Provider-*`, `GET /v1/providers/attestation`) | yes | own |
-| Provider serial, UDID, APNs token, MDA certificate chain | no | yes (stored) | own |
+| Provider serial, APNs token | no | yes (stored) | own |
+| Legacy MDM-era device data (UDID, MDA certificate chain), no longer written | no | yes (stored until the platform's MDM drop migrations remove the columns) | own |
 | Provider X25519 private key, SE private key | no | no | own process / Secure Enclave |
 | Other consumers' prompts | no | for requests it processes | only requests routed to that provider; it may serve multiple accounts |
 
@@ -113,13 +168,26 @@ group, so it gets no persistent cache key: its SSD stores are refused with
 qualification only, a DEBUG build can instead derive the KEK from an
 operator-created private file (`DARKBLOOM_DEBUG_CACHE_KEY_FILE`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift`).
+The installation KEK has generations: since 0.10.15 the provider never reads the
+earlier generation's Keychain entry and deletes it each time it loads the current
+one, before opening or creating it; a failed deletion is logged and retried at the
+next load (`KeychainWrappedKEKStorage.retireEarlierGenerations` in
+`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`, called from
+`SSDCacheKeyMaterial.load`). No key an earlier release held protects what a later
+release writes; caches written under it are rebuilt once, as below.
 That key material sits on disk protected only by file ownership, mode `0600`
 and the volume's encryption, not the Secure Enclave; release builds do not
 contain this path. Lookup names remain keyed HMACs. Some operational
 metadata (sizes, model/layout binding and times) remains visible; the precise
 [format and observable fields](../../reference/ssd-kv-cache.md#dbk3-file-format)
 list it. A delta checkpoint names its parent only through a keyed commitment, so
-files of one conversation stay unlinkable without the cache key. TTL checks on reuse, tenant binding and authentication remain in
+files of one conversation stay unlinkable without the cache key. Inside the
+encryption no file holds a token ID: a complete checkpoint keeps a keyed digest
+of its prefix under `K_lookup` and an MTP token tensor as zeros, both rebuilt
+from the request's prompt on restore, and a pair's records keep their history
+tokens as zeros ([format](../../reference/ssd-kv-cache.md#no-token-ids-in-complete-checkpoints)).
+A request whose sealed `cache_policy` is `memory_only` writes, reads and touches
+nothing in the cache ([files a request can leave](../../reference/ssd-kv-cache.md#what-one-request-can-leave-on-disk)). TTL checks on reuse, tenant binding and authentication remain in
 force. Switching locations leaves earlier ciphertext in its old location; the
 new location's maintenance does not sweep the old one or securely erase a disk.
 TTL limits ordinary cache reuse, not physical retention: detached or inaccessible
@@ -247,7 +315,8 @@ across the Thunderbolt cable:
 - **Cluster prompt cache at rest.** AES-GCM under a key derived from the
   Secure Enclave-rooted KEK (`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterPrefixSSDKeyMaterial.swift`),
   passed to ranks on an input pipe (never in an environment), scoped to model,
-  plan, rank and Mac.
+  plan, rank and Mac. Without that KEK the owner uses a key of its own process,
+  never written; a key file an earlier build wrote is deleted.
 - **Cluster prompt cache partitions.** Both ranks keep and look up every
   prompt prefix, in memory and in their SSD tiers, only under the request's own
   partition, as one Mac does with the request's cache scope: a coordinator

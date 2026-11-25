@@ -251,9 +251,9 @@ describe('installer output', () => {
   it('never shows tokens, credentials or URL queries', () => {
     expect(
       sanitizeInstallLine(
-        `✗ Could not reach https://api.darkbloom.dev/v1/enroll?token=abc Authorization: Bearer ${'z'.repeat(40)} key=hunter2`,
+        `✗ Could not reach https://api.darkbloom.dev/v1/releases/latest?token=abc Authorization: Bearer ${'z'.repeat(40)} key=hunter2`,
       ),
-    ).toBe('Could not reach https://api.darkbloom.dev/v1/enroll Authorization … key …');
+    ).toBe('Could not reach https://api.darkbloom.dev/v1/releases/latest Authorization … key …');
   });
 
   it('reports a timeout, a reason without a step, and a bare failure', () => {

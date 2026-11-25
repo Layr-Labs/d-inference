@@ -146,7 +146,7 @@ struct NemotronSuperVideoGoldenTests {
             while let frame = try frames.next() { decoded.append(frame) }
             #expect(decoded.count == 2 * plan.tubelets, "\(clip.file)")
             #expect(decoded.allSatisfy { $0.count == 3 * plan.grid.width * plan.grid.height }, "\(clip.file)")
-            #expect(decoded.allSatisfy { $0.allSatisfy(\.isFinite) }, "\(clip.file)")
+            #expect(decoded.allSatisfy { $0.allFinite }, "\(clip.file)")
             if clip.sampledIndices.count % 2 == 1 {
                 #expect(decoded[decoded.count - 1] == decoded[decoded.count - 2], "\(clip.file)")
             }
@@ -291,5 +291,17 @@ struct SuperVideoTextTokenizer: MLXLMCommon.Tokenizer {
         for (key, value) in ["bos_token": "<s>", "eos_token": "<|im_end|>", "unk_token": "<unk>",
                              "pad_token": "<|im_end|>"] { context[key] = .string(value) }
         return encode(text: try template.render(context), addSpecialTokens: false)
+    }
+}
+
+extension Array where Element == Float {
+    /// Every value is finite, read through a buffer pointer: in a debug build,
+    /// the generic `allSatisfy` over a key path costs seconds across the
+    /// millions of decoded values (about 20M for the three golden clips).
+    var allFinite: Bool {
+        withUnsafeBufferPointer { values in
+            for value in values where !value.isFinite { return false }
+            return true
+        }
     }
 }

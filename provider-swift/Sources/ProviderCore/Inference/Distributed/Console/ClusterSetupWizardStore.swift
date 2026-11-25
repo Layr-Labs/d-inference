@@ -93,6 +93,9 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
     /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
     public var approvalNote: String? = nil
+    /// The cluster approval whose refusal `approvalNote` says, as the coordinator served it, so its pins can be compared
+    /// with the next one's; nil when the note is about anything else, or there is none.
+    public var approvalRefused: ClusterRuntimeApproval? = nil
     /// How far the leading Mac's start is (`ClusterOnboardingStartProgressMark`), published in its status for the Mac
     /// that joined; nil when no start set it.
     public var startProgress: ClusterOnboardingStartProgressMark? = nil
@@ -132,11 +135,11 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// since the start began (`ClusterOnboardingFollowedStop`). The start's own stops (a model change, the registration's
     /// restart) and the cluster service's never count. Nil before the first.
     public var stopsAsked: Int? = nil
-    /// The re-plan after a Darkbloom update the control leader's service runs on a pair that serves only on its local
-    /// API (`ClusterService.checkForUpdate`), from just before its stop until it ends; nil otherwise. A service that
-    /// starts and finds it set was ended in the middle of that re-plan (the update's own restart: W1, DevNet pair-2,
-    /// 0.10.13 `.180` → `.181`), after its stop cleared the saved start and before it served or put the start back, and
-    /// puts the start back itself (`ClusterService.resumeInterruptedUpdateReplan`).
+    /// The re-plan after a Darkbloom update the control leader's service runs (`ClusterService.checkForUpdate`), from
+    /// just before its stop until it ends; nil otherwise. A service that starts and finds it set was ended in the middle
+    /// of that re-plan (the update's own restart, seen on DevNet pairs during updates: a local-only pair and a pair
+    /// through Darkbloom), after its stop cleared the saved start and before it served or put
+    /// the start back, and puts the start back itself (`ClusterService.resumeInterruptedUpdateReplan`).
     public var updateReplan: UpdateReplanMark? = nil
 
     /// A re-plan after an update under way (`updateReplan`).

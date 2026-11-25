@@ -179,8 +179,7 @@ struct DistributedHTTPCompletionTests {
     /// gets the tokens it had and then a typed error event naming the memory
     /// refusal, with nothing after it. The pair serves the next request.
     @Test func aRequestThePairAbortedForMemoryGetsTheMemoryAnswer() async throws {
-        let words = "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
-            + "(or send less media), or retry when this Mac's other requests finish."
+        let words = memoryBusyWords
         try await withCompletionFixture { fixture in
             for (index, stream) in [false, true].enumerated() {
                 let request = try fixture.request(stream: stream, maxTokens: 3)
@@ -217,28 +216,24 @@ struct DistributedHTTPCompletionTests {
         }
     }
 
-    /// A non-streamed request has no HTTP content timer, so only the engine
-    /// can enforce the first-token budget selected at the HTTP origin.
-    @Test func nonStreamedRequestIsCancelledAtItsFirstTokenBudget() async throws {
+    /// A local request on the pair has no first-token limit (`OwnerMemoryWait.waitsForFirstToken`): streamed or not,
+    /// its first token 1.2 s after an 800 ms first-token budget is served. The pair cancelled it at the budget (the
+    /// engine for a request that isn't streamed: 500 `prefill_stall`; the HTTP content timer for a streamed one): a
+    /// request behind another's long prompt, or the first after a long idle, failed that way.
+    @Test func aLocalRequestWaitsPastThePairsFirstTokenBudget() async throws {
         try await withCompletionFixture(firstTokenBudgetMilliseconds: 800) { fixture in
-            let request = try fixture.request(stream: false)
-            let sent = ContinuousClock.now
-            let client = Task { try await URLSession.shared.data(for: request) }
-            let lease = try await fixture.startedLease()
-            // No token is committed. The pair is cancelled at the budget, and
-            // nothing is released until it acknowledges retirement.
-            #expect(try await httpDeliveryEventually { lease.cancelCount == 1 },
-                    "no cancellation within two seconds of an 800 ms first-token budget")
-            #expect(sent.duration(to: ContinuousClock.now) >= .milliseconds(800))
-            #expect(lease.releaseCount == 0)
-            lease.acknowledge()
-
-            let (data, reply) = try await client.value
-            #expect((reply as? HTTPURLResponse)?.statusCode == 500) // prefill_stall
-            #expect(try jsonObject(data)["error"] != nil)
-            // The release follows the acknowledged retirement on the engine's
-            // queue; the HTTP error can reach the client first.
-            #expect(try await httpDeliveryEventually { lease.releaseCount == 1 })
+            for (index, stream) in [false, true].enumerated() {
+                let request = try fixture.request(stream: stream)
+                let client = Task { try await URLSession.shared.data(for: request) }
+                let lease = try await fixture.startedLease(index + 1)
+                try await Task.sleep(for: .milliseconds(1_200))
+                #expect(lease.cancelCount == 0, "cancelled at the first-token budget (stream=\(stream))")
+                fixture.completeTwoTokens(lease)
+                let (data, reply) = try await client.value
+                let body = String(decoding: data, as: UTF8.self)
+                #expect((reply as? HTTPURLResponse)?.statusCode == 200, "stream=\(stream): \(body.prefix(300))")
+                #expect(body.contains("t4") && !body.contains("\"error\""), "stream=\(stream): \(body.prefix(300))")
+            }
         }
     }
 

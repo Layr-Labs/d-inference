@@ -51,6 +51,10 @@ struct GPTOSSHarmonyFraming: Sendable {
         "<|start|>assistant<|channel|>commentary to=functions.\(name) <|constrain|>json<|message|>"
     }
 
+    let start: Int
+    let channel: Int
+    let message: Int
+    let constrain: Int
     let end: Int
     /// The first message after the prompt boundary.
     let analysisHeader: [Int]
@@ -69,20 +73,28 @@ struct GPTOSSHarmonyFraming: Sendable {
         }
         let start = try control("<|start|>"), channel = try control("<|channel|>")
         let message = try control("<|message|>"), constrain = try control("<|constrain|>")
+        (self.start, self.channel, self.message, self.constrain) = (start, channel, message, constrain)
         end = try control("<|end|>")
-        func header(_ text: String, opener: Int, controls: Set<Int>) throws -> [Int] {
-            let tokens = tokenizer.encode(text: text, addSpecialTokens: false)
-            guard tokens.first == opener, tokens.last == message, tokens.filter({ $0 == message }).count == 1,
-                  tokens.allSatisfy({ $0 < firstAddedTokenID || controls.contains($0) }),
-                  tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false) == text else {
-                throw ToolConstraintSchemaError.invalid("GPT-OSS tokenizer does not encode the Harmony headers exactly")
-            }
-            return tokens
-        }
-        analysisHeader = try header(Self.analysisHeaderText, opener: channel, controls: [channel, message])
+        analysisHeader = try Self.header(Self.analysisHeaderText, tokenizer: tokenizer, opener: channel,
+            message: message, controls: [channel, message], firstAddedTokenID: firstAddedTokenID)
         callHeaders = try names.map {
-            try header(Self.callHeaderText($0), opener: start, controls: [start, channel, constrain, message])
+            try Self.header(Self.callHeaderText($0), tokenizer: tokenizer, opener: start, message: message,
+                controls: [start, channel, constrain, message], firstAddedTokenID: firstAddedTokenID)
         }
+    }
+
+    /// `text`'s tokens, when they open with `opener`, end at their only
+    /// `<|message|>`, hold no added id outside `controls`, and decode back to
+    /// `text` exactly.
+    static func header(_ text: String, tokenizer: any MLXLMCommon.Tokenizer, opener: Int, message: Int,
+                       controls: Set<Int>, firstAddedTokenID: Int) throws -> [Int] {
+        let tokens = tokenizer.encode(text: text, addSpecialTokens: false)
+        guard tokens.first == opener, tokens.last == message, tokens.filter({ $0 == message }).count == 1,
+              tokens.allSatisfy({ $0 < firstAddedTokenID || controls.contains($0) }),
+              tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false) == text else {
+            throw ToolConstraintSchemaError.invalid("GPT-OSS tokenizer does not encode the Harmony headers exactly")
+        }
+        return tokens
     }
 }
 

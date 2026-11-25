@@ -114,7 +114,7 @@ struct ClusterLinkIsolationRestore: Equatable, Sendable {
     /// A first-version keeper is still installed.
     let keeperToRemove: Bool
     /// Darkbloom's service is the port's only one, which `networksetup -removenetworkservice` refuses ("there aren't
-    /// any other network services on Thunderbolt 2", pair-2's MacBook): it is removed through SCPreferences instead.
+    /// any other network services on Thunderbolt 2", a DevNet MacBook): it is removed through SCPreferences instead.
     let lastService: ClusterLinkLastService?
 
     init?(interface: String, removeClusterService: Bool, servicesToEnable: [String],
@@ -140,7 +140,7 @@ struct ClusterLinkIsolationRestore: Equatable, Sendable {
     /// decides how the removal ended. Darkbloom's service goes first, then
     /// its address, and only then does the port go back into its bridge: a
     /// bridge entry written while the service still held the port left it in
-    /// both (pair-2's MacBook, R5-2: "not isolated: member of bridge0"). The
+    /// both (a DevNet MacBook: "not isolated: member of bridge0"). The
     /// services switched on after the entry make macOS apply it.
     var commands: [String] { commands(leavingOrder: lastService.map { [$0.serviceID] } ?? []) }
 
@@ -303,7 +303,7 @@ struct ClusterLinkLastService: Equatable, Sendable {
 
     /// The commands: the name and the device checked as an administrator, then one SCPreferences session (`scutil
     /// --prefs`) that removes the service and its link in the set, sets the order without `leavingOrder`, commits and
-    /// applies; then a read-back that the service is gone, which stops the script when it is not. Proven on pair-2's
+    /// applies; then a read-back that the service is gone, which stops the script when it is not. Proven on a DevNet
     /// MacBook (macOS 27.0, 2026-11-04): the port's last service went, and macOS put the port back in its saved
     /// bridge by itself.
     func removal(service: String, interface: String, leavingOrder: [String]) -> [String] {

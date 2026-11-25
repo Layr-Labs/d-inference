@@ -243,7 +243,7 @@ import Foundation
             return try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: value))
         }
         let route = try routed(peerWorker: "/Users/fixture/bin/darkbloom-cluster-worker")
-        let command = try ClusterPlacementFlow.peerProfileCommand(local: route.members[0], peer: route.members[1])
+        let command = try ClusterPlacementFlow.peerProfileCommand(local: route.members[0], peer: route.members[1], build: .dev)
         func option(_ value: String) -> Bool {
             zip(command.arguments, command.arguments.dropFirst()).contains { $0 == "-o" && $1 == value }
         }
@@ -258,17 +258,23 @@ import Foundation
                 && zip(command.arguments, command.arguments.dropFirst()).contains { $0 == "-l" && $1 == "fixture" })
         refused("a peer installation path a remote shell could read as more than a path is refused", because: "Unsafe SSH configuration") {
             let unsafe = try routed(peerWorker: "/Users/fixture/bin; touch x/darkbloom-cluster-worker")
-            _ = try ClusterPlacementFlow.peerProfileCommand(local: unsafe.members[0], peer: unsafe.members[1])
+            _ = try ClusterPlacementFlow.peerProfileCommand(local: unsafe.members[0], peer: unsafe.members[1], build: .dev)
         }
         refused("an installed path with a space (a DevNet build's app) is refused on the SSH route", because: "Unsafe SSH configuration") {
             let spaced = try routed(peerWorker: "/Users/fixture/Darkbloom Dev.app/Contents/MacOS/darkbloom-cluster-worker")
-            _ = try ClusterPlacementFlow.peerProfileCommand(local: spaced.members[0], peer: spaced.members[1])
+            _ = try ClusterPlacementFlow.peerProfileCommand(local: spaced.members[0], peer: spaced.members[1], build: .dev)
         }
         refused("an identity file that is not this user's own regular file is refused before anything connects", because: "Unsafe configured SSH trust file") {
             let missing = try routed(peerWorker: "/Users/fixture/bin/darkbloom-cluster-worker", identityFile: root.appendingPathComponent("absent").path)
-            _ = try ClusterPlacementFlow.peerProfileCommand(local: missing.members[0], peer: missing.members[1])
+            _ = try ClusterPlacementFlow.peerProfileCommand(local: missing.members[0], peer: missing.members[1], build: .dev)
         }
-        refused("without a profile file the step asks the other Mac, and says so when the trust files are not usable", because: "Unsafe configured SSH trust file") {
+        refused("a release build opens no SSH route to ask the other Mac for its profile", because: "developer harness only") {
+            _ = try ClusterPlacementFlow.peerProfileCommand(local: route.members[0], peer: route.members[1], build: .prod)
+        }
+        // Without a profile file the step asks the other Mac: a release build refuses the SSH route before anything
+        // else; a developer build says so when the trust files are not usable.
+        refused("without a profile file the step asks the other Mac, and says so when it cannot",
+                because: BuildEnvironment.current == .prod ? "developer harness only" : "Unsafe configured SSH trust file") {
             _ = try ClusterPlacementFlow.run(.init(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,
                 localMemberID: "mac-one", output: root.appendingPathComponent("out4")), deadline: deadline())
         }

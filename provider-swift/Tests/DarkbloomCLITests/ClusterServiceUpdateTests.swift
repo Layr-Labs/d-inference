@@ -28,8 +28,13 @@ struct ClusterServiceUpdateTests {
         ClusterSupervisionFiles.read(ClusterMemberSupervisorState.self, from: ClusterServiceAgent.supervisorStatePath(serviceDirectory: directory))
     }
 
+    /// Every wait here is a liveness bound: it ends as soon as `condition` holds, and no check waits for something
+    /// not to happen. On 8-vCPU CI Macs beside the provider shard's other test processes the real update cycle
+    /// (start check of the candidate binary, restart) ran past 20 s (run 44694412643), so each bound is tripled.
+    private static let slowRunnerFactor = 3.0
+
     private func waitUntil(seconds: Double, _ condition: () -> Bool) async -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
+        let deadline = Date().addingTimeInterval(seconds * Self.slowRunnerFactor)
         while Date() < deadline {
             if condition() { return true }
             try? await Task.sleep(nanoseconds: 50_000_000)
@@ -77,7 +82,8 @@ struct ClusterServiceUpdateTests {
                 progressPath: ClusterServiceAgent.updateProgressPath(serviceDirectory: directory),
                 recovery: recovery, follow: follow, quarantined: quarantined),
             reexec: { reexecs.add($0.joined(separator: " ")) }, startCheckTimeoutSeconds: startCheckSeconds,
-            sweepsOrphans: false)
+            // Each 1 s backoff lasts 0.1 s: no check here reads the backoff's length.
+            sweepsOrphans: false, backoffSecondScale: 0.1)
     }
 
     // MARK: - Wiring
@@ -357,8 +363,9 @@ struct ClusterServiceUpdateTests {
         #expect(!said.all.contains { $0.contains("finishes its accepted requests first") || $0.contains("update slot") }, "\(said.all)")
     }
 
-    /// W1 (11-16): a local-only pair's request the service defers (its at-once switch is off there) said "restart … now"
-    /// first and "Not restarted now" after. The first line claims no timing; the deferral is the answer.
+    /// A DevNet run (11-16): a local-only pair's request the service defers (its at-once switch is off there) said
+    /// "restart … now" first and "Not restarted now" after. The first line claims no timing; the deferral is the
+    /// answer.
     @Test func aDeferredLocalOnlyRequestIsNotAnnouncedAsARestartNow() async throws {
         let directory = try temporaryDirectory("cluster-update-local-only-deferred")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -380,8 +387,9 @@ struct ClusterServiceUpdateTests {
         #expect(said.all.last?.hasPrefix("Not restarted now.") == true, "\(said.all)")
     }
 
-    /// W1 (11-15): an update that failed for disk said only "process exited 1". Below about twice the app's size free,
-    /// the failure says how much is free and how much the update needs; with room, or outside an app bundle, nothing.
+    /// A DevNet run (11-15): an update that failed for disk said only "process exited 1". Below about twice the app's
+    /// size free, the failure says how much is free and how much the update needs; with room, or outside an app bundle,
+    /// nothing.
     @Test func aFailedUpdateOnANearlyFullDiskSaysHowMuchItNeeds() {
         let app: Int64 = 913_000_000
         let lines = Update.lowDiskLines(availableBytes: 1_825_361_100, appBytes: app)
@@ -391,6 +399,33 @@ struct ClusterServiceUpdateTests {
         #expect(Update.lowDiskLines(availableBytes: 17_000_000_000, appBytes: app).isEmpty)
         #expect(Update.lowDiskLines(availableBytes: 1_000, appBytes: nil).isEmpty)
         #expect(Update.lowDiskLines(availableBytes: nil, appBytes: app).isEmpty)
+    }
+
+    /// A DevNet run (11-17): with 1.5 GiB free the update said only "process exited 1". The CLI runs through
+    /// `~/.darkbloom/bin/darkbloom`, a symlink into the app, so `Bundle.main` named `bin/` and the app's size was never
+    /// found. The size comes from the app the running executable resolves into.
+    @Test func theAppSizeIsFoundThroughTheBinSymlink() throws {
+        let root = try temporaryDirectory("low-disk-app")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let macOS = root.appendingPathComponent("Darkbloom.app/Contents/MacOS")
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        try Data(count: 1_000).write(to: macOS.appendingPathComponent("darkbloom"))
+        try Data(count: 500).write(to: root.appendingPathComponent("Darkbloom.app/Contents/Info.plist"))
+        let bin = root.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: bin.appendingPathComponent("darkbloom").path,
+                                                   withDestinationPath: "../Darkbloom.app/Contents/MacOS/darkbloom")
+        let outer = root.appendingPathComponent("usr-local-bin-darkbloom")
+        try FileManager.default.createSymbolicLink(atPath: outer.path, withDestinationPath: bin.appendingPathComponent("darkbloom").path)
+        let app = root.appendingPathComponent("Darkbloom.app").resolvingSymlinksInPath()
+        for executable in [bin.appendingPathComponent("darkbloom"), outer, macOS.appendingPathComponent("darkbloom")] {
+            #expect(Update.appBundle(containing: executable)?.resolvingSymlinksInPath() == app, "\(executable.path)")
+        }
+        #expect(Update.runningAppBytes(app: Update.appBundle(containing: bin.appendingPathComponent("darkbloom"))) == 1_500)
+        let loose = root.appendingPathComponent("loose-cli")
+        try Data(count: 10).write(to: loose)
+        #expect(Update.appBundle(containing: loose) == nil)
+        #expect(Update.runningAppBytes(app: nil) == nil)
     }
 
     /// The old service still running the old release, with no word on the request, is no restart: the command waits.

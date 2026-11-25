@@ -154,10 +154,15 @@ struct NemotronSuperImageGoldenTests {
                         "\(fixture.name)[\(index)]")
             }
             if fixture.format == "png" {
-                var sum = 0.0, squares = 0.0
-                for value in prepared.normalizedCHW {
-                    sum += Double(value)
-                    squares += Double(value) * Double(value)
+                // The same sums in the same order, read through a pointer: a debug
+                // build's array iterator costs seconds over the fixtures' 50M values.
+                let (sum, squares) = prepared.normalizedCHW.withUnsafeBufferPointer { values in
+                    var sum = 0.0, squares = 0.0
+                    for value in values {
+                        sum += Double(value)
+                        squares += Double(value) * Double(value)
+                    }
+                    return (sum, squares)
                 }
                 // Same float32 values; only the reference's summation order differs.
                 #expect(abs(sum - reference.sum) <= 1e-9 * max(1, abs(reference.sum)), "\(fixture.name)")

@@ -93,7 +93,7 @@ public enum GLM5NextCalibrationPlacement {
             output = try DistributedCapabilityProbe.run(executable: helper,
                 arguments: ["glm-calibration-candidates", "--input", input.path]
                     + measurements.flatMap { ["--speed", $0.path] },
-                deadline: deadline, maximumOutputBytes: P.maximumBytes)
+                deadline: deadline, maximumOutputBytes: P.maximumBytes, helper: .planner)
         } catch {
             // This probe's defer waits for actual exit before throwing.
             try lease.resolve()

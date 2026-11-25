@@ -47,7 +47,7 @@ struct ClusterServiceStopReasonTests {
         #expect(ClusterService.lastError(in: url) == "Tensor-parallel shard load needs 49.08 GiB of admissible memory and has 0.17 GiB")
     }
 
-    /// The 0.10.8 candidate on pair-2 (c3, B17): the member's worker was SIGKILLed three times in one load. Each time
+    /// The 0.10.8 candidate on a DevNet pair: the member's worker was SIGKILLed three times in one load. Each time
     /// the leader's part ended because its link to the member closed ("Error: closed"), while the member's service kept
     /// its link follower running and logged nothing. The ✗ said "A part keeps ending the same way: starting; this Mac's
     /// part ended (exit 1: closed) …", "This Mac: closed." and "The other Mac (Apple M5 Max, 128 GB): its part is
@@ -292,7 +292,7 @@ struct ClusterServiceStopReasonTests {
         #expect(ClusterService.appName == BuildEnvironment.current.appDisplayName)
     }
 
-    /// The pair-2 DevNet run (P2-1) and the M5 Ultra pair's headless Mac B (A-2): macOS kept the member's link follower
+    /// A DevNet run and the M5 Ultra pair's headless Mac B (A-2): macOS kept the member's link follower
     /// off the local network ("link refused: connectFailed (unreachable)", "this process may not reach the local
     /// network"), while the service's own probe (one broadcast datagram) logged "allowed". The follower kept running and
     /// retrying, so its Mac's status said "running, no error". The truth is the follower's own last dial.
@@ -388,7 +388,7 @@ struct ClusterServiceStopReasonTests {
                 && status.next.hasSuffix("Then run `darkbloom-dev start` here, or choose Retry in `darkbloom-dev cluster`."), "\(status.next)")
     }
 
-    /// The pair-2 re-test (R-4): the leader's Local Network ✗ said the refusal three times, the last in the follower's own
+    /// A DevNet re-test: the leader's Local Network ✗ said the refusal three times, the last in the follower's own
     /// words. That ✗'s own lines already say it plainly, so each Mac's line there only says that its part can't reach the
     /// local network; any other ✗ keeps the part's own reason (A-3).
     @Test func theLocalNetworkCrossSaysTheRefusalOnce() {
@@ -423,7 +423,7 @@ struct ClusterServiceStopReasonTests {
                 == "This Mac: its part is running, no error reported.", "a short line is kept whole")
     }
 
-    /// R-3 (the pair-2 re-test): the pairing hint's firewall line and the line that asks to pair again after a reinstall
+    /// A DevNet re-test: the pairing hint's firewall line and the line that asks to pair again after a reinstall
     /// name this build's app, as macOS lists it (its firewall entry), not production's in the DevNet app.
     @Test func thePairingLinesNameThisBuildsApp() {
         let app = BuildEnvironment.current.appDisplayName

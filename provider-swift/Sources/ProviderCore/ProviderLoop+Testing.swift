@@ -89,6 +89,12 @@ extension ProviderLoop {
         desiredPrefetchRetryDelays = delays
     }
 
+    /// Test seam: shorten shutdown's wait for an unload that never finishes
+    /// (production waits `defaultShutdownUnloadWait` per slot).
+    func setShutdownUnloadWaitForTesting(_ wait: Duration) {
+        shutdownUnloadWait = wait
+    }
+
     /// Test seam: number of scheduled (not yet fired) desired-prefetch retries.
     func pendingDesiredPrefetchRetriesForTesting() -> Int { desiredPrefetchRetryTasks.count }
 
@@ -120,6 +126,47 @@ extension ProviderLoop {
         loadedModelsPersistenceEnabled = url != nil
     }
 
+    /// Test seam: the startup security posture `run()` acts on. Release builds
+    /// collect it in `applySecurityHardening`; DEBUG builds leave it unset.
+    func setSecurityPostureForTesting(_ posture: SecurityPosture?) {
+        securityPosture = posture
+    }
+
+    #if DEBUG
+    /// Test seam: startup collects its posture with the real collector, on these
+    /// boot-settings command results and kernel SIP value (`applySecurityHardening`).
+    func setBootSettingsReadingForTesting(commands: SecurityCommandRunner, kernelSIP: SIPConfiguration?) {
+        bootSettingsReadingOverride = (commands, kernelSIP)
+    }
+    #endif
+
+    /// Test seam: startup's schedule for reading Secure Boot again after a failed read.
+    func setSecureBootReadRetryForTesting(_ retry: SecureBootReadRetry) {
+        secureBootReadRetry = retry
+    }
+
+    /// Test seam: what stopping the App Attest worker waits for and reports (`stopAppAttestWorkerAndWait`), where
+    /// a test runs no worker: a retirement that hasn't finished, or one that failed.
+    func setAppAttestWorkerRetirementForTesting(_ retirement: Task<Bool, Never>?) {
+        appAttestWorkerRetirement = retirement
+    }
+
+    #if DEBUG
+    /// Test seam: what serving's teardown and the end of a refusal's hold hear about native owners
+    /// (`nativeOwnersRetired`), in order; the last answer repeats.
+    func setNativeOwnersRetiredForTesting(_ answers: [Bool]) {
+        let script = NativeOwnersRetiredScript(answers)
+        nativeOwnersRetiredForTesting = { script.next() }
+    }
+    #endif
+
+    /// Test seam: ends the stamp refresh a refusal before connecting started, on a loop that never ran (`run()`
+    /// ends it otherwise).
+    func endRefusalLivenessForTesting() {
+        refusalLiveness?.cancel()
+        refusalLiveness = nil
+    }
+
     /// Test seam: redirect `writeDaemonState()` to a temp path. Per-loop and
     /// race-free, unlike a `DARKBLOOM_STATE_FILE` setenv, which is process
     /// global and can route a concurrently running suite's daemon-state
@@ -132,6 +179,11 @@ extension ProviderLoop {
     /// marker, the shared SSD cache root, or the APNs bridge.
     func setServeUsesHostServicesForTesting(_ enabled: Bool) {
         serveUsesHostServices = enabled
+    }
+
+    /// Test seam: a shorter wait for a stopping member's release receipt.
+    func setMemberSessionReleaseTimeoutForTesting(_ seconds: TimeInterval) {
+        memberSessionReleaseTimeout = seconds
     }
 
     /// Test seam: a shorter member negotiation window, set before `run()`.
@@ -553,3 +605,19 @@ extension ProviderLoop {
 
     func nemotronSuperRetainedWeightBytesForTesting() -> UInt64 { nemotronSuperRetainedWeightBytes }
 }
+
+#if DEBUG
+/// Answers in order; the last one repeats (`setNativeOwnersRetiredForTesting`).
+final class NativeOwnersRetiredScript: @unchecked Sendable {
+    private let lock = NSLock()
+    private let answers: [Bool]
+    private var given = 0
+    init(_ answers: [Bool]) { self.answers = answers.isEmpty ? [true] : answers }
+    func next() -> Bool {
+        lock.withLock {
+            defer { given += 1 }
+            return answers[min(given, answers.count - 1)]
+        }
+    }
+}
+#endif

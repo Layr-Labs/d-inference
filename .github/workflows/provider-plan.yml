@@ -13,12 +13,19 @@ on:
         description: The caller's own route lanes, one per line (darkbloom-route.yml format)
         type: string
         default: ''
+      run_tests:
+        description: Whether the caller runs the test jobs (provider-tests.yml); routes their lanes, ci-plan-checks's included
+        type: boolean
+        default: true
     outputs:
       provider:
         description: "'true' when the provider jobs run (selected, and the tree is untested)"
         value: ${{ jobs.components.outputs.provider }}
       cluster:
         value: ${{ jobs.components.outputs.cluster }}
+      cluster_gpu:
+        description: "'true' when the non-blocking Cluster GPU shards run (cluster selected, and master push, dispatch or run-gpu-ci PR label)"
+        value: ${{ jobs.components.outputs.cluster_gpu }}
       mimo_audio:
         value: ${{ jobs.components.outputs.mimo_audio }}
       changed_provider:
@@ -30,38 +37,142 @@ on:
         value: ${{ jobs.components.outputs.changes_result }}
       skip:
         description: "'true' when a successful run already tested this tree"
-        value: ${{ jobs.tested.outputs.skip }}
+        value: ${{ jobs.components.outputs.skip }}
       tested_run:
-        value: ${{ jobs.tested.outputs.tested_run }}
+        value: ${{ jobs.components.outputs.tested_run }}
       tree:
-        value: ${{ jobs.tested.outputs.tree }}
+        value: ${{ jobs.components.outputs.tree }}
       base:
         description: The tested change's base (`push` for a push)
-        value: ${{ jobs.tested.outputs.base }}
+        value: ${{ jobs.components.outputs.base }}
       head:
-        value: ${{ jobs.tested.outputs.head }}
+        value: ${{ jobs.components.outputs.head }}
       routes:
         value: ${{ jobs.route.outputs.routes }}
+      sha:
+        description: The commit every job checks out; on a dispatch its `ref` input resolved to a full SHA, otherwise empty (the event's default)
+        value: ${{ jobs.commit.outputs.sha }}
 
 permissions:
   contents: read
 
 jobs:
-  changes:
-    uses: ./.github/workflows/component-changes.yml
+  # The commit the run tests. A dispatch names it with its `ref` input (a SHA,
+  # short or full, or a branch: `gh workflow run ci-dev.yml --ref dev -f
+  # ref=<sha>`), resolved here once, from every branch's commits (no trees or
+  # files), to one full SHA that a branch of this repository holds; a commit
+  # no branch holds (a fork's pull request) is refused and nothing runs. With
+  # `pr` (`-f pr=<n>`, and `ref` only as its head) it is that pull request's
+  # test merge commit, the head merged with its base, for a head in this
+  # repository.
+  commit:
+    name: Resolve the commit to test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      # For `pr`: the pull request's base and head, which the tested-tree record names.
+      base: ${{ steps.resolve.outputs.base }}
+      head: ${{ steps.resolve.outputs.head }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: ${{ github.event.inputs.ref != '' }}
+        with:
+          fetch-depth: 0
+          filter: tree:0
+          persist-credentials: false
+          sparse-checkout: README.md
+          sparse-checkout-cone-mode: false
+      - name: Resolve the dispatch's ref
+        id: resolve
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          REF: ${{ github.event.inputs.ref }}
+          PR: ${{ github.event.inputs.pr }}
+          HEAD_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          sha=$HEAD_SHA status_sha=$HEAD_SHA base='' head=''
+          if [ -n "$REF" ]; then
+            case $REF in
+              -* | *..* | *[[:space:]]*) echo "::error title=ref::'$REF' is not a commit SHA or a branch"; exit 1 ;;
+            esac
+            sha=$(git rev-parse --verify -q "refs/remotes/origin/$REF^{commit}" || git rev-parse --verify -q "$REF^{commit}") \
+              || { echo "::error title=ref::'$REF' names no commit on a branch of this repository"; exit 1; }
+            if [ -z "$(git branch -r --contains "$sha")" ]; then
+              echo "::error title=ref::$sha is on no branch of this repository"
+              exit 1
+            fi
+            status_sha=$sha
+          fi
+          # A pull request: its test merge commit (refs/pull/<n>/merge, the head merged
+          # with the base, as a pull request run tests), for a head in this repository.
+          if [ -n "$PR" ]; then
+            case $PR in
+              *[!0-9]* | 0*) echo "::error title=pr::'$PR' is not a pull request number"; exit 1 ;;
+            esac
+            info=$(gh api "repos/$REPOSITORY/pulls/$PR" \
+              --jq '[(.head.repo.full_name // "-"), .head.sha, .state, (.merge_commit_sha // "-")] | join(" ")') \
+              || { echo "::error title=pr::no pull request #$PR in $REPOSITORY"; exit 1; }
+            read -r head_repo head state merge <<<"$info"
+            if [ "$head_repo" != "$REPOSITORY" ]; then
+              echo "::error title=pr::#$PR's head is in $head_repo, not this repository"
+              exit 1
+            fi
+            if [ "$state" != open ] || [ "$merge" = - ]; then
+              echo "::error title=pr::#$PR is $state and has no test merge commit (a conflict, or closed)"
+              exit 1
+            fi
+            if [ -n "$REF" ] && [ "$sha" != "$head" ]; then
+              echo "::error title=pr::$sha is not #$PR's head ($head): GitHub keeps a test merge commit of the head only. Test it unmerged with ref alone, or push it as the head"
+              exit 1
+            fi
+            read -r base second <<<"$(gh api "repos/$REPOSITORY/commits/$merge" --jq '[.parents[].sha] | join(" ")')"
+            if [ "$second" != "$head" ]; then
+              echo "::error title=pr::#$PR's test merge commit $merge is not of its head $head yet; dispatch again in a minute"
+              exit 1
+            fi
+            sha=$merge status_sha=$head
+          fi
+          {
+            echo "sha=$sha"
+            echo "status_sha=$status_sha"
+            echo "base=$base"
+            echo "head=$head"
+          } >> "$GITHUB_OUTPUT"
+          requested=${REF:-the head of $GITHUB_REF_NAME}
+          if [ -n "$PR" ]; then requested="#$PR at ${REF:-its head}, merged with its base"; fi
+          echo "Testing ${sha:0:12} (requested: $requested)" >> "$GITHUB_STEP_SUMMARY"
 
-  tested:
-    name: Find an earlier test of this tree
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.result == 'success' }}
+  # One GitHub-hosted job plans the run (runner routing waits for it, so it
+  # never queues on a routed fleet): the classifier selects the components a
+  # change touches, the tree lookup looks for an earlier successful test of
+  # this change, and the last step chooses the components the test jobs run:
+  # the classifier's, or none when the tree was tested. changes_result is the
+  # classifier step's outcome; the Provider Tests gate fails on anything but
+  # `success`. A failed or skipped lookup leaves skip empty: "test". A
+  # dispatch's `ref` is resolved first (job `commit`); when that fails, nothing
+  # is classified (changes_result `skipped`), so nothing is tested.
+  components:
+    name: Plan the components to test
+    needs: commit
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
     outputs:
+      provider: ${{ steps.choose.outputs.provider }}
+      cluster: ${{ steps.choose.outputs.cluster }}
+      cluster_gpu: ${{ steps.choose.outputs.cluster_gpu }}
+      mimo_audio: ${{ steps.choose.outputs.mimo_audio }}
+      changed_provider: ${{ steps.paths.outputs.provider || 'false' }}
+      changed_cluster: ${{ steps.paths.outputs.cluster || 'false' }}
+      changes_result: ${{ steps.paths.outcome }}
       skip: ${{ steps.lookup.outputs.skip }}
       tested_run: ${{ steps.lookup.outputs.tested_run }}
       tree: ${{ steps.tree.outputs.tree }}
@@ -69,84 +180,104 @@ jobs:
       head: ${{ steps.tree.outputs.head }}
     steps:
       # On a pull request github.sha is its test merge commit of the event's
-      # base and head; on a push, the pushed commit. Only the lookup script is
-      # checked out.
+      # base and head; on a push, the pushed commit; on a dispatch, the commit
+      # its `ref` names (job `commit`), whose tree the API reads.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: ${{ inputs.run_tests && needs.commit.result == 'success' }}
         with:
+          fetch-depth: 0
+          # The classifier diffs trees and walks commits; it reads no file
+          # contents outside the checkout, so a blobless clone is enough.
+          filter: blob:none
           persist-credentials: false
-          sparse-checkout: scripts/ci-tested-tree.py
-          sparse-checkout-cone-mode: false
+      # Its outcome is the plan's changes_result; the job goes on to choose.
+      - name: Classify complete base-to-head Git diff
+        id: paths
+        if: ${{ inputs.run_tests && needs.commit.result == 'success' }}
+        continue-on-error: true
+        run: python3 scripts/ci-component-paths.py
+      # The lookup needs the classifier's components: a record must cover them.
       - name: Name the change this run tests
         id: tree
+        if: ${{ steps.paths.outcome == 'success' }}
         env:
-          BASE: ${{ github.event.pull_request.base.sha || 'push' }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || needs.commit.outputs.base || 'push' }}
+          HEAD: ${{ github.event.pull_request.head.sha || needs.commit.outputs.head || needs.commit.outputs.sha || github.sha }}
+          TESTED: ${{ needs.commit.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
+          if [ -n "$TESTED" ] && [ "$TESTED" != "$(git rev-parse HEAD)" ]; then
+            tree=$(gh api "repos/$REPOSITORY/commits/$TESTED" --jq .commit.tree.sha)
+          else
+            tree=$(git rev-parse 'HEAD^{tree}')
+          fi
           {
-            echo "tree=$(git rev-parse 'HEAD^{tree}')"
+            echo "tree=$tree"
             echo "base=$BASE"
             echo "head=$HEAD"
           } >> "$GITHUB_OUTPUT"
       - name: Look for a successful run that tested it
         id: lookup
+        if: ${{ steps.paths.outcome == 'success' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           EVENT: ${{ github.event_name }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.commit.outputs.sha || github.sha }}
           TREE: ${{ steps.tree.outputs.tree }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-          SELECTED: provider=${{ needs.changes.outputs.provider }},cluster=${{ needs.changes.outputs.cluster }},mimo_audio=${{ needs.changes.outputs.mimo_audio }}
+          SELECTED: provider=${{ steps.paths.outputs.provider }},cluster=${{ steps.paths.outputs.cluster }},mimo_audio=${{ steps.paths.outputs.mimo_audio }}
           RUN_ID: ${{ github.run_id }}
         run: |
           python3 scripts/ci-tested-tree.py lookup --repository "$REPOSITORY" \
             --workflow-ref "$WORKFLOW_REF" --event "$EVENT" --sha "$SHA" --tree "$TREE" \
             --base "$BASE" --head "$HEAD" --components "$SELECTED" --run-id "$RUN_ID"
-
-  # The components the test jobs run: the classifier's, or none when the tree
-  # was tested. A failed lookup has already answered "test".
-  components:
-    name: Choose the components to test
-    needs: [changes, tested]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    permissions: {}
-    outputs:
-      provider: ${{ steps.choose.outputs.provider }}
-      cluster: ${{ steps.choose.outputs.cluster }}
-      mimo_audio: ${{ steps.choose.outputs.mimo_audio }}
-      changed_provider: ${{ needs.changes.outputs.provider }}
-      changed_cluster: ${{ needs.changes.outputs.cluster }}
-      changes_result: ${{ needs.changes.result }}
-    steps:
+      # Runs after any earlier failure unless the run is cancelled: a failed
+      # lookup has already answered "test".
       - name: Choose the components to test
         id: choose
+        if: ${{ !cancelled() }}
         env:
-          SKIP: ${{ needs.tested.outputs.skip }}
-          PROVIDER: ${{ needs.changes.outputs.provider }}
-          CLUSTER: ${{ needs.changes.outputs.cluster }}
-          MIMO_AUDIO: ${{ needs.changes.outputs.mimo_audio }}
+          RUN_TESTS: ${{ inputs.run_tests }}
+          SKIP: ${{ steps.lookup.outputs.skip }}
+          PROVIDER: ${{ steps.paths.outputs.provider }}
+          CLUSTER: ${{ steps.paths.outputs.cluster }}
+          MIMO_AUDIO: ${{ steps.paths.outputs.mimo_audio }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          GPU_LABELED: ${{ github.event_name == 'pull_request' && (github.event.label.name == 'run-gpu-ci' || contains(github.event.pull_request.labels.*.name, 'run-gpu-ci')) }}
         run: |
-          if [ "$SKIP" = true ]; then PROVIDER=false CLUSTER=false MIMO_AUDIO=false; fi
+          if [ "$RUN_TESTS" != true ] || [ "$SKIP" = true ]; then PROVIDER=false CLUSTER=false MIMO_AUDIO=false; fi
+          CLUSTER_GPU=false
+          if [ "$CLUSTER" = true ] && {
+            [ "$EVENT_NAME" = workflow_dispatch ] ||
+            { [ "$EVENT_NAME" = push ] && { [ "$REF" = refs/heads/master ] || [ "$REF" = refs/heads/main ]; }; } ||
+            [ "$GPU_LABELED" = true ];
+          }; then
+            CLUSTER_GPU=true
+          fi
           {
             echo "provider=$PROVIDER"
             echo "cluster=$CLUSTER"
+            echo "cluster_gpu=$CLUSTER_GPU"
             echo "mimo_audio=$MIMO_AUDIO"
           } >> "$GITHUB_OUTPUT"
 
   # Chooses a Darkbloom Sandbox or the Blacksmith fallback for the macOS jobs
   # of provider-tests.yml. This table is the one place that names each job's
   # lane and size. A lane is granted whole or falls back whole, so each job
-  # (each shard) has a lane of its own and falls back alone, except where two
-  # shards share one lane with a count of 2: the two Cluster Focused Checks
-  # shards, Cluster Runtime Tests shards 2 and 3 (test-cluster-2) and shards
-  # 4 and 5 (test-cluster-3). A lane asks for a job only when the job runs.
+  # (each shard) has a lane of its own and falls back alone, except where
+  # shards share one lane with a count: the two Cluster Focused Checks
+  # shards, Cluster Runtime Tests shards 2, 3, 6 and 7 (test-cluster-2, a
+  # count of 4) and shards 4 and 5 (test-cluster-3). A lane asks for a job
+  # only when the job runs.
   #
-  # Sizes (<vCPUs>x<GiB>) are sent only while DARKBLOOM_JOB_SHAPES is `on`
-  # (darkbloom-route.yml). A job asks for the smallest signed size (4x16,
+  # Every lane names its size (<vCPUs>x<GiB>) after its count and its
+  # placement, `balanced` (darkbloom-route.yml), so no lane gets the
+  # approval's pinned macOS size. A job asks for the smallest signed size (4x16,
   # 4x24, 8x16, 12x32) that holds 1.25 times its sampled used memory (app +
   # wired + compressed, scripts/ci-resource-sampler.py) and on which it is at
   # most 5% slower than on 12 vCPUs; a lane that two shards share holds the
@@ -154,32 +285,55 @@ jobs:
   # the exception: they ask for 8x16, on which a cold build is 5 to 10%
   # slower, though a cold build with 12 compile jobs used up to 13.6 GiB,
   # more than 16 / 1.25. The sampled memory of each job is in
-  # docs/developer/build.md (Job sizes).
+  # docs/developer/build.md (Job sizes). Three test lanes ask for more than
+  # their memory needs: test-cluster-1 for 4x24, because its GLM-5.3
+  # resident-stage tests need more than 16 GiB of physical memory
+  # (ClusterStageResidency keeps max(16 GiB, a tenth) for the system), and
+  # test-provider-1 for 12x32, because the parallel class runs its tests
+  # concurrently in one process and on 4 vCPUs its fan and hardware-load
+  # tests' bounded waits time out, also with no serial process beside it,
+  # and beside it the memory-budget suites of its selections (Nemotron Super
+  # prefix cache, EngineV2 reslice floor) size their budgets from physical
+  # memory and fail at 16 GiB. At 4x16 both lanes failed every Darkbloom run
+  # (10 of 10, 14 of 14); at 8x16 test-provider-1 failed those suites.
+  # 12x32 is the signed size with more than 4 vCPUs and more than 16 GiB.
+  # test-provider-gates (Provider Gates) asks for 4x24, the size its gates
+  # passed on in the last shard: its 7.9 GiB would fit 4x16, but four of its
+  # native MiMo gates size their KV budget from the host's physical memory,
+  # and they have never run at 16 GiB. They kept at most 3.25 of 4 vCPUs busy
+  # (1.4 on average), so 12x32 would not end them sooner.
   #
-  # While sizes are off, every lane asks without a size and gets the
-  # approval's pinned macOS size (12 vCPU / 32 GiB on 2026-11-05, the class of
-  # the Blacksmith fallback). If the approval pins a smaller size, the build
-  # jobs and Cluster Release Build Checks get that size too. The lanes are in
-  # the order the DARKBLOOM_MACOS_LANES cap keeps them: the critical-path test
-  # shards first, then the build jobs and Cluster Release Build Checks, then
-  # the non-blocking GPU shards.
+  # The lanes are listed with the critical-path test shards first, then the
+  # build jobs and Cluster Release Build Checks, then the non-blocking GPU
+  # shards.
+  #
+  # Before them, Check the CI plans (provider-tests.yml's ci-plan-checks)
+  # asks for one Linux job on every run that runs the test jobs. It runs
+  # Python only, beside the test jobs, which usually outlast it by minutes,
+  # so the sandbox's start mainly delays a run that tests no component. Its
+  # fallback is the GitHub-hosted ubuntu-24.04 it ran on before it was routed.
   route:
-    needs: [tested, components]
+    needs: components
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/darkbloom-route.yml
     permissions: {}
     with:
       lanes: |
         ${{ inputs.linux_lanes }}
-        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x24
-        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
-        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} 4x16
-        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x24
-        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x16
-        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} 4x16
-        build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ (needs.components.outputs.cluster == 'true' || (github.event_name == 'push' && needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_cluster == 'true')) && 1 || 0 }} 8x16
-        build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ (needs.components.outputs.provider == 'true' || (github.event_name == 'push' && needs.tested.outputs.skip == 'true' && needs.components.outputs.changed_provider == 'true')) && 1 || 0 }} 12x32
-        cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 8x16
-        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
-        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
-        test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} 4x24
+        ci-plan-checks linux_arm64 ubuntu-24.04 ${{ inputs.run_tests && 1 || 0 }} balanced 4x16
+        test-cluster-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 4 || 0 }} balanced 4x24
+        test-cluster-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
+        test-cluster-focused macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 2 || 0 }} balanced 4x16
+        test-provider-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-cluster-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
+        test-provider-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-4 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-5 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        test-provider-gates macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 4x24
+        build-cluster macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
+        build-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.provider == 'true' && 1 || 0 }} balanced 12x32
+        cluster-release-checks macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster == 'true' && 1 || 0 }} balanced 8x16
+        test-cluster-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
+        test-cluster-gpu-2 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24
+        test-cluster-gpu-3 macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.components.outputs.cluster_gpu == 'true' && 1 || 0 }} balanced 4x24

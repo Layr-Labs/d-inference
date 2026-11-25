@@ -142,11 +142,12 @@ extension NemotronSuperManagedSlotTests {
     /// the engine force-finishes within its shutdown timeout, the owner
     /// retires completely, and reloads wait out the recovery cooldown. Until
     /// it ends, new requests are refused before they are accepted, also while
-    /// the slot, still resident, retires.
+    /// the slot, still resident, retires. The engine's shutdown bound is 2 s
+    /// here instead of the default 10 s: the force-finish path is the same.
     @Test(.timeLimit(.minutes(2)))
     func confirmedWedgeRetiresTheSlotOffTheCapacityTick() async throws {
         let gate = DecodeGate()
-        let fixture = try await Self.fixture(mode: .off, decodeGate: gate)
+        let fixture = try await Self.fixture(mode: .off, decodeGate: gate, engineShutdownTimeout: 2)
         defer {
             gate.open()
             try? FileManager.default.removeItem(at: fixture.directory)

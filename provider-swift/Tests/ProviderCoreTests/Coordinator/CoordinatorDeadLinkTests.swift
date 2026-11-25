@@ -7,14 +7,15 @@ import Testing
 /// with no TCP reset and no close frame. The provider must find the silent
 /// link from its pings and reconnect at once, but never drop a link that still
 /// delivers frames. These rows run the real `CoordinatorClient` over loopback
-/// against `LoopbackWebSocketPeer`, with a 0.1 s ping interval and a 0.6 s
-/// bound instead of 2 s and 6 s.
+/// against `LoopbackWebSocketPeer`, with a 0.1 s ping interval, a 0.6 s bound
+/// and 1.5 s before the first frame instead of 2 s, 6 s and 30 s.
 @Suite("Coordinator dead link", .serialized)
 struct CoordinatorDeadLinkTests {
     private static let liveness = CoordinatorLinkLiveness(
-        pingInterval: .milliseconds(100), deadAfter: .milliseconds(600), suspensionGap: .seconds(30))
+        pingInterval: .milliseconds(100), deadAfter: .milliseconds(600), suspensionGap: .seconds(30),
+        firstFrameGrace: .milliseconds(1_500))
 
-    @Test("a silent peer is declared dead within the bound and the client reconnects at once",
+    @Test("a peer silent from the start is declared dead after the first-frame grace and the client reconnects at once",
           .timeLimit(.minutes(1)))
     func silentPeerIsDeclaredDeadAndReconnected() async throws {
         let peer = try LoopbackWebSocketPeer(behavior: .silent)
@@ -32,11 +33,11 @@ struct CoordinatorDeadLinkTests {
 
         let accepted = try await waitForAccepts(2, on: peer, within: .seconds(10))
         let reconnectAfter = accepted[1] - accepted[0]
-        // Silence of more than 0.6 s, the next 0.1 s tick, a 0-0.25 s wait and a
-        // loopback reconnect: about 1 s. The upper limit leaves room for a
-        // loaded CI Mac and is still far below a bound of 30 s.
-        #expect(reconnectAfter > .milliseconds(600), "reconnected \(reconnectAfter) after connecting, before the bound")
-        #expect(reconnectAfter < .seconds(5), "reconnected \(reconnectAfter) after connecting")
+        // The peer never sends a first frame: silence of more than 1.5 s, the
+        // next 0.1 s tick, a 0-0.25 s wait and a loopback reconnect: about 2 s.
+        // The upper limit leaves room for a loaded CI Mac.
+        #expect(reconnectAfter > .milliseconds(1_500), "reconnected \(reconnectAfter) after connecting, before the grace")
+        #expect(reconnectAfter < .seconds(6), "reconnected \(reconnectAfter) after connecting")
     }
 
     @Test("a busy stream whose pongs never come keeps the link", .timeLimit(.minutes(1)))

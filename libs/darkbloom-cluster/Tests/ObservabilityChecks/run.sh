@@ -7,25 +7,28 @@
 # a pass here is not a hardware pass.
 set -euo pipefail
 task_root="$(cd "$(dirname "$0")/../.." && pwd)"
-task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-observability.XXXXXX")"
-trap 'rm -rf "$task_build"' EXIT
-task_target="$(uname -m)-apple-macos14.0"
-flags=(-swift-version 6 -warnings-as-errors -target "$task_target" -j 4)
-build() {
-  local module=$1; shift; local links=()
-  for dependency in "$@"; do links+=(-l"$dependency"); done
-  xcrun swiftc "${flags[@]}" -emit-library -emit-module -module-name "$module" \
-    -emit-module-path "$task_build/$module.swiftmodule" -I "$task_build" -L "$task_build" ${links[@]+"${links[@]}"} \
-    -Xlinker -rpath -Xlinker @executable_path -Xlinker -install_name -Xlinker "@rpath/lib$module.dylib" \
-    "$task_root/Sources/$module"/*.swift -o "$task_build/lib$module.dylib"
+source "$task_root/Tests/Support/check-phases.sh"
+check_build_directory task_build "${TMPDIR:-/tmp}/cluster-observability.XXXXXX"
+compile_checks() {
+  task_target="$(uname -m)-apple-macos14.0"
+  flags=(-swift-version 6 -warnings-as-errors -target "$task_target" -j 4)
+  build() {
+    local module=$1; shift; local links=()
+    for dependency in "$@"; do links+=(-l"$dependency"); done
+    xcrun swiftc "${flags[@]}" -emit-library -emit-module -module-name "$module" \
+      -emit-module-path "$task_build/$module.swiftmodule" -I "$task_build" -L "$task_build" ${links[@]+"${links[@]}"} \
+      -Xlinker -rpath -Xlinker @executable_path -Xlinker -install_name -Xlinker "@rpath/lib$module.dylib" \
+      "$task_root/Sources/$module"/*.swift -o "$task_build/lib$module.dylib"
+  }
+  build DarkbloomClusterBootstrap
+  build DarkbloomClusterProtocol
+  build DarkbloomClusterProcess DarkbloomClusterProtocol
+  build DarkbloomClusterSecurity DarkbloomClusterBootstrap
+  build DarkbloomClusterRemote DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity
+  xcrun swiftc "${flags[@]}" -I "$task_build" -L "$task_build" -lDarkbloomClusterRemote -lDarkbloomClusterSecurity \
+    -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -Xlinker -rpath -Xlinker @executable_path \
+    "$task_root/Tests/ObservabilityChecks/main.swift" "$task_root/Tests/Support/WakeLatencyProbe.swift" \
+    -o "$task_build/observability-check"
 }
-build DarkbloomClusterBootstrap
-build DarkbloomClusterProtocol
-build DarkbloomClusterProcess DarkbloomClusterProtocol
-build DarkbloomClusterSecurity DarkbloomClusterBootstrap
-build DarkbloomClusterRemote DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity
-xcrun swiftc "${flags[@]}" -I "$task_build" -L "$task_build" -lDarkbloomClusterRemote -lDarkbloomClusterSecurity \
-  -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -Xlinker -rpath -Xlinker @executable_path \
-  "$task_root/Tests/ObservabilityChecks/main.swift" "$task_root/Tests/Support/WakeLatencyProbe.swift" \
-  -o "$task_build/observability-check"
+check_phases compile_checks
 "$task_build/observability-check" "$task_build/scratch"

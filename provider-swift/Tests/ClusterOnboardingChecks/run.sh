@@ -2,6 +2,8 @@
 # Model-free checks of the leader-first onboarding (`darkbloom cluster`): the
 # pairing state machine and both sides' flows on a real pseudo-terminal with
 # scripted operations. Plain swiftc, no provider build, no network, no model.
+# Each group of checks runs in its own process, one per core at a time (ONBOARDING_JOBS=N sets N), and its seconds are
+# printed as it ends. `run.sh --list` names the groups; `run.sh --group NAME` runs one alone.
 # ONBOARDING_TRANSCRIPTS=/ABS/DIR keeps each flow's exact screen text there.
 set -euo pipefail
 task_provider="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -21,5 +23,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$(u
   "$task_provider/Tests/ClusterOnboardingChecks/FollowFinalChecks.swift" "$task_provider/Tests/ClusterOnboardingChecks/NoFalseCrossChecks.swift" \
   "$task_provider/Tests/ClusterOnboardingChecks/RoleHeaderChecks.swift" \
   "$task_provider/Tests/ClusterOnboardingChecks/StepFoldChecks.swift" \
-  "$task_provider/Tests/ClusterOnboardingChecks/SimplerOnboardingChecks.swift" -o "$task_build/onboarding-checks"
-"$task_build/onboarding-checks"
+  "$task_provider/Tests/ClusterOnboardingChecks/SimplerOnboardingChecks.swift" \
+  "$task_provider/Tests/ClusterOnboardingChecks/GroupRunner.swift" -o "$task_build/onboarding-checks"
+echo "onboarding checks: compiled in ${SECONDS} s"
+"$task_build/onboarding-checks" "$@"

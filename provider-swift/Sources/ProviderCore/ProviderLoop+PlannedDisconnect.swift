@@ -28,7 +28,9 @@ extension ProviderLoop {
     }
 
     internal func requestPlannedReconnect() {
-        guard !isShuttingDown, servingDrain.owner != .lifecycle, coordinatorClient != nil else { return }
+        // After a boot-settings refusal there is no registration to renew, so no drain is started for one.
+        guard !isShuttingDown, !registrationRefused, servingDrain.owner != .lifecycle, coordinatorClient != nil
+        else { return }
         plannedReconnectRevision &+= 1
         startPlannedReconnectIfNeeded()
     }
@@ -43,7 +45,7 @@ extension ProviderLoop {
     private func startPlannedReconnectIfNeeded() {
         guard pendingRetirementReconnect == nil, modelSwitchTask == nil, updatePhase == .idle,
               servingDrain.owner != .lifecycle, servingDrain.owner != .modelSwitch, !isShuttingDown,
-              plannedReconnectRevision > issuedReconnectRevision else { return }
+              !registrationRefused, plannedReconnectRevision > issuedReconnectRevision else { return }
         beginServingDrain(owner: .reconnect)
         setRetirementReconnectBarrier(true)
         plannedReconnectTaskGeneration &+= 1
@@ -107,7 +109,8 @@ extension ProviderLoop {
     }
 
     internal func resumeAfterUpdateDrain() {
-        if disconnectBarrierPending {
+        // After a boot-settings refusal no fresh connection will come: the update's drain just ends.
+        if disconnectBarrierPending, !registrationRefused {
             // The coordinator may have committed a permanent fence even when
             // its ack was lost. Keep admission closed until a fresh connection.
             requestPlannedReconnect()
@@ -122,9 +125,9 @@ extension ProviderLoop {
     /// closed until the fresh registration.
     internal func resumeAfterAddonHold() {
         servingDrain.resumeAddonHold()
-        if pendingRetirementReconnect != nil {
+        if pendingRetirementReconnect != nil, !registrationRefused {
             beginServingDrain(owner: .reconnect)
-        } else if disconnectBarrierPending {
+        } else if disconnectBarrierPending, !registrationRefused {
             requestPlannedReconnect()
         } else {
             startPlannedReconnectIfNeeded()

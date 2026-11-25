@@ -242,6 +242,11 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
     public var mlxPeakBytes: Int64?
     public var lowPowerMode: Bool?
     public var tokensAfterCancel: Int64?
+    /// Tool calls the response returned, and how many of them break the
+    /// request's declaration (an undeclared function or arguments its schema
+    /// refuses; returned as generated). Absent when it returned none.
+    public var toolCalls: Int64?
+    public var toolCallsBreakingDeclaration: Int64?
 
     // Closed enums
     public var deadlineMode: DeadlineMode?
@@ -305,6 +310,8 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
         case mlxPeakBytes = "mlx_peak_bytes"
         case lowPowerMode = "low_power_mode"
         case tokensAfterCancel = "tokens_after_cancel"
+        case toolCalls = "tool_calls"
+        case toolCallsBreakingDeclaration = "tool_calls_breaking_declaration"
         case deadlineMode = "deadline_mode"
         case thermalState = "thermal_state"
         case cancelStage = "cancel_stage"
@@ -377,6 +384,8 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
         p.projectedDecodeTokens = n(p.projectedDecodeTokens)
         p.partialPrefillCap = n(p.partialPrefillCap)
         p.tokensAfterCancel = n(p.tokensAfterCancel)
+        p.toolCalls = n(p.toolCalls)
+        p.toolCallsBreakingDeclaration = n(p.toolCallsBreakingDeclaration)
         p.bytesEmitted = b(p.bytesEmitted)
         p.kvBytesInUseAtAdmit = b(p.kvBytesInUseAtAdmit)
         p.kvBytesCapacity = b(p.kvBytesCapacity)

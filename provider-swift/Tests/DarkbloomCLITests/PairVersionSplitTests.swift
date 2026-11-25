@@ -50,7 +50,7 @@ struct PairVersionSplitTests {
         #expect(summary.next == "On this Mac, run `\(cli) update`; then check that `\(cli) --version` shows 999.0.0 on both Macs.")
     }
 
-    /// DevNet builds are versioned `0.10.13-dev.branch.N`. W1 on DevNet pair-2 (2026-11-16, W14 note 2): only the Studio
+    /// DevNet builds are versioned `0.10.13-dev.branch.N`. On a DevNet pair (2026-11-16): only the Studio
     /// updated (`.202`; the MacBook's update had failed, `.199`), and the Studio's `status` repeated "this Mac's part ended
     /// (exit 1: Installed input identity or SHA-256 differs)" every 12 s without naming the other Mac's update: the split
     /// was never detected between such versions. They compare as semantic versions now, release versions as before.
@@ -89,6 +89,55 @@ struct PairVersionSplitTests {
         #expect(V.older("0.10.13-dev.branch.202", "0.10.13") == true && V.older("0.10.13", "0.10.13-dev.branch.202") == false)
         #expect(V.older("0.10.13-dev.branch.202", "0.10.14") == true)
         #expect(V.older("0.10.13-dev.branch.202", "0.10.13-dev.branch.202") == nil && V.older("0.10.13-", "0.10.13") == nil)
+    }
+
+    /// On a DevNet pair (0.10.15, 2026-11-17): for 15 min both Macs' status named the versions and the
+    /// Mac to update; then the pair's 15-min line ("The pair hasn't served for 15 min since it started … Run `start
+    /// --solo` …, or `start` …") replaced it, though a split never clears by itself. The split outranks that line in
+    /// `cluster status`, `status` and `doctor`'s line; any other reason still gets the 15-min line.
+    @Test func aVersionSplitOutranksTheFifteenMinuteLine() {
+        let split = ClusterOnboardingVersionSplit(thisVersion: ProviderCore.version, otherVersion: "0.0.1", other: otherMac)
+        let fifteen = ClusterPairWatch.line(.notServing(seconds: 960), otherMac: "Apple M4 Max, 128 GB", cli: cli)!
+        func afterFifteenMinutes(reason: String) -> ClusterPairSummary {
+            var summary = pair(role: .leader)
+            summary.pairRunning = false
+            summary.pairNotRunning = fifteen
+            summary.read(status: [ClusterOnboardingNotServing.statusLine(model: "Gemma 4 26B", reason: reason)], leaderMode: nil)
+            return summary
+        }
+        let summary = afterFifteenMinutes(reason: split.reason)
+        let update = "On the other Mac (Apple M4 Max, 128 GB), run `\(cli) update`; then check that `\(cli) --version` shows \(ProviderCore.version) on both Macs."
+        #expect(summary.startedButNotRunningLine == nil)
+        #expect(summary.clusterStatusLines.contains("Next: " + update), "\(summary.clusterStatusLines)")
+        #expect(!summary.clusterStatusLines.contains { $0.contains("hasn't served for") }, "\(summary.clusterStatusLines)")
+        #expect(summary.statusLine.contains("the two Macs run different Darkbloom versions"), "\(summary.statusLine)")
+        // Another reason: the 15-min line, as before.
+        let ended = afterFifteenMinutes(reason: "this Mac's part ended (exit 1: closed) and starts again by itself")
+        #expect(ended.startedButNotRunningLine == fifteen)
+        #expect(ended.clusterStatusLines.contains(fifteen), "\(ended.clusterStatusLines)")
+    }
+
+    /// The joined Mac's "different builds" lines (`differentBuildsLines`) order versions as the split does: DevNet
+    /// builds (`0.10.13-dev.branch.N`) name the Mac to update; release versions as before.
+    @Test func theJoinedMacNamesTheMacToUpdateBetweenDevNetBuilds() {
+        let older = ClusterOnboardingLeaderStep.isOlder
+        #expect(older("0.10.13-dev.branch.199", "0.10.13-dev.branch.202") == true)
+        #expect(older("0.10.13-dev.branch.202", "0.10.13-dev.branch.199") == false)
+        #expect(older("0.10.13-dev.branch.202", "0.10.13-dev.branch.202") == false)
+        #expect(older("0.10.13-dev.branch.202", "0.10.13") == true && older("0.10.13", "0.10.14-dev.branch.1") == true)
+        #expect(older("0.10.9", "0.10.10") == true && older("0.10.10", "0.10.9") == false && older("0.10", "0.10.0") == false)
+        #expect(older("0.10", "0.10.1") == true && older("dev", "0.10.9") == nil && older("0.10.9", "") == nil)
+        // Numeric identifiers by number: leading zeros don't order them, so they are one version (no split), and the
+        // next identifier, then the count, decides.
+        #expect(ClusterOnboardingVersionSplit.detect(thisVersion: "0.10.13-dev.01", otherVersion: "0.10.13-dev.1", other: otherMac) == nil)
+        #expect(older("0.10.13-dev.01.5", "0.10.13-dev.1.6") == true && older("0.10.13-dev.1.6", "0.10.13-dev.01.5") == false)
+        #expect(older("0.10.13-dev.01", "0.10.13-dev.1.1") == true)
+        let behind = ClusterOnboardingDriver.differentBuildsLines("Mac Studio", thisVersion: "0.10.15-dev.branch.220",
+                                                                  leaderVersion: "0.10.15-dev.branch.221")
+        #expect(behind.contains("On this Mac, run `darkbloom update`."), "\(behind)")
+        let ahead = ClusterOnboardingDriver.differentBuildsLines("Mac Studio", thisVersion: "0.10.15-dev.branch.221",
+                                                                 leaderVersion: "0.10.15-dev.branch.220")
+        #expect(ahead.contains { $0.hasPrefix("On ") && $0.hasSuffix(", run `darkbloom update`.") && !$0.hasPrefix("On this Mac") }, "\(ahead)")
     }
 
     /// The watchdog installs only for single-Mac serving: never for a member's job, never while the pair runs here

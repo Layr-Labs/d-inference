@@ -1,33 +1,33 @@
 import Foundation
 import Darwin
 
-/// The leader's wait for the coordinator, on real hardware (pair-2, DevNet branch.81/82, 2026-11-05): its 15-minute ✗
+/// The leader's wait for the coordinator, on real hardware (a DevNet pair, branch.81/82, 2026-11-05): its 15-minute ✗
 /// blamed Apple verification on two authorized Macs (the coordinator refused `serves_model`); q did nothing in it and a
 /// `cluster stop` elsewhere left it waiting; and the joining Mac showed "This Mac runs its part by itself … Close"
 /// through the leader's model change (R5-8).
 extension OnboardingChecks {
-    static func waitHonestChecks() {
-        theCoordinatorsWaitNamesOnlyWhatTheMacsReportNow()
-        aStaleTrustWordOnVerifiedMacsIsTheCoordinators()
-        qLeavesTheCoordinatorsWaitAndSaysWhatKeepsGoing()
-        aStopFromAnywhereEndsTheLeadersWaitAtOnce()
-        aStopFromAnywhereEndsTheJoiningMacsWait()
-        theJoiningMacFollowsTheLeadersModelChange()
+    static var waitHonestGroups: [CheckGroup] { [
+        CheckGroup("theCoordinatorsWaitNamesOnlyWhatTheMacsReportNow") { theCoordinatorsWaitNamesOnlyWhatTheMacsReportNow() },
+        CheckGroup("aStaleTrustWordOnVerifiedMacsIsTheCoordinators") { aStaleTrustWordOnVerifiedMacsIsTheCoordinators() },
+        CheckGroup("qLeavesTheCoordinatorsWaitAndSaysWhatKeepsGoing") { qLeavesTheCoordinatorsWaitAndSaysWhatKeepsGoing() },
+        CheckGroup("aStopFromAnywhereEndsTheLeadersWaitAtOnce") { aStopFromAnywhereEndsTheLeadersWaitAtOnce() },
+        CheckGroup("aStopFromAnywhereEndsTheJoiningMacsWait") { aStopFromAnywhereEndsTheJoiningMacsWait() },
+        CheckGroup("theJoiningMacFollowsTheLeadersModelChange") { theJoiningMacFollowsTheLeadersModelChange() },
         // An external pair on 0.10.12 (2026-11-12): the joining Mac said the stop line 20 s into a download nobody stopped.
-        aStatusThatReadsStoppedThroughADownloadIsNoStop()
-        aStopIsTheLeadersRecordNeverItsStatusWords()
-        aStopBeforeTheStartIsNoStopOfIt()
-        aStopDuringTheDownloadEndsTheJoiningMacsWaitAtOnce()
-        aStopDuringTheDownloadKeepsThePairStopped()
-        aStopFromAnywhereEndsTheLeadersLoadAtOnce()
-        thePairsOwnStopsNeverEndTheLeadersWait()
-        aStopDuringTheTestEndsTheLeadersScreen()
-        aStartRefusedForAStopEndsTheScreen()
-        aStopDuringTheSoloQuestionKeepsThePairStopped()
-        aStopDuringTheVersionQuestionKeepsThePairStopped()
-        retryIsANewStart()
-        theJoiningMacComparesWithTheLeadersCount()
-    }
+        CheckGroup("aStatusThatReadsStoppedThroughADownloadIsNoStop") { aStatusThatReadsStoppedThroughADownloadIsNoStop() },
+        CheckGroup("aStopIsTheLeadersRecordNeverItsStatusWords") { aStopIsTheLeadersRecordNeverItsStatusWords() },
+        CheckGroup("aStopBeforeTheStartIsNoStopOfIt") { aStopBeforeTheStartIsNoStopOfIt() },
+        CheckGroup("aStopDuringTheDownloadEndsTheJoiningMacsWaitAtOnce") { aStopDuringTheDownloadEndsTheJoiningMacsWaitAtOnce() },
+        CheckGroup("aStopDuringTheDownloadKeepsThePairStopped") { aStopDuringTheDownloadKeepsThePairStopped() },
+        CheckGroup("aStopFromAnywhereEndsTheLeadersLoadAtOnce") { aStopFromAnywhereEndsTheLeadersLoadAtOnce() },
+        CheckGroup("thePairsOwnStopsNeverEndTheLeadersWait") { thePairsOwnStopsNeverEndTheLeadersWait() },
+        CheckGroup("aStopDuringTheTestEndsTheLeadersScreen") { aStopDuringTheTestEndsTheLeadersScreen() },
+        CheckGroup("aStartRefusedForAStopEndsTheScreen") { aStartRefusedForAStopEndsTheScreen() },
+        CheckGroup("aStopDuringTheSoloQuestionKeepsThePairStopped") { aStopDuringTheSoloQuestionKeepsThePairStopped() },
+        CheckGroup("aStopDuringTheVersionQuestionKeepsThePairStopped") { aStopDuringTheVersionQuestionKeepsThePairStopped() },
+        CheckGroup("retryIsANewStart") { retryIsANewStart() },
+        CheckGroup("theJoiningMacComparesWithTheLeadersCount") { theJoiningMacComparesWithTheLeadersCount() },
+    ] }
 
     static func theCoordinatorsWaitNamesOnlyWhatTheMacsReportNow() {
         let unverified = ClusterOnboardingNotServing.notVerified("the other Mac (Apple M5 Max, 128 GB)")
@@ -162,17 +162,17 @@ extension OnboardingChecks {
         expect(!run.text.contains(ClusterOnboardingDriver.memberRunsByItselfLine), "model change: not the idle member screen: \(run.text)")
     }
 
-    /// Seconds since it was first read: a scripted leader's start runs from the joining Mac's first look.
-    final class FirstLook: @unchecked Sendable {
+    /// A scripted leader's clock: its start runs from the joining Mac's first look, and each look moves it one second on.
+    /// The follow reads the same clock (`ClusterOnboardingFollowTiming.now`), so the script's minutes pass for both
+    /// without waiting them on the wall clock, and every stretch of a second or more is looked at.
+    final class LookClock: @unchecked Sendable {
         private let lock = NSLock()
-        private var began: Date?
-        var seconds: Double {
-            lock.withLock {
-                let now = Date()
-                if began == nil { began = now }
-                return now.timeIntervalSince(began!)
-            }
-        }
+        private let origin = Date()
+        private var looks = 0
+        /// The script's seconds at this look (0 at the first); the next look is a second later.
+        func look() -> Double { lock.withLock { defer { looks += 1 }; return Double(looks) } }
+        /// The follow's time: a second past the first look for each look so far.
+        func now() -> Date { lock.withLock { origin.addingTimeInterval(Double(looks)) } }
     }
 
     /// The report (an external pair on 0.10.12, 2026-11-12 ~20:46Z): the leading Mac downloaded the chosen model and the
@@ -182,14 +182,16 @@ extension OnboardingChecks {
     /// their bytes, and through what comes before the start with nothing published (here a login after the download). It
     /// reads "Stopped; last model …" again while it stops both parts to register them. Each stretch lasts over 20 s, so no
     /// rule that takes "Stopped" held a while for a stop passes, whichever phases it leaves out. None of it is a stop: the
-    /// joining Mac follows the start to the leading Mac's outcome.
+    /// joining Mac follows the start to the leading Mac's outcome. The script's 66 s pass on its `LookClock`, which the
+    /// follow reads too: each stretch lasts as long on the clock that the follow's bounds (and any hold) would use.
     static func aStatusThatReadsStoppedThroughADownloadIsNoStop() {
         typealias P = ClusterOnboardingStartProgress
         let served = "Serving Qwen 3.8 27B through Darkbloom on both Macs (pipeline)."
         var made = operations(Recorder(), pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: leaderName))
-        let clock = FirstLook()
+        let clock = LookClock()
+        made.followTiming.now = { clock.now() }
         made.leaderStatus = {
-            let seconds = clock.seconds
+            let seconds = clock.look()
             switch seconds {
             case ..<21:
                 return .init(lines: ["Stopped."], step: .init(.copy),

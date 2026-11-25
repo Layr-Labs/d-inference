@@ -7,9 +7,10 @@ import Foundation
 /// keychain entitlement: derived (HKDF-SHA256, its own label) from the same
 /// Secure Enclave-rooted KEK the single-Mac SSD tier uses, so records survive
 /// owner, provider and machine restarts with no new keychain item and no new
-/// permission. Never an ephemeral key: when the KEK is unavailable (a build
-/// without the entitlement) this yields nil and the installed owner falls back
-/// to its owner-only key file (`DistributedInstalledPrefixSSD`).
+/// permission. This never yields an ephemeral key itself: when the KEK is
+/// unavailable (a build without the entitlement) it yields nil, and the
+/// installed owner then uses a key of its own process that is never written
+/// (`DistributedInstalledPrefixSSD`).
 public enum ClusterPrefixSSDKeyMaterial {
     static let salt = Data("darkbloom-cluster-prefix-ssd-v1".utf8)
 

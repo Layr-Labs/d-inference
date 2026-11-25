@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -105,8 +105,8 @@ do not widen model eligibility, memory limits or hardware qualification.
 
 Network providers require macOS 27 or later and current qualified App Attest
 authorization. The binary build floor below is not network eligibility.
-Darkbloom MDM is removed, so there is no legacy serving path; an old OS or an
-installed Darkbloom profile cannot serve
+There is no other serving path; an old OS or an
+installed Darkbloom enrollment profile cannot serve
 ([provider trust](../architecture/security/provider-trust.md)). These are provider requirements, not consumer requirements.
 
 Native DiffusionGemma retains its vision tower and applies the existing per-frame
@@ -123,7 +123,7 @@ or throughput guarantee follows from the capability flag.
 | macOS | 14 (Sonoma) or later, the build floor; `darkbloom doctor` warns below macOS 26 (`recommendedMacOSMajorVersion`, [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)) but does not block | `provider-swift/Package.swift` (`.macOS(.v14)`), `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 | Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
-| Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
+| Security posture | SIP at Apple's default configuration (no `csrutil enable --without …` exceptions) and Full Security boot (the provider refuses Reduced or Permissive Security); a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
 
 ## MiMo candidate qualification scope
 

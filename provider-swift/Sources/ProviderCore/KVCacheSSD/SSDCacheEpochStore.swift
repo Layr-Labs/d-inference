@@ -274,6 +274,10 @@ final class SSDCacheEpochStore: @unchecked Sendable {
     /// keeping `nextSequence` monotonic across the unload/reload. A missing
     /// record means orphaned files that the body may remove; an unreadable or
     /// foreign-schema record is left for the next initialization to rebuild.
+    /// An invalidating record (a wipe that was interrupted or failed) already
+    /// condemns every block of the root, so deletions run under it too: the
+    /// next initialization still repeats the wipe, and until then the root's
+    /// files keep their TTL.
     static func performUnloadedDestructiveChange(
         root: URL,
         _ body: () -> Void
@@ -286,7 +290,7 @@ final class SSDCacheEpochStore: @unchecked Sendable {
                 return true
             }
             guard let record = existing.record,
-                record.schema == schema,
+                record.schema == schema || record.schema == invalidatingSchema,
                 validEpoch(record.epoch)
             else { return false }
             body()

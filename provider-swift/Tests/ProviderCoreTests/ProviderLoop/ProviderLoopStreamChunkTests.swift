@@ -94,7 +94,7 @@ func visibleOutputSignalIgnoresRoleOnlyPreamble() throws {
 
     #expect(!ProviderLoop.hasVisibleStreamOutput(
         contentFrameCount: contentFrameCount,
-        fullResponseText: fullResponseText
+        hasResponseText: !fullResponseText.isEmpty
     ))
 }
 
@@ -112,7 +112,7 @@ func visibleOutputSignalCountsContentFrames() throws {
 
     #expect(ProviderLoop.hasVisibleStreamOutput(
         contentFrameCount: contentFrameCount,
-        fullResponseText: fullResponseText
+        hasResponseText: !fullResponseText.isEmpty
     ))
 }
 
@@ -285,8 +285,8 @@ func parseStreamChunkExtractsToolCallsDelta() throws {
 
 /// The hash-encoding helper must produce a deterministic, framed
 /// string for each tool call. The inference handler appends the
-/// returned string to `fullResponseText` (the attestation hash
-/// accumulator); a non-deterministic encoding would break attestation
+/// returned string to the output the attestation hash covers
+/// (`hashedOutput`); a non-deterministic encoding would break attestation
 /// reproducibility across providers and across rebuilds of the same
 /// release.
 @Test("encodeToolCallsForHash produces stable framed JSON")

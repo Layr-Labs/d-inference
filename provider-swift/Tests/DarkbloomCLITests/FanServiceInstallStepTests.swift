@@ -27,8 +27,7 @@ struct FanServiceInstallStepTests {
         #expect(codesign.count == 2)
         #expect(codesign.first == [
             "--verify", "--deep", "--strict", "--verbose=2",
-            "-R=" + FanCodeRequirements.requirement(
-                identifier: FanIPC.providerIdentifier, teamID: FanIPC.teamID),
+            "-R=" + FanCodeRequirements.providerRequirement(),
             fixture.app.path,
         ])
         #expect(codesign.last == [

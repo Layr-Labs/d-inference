@@ -83,6 +83,8 @@ public struct PairDriver: Sendable {
         // Tensor parallel: the load (plan, shares, sealed all-sum), each request, the link probe and the collective wait.
         "darkbloom-tensor-parallel-load-v1 ", "darkbloom-tensor-parallel-request-v1 ", "darkbloom-link-probe-v1 ",
         "darkbloom-collective-sync-v1 ",
+        // Each worker start's phases, from its start-up hardening to its readiness (`WorkerOwnerPhases`).
+        "darkbloom-owner-phases-v1 ",
         // Diagnostic (`DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING=1`): each prompt's frames on a Qwen TP rank.
         "qwen-tp-prefill-v1 "]
     /// The two workers' credential lines for one run (S16).
@@ -346,6 +348,7 @@ public struct PairDriver: Sendable {
                     expectedIdentity: workerIdentity, rank: rank, profile: capability.profile,
                     executionPlanSHA256: partition.planSHA256,
                     stopRenewalsAfterNanoseconds: c.stopRenewalsAfterSeconds.map { UInt64($0 * 1e9) },
+                    leaseTTLNanoseconds: c.workerLeaseTTLNanoseconds, leaseRenewNanoseconds: c.workerLeaseRenewNanoseconds,
                     initialLine: lines[rank])
             }
         } catch { return finish("refused", "cannot prepare the workers: \(error)") }
@@ -608,7 +611,7 @@ public struct PairDriver: Sendable {
         }
         // A clean shutdown is acknowledged in seconds; a lease that lapsed
         // ends a worker within its time to live, plus the forced exit's bound.
-        let exitLimit = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.ttlNanoseconds + 60_000_000_000
+        let exitLimit = DispatchTime.now().uptimeNanoseconds + c.workerLeaseTTLNanoseconds + 60_000_000_000
         for endpoint in endpoints { _ = endpoint.waitForExit(until: exitLimit) }
         timing.shutdownSeconds = Double(DispatchTime.now().uptimeNanoseconds - shutdownStarted) / 1e9
 

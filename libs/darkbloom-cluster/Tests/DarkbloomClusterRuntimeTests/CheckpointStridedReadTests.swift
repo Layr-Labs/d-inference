@@ -4,14 +4,10 @@ import Testing
 @testable import DarkbloomClusterRuntime
 
 // A rank's runs of a tensor divided on an inner axis are read together where they share pages, with the same
-// bytes. CPU fixture, no model. The same check runs in `Tests/CheckpointChecks/run.sh`.
+// bytes. CPU fixture, no model. `CheckpointStridedReadCheck.run()` itself runs in `Tests/CheckpointChecks/run.sh`.
 
 @Suite("Checkpoint runs that share pages are read together (CPU fixture)")
 struct CheckpointStridedReadTests {
-    @Test func runsThatSharePagesAreReadTogether() throws {
-        try CheckpointStridedReadCheck.run()
-    }
-
     /// Through `TensorDescriptor.read`, uncached: each rank's half of a tensor shaped like MiMo's expert `down_proj`
     /// (`U32 [2, 4096, 256]`, ending the file off a page) and of an odd-sized `BF16` tensor at an offset off a page is
     /// byte-identical to one aligned read per run, as before the change. Whole-axis and several-range selections still

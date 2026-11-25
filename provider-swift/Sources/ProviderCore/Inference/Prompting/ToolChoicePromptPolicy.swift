@@ -27,6 +27,10 @@ enum ToolChoicePromptPolicy {
         /// (`ToolSchemaNormalization`) filled in render types. Validation of
         /// `auto` calls reads these; nil falls back to `tools`.
         var declaredTools: [OpenAITool]? = nil
+        /// The declarations the call parser reads arguments with
+        /// (`ToolArgumentSchemas.reading`): `tools`, each with the caller's
+        /// parameters instead of their render types. Nil reads `tools`.
+        var argumentTools: [OpenAITool]? = nil
         /// An answer the engine cut at the token limit ends as a normal
         /// `length` finish, as generated (`TokenLimitCutPolicy`).
         var cutAnswersEndAtLength = TokenLimitCutPolicy.endsAtLength
@@ -35,6 +39,12 @@ enum ToolChoicePromptPolicy {
         /// (`StrictToolCallPolicy`). Set by the serving path, which knows the
         /// client's own `stream`.
         var strictCallsAsGenerated = false
+        /// The client itself streams (the request's `stream`; on the
+        /// coordinator path, which serves every request as a stream, the
+        /// body's own). Forced Gemma 4, Qwen 3.5–3.8 and GPT-OSS calls stream
+        /// only to such a client (`ToolStreamPreparation`); one that does not
+        /// keeps the complete-call output.
+        var clientStreams = false
 
         /// The engine cut the answer at the token limit (`finishReason`
         /// `length`) and it ends as a normal `length` finish.
@@ -82,6 +92,7 @@ enum ToolChoicePromptPolicy {
                 allowsParallelCalls: false, allowedToolNames: choice.allowedToolNames)
         }
         choice.glm5PairPostValidation = glm5PairPostValidation
+        choice.clientStreams = request.stream == true
         choice.glmResponseFormat = try GLM5NextResponseFormat.resolve(request, modelType: modelType)
         guard let responseFormat else { return choice }
         // Recursive's Flint contract: tools plus a response format get only the
@@ -94,6 +105,7 @@ enum ToolChoicePromptPolicy {
                 messages: choice.messages, tools: choice.tools, mode: .none, compiledTools: nil,
                 allowsParallelCalls: false, allowedToolNames: [])
             : choice
+        prepared.clientStreams = choice.clientStreams
         prepared.responseFormat = responseFormat
         return prepared
     }

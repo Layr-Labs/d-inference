@@ -35,8 +35,14 @@
 // * Resolved once at slot construction (like the stop-token set). The
 //   sampler is not part of prompt or cache identity, so prefix-cache and
 //   SSD checkpoint identity are unchanged. It still decides whether a row
-//   speculates: the engine drafts no row with a repetition, frequency or
-//   presence penalty (`EngineLoopV2.mtpBasicEligible`). On an opted-in
+//   speculates: a row with a frequency or presence penalty drafts only on the
+//   builds that opt in (`SDKFeatureDefaults.penaltyRowBuilds`: these catalog
+//   Qwen builds among them), and a row with a repetition penalty only on
+//   `SDKFeatureDefaults.repetitionPenaltyRowBuilds`, on a drafter with
+//   target-prefix acceptance, verified with exact acceptance
+//   (`EngineLoopV2.mtpPenaltiesEligible` / `mtpRepetitionPenaltyEligible`;
+//   `DARKBLOOM_MTP_PENALTY_ROWS=0` / `DARKBLOOM_MTP_REPETITION_PENALTY_ROWS=0`
+//   keep such rows target-only). On an opted-in
 //   history-keeping MTP head such a row still stages the resident and SSD
 //   checkpoints a speculating row stages (prefix-cache invariant 9).
 

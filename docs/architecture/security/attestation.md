@@ -1,6 +1,6 @@
 # Provider Attestation
 
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 Provider attestation binds keys and reported runtime identity to an approved
 process. It does not prove model correctness, physical uniqueness, certified
@@ -12,7 +12,7 @@ Current backend behavior is owned by the latest default branch of
 not current source or deployment state. No backend implementation is retained
 in this repository. The [authorization reference](../../reference/provider-authorization.md)
 describes the consumed contract; provider support does not activate platform policy.
-App Attest is the only verification path: Darkbloom MDM is retired (production runs it off by configuration (`EIGENINFERENCE_MDM_URL` empty) from a planned coordinator restart, and the platform removes its MDM code in a separate change).
+App Attest is the only verification path.
 
 ## Provider connection control
 
@@ -119,13 +119,10 @@ documented snapshot validation and environment rules in the
 [configuration reference](../../reference/configuration.md#runtime-metallib-snapshots).
 File hashes alone do not prove the executed model's output.
 
-### Removed — MDM SecurityInfo and Managed Device Attestation
+### Flag — SIP and Secure Boot
 
-Darkbloom MDM is removed, and with it the MDM SecurityInfo posture check (the
-former `hardware` grant) and Apple Managed Device Attestation. Public
-`mdm_verified` and `mda_verified` are historical, always false. App Attest's Mac
-access policy covers SIP and Secure Boot. An old Darkbloom profile left on a Mac
-does nothing; see [profile cleanup](enrollment.md).
+App Attest's Mac access policy covers SIP and Secure Boot. An old Darkbloom
+enrollment profile left on a Mac does nothing; see [profile cleanup](enrollment.md).
 
 ### Flag — APNs code identity
 

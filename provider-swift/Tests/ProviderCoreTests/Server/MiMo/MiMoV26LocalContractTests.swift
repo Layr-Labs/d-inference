@@ -28,6 +28,21 @@ private extension MiMoConsumerServing {
 }
 
 final class MiMoV26LocalContractTests: XCTestCase {
+    /// One SSE object as JSON text with every `delta.tool_calls` removed.
+    private static func withoutToolCallFragments(_ object: [String: Any]) -> String {
+        var object = object
+        object["choices"] = (object["choices"] as? [[String: Any]] ?? []).map { choice in
+            var choice = choice
+            if var delta = choice["delta"] as? [String: Any] {
+                delta["tool_calls"] = nil
+                choice["delta"] = delta
+            }
+            return choice
+        }
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
     func testRealHTTPMalformedFramesNeverStreamFallbackBeforeTerminalError() async throws {
         let (tokenizer, _) = try await MiMoConsumerFixture.load()
         let badOutputs = [
@@ -50,8 +65,25 @@ final class MiMoV26LocalContractTests: XCTestCase {
                                     headers: [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"],
                                     body: ByteBuffer(bytes: data)) { result in
                                     let text = String(buffer: result.body)
-                                    XCTAssertFalse(text.contains("PRIVATE_BAD_FRAME"), "Bad fallback must never precede the error")
-                                    XCTAssertFalse(text.contains("<tool_call>"))
+                                    // A chat stream exposes `auto` and forced calls while they are
+                                    // generated (`ToolStreamPreparation.streamsNativeFamilyCalls`):
+                                    // a call that fails after it started may already have sent
+                                    // argument fragments. They leave only inside that unfinished
+                                    // call, never as text, and the response never finishes.
+                                    let streamsCalls = streaming && !responses && choice != #""none""#
+                                    let visible = streamsCalls
+                                        ? try MiMoConsumerFixture.sseObjects(text).map(Self.withoutToolCallFragments)
+                                            .joined(separator: "\n")
+                                        : text
+                                    XCTAssertFalse(visible.contains("PRIVATE_BAD_FRAME"), "Bad fallback must never precede the error")
+                                    XCTAssertFalse(visible.contains("<tool_call>"))
+                                    if streamsCalls {
+                                        XCTAssertFalse(try MiMoConsumerFixture.sseObjects(text).contains { object in
+                                            (object["choices"] as? [[String: Any]] ?? []).contains {
+                                                ($0["finish_reason"] as? String).map { $0 != "error" } == true
+                                            }
+                                        }, "A failed streamed call is never finished (only the error frame ends it)")
+                                    }
                                     if streaming {
                                         XCTAssertEqual(result.status, .ok)
                                         if responses {

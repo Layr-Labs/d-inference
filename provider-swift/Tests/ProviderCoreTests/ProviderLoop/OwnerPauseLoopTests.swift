@@ -28,7 +28,7 @@ final class OwnerPauseOutbound: @unchecked Sendable {
     func messages(for requestID: String) -> [OutboundMessage] {
         lock.withLock { messages }.filter {
             switch $0 {
-            case .inferenceAccepted(let id), .inferenceError(let id, _, _), .inferenceComplete(let id, _, _, _, _, _),
+            case .inferenceAccepted(let id), .inferenceError(let id, _, _), .inferenceComplete(let id, _, _, _, _, _, _),
                  .inferenceChunk(let id, _, _): return id == requestID
             default: return false
             }
@@ -162,7 +162,8 @@ struct OwnerPauseLoopTests {
         let client: CoordinatorClient
 
         func heartbeat() async throws -> [String: Any] {
-            try #require(JSONSerialization.jsonObject(with: Data(await client.buildHeartbeatJSON().utf8)) as? [String: Any])
+            let json = try #require(await client.buildHeartbeatJSON())
+            return try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
         }
 
         /// The heartbeat, canonical, without `system_metrics`: the one part that

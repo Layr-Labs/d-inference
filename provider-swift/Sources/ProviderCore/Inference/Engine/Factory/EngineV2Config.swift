@@ -179,6 +179,7 @@ public enum EngineV2Factory {
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure? = nil,
+        logitsWidth: Int? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> EngineV2Factory.ProductionBuild
     ) throws -> EngineV2Bridge {
@@ -254,6 +255,7 @@ public enum EngineV2Factory {
                     ?? Qwen4SupportPolicy.contextLimit(
                         modelID: modelId, environment: runtimePolicyEnvironment),
                 glm5NextNativeOwner: glmOwner,
+                logitsWidth: logitsWidth,
                 emitTelemetry: emitTelemetry
             )
             try glmOwner?.bind(to: bridge)

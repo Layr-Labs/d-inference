@@ -314,6 +314,8 @@ struct ProviderLifecycleTests {
             models: [ModelLoadingFixtures.model("retained-glm")])
         await loop.modelLoadingInstallSlot("retained-glm", bridge: makeInertStubBridge(modelId: "retained-glm").bridge)
         await loop.modelLoadingMarkUnloading("retained-glm")
+        // The production wait per slot is 15 s; the abandon path is the same at any bound.
+        await loop.setShutdownUnloadWaitForTesting(.milliseconds(500))
         let finished = OneShotBoolContinuation()
         let shutdown = Task { _ = await loop.shutdownBeforeRegistration(); finished.resume(returning: true) }
         let timer = Task {

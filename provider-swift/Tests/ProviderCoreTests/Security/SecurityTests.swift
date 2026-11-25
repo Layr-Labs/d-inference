@@ -59,16 +59,18 @@ import Testing
             return SecurityCommandResult(terminationStatus: 0, stdout: stdout)
         }
     }
-    #expect(checkSIPEnabled(runner: sip("System Integrity Protection status: enabled.\n")))
-    #expect(!checkSIPEnabled(runner: sip("System Integrity Protection status: disabled.\n")))
-    #expect(checkSIPEnabled(runner: sip(
+    // Without the kernel's value (configuration: nil) csrutil decides; a
+    // custom configuration is not the default, so it never reports enabled.
+    #expect(checkSIPEnabled(runner: sip("System Integrity Protection status: enabled.\n"), configuration: nil))
+    #expect(!checkSIPEnabled(runner: sip("System Integrity Protection status: disabled.\n"), configuration: nil))
+    #expect(!checkSIPEnabled(runner: sip(
         """
         System Integrity Protection status: enabled (Custom Configuration).
 
         Configuration:
         \tKext Signing: disabled
         """
-    )))
+    ), configuration: nil))
 }
 
 @Test func authenticatedRootFeedsTheSecureBootCompatibilityProxy() {

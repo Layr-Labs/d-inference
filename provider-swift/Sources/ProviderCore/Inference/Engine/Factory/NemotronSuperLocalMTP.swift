@@ -173,11 +173,26 @@ enum NemotronSuperLocalMTP {
     /// fixed depth (none when adaptive), its width table and the assistant's
     /// verification mode. The serving policy sizes the owner's round
     /// reservation from the same value.
-    static func config(_ setting: Setting, requests: Int) -> CBv2MTPConfig {
-        CBv2MTPConfig(
+    ///
+    /// A row under the call grammar (`NemotronSuperToolGrammar`) drafts too:
+    /// through its free reasoning and text (constraint spans) and with
+    /// grammar-aware verification inside a call, by default, so a tool request
+    /// keeps the owner's decode speed. An operator's
+    /// `DARKBLOOM_CONSTRAINT_SPANS` or `DARKBLOOM_CBV2_MTP_GRAMMAR` value wins
+    /// (`SDKFeatureDefaults.applyMTPDefaults`): spans `0` keeps such a row
+    /// target-only, grammar `0` keeps it target-only inside a call. Rows
+    /// without a constraint are unaffected.
+    static func config(_ setting: Setting, requests: Int,
+                       processEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> CBv2MTPConfig {
+        var config = CBv2MTPConfig(
             enabled: true, maxDraftTokens: setting.depth, maxSpeculativeBatch: requests,
             fixedDraftTokens: setting.adaptive ? nil : setting.depth,
             fixedDraftTokensByDecodeRows: setting.depthByRequests,
             verificationMode: setting.verification == .serial ? .serialTarget : .rectangularExact)
+        let builds: Set<String> = [NemotronSuperServingPolicy.modelID.lowercased()]
+        SDKFeatureDefaults.applyMTPDefaults(to: &config, modelId: NemotronSuperServingPolicy.modelID,
+            environment: [:], processEnvironment: processEnvironment, spansBuilds: builds, grammarBuilds: builds,
+            nativeGrammarBuilds: [], penaltyBuilds: [])
+        return config
     }
 }

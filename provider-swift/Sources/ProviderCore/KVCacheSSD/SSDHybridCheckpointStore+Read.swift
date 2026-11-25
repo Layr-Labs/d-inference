@@ -6,9 +6,13 @@ extension SSDHybridCheckpointStore {
     // engine's import scratch and active destination are charged separately.
     static let ioScratchBytes = CBv2CompleteCheckpointManifest.maximumProviderScratchBytes
 
-    /// A chain restore also holds one decrypted chunk per additional file.
-    static func ioScratchBytes(files: Int) -> Int {
-        ioScratchBytes + (files - 1) * CBv2CompleteCheckpointManifest.maximumSegmentBytes
+    /// A chain restore also holds one decrypted chunk per additional file, and a
+    /// parallel stage up to `parallelStageDepth` read and opened chunks per file
+    /// ahead of the consumer: each may briefly hold its sealed bytes, the
+    /// ciphertext copy the open makes, and the plaintext.
+    static func ioScratchBytes(files: Int, parallel: Bool) -> Int {
+        let ahead = parallel ? files * parallelStageDepth * 3 : 0
+        return ioScratchBytes + (files - 1 + ahead) * CBv2CompleteCheckpointManifest.maximumSegmentBytes
     }
 
     struct ReadCandidate {
@@ -45,7 +49,8 @@ extension SSDHybridCheckpointStore {
         reserveReadScratch: @Sendable () throws -> CBv2CompleteCheckpointIOLease,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> CBv2CompleteCheckpointImportPlan
     ) async -> SSDPrefixCacheStageResult {
-        guard config.backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout else {
+        guard !MemoryOnlyReceipt.refusesTierAccess(requestID),
+            config.backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout else {
             return .init(disposition: .skippedPolicy, stageMs: 0, chainHashes: [], blockSize: PrefixCachePolicy.blockSize)
         }
         return await stageTransfer(requestID: requestID, request: request, reserveReadScratch: reserveReadScratch,
@@ -57,6 +62,9 @@ extension SSDHybridCheckpointStore {
         reserveReadScratch: @Sendable () throws -> CBv2CompleteCheckpointIOLease,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> CBv2NativeBlockCheckpointImportPlan
     ) async -> SSDPrefixCacheStageResult {
+        guard !MemoryOnlyReceipt.refusesTierAccess(requestID) else {
+            return .init(disposition: .skippedPolicy, stageMs: 0, chainHashes: [], blockSize: PrefixCachePolicy.blockSize)
+        }
         let boundNativeMedia = request.hybridPrefixIdentity != nil && request.multimodal.map {
             !$0.spans.isEmpty && $0.attention == .bidirectionalSpans
                 && $0.positionState == nil && $0.deepstackEmbeddings == nil
@@ -152,9 +160,22 @@ extension SSDHybridCheckpointStore {
                 do { try budget.checkTime() } catch { return result(.skippedCapacity) }
             }
             let reservationKey = "ssd-complete:\(namespace):\(UUID().uuidString)"
-            let ioScratch = Self.ioScratchBytes(files: selected.chain.count)
+            // A budget too tight for the read-ahead stages sequentially instead.
+            // The read-ahead is optional: ask only when the ledger has room, so a
+            // refusal (and its reclaim) happens on its behalf only if memory
+            // changes between this check and the reservation.
+            var parallel = config.parallelStage
+            if parallel, let kvBudget, kvBudget.processLedger.snapshot().remainingBytes
+                < UInt64(Self.ioScratchBytes(files: selected.chain.count, parallel: true)) {
+                parallel = false
+            }
+            var ioScratch = Self.ioScratchBytes(files: selected.chain.count, parallel: parallel)
             if let kvBudget, !(await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(ioScratch))) {
-                return result(.skippedCapacity)
+                guard parallel else { return result(.skippedCapacity) }
+                (parallel, ioScratch) = (false, Self.ioScratchBytes(files: selected.chain.count, parallel: false))
+                guard await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(ioScratch)) else {
+                    return result(.skippedCapacity)
+                }
             }
             let lease = SSDCheckpointStageReservation(key: reservationKey, bytes: ioScratch,
                 budget: kvBudget, activity: activity, stats: statsBox, holdsIO: true)
@@ -168,7 +189,7 @@ extension SSDHybridCheckpointStore {
             let outcome = await readAttempt(
                 requestID: requestID, request: request, candidate: selected,
                 access: access, epoch: epoch, lease: lease, readScratch: readScratch,
-                budget: budget, makeImportPlan: makeImportPlan)
+                budget: budget, parallel: parallel, makeImportPlan: makeImportPlan)
             if case .staged = outcome.disposition {
                 transferred = true
                 let staged = result(outcome.disposition, deviceBytes: outcome.deviceBytes)

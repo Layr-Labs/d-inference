@@ -82,14 +82,34 @@ on:
         default: false
         type: boolean
       coordinator_url:
-        description: Coordinator base URL
+        description: Coordinator base URL (production or dev)
         required: false
+        type: choice
+        options:
+          - https://api.darkbloom.dev
+          - https://api.dev.darkbloom.dev
         default: https://api.darkbloom.dev
 
 jobs:
   register:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
+      # The publishing key goes only to a Darkbloom coordinator, whatever value
+      # reaches the input. A failure here stops the job before any step that
+      # reads the key.
+      - name: Check coordinator URL
+        env:
+          COORDINATOR_URL: ${{ inputs.coordinator_url }}
+        run: |
+          case "$COORDINATOR_URL" in
+            https://api.darkbloom.dev|https://api.dev.darkbloom.dev) ;;
+            *)
+              echo "coordinator_url is not a Darkbloom coordinator (https://api.darkbloom.dev or https://api.dev.darkbloom.dev)" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Build registration payload
         if: ${{ !inputs.publish_revision_only }}
         env:

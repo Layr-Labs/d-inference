@@ -151,6 +151,20 @@ Follow `.agents/skills/darkbloom-contributor/SKILL.md` and `CONTRIBUTING.md`.
 Run docs-impact and docs lint before finalizing. A genuinely inapplicable mapping
 requires the maintainer-applied `docs-not-needed` label, not a weakened checker.
 
+PR CI runs on the `run-ci` label or at ready-for-review, never on a push to a PR
+branch (`ci-dev.yml` and the macOS `Tests` jobs of `ci-master.yml` run on the
+label only). Run CI on one commit with `gh workflow run ci-dev.yml --ref dev -f
+ref=<sha>` (`docs/developer/build.md`). Trigger a one-shot PR CI run via CLI
+with `gh pr edit <PR> --add-label run-ci` (auto-removes on start; re-add when
+ready for another run), or opt in to non-blocking Cluster GPU shards with
+`gh pr edit <PR> --add-label run-gpu-ci` (auto-removes on start; they also run
+nightly on `dev`). PRs that change the release build opt in to the SDK 27
+release and qualification jobs with `gh pr edit <PR> --add-label run-release-ci`
+(auto-removes on start). All AWS Bedrock workflows (`threat-model-review.yml`,
+`bedrock-smoke.yml`) are currently paused (`BEDROCK_SCAN_ENABLED=false`).
+Dev/PR suites stay on Darkbloom; Blacksmith is reserved for releases
+(`release-swift.yml`, `release-desktop.yml`, `release-provider.yml` macOS jobs).
+
 Every PR commit must be signed and display Verified on GitHub, including fork
 commits. Never commit, push, release or open a PR without authorization. Every
 PR needs clearly labeled Before/After Mermaid diagrams covering observable

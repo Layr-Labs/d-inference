@@ -15,8 +15,9 @@ private let antiDebugLogger = Logger(subsystem: BuildEnvironment.current.service
 ///
 /// On macOS, this syscall tells the kernel to deny any future ptrace requests
 /// against this process. Even root cannot override this while SIP is enabled.
-/// Combined with Hardened Runtime (no get-task-allow entitlement), this makes
-/// the process's memory unreadable.
+/// Combined with Hardened Runtime (no get-task-allow entitlement), it stops a
+/// debugger from attaching; it does not by itself keep other processes from
+/// reading this process's memory.
 ///
 /// Must be called early in process startup, before any sensitive data is loaded.
 public func denyDebuggerAttachment() throws {

@@ -250,11 +250,29 @@ public struct ClusterControlNode: Sendable, Equatable {
     /// window passed awake. Never during a gap since the last tick that no tick has seen yet.
     public func leadershipConfirmed(now: Double) -> Bool {
         guard leads, !untickedGap(now: now) else { return false }
+        return windowsLeft(now: now).allSatisfy { $0 == 0 }
+    }
+
+    /// While this Mac leads by a claim not yet confirmed: the seconds until it counts as confirmed with no member
+    /// answering (`leadershipConfirmed`); 0 once it is confirmed; nil when it doesn't lead. During a gap since the last
+    /// tick that no tick has seen yet, a whole time-to-live: the next tick starts that window.
+    public func secondsUntilConfirmed(now: Double) -> Double? {
+        guard leads else { return nil }
+        if untickedGap(now: now) { return ttl }
+        return windowsLeft(now: now).max() ?? 0
+    }
+
+    /// For each other member the claim names: 0 when it confirmed the claim and answers within the time-to-live, else
+    /// the seconds until its time-to-live, awake, has passed (0 once it has).
+    private func windowsLeft(now: Double) -> [Double] {
         let present = present(now: now)
-        return claim.members.filter { $0 != localID }.allSatisfy { id in
-            (confirmed.contains(id) && present.contains(id)) || now - max(heard[id] ?? -Double.infinity, awakeSince) >= ttl
+        return claim.members.filter { $0 != localID }.map { id in
+            confirmed.contains(id) && present.contains(id) ? 0 : max(0, ttl - (now - max(heard[id] ?? -Double.infinity, awakeSince)))
         }
     }
+
+    /// Whether another Mac answered over the link within the time-to-live (`otherAnsweredAt`).
+    public func otherAnswering(now: Double) -> Bool { otherAnsweredAt.map { now - $0 < ttl } ?? false }
 
     /// A gap since the last tick that no renewal could cross, not yet seen by a tick (`tick` then records the wake).
     private func untickedGap(now: Double) -> Bool {
@@ -600,6 +618,8 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
     public static let backoffCapSeconds: Double = 30
     /// The longest wait while the other Mac doesn't answer (`restartBackoff`).
     public static let awayBackoffCapSeconds: Double = 600
+    /// The longest wait of the leading Mac's part after a Mac's load gate refused its share (`restartBackoff`).
+    public static let memoryBackoffCapSeconds: Double = 300
 
     /// The restart backoff after this Mac's part ended having run `ranSeconds`, from the backoff before (`backoff`), and
     /// the wait before it starts again (the same value). A part that ran `longRunSeconds` starts again after
@@ -607,18 +627,25 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
     /// other Mac doesn't answer (`otherMacAway`, `ClusterControlNode.Mode.othersAway`), the wait doubles from
     /// `backoffCapSeconds` up to `awayBackoffCapSeconds` whatever the run's length: such a part cannot form the pair, and
     /// each start reads its share of the model again and registers again (a MiMo leader whose follower slept started
-    /// every 48 s, 2026-11-09). The service starts it again at once when the other Mac answers.
-    public static func restartBackoff(after backoff: Double, ranSeconds: Double, otherMacAway: Bool) -> Double {
+    /// every 48 s, 2026-11-09). The service starts it again at once when the other Mac answers. A leading Mac's part
+    /// that ended because a Mac's load gate refused its share (`memoryRefused`) waits twice as long each time, whatever
+    /// the run's length, up to `memoryBackoffCapSeconds`: the memory rarely comes back within seconds, and each start
+    /// reads the share again and pushes that Mac's applications into compression (a DevNet pair, 2026-11-15: every
+    /// 30 s). The re-plan after two refusals moves to a split each Mac's free pages hold when there is one
+    /// (`ClusterService.replanForMemory`), and a changed setup starts at once.
+    public static func restartBackoff(after backoff: Double, ranSeconds: Double, otherMacAway: Bool,
+                                      memoryRefused: Bool = false) -> Double {
         if otherMacAway { return min(max(backoff * 2, backoffCapSeconds), awayBackoffCapSeconds) }
+        if memoryRefused { return min(max(backoff * 2, firstBackoffSeconds), memoryBackoffCapSeconds) }
         if ranSeconds >= longRunSeconds { return firstBackoffSeconds }
         return min(backoff * 2, backoffCapSeconds)
     }
 
     /// Why this Mac's part of the pair (`key` "cluster:…") waits instead of starting: the other Mac reports its own part
     /// can't start for a reason that doesn't clear by itself (`otherMacHeldBack`; single-Mac serving there). A part started
-    /// anyway only waits for its missing follower and ends again (every 38 s on pair-2). Never for serving alone ("solo:"),
-    /// and only while this Mac leads (`leads`): only the leader reads that reason, so a member never waits on one it read
-    /// while it led.
+    /// anyway only waits for its missing follower and ends again (every 38 s on a DevNet pair). Never for serving alone
+    /// ("solo:"), and only while this Mac leads (`leads`): only the leader reads that reason, so a member never waits
+    /// on one it read while it led.
     public static func waitsForOtherMac(key: String, otherMacHeldBack: String?, leads: Bool) -> String? {
         guard leads, key.hasPrefix("cluster:"), let reason = otherMacHeldBack, !reason.isEmpty else { return nil }
         return reason

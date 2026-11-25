@@ -6,6 +6,7 @@
 
 import NIOCore
 import Foundation
+import HTTPTypes
 import Hummingbird
 import MLXLMServer
 import NIOCore
@@ -171,7 +172,17 @@ where Inner.Context == BasicRequestContext {
         item.request.reasoningParser = await reasoningParserFor(item.request.model)
     }
 
+    /// A request's own bound on its wait for memory (`OwnerMemoryWait.requestLimit`) holds for everything it runs.
     public func respond(to request: Request, context: Context) async throws -> Response {
+        let bound = OwnerMemoryWait.requestLimit(header: request.headers[Self.maxWaitHeader])
+        return try await OwnerMemoryWait.$requestLimit.withValue(bound) {
+            try await respondWithinItsWait(to: request, context: context)
+        }
+    }
+
+    private static var maxWaitHeader: HTTPField.Name { HTTPField.Name(OwnerMemoryWait.requestLimitHeaderName)! }
+
+    private func respondWithinItsWait(to request: Request, context: Context) async throws -> Response {
         guard request.method == .post else {
             return try await inner.respond(to: request, context: context)
         }
@@ -501,7 +512,7 @@ where Inner.Context == BasicRequestContext {
 
     /// `response` with a raw-body owner's entries as `choices[0].logprobs.content`.
     /// The owner leaves on the channel exactly the entries its stream would
-    /// carry (`NemotronSuperCompleteLogprobs`). The upstream response has no
+    /// carry (`NemotronSuperCarriedLogprobs`). The upstream response has no
     /// logprobs field, so the encoded JSON is edited.
     static func jsonResponse(_ response: OpenAIChatCompletionResponse,
                              logprobs entries: [SSETokenLogprob]) throws -> Response {
@@ -582,28 +593,32 @@ where Inner.Context == BasicRequestContext {
     /// `prefillProgress`: the request's prompt progress, said in the same body from its first frame until its first
     /// token (`LocalPrefillProgress.startComments`). Without it the bytes are the upstream helper's; with it the
     /// frames are still written as they come, and the comments go between them from their own timer.
+    ///
+    /// The frame task and the timer stop when the body's write ends, however it ends: the body finishes its own
+    /// stream on the way out. A write that throws (a cancelled task the writer checks, or a closed channel) leaves
+    /// the loop without another `next()`, so the stream's own cancellation handler would not run while the
+    /// `Response` is still held.
     static func sseResponse(_ frames: AsyncThrowingStream<String, Error>,
                             prefillProgress: LocalPrefillProgress?) -> Response {
-        let body = AsyncThrowingStream<ByteBuffer, Error> { continuation in
-            let task = Task {
-                do {
-                    var iterator = frames.makeAsyncIterator()
-                    if let first = try await iterator.next() {
-                        continuation.yield(ByteBuffer(string: first))
-                        prefillProgress?.startComments { continuation.yield(ByteBuffer(string: $0)) }
-                    }
-                    while let frame = try await iterator.next() {
-                        continuation.yield(ByteBuffer(string: frame))
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+        let (body, continuation) = AsyncThrowingStream<ByteBuffer, Error>.makeStream()
+        let task = Task {
+            do {
+                var iterator = frames.makeAsyncIterator()
+                if let first = try await iterator.next() {
+                    continuation.yield(ByteBuffer(string: first))
+                    prefillProgress?.startComments { continuation.yield(ByteBuffer(string: $0)) }
                 }
+                while let frame = try await iterator.next() {
+                    continuation.yield(ByteBuffer(string: frame))
+                }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
             }
-            continuation.onTermination = { _ in
-                task.cancel()
-                prefillProgress?.end()
-            }
+        }
+        continuation.onTermination = { _ in
+            task.cancel()
+            prefillProgress?.end()
         }
         return Response(
             status: .ok,
@@ -611,7 +626,11 @@ where Inner.Context == BasicRequestContext {
                 .contentType: "text/event-stream; charset=utf-8",
                 .cacheControl: "no-cache",
             ],
-            body: .init(asyncSequence: body)
+            body: .init { writer in
+                defer { continuation.finish() }
+                try await writer.write(body)
+                try await writer.finish(nil)
+            }
         )
     }
 }

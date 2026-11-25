@@ -1,4 +1,4 @@
-/// `darkbloom update` on pair-2's MacBook (DevNet, 2026-11-07) failed twice with "download failed: update check failed:
+/// `darkbloom update` on a DevNet MacBook (2026-11-07) failed twice with "download failed: update check failed:
 /// The request timed out", a minute each, while the coordinator answered `curl` in 0.3 s: the release check sent one
 /// request, waited the shared session's 60 s for an answer and never asked again. The coordinator here is answered
 /// in-process, one scripted step per request (`ScriptedReleaseProtocol`), or is a loopback peer that takes the

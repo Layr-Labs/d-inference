@@ -5,7 +5,7 @@ import Testing
 @testable import ProviderCore
 @testable import darkbloom
 
-// What a paired Mac says of its pair where the real-Mac journeys found a false line (journey 3 on pair-2, and the
+// What a paired Mac says of its pair where the real-Mac journeys found a false line (on a DevNet pair, and the
 // reviews of #1908 and #1911). The pair is a fixture; nothing of this Mac's own cluster is read.
 
 private let otherMac = "the other Mac (Apple M3 Ultra, 256 GB)"
@@ -28,7 +28,7 @@ private func status(_ json: String) throws -> ClusterServiceStatus {
     try JSONDecoder().decode(ClusterServiceStatus.self, from: Data(json.utf8))
 }
 
-@Suite("A paired Mac's words where pair-2 found them false (journey 3)", .serialized)
+@Suite("A paired Mac's words where a DevNet pair found them false", .serialized)
 struct ClusterPairRealMacWordsTests {
     // MARK: - D1: the member's doctor said "loading" while the pair served
 
@@ -134,9 +134,9 @@ struct StartSoloModeFlagTests {
         port = 8001
         """
 
-    /// Journey 3's delta: `start --solo --local …` on pair-2's Studio saved `[local] mode = 'local'`, while the pair
-    /// went on serving Both. On a Mac in a pair `[local] mode` holds the pair's answer, so the flag serves this start
-    /// alone that way and saves nothing.
+    /// Journey 3's delta: `start --solo --local …` on a DevNet pair's Studio saved `[local] mode = 'local'`, while the
+    /// pair went on serving Both. On a Mac in a pair `[local] mode` holds the pair's answer, so the flag serves this
+    /// start alone that way and saves nothing.
     @Test("with --solo a mode flag serves that start only; without it, the flag is saved as before")
     func aSoloFlagIsForThatStartOnly() throws {
         let config = try TempConfig(Self.config)

@@ -14,10 +14,15 @@ func windowRefusalWords(_ contextTokens: Int) -> String {
         + "Shorten the prompt or start a new conversation."
 }
 
-/// The words of the memory 503, on one Mac and on a pair: a request the
-/// memory can't hold now.
-let memoryRefusalWords = "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
-    + "(or send less media), or retry when this Mac's other requests finish."
+/// The words of the memory 503, on one Mac and on a pair, for a request
+/// larger than the memory holds with nothing else running: the only memory
+/// refusal that asks for a smaller request.
+let memoryExceedsIdleWords = "This request needs more memory than this Mac can give it, even with nothing else "
+    + "running. Lower max_tokens or shorten the prompt (or send less media)."
+
+/// The words of the memory 503 for a request the memory would hold idle:
+/// requests already running hold it (`LocalMemoryRefusal.busy`).
+let memoryBusyWords = "This Mac is at capacity. Retry when more memory is available."
 
 /// That refusal as the bridge throws it.
 func windowRefusal(_ contextTokens: Int) -> MultiModelBatchSchedulerEngineError {

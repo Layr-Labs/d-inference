@@ -4,7 +4,7 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-// The pair's setup screen where pair-2 found it unclear or false (journey 3 and its deltas).
+// The pair's setup screen where a DevNet pair found it unclear or false.
 
 @Suite("The pair's setup screen: what each mode serves, and a stopped pair whose other Mac is gone")
 struct ClusterSetupRealMacWordsTests {
@@ -86,7 +86,7 @@ struct ClusterSetupRealMacWordsTests {
                   firstTokenSeconds: 1, decodeTokensPerSecond: decode, absolute: true, measured: false, alone: [], aloneAsFast: [],
                   fitsNow: true, needsBytes: nil, explanation: [])
         }
-        // The planner predicts the pipeline faster here (pair-2's Gemma right after an update).
+        // The planner predicts the pipeline faster here (a DevNet pair's Gemma right after an update).
         let advice = OnboardingLive.modeAdvice(offered, listed: plan(Self.tp, decode: 60), families: [plan(Self.pp, decode: 90)],
                                                throughDarkbloom: true, serving: false)
         #expect(advice?.mode == Self.tp)

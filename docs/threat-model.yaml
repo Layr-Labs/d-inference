@@ -61,16 +61,12 @@ methodology: STRIDE
 # GPU limit for a GLM pair reviewed 2026-11-01: TB-014, A-020 and T-062 describe
 # darkbloom cluster gpu-limit raising the macOS GPU and wire limits and installing
 # a boot job as root, behind the owner's confirmation and an administrator prompt.
-# Darkbloom MDM removal reviewed 2026-11-16: production runs MicroMDM off by
-# configuration (EIGENINFERENCE_MDM_URL empty) from a planned coordinator restart,
-# and the platform removes its MDM code in a separate change (T-036 stays open
-# until that ships); App Attest is the only verification. The
-# provider no longer decodes mdm_removal_ready and has no privileged profile
-# inventory: it reads only `profiles status -type enrollment` unprivileged
-# (scripts/test-provider-profiles-unprivileged.py) to point at an old Darkbloom
-# profile, which the user removes. MDM, MDA, legacy-cohort and profile-inventory
-# content in ADV-003, A-010, TB-009, TB-011, T-036, T-037 and T-057 is marked not
-# applicable; IDs are unchanged. Earlier analysis:
+# App Attest-only verification reviewed 2026-11-18: App Attest is the only
+# verification. The provider reads only `profiles status -type enrollment`
+# unprivileged (scripts/test-provider-profiles-unprivileged.py) to point at the
+# inert old Darkbloom enrollment profile, which the user removes. ADV-003, A-010,
+# TB-009, TB-011, T-036, T-037 and T-057 describe that system; IDs are unchanged.
+# Earlier analysis:
 # https://github.com/Layr-Labs/d-inference/blob/63a82b502c/docs/threat-model.yaml
 description: >
   Provider and native-runtime threat model, including the external trust
@@ -114,7 +110,7 @@ adversaries:
     name: external_attacker
     description: >
       An unauthenticated external party targeting the coordinator HTTP API, console UI,
-      or WebSocket endpoint (the MDM webhook is removed with Darkbloom MDM). No prior
+      or WebSocket endpoint. No prior
       access assumed. Goals include account takeover, SSRF, DoS, trust escalation,
       or payment manipulation.
 
@@ -200,17 +196,13 @@ assets:
     notes: Atomic balance operations required; duplicate webhook risk (SEC-012).
 
   - id: A-010
-    name: attestation_blob_and_mda_chain
+    name: attestation_blob
     description: >
-      SE-signed attestation blob (hardware info, binary hash, SIP/SecureBoot state) and
-      the Apple MDA DER certificate chain signed by Apple Enterprise Attestation Root CA.
+      SE-signed attestation blob (hardware info, binary hash, SIP/SecureBoot state).
     sensitivity: critical
     notes: >
-      Legacy evidence only. The MDA chain is not applicable since 2026-11-16:
-      Darkbloom MDM is removed, so no MDM SecurityInfo or MDA proof is produced and
-      public mda_verified is historical, always false. The SE-signed blob remains.
-      App Attest authorization never fabricates either flag. Integrity must be
-      maintained end-to-end.
+      Legacy evidence only. App Attest authorization never fabricates legacy flags.
+      Integrity must be maintained end-to-end.
 
   - id: A-011
     name: provider_binary_hash_registry
@@ -422,6 +414,13 @@ trust_boundaries:
       MallocErrorAbort, NSZombieEnabled, OBJC_DEBUG_POOL_ALLOCATION,
       CFNETWORK_DIAGNOSTICS).
 
+      Before that, as the first statement of main, every Darkbloom executable
+      (provider, enclave and fan helpers, cluster worker and planner) applies
+      start-up hardening (DarkbloomProcessHardening); a process where it cannot be
+      applied runs only diagnostics and never serves. The release build links each
+      with a fixed 8 MiB main-thread stack, independent of the limit it is started
+      with (scripts/check-fixed-stack.sh).
+
       SIP is checked once at startup by spawning /usr/bin/csrutil status and parsing for
       "enabled" (SecurityHardening.swift). If disabled the process aborts. The
       check is not repeated after startup; it is sound because disabling SIP requires a
@@ -465,9 +464,15 @@ trust_boundaries:
       The provider config file (~/.config/darkbloom/provider.toml) stores only
       operational settings (coordinator URL, backend port, idle timeout, model list).
       It contains no cryptographic secrets. Core dumps are disabled (RLIMIT_CORE=0).
-      Memory wiping functions (secureZero via memset_s) are defined in
-      SecurityHardening.swift but call-site coverage in the inference path is not
-      confirmed from static analysis.
+      NodeKeyPair zeroes the buffers it creates with secureZero (memset_s): the
+      decrypted request body on a background queue once the request's response has
+      been sent, the copy it makes of each response chunk to seal it, and its copies
+      of the endpoint secret and the request's shared key (RequestBufferWipeTests
+      reads the test process's memory). The response text the inference handler
+      gathers while it streams (for the response hash, the billing floor and the
+      reasoning count) is held in a ResponseTextBuffer, zeroed as it grows and when
+      the request ends (ResponseTextWipeTests); counting tokens hands the tokenizer a
+      string copy, which is not zeroed.
 
       Cache payload placement is operator-controlled through provider.toml.
       A selected external APFS volume is not part of the attested Mac boundary:
@@ -483,9 +488,8 @@ trust_boundaries:
       - "SIP check is single-shot at startup. This is sound given the Recovery Mode
         reboot requirement, but there is no in-process re-verification between coordinator
         challenges."
-      - "secureZero* (memset_s) functions are defined but their invocation in the actual
-        inference data path (decrypted prompt buffers, KV-cache tensors) is not confirmed
-        by static analysis of SecurityHardening.swift."
+      - "Only buffers that NodeKeyPair creates and the handler's gathered response text
+        are zeroed; copies made by other layers are not."
       - "GPU-side MLX buffers (Metal) are not explicitly zeroed between requests.
         Residual prompt tokens and KV-cache data may persist in GPU memory until
         overwritten by the next batch."
@@ -586,11 +590,9 @@ trust_boundaries:
     description: >
       The legacy evidence path consists of SE key generation → attestation
       blob construction and SE signing → coordinator signature verification →
-      ongoing challenge-response. The MDM SecurityInfo cross-check (the former
-      hardware grant) and the MDA cert chain are not applicable since 2026-11-16:
-      Darkbloom MDM is removed. This path is evidence, not a serving grant; TB-011
+      ongoing challenge-response. This path is evidence, not a serving grant; TB-011
       App Attest authorization is the only serving path. App Attest does not
-      manufacture legacy hardware, MDA or APNs evidence.
+      manufacture legacy hardware or APNs evidence.
     how_it_works: >
       SE key lifecycle: PersistentEnclaveKey.swift creates or loads a persistent
       SecureEnclave P-256 signing key stored in the macOS keychain under access group
@@ -660,11 +662,7 @@ trust_boundaries:
         string could theoretically produce the same signed bytes as a different
         (nonce, timestamp) pair, though in practice base64 nonces (44 chars) and RFC3339
         timestamps are statistically non-overlapping."
-      - "Not applicable since 2026-11-16 (Darkbloom MDM removed): the frozen legacy
-        MDM cohort, the /v1/enroll gate, copyable MDM profiles, MDA freshness codes
-        and Apple Enterprise Attestation Root CA checks, the MDM webhook secret and
-        asynchronous MDM/MDA verification. No MDM evidence grants serving; a
-        self_signed label is not public authorization, and a current App Attest
+      - "A self_signed label is not public authorization; a current App Attest
         lease must qualify. Earlier analysis is in the history linked at the top."
       - "ARV (Authenticated Root Volume) status is parsed from the SE attestation but
         is not enforced in the trust state machine."
@@ -680,8 +678,10 @@ trust_boundaries:
       Explicit sudo enable verifies the separately signed nested helper and atomically
       copies it to /Library/PrivilegedHelperTools/io.darkbloom.fan-helper, with a
       root-owned LaunchDaemon plist and validated JSON policy. Both XPC peers use
-      NSXPCConnection code-signing requirements that pin Team SLDQ2GJ6TL and the
-      io.darkbloom.provider / io.darkbloom.fan-helper identifiers. The helper also
+      NSXPCConnection code-signing requirements that pin Team SLDQ2GJ6TL, the
+      listed Darkbloom signing certificates (DarkbloomSigningIdentity) and the
+      io.darkbloom.provider / io.darkbloom.fan-helper identifiers. A helper before
+      version 3 pins the team and identifiers only. The helper also
       requires the configured numeric provider UID. The provider renews every five
       seconds; expiry after fifteen seconds restores automatic mode. The root helper
       exposes no arbitrary key/value SMC API and has no network, model, credential,
@@ -704,8 +704,8 @@ trust_boundaries:
     description: >
       Apple authenticates an App Attest credential and signed code/access-policy
       evidence; the coordinator evaluates that evidence and grants bounded permission
-      to one current provider connection. It is the only serving path: Darkbloom MDM
-      is removed (2026-11-16). It is not an automatic upgrade of the legacy
+      to one current provider connection. It is the only serving path. It is not an
+      automatic upgrade of the legacy
       trust_level or flags.
     how_it_works: >
       ProviderLoop.handleAppAttestShadow first opens a challenge encrypted to its own
@@ -769,7 +769,7 @@ trust_boundaries:
       extend readiness. Failed reads, status delivery,
       receipt renewal and monitoring success cannot extend basic policy or proof age.
       Local credential revocation fences matching current/retained presenters
-      immediately after durable success. There is no legacy MDM fallback. Policy
+      immediately after durable success. There is no fallback. Policy
       and qualification generation changes invalidate stale grants. For existing deployments, full Apple code
       measurements can still use exact configured build/code mappings if no durable
       row exists and the qualification snapshot is fresh. Durable rows/tombstones
@@ -788,14 +788,14 @@ trust_boundaries:
       fields. Public snapshot badges describe a past coordinator observation;
       neither a badge nor an optional diagnostic grants permission.
 
-      Onboarding installs no MDM profile and waits for App Attest. An old Darkbloom
-      profile does nothing; removing it needs no coordinator decision. The provider
+      Onboarding installs no profile and waits for App Attest. An old Darkbloom
+      enrollment profile does nothing; removing it needs no coordinator decision. The provider
       reads only `profiles status -type enrollment` unprivileged, names the profile
       and opens System Settings; the user removes it. No sudo profile inventory
       exists (regression check: scripts/test-provider-profiles-unprivileged.py). A
       server line with a control or format character is never treated as
-      Darkbloom's and is printed escaped (parseMDMEnrollmentStatus). Other MDM profiles
-      and the application's embedded signing profile are not removal targets.
+      Darkbloom's and is printed escaped (parseMDMEnrollmentStatus). Other management
+      profiles and the application's embedded signing profile are not removal targets.
       Reviewed serving/receipt contract and code map (platform-owned evidence):
       https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md
       (EvaluateAuthorization, EvaluateReceiptMonitoring, Controller.Refresh,
@@ -1171,7 +1171,9 @@ threats:
     mitigations:
       - description: PT_DENY_ATTACH applied at startup; kernel denies task_for_pid.
         status: implemented
-      - description: Hardened Runtime entitlement blocks external memory inspection.
+      - description: Every Darkbloom executable applies start-up hardening first in main; serving refuses if it cannot.
+        status: implemented
+      - description: Hardened Runtime (no get-task-allow) blocks debugger attachment and task_for_pid from other processes while SIP is enabled.
         status: implemented
       - description: SE P-256 key is non-exportable and never present in regular process memory.
         status: implemented
@@ -1721,36 +1723,32 @@ threats:
   - id: T-036
     trust_boundary: TB-009
     stride: Elevation_of_Privilege
-    title: Legacy hardware trust elevated without valid MDM SecurityInfo evidence
+    title: Legacy hardware trust elevated without valid device evidence
     description: >
-      Mitigated by configuration from a planned coordinator restart: production runs
-      with EIGENINFERENCE_MDM_URL empty, so the coordinator has no MDM client,
-      scheduler, trust reuse or SecurityInfo/MDA handling to bypass. The MDM webhook
-      route, the legacy serving path and the legacy cohort stay in the coordinator
-      code until the platform's removal (darkbloom-platform #1044, #1053) is
-      released, so SEC-004 remains open as a configuration-dependent finding.
-      Earlier analysis, including trust-reuse fast-skip, is in the history linked
-      at the top of this file.
+      Mitigated: the coordinator has no device-management client, SecurityInfo or
+      device-attestation handling to bypass (removed in darkbloom-platform dev and
+      master). SEC-004 stays listed until the platform closes it. Earlier analysis,
+      including trust-reuse fast-skip, is in the history linked at the top of this
+      file.
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
     affected_files:
       - https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/attestation
-      - https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/mdm/mdm.go
     mitigations:
       - description: >
-          MDM off by configuration (EIGENINFERENCE_MDM_URL empty) from the
-          planned coordinator restart; App Attest (TB-011) is the only serving
-          authorization the provider relies on.
+          App Attest (TB-011) is the only serving authorization the provider
+          relies on.
         status: implemented
       - description: >
-          Coordinator MDM code removed (MDM client, webhook, MDA, trust reuse,
-          legacy cohort) in the platform stack, released through dev to master.
-        status: open
+          The coordinator's device-management code is removed in source (the
+          platform's dev and master branches) and deployed to production on
+          2026-11-18.
+        status: implemented
     open_findings: [SEC-004]
     severity: critical
     detection_hint: >
-      Re-setting EIGENINFERENCE_MDM_URL, lowering the trust floor below App Attest,
-      or any change that reintroduces an MDM, MDA or hardware-trust grant path, or
+      Lowering the trust floor below App Attest, any change that reintroduces a
+      device-management or hardware-trust grant path, or
       lets a legacy trust_level authorize serving, reopens this threat.
 
   - id: T-037
@@ -1772,9 +1770,8 @@ threats:
       - description: Disabling SIP requires reboot (kills process); practical attack window is extremely narrow.
         status: implemented
       - description: >
-          MDM SecurityInfo SIP verification is not applicable since 2026-11-16
-          (Darkbloom MDM removed); App Attest's Mac access policy checks SIP and
-          Secure Boot at each assertion.
+          App Attest's Mac access policy checks SIP and Secure Boot at each
+          assertion.
         status: implemented
     open_findings: []
     severity: medium
@@ -1852,7 +1849,8 @@ threats:
       newer than the rolled-back-to predecessor's successor) prevents v2 from
       reinstalling. No component may claim multi-version quarantine.
       (4) Rollback/replay verification is fail-closed on the pinned Darkbloom
-      designated requirement (Team SLDQ2GJ6TL): legacy flat/ad-hoc or locally
+      designated requirement (Team SLDQ2GJ6TL and a listed Darkbloom signing
+      certificate): legacy flat/ad-hoc or locally
       re-signed installs are NOT rollback-eligible; the watchdog logs an
       actionable refusal and preserves the live install, and the remedy is a
       signed reinstall via install.sh. This is an accepted fleet-impact
@@ -1956,8 +1954,9 @@ threats:
       - provider-swift/Sources/darkbloom/FanActivityLease.swift
     mitigations:
       - description: >
-          Production XPC connections mutually pin exact signing identifiers and
-          Developer ID Team SLDQ2GJ6TL using NSXPCConnection requirements; the
+          Production XPC connections mutually pin exact signing identifiers,
+          Developer ID Team SLDQ2GJ6TL and the listed Darkbloom signing
+          certificates using NSXPCConnection requirements; the
           helper separately restricts peers to root or the configured numeric UID
           whose directory-service GeneratedUID still matches the opt-in account.
         status: implemented
@@ -2353,13 +2352,12 @@ threats:
   - id: T-057
     trust_boundary: TB-011
     stride: Denial_of_Service
-    title: Apple recovery or premature MDM removal strands a provider without authorization
+    title: Apple recovery failure strands a provider without authorization
     description: >
       Enrollment/assertion errors, missing required accepted-proof evidence, expired
       policy or unqualified builds can leave providers pending. Recurring
       receipt/risk failures alone withhold rewards, not an otherwise valid basic
-      grant. Premature MDM removal is not applicable since 2026-11-16: Darkbloom MDM
-      is removed, so removing the old profile removes no serving path.
+      grant. Removing the old Darkbloom enrollment profile removes no serving path.
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-015, A-016]
     affected_files:
@@ -2371,12 +2369,12 @@ threats:
     mitigations:
       - description: >
           Bounded persisted enrollment recovery and receipt renewal never grant trust.
-          Onboarding waits for App Attest and installs no MDM profile. Removing an
+          Onboarding waits for App Attest and installs no profile. Removing an
           old Darkbloom profile is guidance only: no coordinator readiness, no
           privileges, the user's action in System Settings, and employer profiles
           are never offered (TB-011).
         status: implemented
-      - description: Apple availability remains an operational risk; there is no MDM fallback.
+      - description: Apple availability remains an operational risk; there is no fallback.
         status: accepted
     open_findings: []
     severity: high

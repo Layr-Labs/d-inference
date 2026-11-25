@@ -65,19 +65,19 @@ extension ProviderLoop {
 
     /// A served blind request's usage statement, signed by `signer`: its terms,
     /// the usage, how it finished, and digests of the `chunkCount` frames and
-    /// the sealed usage it sent. Throws without a signer.
+    /// the sealed usage it sent. Throws without a signer or the frames' digest.
     nonisolated static func signedBlindUsage(
         _ frame: VerifiedBlindFrame, requestId: String, usage: UsageInfo,
-        finishReason: SealedTerminalFields.FinishReason, chunkCount: UInt64, framesSHA256: Data,
+        finishReason: SealedTerminalFields.FinishReason, chunkCount: UInt64, framesSHA256: Data?,
         encryptedUsage: EncryptedPayload, signer: (any AttestationSigner)?
     ) throws -> SignedBlindStatement {
-        guard let signer else { throw BlindRefusalReason.posture }
+        guard let signer, let framesSHA256, let sealedUsage = Data(base64Encoded: encryptedUsage.ciphertext)
+        else { throw CryptoError.encryptionFailed }
         let terms = BlindStatement.UsageTerms(
             requestID: requestId, signedRequestSHA256: frame.signedRequestSHA256,
             recipientPublicKey: frame.signature.payload.recipientPublicKey,
             clientPublicKey: frame.terms.clientPublicKey, clientNonce: frame.terms.clientNonce,
             model: frame.terms.model, maxTokens: frame.terms.maxTokens)
-        let sealedUsage = Data(base64Encoded: encryptedUsage.ciphertext) ?? Data()
         return try BlindStatement.usage(
             terms, usage: usage, finishReason: BlindFinishReason(finishReason), chunkCount: chunkCount,
             framesSHA256: framesSHA256, sealedUsageSHA256: Data(SHA256.hash(data: sealedUsage)),

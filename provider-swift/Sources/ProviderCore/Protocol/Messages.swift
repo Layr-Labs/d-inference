@@ -1524,7 +1524,8 @@ extension ProviderMessage: Codable {
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
                 encryptedUsage: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedUsage),
-                blindUsage: (try? container.decodeIfPresent(SignedBlindStatement.self, forKey: .blindUsage)).flatMap { $0 },
+                blindUsage: (try? container.decodeIfPresent(SignedBlindStatement.self, forKey: .blindUsage))
+                    .flatMap { $0 },
                 profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
             )
             complete.stopSequence = try container.decodeIfPresent(String.self, forKey: .stopSequence)

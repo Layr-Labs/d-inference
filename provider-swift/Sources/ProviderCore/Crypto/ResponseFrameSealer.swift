@@ -17,6 +17,7 @@ final class ResponseFrameSealer: Sendable {
     private let keyPair: NodeKeyPair
     private let sharedKey: Data
     let prefix: [UInt8]
+
     private struct Sealed {
         /// Frames sealed so far, which is also the next frame's number.
         var count: UInt64 = 0
@@ -36,7 +37,7 @@ final class ResponseFrameSealer: Sendable {
         self.keyPair = keyPair
         self.sharedKey = sharedKey
         self.prefix = prefix
-        sealed = os.OSAllocatedUnfairLock(uncheckedState: Sealed(digest: digestsFrames ? SHA256() : nil))
+        sealed = os.OSAllocatedUnfairLock(initialState: Sealed(digest: digestsFrames ? SHA256() : nil))
     }
 
     /// Seals the next frame of the response.
@@ -44,23 +45,24 @@ final class ResponseFrameSealer: Sendable {
         try sealed.withLockUnchecked { state in
             let payload = try keyPair.encryptPayloadFast(
                 sharedKey: sharedKey, plaintext: plaintext, nonce: nonce(state.count))
-            if state.digest != nil, let box = Data(base64Encoded: payload.ciphertext) {
-                state.digest?.update(data: box)
+            if state.digest != nil {
+                guard let raw = Data(base64Encoded: payload.ciphertext) else { throw CryptoError.encryptionFailed }
+                state.digest?.update(data: raw)
             }
             state.count += 1
             return payload
         }
     }
 
-    /// Frames sealed so far.
+    /// Frames sealed so far: read before `sealUsage`, the count it seals.
     var framesSealed: UInt64 {
-        sealed.withLockUnchecked { $0.count }
+        sealed.withLock { $0.count }
     }
 
     /// SHA-256 over the raw `nonce ‖ box` of every frame sealed so far, in
     /// order; nil for a sealer that does not digest its frames.
     var framesSHA256: Data? {
-        sealed.withLockUnchecked { state in state.digest.map { Data($0.finalize()) } }
+        sealed.withLock { state in state.digest.map { Data($0.finalize()) } }
     }
 
     /// Seals the request's usage and frame count, and `terminal` when given,

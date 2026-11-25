@@ -1631,14 +1631,15 @@ request, and its `inference_complete` carries, beside the clear `usage` and
 terms'), `prompt_tokens`, `completion_tokens`, `reasoning_tokens` and
 `cached_tokens` (the clear usage's; an absent count is 0), `finish_reason`
 (`stop`, `length`, `tool_calls` or `cancelled`), `chunk_count` (the response
-frames sent), `frames_sha256` (base64 SHA-256 over the raw `nonce ‖ box` of
-those frames, in order), `sealed_usage_sha256` (base64 SHA-256 of the raw
-`encrypted_usage`) and `issued_at_ms`, integers as JSON numbers. The signature
-is ECDSA P-256 over SHA-256, by the Mac's Secure Enclave key, of the 4-byte
-big-endian length and bytes of `darkbloom-blind-usage-v1` and then of each
-member's string form in that order (`BlindStatement.usage`,
-`ProviderLoop.signedBlindUsage`). A usage that cannot be signed ends the
-request with `encryption_failure`, as one that cannot be sealed does.
+frames sent, as in the sealed usage), `frames_sha256` (base64 SHA-256 over the
+raw `nonce ‖ box` of those frames, in order), `sealed_usage_sha256` (base64
+SHA-256 of the raw `nonce ‖ box` of `encrypted_usage`) and `issued_at_ms`,
+integers as JSON numbers. The signature is ECDSA P-256 over SHA-256, by the
+Mac's Secure Enclave key, of the 4-byte big-endian length and bytes of
+`darkbloom-blind-usage-v1` and then of each member's string form in that order
+(integers in decimal) (`BlindStatement.usage`, `ProviderLoop.signedBlindUsage`).
+A usage that cannot be signed ends the request with `encryption_failure`, as
+one that cannot be sealed does.
 
 A refusal is an `inference_error` with `failure_code` `blind_refused`,
 `status_code` 502 for `signature_invalid` and `posture` and 400 for every

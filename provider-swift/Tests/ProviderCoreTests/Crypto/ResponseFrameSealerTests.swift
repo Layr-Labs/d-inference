@@ -31,11 +31,14 @@ func responseFrameNumber(_ payload: EncryptedPayload) throws -> (prefix: [UInt8]
 }
 
 /// A sealer for a fresh provider key, sealing to a fresh consumer key.
-private func makeSealer() throws -> (ResponseFrameSealer, provider: NodeKeyPair, consumer: NodeKeyPair) {
+private func makeSealer(
+    digestsFrames: Bool = false
+) throws -> (ResponseFrameSealer, provider: NodeKeyPair, consumer: NodeKeyPair) {
     let provider = NodeKeyPair.generate()
     let consumer = NodeKeyPair.generate()
     let sealer = ResponseFrameSealer(
-        keyPair: provider, sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes))
+        keyPair: provider, sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes),
+        digestsFrames: digestsFrames)
     return (sealer, provider, consumer)
 }
 
@@ -71,23 +74,19 @@ struct ResponseFrameSealerTests {
 
     @Test("a sealer that digests its frames keeps SHA-256 over their raw nonce and box, in order")
     func framesDigest() throws {
-        let provider = NodeKeyPair.generate()
-        let consumer = NodeKeyPair.generate()
-        let sharedKey = try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes)
-        let sealer = ResponseFrameSealer(keyPair: provider, sharedKey: sharedKey, digestsFrames: true)
+        let (sealer, _, _) = try makeSealer(digestsFrames: true)
         #expect(sealer.framesSHA256 == Data(SHA256.hash(data: Data())))
         var expected = SHA256()
         for text in ["a", "bc", "def"] {
             let payload = try sealer.sealFrame(Data(text.utf8))
-            let box = try #require(Data(base64Encoded: payload.ciphertext))
-            expected.update(data: box)
+            expected.update(data: try #require(Data(base64Encoded: payload.ciphertext)))
         }
         #expect(sealer.framesSealed == 3)
         #expect(sealer.framesSHA256 == Data(expected.finalize()))
         _ = try sealer.sealUsage(UsageInfo(promptTokens: 1, completionTokens: 3))
         #expect(sealer.framesSHA256 == Data(expected.finalize()), "the usage is not a frame")
 
-        let plain = ResponseFrameSealer(keyPair: provider, sharedKey: sharedKey)
+        let (plain, _, _) = try makeSealer()
         _ = try plain.sealFrame(Data("a".utf8))
         #expect(plain.framesSHA256 == nil)
     }
@@ -154,14 +153,15 @@ struct ResponseFrameSealerTests {
         #expect(first.prefix != second.prefix)
     }
 
-    @Test("a frame and the usage match the bytes the coordinator's tests open")
-    func sharedVector() throws {
+    @Test("a frame and the usage match the bytes the coordinator's tests open, whether or not the sealer digests",
+          arguments: [false, true])
+    func sharedVector(digestsFrames: Bool) throws {
         let provider = try NodeKeyPair(rawSecret: Data(hexString: SharedResponseVector.providerSecretHex))
         let consumer = try NodeKeyPair(rawSecret: Data(hexString: SharedResponseVector.consumerSecretHex))
         let sealer = ResponseFrameSealer(
             keyPair: provider,
             sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes),
-            prefix: SharedResponseVector.prefix)
+            prefix: SharedResponseVector.prefix, digestsFrames: digestsFrames)
 
         _ = try sealer.sealFrame(Data("frame 0".utf8))
         _ = try sealer.sealFrame(Data("frame 1".utf8))

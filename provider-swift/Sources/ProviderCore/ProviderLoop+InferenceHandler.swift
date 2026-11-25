@@ -1024,7 +1024,8 @@ extension ProviderLoop {
                 return
             }
             if rejectExpiredDeadline() { return }
-            let responseSealer = ResponseFrameSealer(keyPair: kp, sharedKey: sharedKey, digestsFrames: blindFrame != nil)
+            let responseSealer = ResponseFrameSealer(
+                keyPair: kp, sharedKey: sharedKey, digestsFrames: blindFrame != nil)
 
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
@@ -1836,7 +1837,7 @@ extension ProviderLoop {
                 if let blindFrame {
                     blindUsage = try Self.signedBlindUsage(
                         blindFrame, requestId: requestId, usage: usageInfo, finishReason: terminalFields.finishReason,
-                        chunkCount: chunkCount, framesSHA256: responseSealer.framesSHA256 ?? Data(),
+                        chunkCount: chunkCount, framesSHA256: responseSealer.framesSHA256,
                         encryptedUsage: encryptedUsage, signer: signingIdentity)
                 }
             } catch {

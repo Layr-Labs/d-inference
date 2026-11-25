@@ -279,12 +279,12 @@ public enum OutboundMessage: Sendable {
     /// instant on it, and `CoordinatorClientCodec.providerMessage(for:)`
     /// materializes `wireObject()` at encode time so those stamps (and the
     /// outbound-queue latency in `total_us`) land in the object.
+    /// The response's stop sequence, hash and signature travel only inside
+    /// `encryptedUsage` (`SealedTerminalFields`): this case has no field
+    /// for their clear copies.
     case inferenceComplete(
         requestId: String,
         usage: UsageInfo,
-        stopSequence: String?,
-        seSignature: String?,
-        responseHash: String?,
         profile: RequestProfileBuilder? = nil,
         encryptedUsage: EncryptedPayload? = nil
     )

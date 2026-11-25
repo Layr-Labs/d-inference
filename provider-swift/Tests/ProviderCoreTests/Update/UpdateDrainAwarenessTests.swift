@@ -314,7 +314,7 @@ struct CoordinatorLifecycleBarrierTests {
             }
         }
         defer { reader.cancel() }
-        send(.inferenceComplete(requestId: "finished", usage: UsageInfo(promptTokens: 3, completionTokens: 2), stopSequence: nil, seSignature: nil, responseHash: nil, profile: nil))
+        send(.inferenceComplete(requestId: "finished", usage: UsageInfo(promptTokens: 3, completionTokens: 2), profile: nil))
         #expect(await client.acknowledgeDrain(timeout: .seconds(2)))
         let captured = mock.snapshot()
         #expect(captured.inferenceComplete.count == 1)
@@ -398,7 +398,7 @@ struct PlannedProviderDisconnectTests {
         #expect(state.refusingNewWork)
         #expect(mock.snapshot().registers.count == 1)
         #expect(await loop.lifecycleRemaining == 1)
-        send(.inferenceComplete(requestId: "accepted", usage: .init(promptTokens: 2, completionTokens: 1), stopSequence: nil, seSignature: nil, responseHash: nil, profile: nil))
+        send(.inferenceComplete(requestId: "accepted", usage: .init(promptTokens: 2, completionTokens: 1), profile: nil))
         await loop.finishPlannedWork()
         let completed = try await mock.waitForSnapshot(timeout: .seconds(5)) { $0.registers.count >= 2 }
         #expect(completed?.inferenceComplete.count == 1)

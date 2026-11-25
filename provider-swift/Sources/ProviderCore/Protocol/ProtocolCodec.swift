@@ -233,6 +233,7 @@ public enum ProviderProtocolCodec {
         if let version = register.gemmaPromptContract, version > 1 {
             try fields.append(("gemma_prompt_contract", encodeValue(version)))
         }
+        try appendIfPresent(register.terminalFieldsSealed, key: "terminal_fields_sealed", to: &fields)
         if let busy = register.busy {
             try fields.append(("busy_reason", encodeValue(busy.reason)))
             try fields.append(("busy_since_ms", encodeValue(busy.sinceMs)))

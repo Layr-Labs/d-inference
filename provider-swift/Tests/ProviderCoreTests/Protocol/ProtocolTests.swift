@@ -465,7 +465,8 @@ private func fullyPopulatedRegister(attestation: RawJSON) throws -> ProviderMess
         clusterModels: [sampleModel()],
         clusterMembership: membership,
         busy: ProviderBusy(reason: .addon, sinceMs: 1_700_000_000_000, addon: "io.darkbloom.sandbox"),
-        gemmaPromptContract: 2)
+        gemmaPromptContract: 2,
+        terminalFieldsSealed: 1)
 }
 
 /// The fields of `register` left empty (nil, empty, `false`, zero or the solo
@@ -557,9 +558,7 @@ private func isSetRegisterValue(_ value: Any) -> Bool {
         .inferenceComplete(ProviderMessage.InferenceComplete(
             requestId: "req-complete",
             usage: UsageInfo(promptTokens: 12, completionTokens: 34),
-            stopSequence: "<END>",
-            seSignature: "c2ln",
-            responseHash: "aGFzaA=="
+            encryptedUsage: EncryptedPayload(ephemeralPublicKey: "ZXBoZW1lcmFs", ciphertext: "dXNhZ2U=")
         )),
         .inferenceError(ProviderMessage.InferenceError(
             requestId: "req-error",
@@ -1686,11 +1685,17 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(profileObject["mlx_peak_bytes"] as? Int64 == 1 << 48)
     #expect(profileObject["deadline_mode"] as? String == "projected")
     #expect(profileObject["cancel_stage"] as? String == "post_terminal")
-    #expect((profileObject["engine"] as? [String: Any])?["finish_reason"] as? String == "stop_sequence")
+    // The clear profile names a stop string's finish as `stop`.
+    #expect((profileObject["engine"] as? [String: Any])?["finish_reason"] as? String == "stop")
+    var clearProfile = profile
+    clearProfile.engine?.finishReason = .stop
     let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: withData)
-    #expect(decoded == with)
+    #expect(decoded == ProviderMessage.inferenceComplete(ProviderMessage.InferenceComplete(
+        requestId: "req-profile",
+        usage: UsageInfo(promptTokens: 12, completionTokens: 34),
+        profile: clearProfile)))
     guard case .inferenceComplete(let c) = decoded else { throw TestFailure.unexpectedMessage }
-    #expect(c.profile == profile)
+    #expect(c.profile == clearProfile)
 
     // Absent → key omitted (mirrors Go `omitempty`), round-trips to nil, and
     // the legacy wire shape is untouched.
@@ -1730,6 +1735,19 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     let withoutData = try ProviderProtocolCodec.encodeProviderMessage(without)
     #expect(try jsonObject(withoutData)["encrypted_usage"] == nil)
     #expect(try ProviderProtocolCodec.decodeProviderMessage(from: withoutData) == without)
+}
+
+@Test func inferenceCompleteDecodesButNeverEncodesClearTerminalFields() throws {
+    // An older provider's clear copies decode; re-encoding never writes them,
+    // because they travel only inside `encrypted_usage`.
+    let json = #"{"type":"inference_complete","request_id":"r","usage":{"prompt_tokens":1,"completion_tokens":1},"stop_sequence":"<END>","se_signature":"c2ln","response_hash":"aGFzaA=="}"#
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: json)
+    guard case .inferenceComplete(let c) = decoded else { throw TestFailure.unexpectedMessage }
+    #expect(c.stopSequence == "<END>")
+    #expect(c.seSignature == "c2ln")
+    #expect(c.responseHash == "aGFzaA==")
+    let reencoded = try jsonObject(try ProviderProtocolCodec.encodeProviderMessage(decoded))
+    #expect(Set(reencoded.keys) == ["type", "request_id", "usage"])
 }
 
 @Test func profilerInferenceErrorEncodesProfileOnlyWhenPresent() throws {
@@ -1802,6 +1820,10 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     #expect(
         EngineFinishReason.allCases.map(\.rawValue)
             == ["stop", "length", "stop_sequence", "cancelled", "error", "other"])
+    // The clear profile carries only `stop`, `length`, `cancelled` and `error`.
+    #expect(
+        EngineFinishReason.allCases.map(\.clearWireValue.rawValue)
+            == ["stop", "length", "stop", "cancelled", "error", "stop"])
     #expect(
         MemoryPressureLevelWire.allCases.map(\.rawValue)
             == ["normal", "warning", "critical", "other"])
@@ -1812,16 +1834,36 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     encoder.outputFormatting = [.sortedKeys]
     let data = try encoder.encode(fullInferenceProfile())
     #expect(data.count <= 4096, "full profile encoded to \(data.count) bytes")
-    // And the whole terminal frame carrying it stays well clear of any
-    // coordinator frame limit.
+}
+
+@Test func worstCaseCompletionFrameStaysUnder64KiB() throws {
+    // The completion always carries the sealed usage, and with it the matched
+    // stop string, bounded in UTF-8 bytes on that sealed copy
+    // (`SealedTerminalFields.maxStopSequenceBytes`), not on requests. The
+    // worst case seals the longest stop string kept, of a character JSON
+    // escapes to six bytes (`\u0001`), beside a usage with every field at its
+    // longest encoding, a 64-hex response hash, a 72-byte DER signature (the
+    // longest P-256 one) and the full profile.
+    let stop = String(repeating: "\u{01}", count: 4096)
+    let usage = UsageInfo(
+        promptTokens: .max, completionTokens: .max, reasoningTokens: .max, cacheOutcome: .skippedCapacity,
+        cacheTier: .memory, cachedTokens: .max, prefillTokensSaved: .max,
+        cacheStageMs: -Double.greatestFiniteMagnitude)
+    let terminal = SealedTerminalFields(
+        finishReason: .stop, stopSequence: stop, responseHash: String(repeating: "f", count: 64),
+        seSignature: Data(repeating: 0xff, count: 72).base64EncodedString())
+    #expect(terminal.stopSequence == stop)
+    let provider = NodeKeyPair.generate()
+    let consumer = NodeKeyPair.generate()
+    let sealer = ResponseFrameSealer(
+        keyPair: provider, sharedKey: try provider.precomputeSharedKey(recipientPublicKey: consumer.publicKeyBytes))
     let frame = try ProviderProtocolCodec.encodeProviderMessage(
         .inferenceComplete(ProviderMessage.InferenceComplete(
             requestId: "0f3c2b8e-6b1a-4c8f-9d2e-7a5b3c1d9e0f",
-            usage: UsageInfo(promptTokens: 812, completionTokens: 147, reasoningTokens: 12),
-            stopSequence: "<END>", seSignature: String(repeating: "s", count: 96),
-            responseHash: String(repeating: "h", count: 64),
+            usage: usage,
+            encryptedUsage: try sealer.sealUsage(usage, terminal: terminal),
             profile: fullInferenceProfile())))
-    #expect(frame.count <= 4096 + 512)
+    #expect(frame.count < 64 << 10, "worst-case completion encoded to \(frame.count) bytes")
 }
 
 @Test func profilerBackendSlotCapacityRoundTripsTelemetry() throws {
@@ -2189,9 +2231,13 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     else { throw TestFailure.unexpectedMessage }
     #expect(e.profile == over.saturatedToWireRanges())
 
-    // Idempotent: an in-range profile is byte-identical with or without it.
+    // An in-range profile is unchanged but for the clear finish reason, and
+    // saturating twice changes nothing more.
     let inRange = fullInferenceProfile()
-    #expect(inRange.saturatedToWireRanges() == inRange)
+    var clearInRange = inRange
+    clearInRange.engine?.finishReason = .stop
+    #expect(inRange.saturatedToWireRanges() == clearInRange)
+    #expect(clearInRange.saturatedToWireRanges() == clearInRange)
 }
 
 private func sampleHardware() -> HardwareInfo {

@@ -288,18 +288,13 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     let complete = try ProviderProtocolCodec.decodeProviderMessage(
         from: try CoordinatorClientCodec.encodeOutboundMessage(.inferenceComplete(
             requestId: "req-3",
-            usage: UsageInfo(promptTokens: 10, completionTokens: 20),
-            stopSequence: "<END>",
-            seSignature: "sig",
-            responseHash: "hash"
-        ))
+            usage: UsageInfo(promptTokens: 10, completionTokens: 20)))
     )
+    // The outbound terminal has no field for the clear stop sequence, hash
+    // or signature, so none is ever encoded.
     #expect(complete == .inferenceComplete(ProviderMessage.InferenceComplete(
         requestId: "req-3",
-        usage: UsageInfo(promptTokens: 10, completionTokens: 20),
-        stopSequence: "<END>",
-        seSignature: "sig",
-        responseHash: "hash"
+        usage: UsageInfo(promptTokens: 10, completionTokens: 20)
     )))
 
     let lookup = try CoordinatorClientCodec.encodeOutboundMessageString(.prefixCacheLookup(

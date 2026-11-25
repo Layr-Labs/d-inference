@@ -68,6 +68,69 @@ struct ResponseFrameSealerTests {
         #expect(opened == SealedResponseUsage(frameCount: 3, usage: usage))
     }
 
+    @Test("terminal fields given to the usage are sealed beside it")
+    func terminalFieldsAreSealedWithTheUsage() throws {
+        let (sealer, _, consumer) = try makeSealer()
+        _ = try sealer.sealFrame(Data("x".utf8))
+        let usage = UsageInfo(promptTokens: 10, completionTokens: 3)
+        let terminal = SealedTerminalFields(
+            finishReason: .stop, stopSequence: "</answer>", responseHash: String(repeating: "c", count: 64),
+            seSignature: "c2ln")
+        let payload = try sealer.sealUsage(usage, terminal: terminal)
+        #expect(try responseFrameNumber(payload).number == 1)
+        let plaintext = try consumer.decryptPayload(payload)
+        let opened = try JSONDecoder().decode(SealedResponseUsage.self, from: plaintext)
+        #expect(opened == SealedResponseUsage(frameCount: 1, usage: usage, terminal: terminal))
+        let object = try #require(try JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        #expect(Set(object.keys) == [
+            "chunk_count", "usage", "finish_reason", "stop_sequence", "response_hash", "se_signature"])
+    }
+
+    @Test("a matched stop string longer than the sealed bound is left out whole, never cut")
+    func longStopSequenceIsOmitted() throws {
+        let hash = String(repeating: "e", count: 64)
+        // The bound counts UTF-8 bytes, not characters: "é" is two.
+        let fits = String(repeating: "é", count: 4096 / 2)
+        let over = fits + "a"
+        let kept = SealedTerminalFields(finishReason: .stop, stopSequence: fits, responseHash: hash, seSignature: nil)
+        #expect(kept.stopSequence == fits)
+        let omitted = SealedTerminalFields(
+            finishReason: .stop, stopSequence: over, responseHash: hash, seSignature: nil)
+        #expect(omitted.stopSequence == nil)
+
+        let (sealer, _, consumer) = try makeSealer()
+        let payload = try sealer.sealUsage(UsageInfo(promptTokens: 1, completionTokens: 1), terminal: omitted)
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: consumer.decryptPayload(payload)) as? [String: Any])
+        #expect(Set(object.keys) == ["chunk_count", "usage", "finish_reason", "response_hash"])
+        #expect(object["finish_reason"] as? String == "stop")
+    }
+
+    @Test("a response without a stop sequence or signature leaves them out of the sealed usage")
+    func absentTerminalFieldsAreOmitted() throws {
+        let (sealer, _, consumer) = try makeSealer()
+        let terminal = SealedTerminalFields(
+            finishReason: .length, stopSequence: nil, responseHash: String(repeating: "d", count: 64), seSignature: nil)
+        let payload = try sealer.sealUsage(UsageInfo(promptTokens: 1, completionTokens: 1), terminal: terminal)
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: consumer.decryptPayload(payload)) as? [String: Any])
+        #expect(Set(object.keys) == ["chunk_count", "usage", "finish_reason", "response_hash"])
+        #expect(object["finish_reason"] as? String == "length")
+    }
+
+    @Test("the finish reason is one of a closed set")
+    func finishReasonMapping() {
+        #expect(SealedTerminalFields.finishReason(streamed: "stop", cancelled: false) == .stop)
+        #expect(SealedTerminalFields.finishReason(streamed: "length", cancelled: false) == .length)
+        #expect(SealedTerminalFields.finishReason(streamed: "tool_calls", cancelled: false) == .toolCalls)
+        #expect(SealedTerminalFields.finishReason(streamed: nil, cancelled: false) == .stop)
+        #expect(SealedTerminalFields.finishReason(streamed: "content_filter", cancelled: false) == .stop)
+        #expect(SealedTerminalFields.finishReason(streamed: "cancelled", cancelled: false) == .stop)
+        #expect(SealedTerminalFields.finishReason(streamed: "length", cancelled: true) == .cancelled)
+        let wireValues: [SealedTerminalFields.FinishReason] = [.stop, .length, .toolCalls, .cancelled]
+        #expect(wireValues.map(\.rawValue) == ["stop", "length", "tool_calls", "cancelled"])
+    }
+
     @Test("a request with no frames seals its usage as number 0")
     func usageOfAnEmptyResponse() throws {
         let (sealer, _, consumer) = try makeSealer()

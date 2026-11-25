@@ -261,7 +261,7 @@ private final class FlashNextHandlerRecorder: @unchecked Sendable {
     var snapshot: [OutboundMessage] { lock.withLock { messages } }
     func terminalCount(for requestID: String) -> Int { snapshot.filter {
         switch $0 {
-        case .inferenceComplete(let id, _, _, _, _, _, _), .inferenceError(let id, _, _): id == requestID
+        case .inferenceComplete(let id, _, _, _), .inferenceError(let id, _, _): id == requestID
         default: false
         }
     }.count }

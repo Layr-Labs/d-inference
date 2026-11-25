@@ -1028,11 +1028,11 @@
             {
               "type": "paragraph",
               "anchor": "terms-section-09-privacy-and-security-paragraph-3",
-              "text": "MDM enrollment is configured for security verification only. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data.",
+              "text": "Darkbloom no longer uses Mobile Device Management (MDM). Provider Macs are verified with Apple's App Attest service. A Mac enrolled under an earlier version of the Services may still carry an inactive Darkbloom enrollment profile; Darkbloom does not use it, and you can remove it in System Settings or with the provider application's \"darkbloom unenroll\" command.",
               "inline": [
                 {
                   "type": "text",
-                  "text": "MDM enrollment is configured for security verification only. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data."
+                  "text": "Darkbloom no longer uses Mobile Device Management (MDM). Provider Macs are verified with Apple's App Attest service. A Mac enrolled under an earlier version of the Services may still carry an inactive Darkbloom enrollment profile; Darkbloom does not use it, and you can remove it in System Settings or with the provider application's \"darkbloom unenroll\" command."
                 }
               ]
             }
@@ -1170,11 +1170,11 @@
                 },
                 {
                   "anchor": "terms-section-11-third-party-services-and-open-source-list-1-item-3",
-                  "text": "the security verification features of the Services depend on Apple infrastructure including MDM, APNs, Secure Enclave, and System Integrity Protection, which are operated and controlled by Apple and subject to Apple's policies;",
+                  "text": "the security verification features of the Services depend on Apple infrastructure including App Attest, APNs, Secure Enclave, and System Integrity Protection, which are operated and controlled by Apple and subject to Apple's policies;",
                   "inline": [
                     {
                       "type": "text",
-                      "text": "the security verification features of the Services depend on Apple infrastructure including MDM, APNs, Secure Enclave, and System Integrity Protection, which are operated and controlled by Apple and subject to Apple's policies;"
+                      "text": "the security verification features of the Services depend on Apple infrastructure including App Attest, APNs, Secure Enclave, and System Integrity Protection, which are operated and controlled by Apple and subject to Apple's policies;"
                     }
                   ]
                 },
@@ -1342,11 +1342,11 @@
             {
               "type": "paragraph",
               "anchor": "terms-section-13-suspension-and-termination-paragraph-3",
-              "text": "Further, the security verification features of the Services, including the hardware attestation and trust-level verification on which privacy assurances are based, depend on depend on third party infrastructure, including Apple's Mobile Device Management (MDM) framework, Apple Push Notification service (APNs), Secure Enclave, System Integrity Protection, and related Apple infrastructure. Such third parties may modify, restrict, suspend, or discontinue any of these capabilities at any time with or without notice. In such an event, we may be required to modify, suspend, or discontinue affected features of the Services, including security verification features, with reasonable notice where practicable. Your sole remedy in such circumstances is termination of your participation in accordance with Section 13.",
+              "text": "Further, the security verification features of the Services, including the hardware attestation and trust-level verification on which privacy assurances are based, depend on depend on third party infrastructure, including Apple's App Attest service, Apple Push Notification service (APNs), Secure Enclave, System Integrity Protection, and related Apple infrastructure. Such third parties may modify, restrict, suspend, or discontinue any of these capabilities at any time with or without notice. In such an event, we may be required to modify, suspend, or discontinue affected features of the Services, including security verification features, with reasonable notice where practicable. Your sole remedy in such circumstances is termination of your participation in accordance with Section 13.",
               "inline": [
                 {
                   "type": "text",
-                  "text": "Further, the security verification features of the Services, including the hardware attestation and trust-level verification on which privacy assurances are based, depend on depend on third party infrastructure, including Apple's Mobile Device Management (MDM) framework, Apple Push Notification service (APNs), Secure Enclave, System Integrity Protection, and related Apple infrastructure. Such third parties may modify, restrict, suspend, or discontinue any of these capabilities at any time with or without notice. In such an event, we may be required to modify, suspend, or discontinue affected features of the Services, including security verification features, with reasonable notice where practicable. Your sole remedy in such circumstances is termination of your participation in accordance with Section 13."
+                  "text": "Further, the security verification features of the Services, including the hardware attestation and trust-level verification on which privacy assurances are based, depend on depend on third party infrastructure, including Apple's App Attest service, Apple Push Notification service (APNs), Secure Enclave, System Integrity Protection, and related Apple infrastructure. Such third parties may modify, restrict, suspend, or discontinue any of these capabilities at any time with or without notice. In such an event, we may be required to modify, suspend, or discontinue affected features of the Services, including security verification features, with reasonable notice where practicable. Your sole remedy in such circumstances is termination of your participation in accordance with Section 13."
                 }
               ]
             }
@@ -2471,11 +2471,11 @@
                 },
                 {
                   "anchor": "privacy-section-02-personal-information-we-collect-list-5-item-3",
-                  "text": "attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity in our MDM server; SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;",
+                  "text": "attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity; SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;",
                   "inline": [
                     {
                       "type": "text",
-                      "text": "attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity in our MDM server; SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;"
+                      "text": "attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity; SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;"
                     }
                   ]
                 },
@@ -2514,22 +2514,22 @@
             {
               "type": "paragraph",
               "anchor": "privacy-section-02-personal-information-we-collect-paragraph-9",
-              "text": "Further, provider Macs enrolled in the platform are subject to periodic automated SecurityInfo queries sent via Apple's MDM protocol through Apple's Push Notification service (APNs). These queries request SIP status, Secure Boot level, and Authenticated Root Volume integrity from the device's OS MDM client and not from Darkbloom software. This querying occurs on an ongoing basis throughout the provider's participation in the platform.",
+              "text": "Further, provider Macs are verified with Apple's App Attest service. The Darkbloom provider application creates a key in the Mac's Secure Enclave, Apple attests that the key belongs to the genuine, unmodified Darkbloom provider application on genuine Apple hardware, and the application signs later requests with that key. We collect and process the resulting attestation and assertion data, and we may send push notifications to the provider application through Apple's Push Notification service (APNs) to confirm its identity. This verification occurs on an ongoing basis throughout the provider's participation in the platform.",
               "inline": [
                 {
                   "type": "text",
-                  "text": "Further, provider Macs enrolled in the platform are subject to periodic automated SecurityInfo queries sent via Apple's MDM protocol through Apple's Push Notification service (APNs). These queries request SIP status, Secure Boot level, and Authenticated Root Volume integrity from the device's OS MDM client and not from Darkbloom software. This querying occurs on an ongoing basis throughout the provider's participation in the platform."
+                  "text": "Further, provider Macs are verified with Apple's App Attest service. The Darkbloom provider application creates a key in the Mac's Secure Enclave, Apple attests that the key belongs to the genuine, unmodified Darkbloom provider application on genuine Apple hardware, and the application signs later requests with that key. We collect and process the resulting attestation and assertion data, and we may send push notifications to the provider application through Apple's Push Notification service (APNs) to confirm its identity. This verification occurs on an ongoing basis throughout the provider's participation in the platform."
                 }
               ]
             },
             {
               "type": "paragraph",
               "anchor": "privacy-section-02-personal-information-we-collect-paragraph-10",
-              "text": "MDM enrollment is configured for security verification. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data.",
+              "text": "Darkbloom no longer uses Mobile Device Management (MDM) and no longer sends MDM queries to provider Macs. A Mac enrolled under an earlier version of the Services may still carry an inactive Darkbloom enrollment profile; Darkbloom does not use it, and you can remove it in System Settings or with the provider application's \"darkbloom unenroll\" command.",
               "inline": [
                 {
                   "type": "text",
-                  "text": "MDM enrollment is configured for security verification. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data."
+                  "text": "Darkbloom no longer uses Mobile Device Management (MDM) and no longer sends MDM queries to provider Macs. A Mac enrolled under an earlier version of the Services may still carry an inactive Darkbloom enrollment profile; Darkbloom does not use it, and you can remove it in System Settings or with the provider application's \"darkbloom unenroll\" command."
                 }
               ]
             },
@@ -2742,11 +2742,11 @@
                 },
                 {
                   "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-4",
-                  "text": "operate provider onboarding, MDM enrollment, attestation, integrity verification, challenge-response verification, and account-linking features;",
+                  "text": "operate provider onboarding, attestation, integrity verification, challenge-response verification, and account-linking features;",
                   "inline": [
                     {
                       "type": "text",
-                      "text": "operate provider onboarding, MDM enrollment, attestation, integrity verification, challenge-response verification, and account-linking features;"
+                      "text": "operate provider onboarding, attestation, integrity verification, challenge-response verification, and account-linking features;"
                     }
                   ]
                 },
@@ -3271,11 +3271,11 @@
                 },
                 {
                   "anchor": "privacy-section-08-retention-list-2-item-4",
-                  "text": "provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, MDM SecurityInfo responses, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;",
+                  "text": "provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, App Attest attestation and assertion data, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;",
                   "inline": [
                     {
                       "type": "text",
-                      "text": "provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, MDM SecurityInfo responses, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;"
+                      "text": "provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, App Attest attestation and assertion data, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;"
                     }
                   ]
                 },

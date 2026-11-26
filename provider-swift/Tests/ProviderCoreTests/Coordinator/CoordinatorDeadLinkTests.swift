@@ -105,6 +105,49 @@ struct CoordinatorDeadLinkTests {
         #expect(peer.closeCodes.contains(4001), "close codes read: \(peer.closeCodes)")
     }
 
+    /// A handler can end the connection, here a member's refusal of a
+    /// native-pair frame that breaks the contract. A frame read before that
+    /// must not be handled, as the old loop's next read on the cancelled
+    /// connection failed. The client's actor is held while both frames arrive,
+    /// so the second one is already read when the first ends the connection.
+    @Test("a frame read before a handler ended the connection is not handled", .timeLimit(.minutes(1)))
+    func frameReadBeforeAHandlerEndedTheConnectionIsNotHandled() async throws {
+        let peer = try LoopbackWebSocketPeer(behavior: .answersPings)
+        let port = try await peer.start()
+        defer { peer.stop() }
+        let client = makeDeadLinkClient(
+            port: port, reconnectPolicy: CoordinatorReconnectPolicy(stableSessionDuration: .milliseconds(200)),
+            executionRole: .clusterMember)
+        let (events, _) = await client.start()
+        let cancels = Task { () -> [String] in
+            var requestIDs: [String] = []
+            for await event in events {
+                if case .cancel(let requestID, _) = event { requestIDs.append(requestID) }
+            }
+            return requestIDs
+        }
+        defer {
+            cancels.cancel()
+            Task { await client.shutdown() }
+        }
+
+        _ = try await waitForAccepts(1, on: peer, within: .seconds(10))
+        // The registration is sent; then both frames arrive while the actor is held.
+        try await Task.sleep(for: .milliseconds(300))
+        let hold = Task { await holdActor(client, for: .milliseconds(500)) }
+        try await Task.sleep(for: .milliseconds(100))
+        // A member without an accepted session takes any native-pair frame as a contract break.
+        peer.send([Data(#"{"type":"native_pair_probe"}"#.utf8),
+                   Data(#"{"type":"cancel","request_id":"read-before-the-end"}"#.utf8)])
+        await hold.value
+
+        // The first frame ended the connection: the client connects again.
+        _ = try await waitForAccepts(2, on: peer, within: .seconds(10))
+        cancels.cancel()
+        let handled = await cancels.value
+        #expect(handled.isEmpty, "cancels handled after the connection ended: \(handled)")
+    }
+
     /// Connects a client to `peer` and checks that it keeps its first
     /// connection for four times the bound.
     private func expectLinkKept(by peer: LoopbackWebSocketPeer) async throws {
@@ -124,7 +167,8 @@ struct CoordinatorDeadLinkTests {
     }
 
     private func makeDeadLinkClient(
-        port: UInt16, reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy()
+        port: UInt16, reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy(),
+        executionRole: ProviderExecutionRole = .solo
     ) -> CoordinatorClient {
         CoordinatorClient(
             config: CoordinatorClientConfig(
@@ -136,7 +180,10 @@ struct CoordinatorDeadLinkTests {
                     gpuCores: 40, memoryBandwidthGbs: 546),
                 models: [],
                 backendName: "mlx-swift",
-                heartbeatInterval: 60),
+                heartbeatInterval: 60,
+                executionRole: executionRole,
+                // A member's window outlasts every row, so no refusal ends a link here.
+                memberNegotiationWindow: .seconds(60)),
             stats: AtomicProviderStats(),
             state: ProviderState(),
             liveAPNsToken: { nil },

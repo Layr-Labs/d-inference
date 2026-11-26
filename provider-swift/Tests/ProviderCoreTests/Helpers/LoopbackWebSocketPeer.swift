@@ -81,6 +81,18 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
         }
     }
 
+    /// Sends `messages` as text messages, in order and back to back, on the
+    /// connection accepted last.
+    func send(_ messages: [Data]) {
+        guard let connection = lock.withLock({ connections.last }) else { return }
+        for message in messages {
+            let text = NWProtocolWebSocket.Metadata(opcode: .text)
+            let context = NWConnection.ContentContext(identifier: "message", metadata: [text])
+            connection.send(content: message, contentContext: context, isComplete: true,
+                            completion: .contentProcessed { _ in })
+        }
+    }
+
     func stop() {
         listener.cancel()
         let (connections, timers) = lock.withLock { (self.connections, self.timers) }

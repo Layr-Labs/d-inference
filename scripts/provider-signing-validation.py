@@ -32,9 +32,6 @@ EXECUTABLE_MODE = 0o755
 SIGNING_ENTITLEMENTS = ("entitlements.plist", "entitlements-enclave.plist", "entitlements-cluster-worker.plist")
 # The first four bytes of a thin (either byte order) or universal Mach-O file.
 MACHO_MAGICS = {bytes.fromhex(magic) for magic in ("cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca")}
-# A universal file. codesign reports one slice of it, so its other slices would
-# go unchecked; every shipped executable is a thin arm64 file.
-UNIVERSAL_MAGICS = {bytes.fromhex(magic) for magic in ("cafebabe", "bebafeca")}
 DEBUG_TASK_ENTITLEMENTS = ("get-task-allow", "com.apple.security.get-task-allow")
 # The hardened runtime's exception entitlements (allow-jit,
 # allow-unsigned-executable-memory, allow-dyld-environment-variables,
@@ -326,10 +323,10 @@ def macho_files(app):
     return found
 
 
-def universal_problem(path):
-    """None for a thin Mach-O file; a universal one is refused."""
-    with path.open("rb") as source:
-        return "is a universal Mach-O file; only thin arm64 executables are shipped" if source.read(4) in UNIVERSAL_MAGICS else None
+def architecture_problem(path):
+    """None for a thin arm64 Mach-O file. Every shipped executable is one; a
+    universal file is refused too, since codesign reports one slice of it."""
+    return None if is_arm64_macho(path) else "is not a thin arm64 Mach-O file"
 
 
 def developer_id_problem(path, team=RELEASE_TEAM_IDENTIFIER):
@@ -379,7 +376,7 @@ def bundle_entitlements(arguments):
     refused = []
     for path in found:
         name = str(path.relative_to(app))
-        problem = universal_problem(path) or developer_id_problem(path) or entitlement_problem(path)
+        problem = architecture_problem(path) or developer_id_problem(path) or entitlement_problem(path)
         if problem:
             refused.append(f"{name} {problem}")
             continue

@@ -110,8 +110,10 @@ struct CoordinatorDeadLinkTests {
     /// must not be handled, as the old loop's next read on the cancelled
     /// connection failed. The client's actor is held while both frames arrive,
     /// so the second one is already read when the first ends the connection.
-    @Test("a frame read before a handler ended the connection is not handled", .timeLimit(.minutes(1)))
-    func frameReadBeforeAHandlerEndedTheConnectionIsNotHandled() async throws {
+    /// The order is made certain below, so all 20 repetitions must agree.
+    @Test("a frame read before a handler ended the connection is not handled", .timeLimit(.minutes(1)),
+          arguments: 1...20)
+    func frameReadBeforeAHandlerEndedTheConnectionIsNotHandled(repetition: Int) async throws {
         let peer = try LoopbackWebSocketPeer(behavior: .answersPings)
         let port = try await peer.start()
         defer { peer.stop() }
@@ -152,6 +154,7 @@ struct CoordinatorDeadLinkTests {
         _ = try await waitForAccepts(2, on: peer, within: .seconds(10))
         cancels.cancel()
         let handled = await cancels.value
+        print("cancel-guard repetition \(repetition) of 20: " + (handled.isEmpty ? "not handled" : "handled \(handled)"))
         #expect(handled.isEmpty, "cancels handled after the connection ended: \(handled)")
     }
 

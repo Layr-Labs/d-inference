@@ -56,33 +56,39 @@ struct CoordinatorLinkLivenessTests {
             == "Coordinator frames not handled in time (a frame waited 21s for its handling); link closed")
     }
 
-    @Test("the backlog passes each limit, a size limit stays passed, and handled frames leave it")
-    func backlogPassesEachLimit() {
+    @Test("the backlog passes its byte limit, which stays passed while its frames are handled")
+    func backlogPassesTheByteLimit() {
         let start = ContinuousClock.now
+        let backlog = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxBytes: 100))
+        #expect(backlog.add(size: 60, receivedAt: start))
+        #expect(!backlog.add(size: 60, receivedAt: start))
+        backlog.finishOldest()
+        backlog.finishOldest()
+        #expect(backlog.excess(now: start) == .bytes(120))
+    }
 
-        let bytes = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxBytes: 100))
-        #expect(bytes.add(size: 60, receivedAt: start))
-        #expect(!bytes.add(size: 60, receivedAt: start))
-        bytes.finishOldest()
-        bytes.finishOldest()
-        #expect(bytes.excess(now: start) == .bytes(120))
+    @Test("the backlog passes its frame limit")
+    func backlogPassesTheFrameLimit() {
+        let start = ContinuousClock.now
+        let backlog = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxFrames: 2))
+        #expect(backlog.add(size: 1, receivedAt: start))
+        #expect(backlog.add(size: 1, receivedAt: start))
+        #expect(!backlog.add(size: 1, receivedAt: start))
+        #expect(backlog.excess(now: start) == .frames(3))
+    }
 
-        let frames = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxFrames: 2))
-        #expect(frames.add(size: 1, receivedAt: start))
-        #expect(frames.add(size: 1, receivedAt: start))
-        #expect(!frames.add(size: 1, receivedAt: start))
-        #expect(frames.excess(now: start) == .frames(3))
-
-        // The age is the oldest frame's, until its handling returns.
-        let age = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxAge: .seconds(1)))
-        #expect(age.add(size: 1, receivedAt: start))
-        #expect(age.add(size: 1, receivedAt: start + .milliseconds(800)))
-        #expect(age.excess(now: start + .seconds(1)) == nil)
-        #expect(age.excess(now: start + .milliseconds(1_100)) == .age(.milliseconds(1_100)))
-        age.finishOldest()
-        #expect(age.excess(now: start + .milliseconds(1_100)) == nil)
-        age.finishOldest()
-        #expect(age.excess(now: start + .seconds(60)) == nil)
+    @Test("the oldest frame passes the age limit until its handling returns")
+    func backlogPassesTheAgeLimit() {
+        let start = ContinuousClock.now
+        let backlog = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxAge: .seconds(1)))
+        #expect(backlog.add(size: 1, receivedAt: start))
+        #expect(backlog.add(size: 1, receivedAt: start + .milliseconds(800)))
+        #expect(backlog.excess(now: start + .seconds(1)) == nil)
+        #expect(backlog.excess(now: start + .milliseconds(1_100)) == .age(.milliseconds(1_100)))
+        backlog.finishOldest()
+        #expect(backlog.excess(now: start + .milliseconds(1_100)) == nil)
+        backlog.finishOldest()
+        #expect(backlog.excess(now: start + .seconds(60)) == nil)
     }
 
     @Test("a peer that answered and went silent is declared dead after the bound and before bound plus one ping interval")

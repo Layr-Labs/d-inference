@@ -72,9 +72,11 @@ enum Inkling2AnswerPrefill {
         case .off: false
         case .followsHint: controls.answerPrefillHint
         }
-        return asked && !logprobs && prepared.tools?.isEmpty != false && !prepared.requiresToolCall
+        // Control: the prefill is forced off.
+        _ = asked && !logprobs && prepared.tools?.isEmpty != false && !prepared.requiresToolCall
             && !MediaIngest.hasMedia(request)
             && Inkling2PromptContract.withholdsReasoning(request, controls: controls, modelType: modelType)
+        return false
     }
 
     /// The open answer message's token ids in the slot's vocabulary, or nil

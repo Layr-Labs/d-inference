@@ -83,10 +83,27 @@ final class CoordinatorFrameBacklog: @unchecked Sendable {
 
     /// Forgets the oldest frame: its handling has returned.
     func finishOldest() {
-        lock.withLock {
-            guard !pending.isEmpty else { return }
+        let drained: (() -> Void)? = lock.withLock {
+            guard !pending.isEmpty else { return nil }
             bytes -= pending.removeFirst().size
+            guard pending.isEmpty else { return nil }
+            defer { onDrained = nil }
+            return onDrained
         }
+        drained?()
+    }
+
+    // RED CONTROL, never merge: what runs once every frame read has been handled.
+    private var onDrained: (() -> Void)?
+
+    // RED CONTROL, never merge: runs `next` once every frame read has been handled.
+    func afterDrained(_ next: @escaping () -> Void) {
+        let runNow = lock.withLock { () -> Bool in
+            if pending.isEmpty { return true }
+            onDrained = next
+            return false
+        }
+        if runNow { next() }
     }
 
     /// The limit passed at `now`, if any.

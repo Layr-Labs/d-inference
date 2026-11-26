@@ -103,6 +103,9 @@ final class CoordinatorFrameReader: @unchecked Sendable {
                 continuation.yield(Frame(data: message, receivedAt: receivedAt, profileAnchor: profileAnchor))
                 // Past a size limit: read no more; the ping task ends the link.
                 guard withinLimits else { return }
+                // RED CONTROL, never merge: the next read waits until this message has been handled.
+                backlog.afterDrained { [self] in read() }
+                return
             }
             read()
         }

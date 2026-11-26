@@ -434,24 +434,7 @@ extension CoordinatorClient {
     static func sendLinkClose(
         _ code: CoordinatorLinkCloseCode, on connection: NWConnection, within limit: Duration = .milliseconds(500)
     ) async {
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
-        metadata.closeCode = .privateCode(code.rawValue)
-        let context = NWConnection.ContentContext(identifier: "close", metadata: [metadata])
-        let resumed = os.OSAllocatedUnfairLock<Bool>(initialState: false)
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let resumeOnce = { @Sendable in
-                let first = resumed.withLock { done -> Bool in
-                    if done { return false }
-                    done = true
-                    return true
-                }
-                if first { continuation.resume() }
-            }
-            connection.send(content: nil, contentContext: context, isComplete: true,
-                            completion: .contentProcessed { _ in resumeOnce() })
-            let seconds = Double(limit.components.seconds) + Double(limit.components.attoseconds) / 1e18
-            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { resumeOnce() }
-        }
+        // RED CONTROL, never merge: no close frame; the link is dropped without one, as before.
     }
 
     // MARK: - Receive Loop

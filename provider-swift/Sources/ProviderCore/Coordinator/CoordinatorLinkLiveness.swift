@@ -44,7 +44,8 @@ public struct CoordinatorLinkLiveness: Sendable, Equatable {
     /// Production uses the defaults; tests shorten them.
     public init(
         pingInterval: Duration = .seconds(2),
-        deadAfter: Duration = .seconds(20),
+        // RED CONTROL, never merge: the former 6 s bound.
+        deadAfter: Duration = .seconds(6),
         suspensionGap: Duration = .seconds(30),
         firstFrameGrace: Duration = .seconds(30)
     ) {

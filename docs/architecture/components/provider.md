@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-26
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -143,10 +143,25 @@ connection's inference requests; this does not resume interrupted completions
 or prove two-minute engine continuity.
 
 A link can die with no TCP reset and no close frame, for example when the
-coordinator node is hard-reset. `sessionLoop` pings every `pingInterval` and
-declares the link dead when no frame comes in for more than `deadAfter`
-(`CoordinatorLinkLiveness`). Every inbound frame counts, not only a pong, so a
-busy stream whose pongs are late keeps its link. The ping task reads the
+coordinator node is hard-reset. `sessionLoop` pings every `pingInterval` (2 s)
+and declares the link dead when no frame comes in for more than `deadAfter`
+(20 s; `CoordinatorLinkLiveness`). Every inbound frame counts, not only a pong,
+so a busy stream whose pongs are late keeps its link. The bound outlasts the
+coordinator edge's own write budget for the largest request body (at least 5 s,
+`size / 2 MiB/s` above that: about 10.5 s for 21 MiB), so pongs queued behind a
+large body never end the link. The connection is read on its own queue by
+`CoordinatorFrameReader`
+(`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorFrameReader.swift`),
+which arms the next read inside the callback of the one before and hands
+messages to the session in order. Handling a message waits on the
+`CoordinatorClient` actor; in 0.10.13 to 0.10.19 the next read waited for
+that handling, so a handling longer than those versions' 6 s bound, a large
+vision request among others, left pongs and frames unread and the provider
+dropped a live link 6 to 8 s after the request came in. When
+the provider drops a link it judged dead it first sends a close frame with the
+private code 4001 (4002 after a suspension; `CoordinatorLinkCloseCode`), so the
+coordinator records `ws_close_4001` instead of a frame-less read error; on a
+link that is really dead the frame is lost. The ping task reads the
 continuous clock: a tick that is `suspensionGap` late (the Mac slept) reconnects
 once, and a shorter late tick restarts the silence window instead of counting
 as missed pongs. Before the coordinator's first frame on a new connection the

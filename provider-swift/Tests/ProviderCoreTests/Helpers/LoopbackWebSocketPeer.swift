@@ -13,6 +13,9 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
         /// Never reads and never answers a ping, but sends `frame` as a text
         /// message every `interval`: a busy stream whose pongs never come.
         case streams(frame: Data, interval: DispatchTimeInterval)
+        /// Reads every message and records the code of each close frame, but
+        /// never answers a ping and never sends.
+        case recordsCloses
     }
 
     private let listener: NWListener
@@ -22,6 +25,7 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
     private var connections: [NWConnection] = []
     private var acceptTimes: [ContinuousClock.Instant] = []
     private var timers: [DispatchSourceTimer] = []
+    private var receivedCloseCodes: [UInt16] = []
 
     init(behavior: Behavior) throws {
         self.behavior = behavior
@@ -35,6 +39,9 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
 
     /// When each connection was accepted, in order.
     var accepted: [ContinuousClock.Instant] { lock.withLock { acceptTimes } }
+
+    /// The codes of the close frames read (`recordsCloses`), in order.
+    var closeCodes: [UInt16] { lock.withLock { receivedCloseCodes } }
 
     func start() async throws -> UInt16 {
         listener.newConnectionHandler = { [weak self] connection in
@@ -87,6 +94,8 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
             break
         case .answersPings:
             readAndDrop(connection)
+        case .recordsCloses:
+            readAndRecordCloses(connection)
         case .streams(let frame, let interval):
             let timer = DispatchSource.makeTimerSource(queue: queue)
             timer.schedule(deadline: .now(), repeating: interval)
@@ -98,6 +107,23 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
             }
             lock.withLock { timers.append(timer) }
             timer.resume()
+        }
+    }
+
+    private func readAndRecordCloses(_ connection: NWConnection) {
+        connection.receiveMessage { [weak self] _, context, _, error in
+            guard let self else { return }
+            if let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
+                as? NWProtocolWebSocket.Metadata, metadata.opcode == .close {
+                let code: UInt16? = switch metadata.closeCode {
+                case .protocolCode(let defined): defined.rawValue
+                case .applicationCode(let value), .privateCode(let value): value
+                @unknown default: nil
+                }
+                if let code { self.lock.withLock { self.receivedCloseCodes.append(code) } }
+            }
+            guard error == nil else { return }
+            self.readAndRecordCloses(connection)
         }
     }
 

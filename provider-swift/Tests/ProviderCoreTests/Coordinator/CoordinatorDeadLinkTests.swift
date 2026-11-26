@@ -53,6 +53,58 @@ struct CoordinatorDeadLinkTests {
         try await expectLinkKept(by: LoopbackWebSocketPeer(behavior: .answersPings))
     }
 
+    /// A provider whose handling of one message, a large vision request among
+    /// others, took longer than the bound read nothing meanwhile, so its own
+    /// link watch saw silence and dropped a live link 6-8 s after the request
+    /// came in. Here the client's actor is held for three times the bound while
+    /// the peer keeps streaming frames.
+    @Test("a link stays up while one message's handling holds the client longer than the bound",
+          .timeLimit(.minutes(1)))
+    func longHandlingKeepsTheLink() async throws {
+        let frame = Data(#"{"type":"drain_ack","id":"x"}"#.utf8)
+        let peer = try LoopbackWebSocketPeer(behavior: .streams(frame: frame, interval: .milliseconds(50)))
+        let port = try await peer.start()
+        defer { peer.stop() }
+        // A dropped link would be retried within 0.25 s, so a drop shows below.
+        let client = makeDeadLinkClient(
+            port: port, reconnectPolicy: CoordinatorReconnectPolicy(stableSessionDuration: .milliseconds(200)))
+        let (events, _) = await client.start()
+        let drain = Task { for await _ in events {} }
+        defer {
+            drain.cancel()
+            Task { await client.shutdown() }
+        }
+
+        _ = try await waitForAccepts(1, on: peer, within: .seconds(10))
+        // Frames are flowing; then one handling holds the actor.
+        try await Task.sleep(for: .milliseconds(300))
+        await holdActor(client, for: Self.liveness.deadAfter * 3)
+        try await Task.sleep(for: Self.liveness.deadAfter * 4)
+        #expect(peer.accepted.count == 1, "the client reconnected \(peer.accepted.count - 1) times")
+    }
+
+    @Test("a link declared dead is closed with the provider's private code 4001 before it is dropped",
+          .timeLimit(.minutes(1)))
+    func deadLinkIsClosedWithThePrivateCode() async throws {
+        let peer = try LoopbackWebSocketPeer(behavior: .recordsCloses)
+        let port = try await peer.start()
+        defer { peer.stop() }
+        let client = makeDeadLinkClient(port: port)
+        let (events, _) = await client.start()
+        let drain = Task { for await _ in events {} }
+        defer {
+            drain.cancel()
+            Task { await client.shutdown() }
+        }
+
+        // The peer never answers: the 1.5 s first-frame grace ends the link.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while ContinuousClock.now < deadline, !peer.closeCodes.contains(4001) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(peer.closeCodes.contains(4001), "close codes read: \(peer.closeCodes)")
+    }
+
     /// Connects a client to `peer` and checks that it keeps its first
     /// connection for four times the bound.
     private func expectLinkKept(by peer: LoopbackWebSocketPeer) async throws {
@@ -105,4 +157,9 @@ struct CoordinatorDeadLinkTests {
         Issue.record("the peer accepted \(peer.accepted.count) connections in \(limit), expected \(count)")
         throw CancellationError()
     }
+}
+
+/// Holds `client`'s actor for `duration`, as a long handling of one message does.
+private func holdActor(_ client: isolated CoordinatorClient, for duration: Duration) {
+    Thread.sleep(forTimeInterval: Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18)
 }

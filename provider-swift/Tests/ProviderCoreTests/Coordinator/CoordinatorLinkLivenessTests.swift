@@ -1,5 +1,6 @@
-/// Dead-link rows for the production values (2 s pings, 6 s bound, 30 s
-/// suspension gap, 30 s before the coordinator's first frame). `CoordinatorLinkWatch`
+/// Dead-link rows for 2 s pings, a 6 s bound, a 30 s suspension gap and 30 s
+/// before the coordinator's first frame (the production bound is 20 s; the
+/// rows keep 6 s so each timeline stays short). `CoordinatorLinkWatch`
 /// takes the time of each tick and of the last inbound frame as arguments, so
 /// each row plays a whole timeline without sleeping. A last inbound frame at or
 /// before the watch's start means the coordinator has not answered yet.
@@ -11,19 +12,26 @@ import Testing
 
 @Suite("Coordinator link liveness")
 struct CoordinatorLinkLivenessTests {
-    private static let liveness = CoordinatorLinkLiveness()
+    private static let liveness = CoordinatorLinkLiveness(
+        pingInterval: .seconds(2), deadAfter: .seconds(6), suspensionGap: .seconds(30), firstFrameGrace: .seconds(30))
     private static let start = ContinuousClock.now
 
     private static func at(_ seconds: Double) -> ContinuousClock.Instant {
         start.advanced(by: .milliseconds(Int64((seconds * 1000).rounded())))
     }
 
-    @Test("the production values are 2 s pings, a 6 s bound, a 30 s suspension gap and 30 s for the first frame")
+    /// The bound outlasts the coordinator edge's own write budget for the
+    /// largest request body (21 MiB at its 2 MiB/s floor: about 10.5 s), so a
+    /// body the edge still writes, with pongs behind it, never ends the link.
+    @Test("the production values are 2 s pings, a 20 s bound, a 30 s suspension gap and 30 s for the first frame")
     func productionValues() {
-        #expect(Self.liveness.pingInterval == .seconds(2))
-        #expect(Self.liveness.deadAfter == .seconds(6))
-        #expect(Self.liveness.suspensionGap == .seconds(30))
-        #expect(Self.liveness.firstFrameGrace == .seconds(30))
+        let production = CoordinatorLinkLiveness()
+        #expect(production.pingInterval == .seconds(2))
+        #expect(production.deadAfter == .seconds(20))
+        #expect(production.suspensionGap == .seconds(30))
+        #expect(production.firstFrameGrace == .seconds(30))
+        #expect(CoordinatorError.pongTimeout(after: production.deadAfter).localizedDescription
+            == "WebSocket pong timeout (no frame from the coordinator in 20s)")
     }
 
     @Test("the reconnect log gives the dead-link reason, not a generic error number")

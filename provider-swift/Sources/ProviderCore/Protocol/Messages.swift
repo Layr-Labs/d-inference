@@ -1068,7 +1068,6 @@ extension ProviderMessage: Codable {
         case bytesTotal = "bytes_total"
         // Prefix cache receipts
         case cacheReceiptNonce = "cache_receipt_nonce"
-        case answerPrefill = "answer_prefill"
         case outcome, tier
         case cachedTokens = "cached_tokens"
         case prefillTokensSaved = "prefill_tokens_saved"
@@ -1751,9 +1750,9 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// can only narrow the sealed policy (`RequestCachePolicy.narrowed`).
         public var frameCachePolicy: RequestCachePolicy
         /// `answer_prefill`: the coordinator asks this request to answer at
-        /// once (`Inkling2AnswerPrefill`). Only the provider's own eligibility
-        /// and its local switch decide whether it does; absent or false asks
-        /// nothing. It changes only how an eligible reply's answer opens.
+        /// once (`Inkling2AnswerPrefill`); absent or false asks nothing. The
+        /// provider's own eligibility and this Mac's override still apply. It
+        /// changes only how an eligible reply's answer opens.
         public var answerPrefill: Bool
 
         public init(
@@ -1991,6 +1990,7 @@ extension CoordinatorMessage: Codable {
         case gemmaPromptContract = "gemma_prompt_contract"
         case coordinatorSignature = "coordinator_signature"
         case cachePolicy = "cache_policy"
+        case answerPrefill = "answer_prefill"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload

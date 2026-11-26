@@ -56,7 +56,7 @@ withheld reasoning (`WithheldReasoningLogprobsFilter` for `<think>` spans;
 `InklingWithheldReasoningLogprobsFilter` for Inkling 2, which classifies each
 entry by the message its token lands in, as `Inkling2OutputChannels` reads the
 output, and also drops the frame markers) before either encoder sees them. An Inkling 2 thinking-off request that answers at once
-(`Inkling2AnswerPrefill`, off by default) has no logprobs: the prefill applies only
+(`Inkling2AnswerPrefill`, when the coordinator's `answer_prefill` or this Mac's override asks) has no logprobs: the prefill applies only
 without them, so this filter always reads the output from its first frame. One exception keeps the vLLM-style contract on the coordinator relay: for
 GLM5-Next and the Nemotron Super owner (`ProviderLoop.logprobsCoverReasoning`)
 the scheduler or the owner appends entries to an `EngineV2LogprobsChannel` before

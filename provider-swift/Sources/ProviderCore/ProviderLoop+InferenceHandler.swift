@@ -453,6 +453,7 @@ extension ProviderLoop {
         // vision, and both prompt-token recount paths. A request planned for
         // the coordinator's prompt cache renders the prompt of its plan, in
         // the Gemma 4 prompt contract the coordinator planned and counted it with.
+        // The frame's answer-at-once hint reaches the controls only here.
         let templateControls = inbound.extensions.templateControls.servingCoordinatorRequest(
             planned: plannedCache.scope != nil || plannedCache.receiptNonce != nil,
             gemmaPromptContract: gemmaPromptContract, answerPrefill: answerPrefill)

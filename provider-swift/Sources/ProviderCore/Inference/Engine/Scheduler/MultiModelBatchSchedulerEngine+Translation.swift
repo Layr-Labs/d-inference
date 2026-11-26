@@ -138,7 +138,7 @@ public struct ChatTemplateControls: Sendable, Equatable {
 
     /// The controls a coordinator `inference_request` renders with: the prompt
     /// its plan was made for, in the Gemma 4 prompt contract the frame asks
-    /// for, with the request's date.
+    /// for, with the frame's answer-at-once hint and the request's date.
     func servingCoordinatorRequest(
         planned: Bool, gemmaPromptContract: Int?, answerPrefill: Bool = false,
         enabled: Bool = GemmaPromptContract.enabled, at now: Date = Date()

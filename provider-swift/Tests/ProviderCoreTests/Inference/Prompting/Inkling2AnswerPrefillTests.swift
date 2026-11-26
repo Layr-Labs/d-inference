@@ -120,8 +120,9 @@ struct Inkling2AnswerPrefillTests {
 
     // MARK: - Which requests
 
-    /// Every form of thinking off answers at once with the switch on; thinking
-    /// on, an effort above none and the template default never do.
+    /// Every form of thinking off answers at once when asked (the hint, or the
+    /// override on); thinking on, an effort above none and the template
+    /// default never do.
     @Test func onlyThinkingOffGetsThePrefill() throws {
         for (json, off) in [
             ("", false), (#","reasoning_effort":"none""#, true), (#","reasoning_effort":"OFF""#, true),
@@ -197,7 +198,7 @@ struct Inkling2AnswerPrefillTests {
     }
 
     /// From inside the answer the reply is content up to `<|end_message|>`;
-    /// read from the boundary, as with the switch off, the same bytes are
+    /// read from the boundary, as without the prefill, the same bytes are
     /// outside every message and dropped.
     @Test func theLexerStartsInsideTheAnswer() {
         let reply = "Paris.<|end_message|><|content_model_end_sampling|>"

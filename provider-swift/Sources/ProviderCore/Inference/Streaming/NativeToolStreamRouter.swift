@@ -343,7 +343,8 @@ struct NativeToolStreamRouter {
             // a run of these failures names its kind without a code read.
             Self.frameFailureLogger.error(ProviderOperationalMessage(inklingToolFrameFailure: failure))
         }
-        if requiresToolCall || nativeMiMoRequiresConstraint || inklingParser != nil {
+        // DO NOT MERGE: an unparsed Inkling frame on an auto request is untyped again.
+        if requiresToolCall || nativeMiMoRequiresConstraint {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
         }
         throw MultiModelBatchSchedulerEngineError.generationFailed(message)

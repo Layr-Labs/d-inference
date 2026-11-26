@@ -23,17 +23,7 @@ extension CoordinatorClient {
         sessionRegistered = false
         memberNegotiation = nil
         detachNativePairMember()
-        abandon(nwConnection)
-    }
-
-    /// Ends `connection` on the actor: cancels it and marks it so that the
-    /// receive loop hands over none of the frames already read from it.
-    /// `connection.state` alone can't say so in time: cancel is asynchronous,
-    /// and the state turns `.cancelled` later, on the connection's queue.
-    internal func abandon(_ connection: NWConnection?) {
-        guard let connection else { return }
-        abandonedConnection = connection
-        connection.cancel()
+        nwConnection?.cancel()
     }
 
     /// Send a pre-encoded JSON frame on the current connection, if any. The
@@ -83,7 +73,7 @@ extension CoordinatorClient {
                     receivedAt: DispatchTime.now().uptimeNanoseconds, wallUnixNanoseconds: Int64(wall)) { return }
             } catch {
                 detachNativePairMember()
-                abandon(connection)
+                connection?.cancel()
                 return
             }
         }

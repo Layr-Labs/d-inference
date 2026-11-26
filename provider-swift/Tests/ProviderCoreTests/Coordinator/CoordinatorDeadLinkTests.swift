@@ -134,11 +134,18 @@ struct CoordinatorDeadLinkTests {
         _ = try await waitForAccepts(1, on: peer, within: .seconds(10))
         // The registration is sent; then both frames arrive while the actor is held.
         try await Task.sleep(for: .milliseconds(300))
-        let hold = Task { await holdActor(client, for: .milliseconds(500)) }
+        let queue = await client.connectionQueue
+        let hold = Task { await holdActor(client, for: .milliseconds(600)) }
         try await Task.sleep(for: .milliseconds(100))
         // A member without an accepted session takes any native-pair frame as a contract break.
         peer.send([Data(#"{"type":"native_pair_probe"}"#.utf8),
                    Data(#"{"type":"cancel","request_id":"read-before-the-end"}"#.utf8)])
+        // Both frames are read by now. The connection's queue is then held past
+        // the actor's release, so the cancel that the first frame's handling
+        // issues cannot reach `connection.state` before the loop takes the
+        // second frame: an order a loaded Mac can produce, made certain here.
+        try await Task.sleep(for: .milliseconds(300))
+        queue.async { Thread.sleep(forTimeInterval: 0.5) }
         await hold.value
 
         // The first frame ended the connection: the client connects again.

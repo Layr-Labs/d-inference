@@ -33,6 +33,13 @@ SIGNING_ENTITLEMENTS = ("entitlements.plist", "entitlements-enclave.plist", "ent
 # The first four bytes of a thin (either byte order) or universal Mach-O file.
 MACHO_MAGICS = {bytes.fromhex(magic) for magic in ("cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca")}
 DEBUG_TASK_ENTITLEMENTS = ("get-task-allow", "com.apple.security.get-task-allow")
+# The hardened runtime's exception entitlements (allow-jit,
+# allow-unsigned-executable-memory, allow-dyld-environment-variables,
+# disable-library-validation, disable-executable-page-protection, debugger and
+# any later one) all share this prefix. No shipped executable may carry one.
+RUNTIME_EXCEPTION_PREFIX = "com.apple.security.cs."
+# The hardened runtime's CodeDirectory flag (CS_RUNTIME).
+HARDENED_RUNTIME_FLAG = 0x10000
 # The Developer ID team every shipped executable is signed by (dev, staging and production).
 RELEASE_TEAM_IDENTIFIER = "SLDQ2GJ6TL"
 
@@ -282,11 +289,27 @@ def cli_entitlements(arguments):
         raise ValueError("Signed CLI lacks the required APNs entitlement")
     if debug_task_allowed(value):
         raise ValueError("Signed CLI enables or malforms get-task-allow")
+    if runtime_exceptions(value):
+        raise ValueError("Signed CLI carries a hardened-runtime exception: " + ", ".join(runtime_exceptions(value)))
 
 
 def debug_task_allowed(entitlements):
     """True unless every get-task-allow spelling is absent or false."""
     return any(entitlements.get(key, False) is not False for key in DEBUG_TASK_ENTITLEMENTS)
+
+
+def runtime_exceptions(entitlements):
+    """The hardened-runtime exception entitlements present, whatever their value."""
+    return sorted(key for key in entitlements if key.startswith(RUNTIME_EXCEPTION_PREFIX))
+
+
+def code_directory_flags(details):
+    """The CodeDirectory flags of `codesign -dv` output lines, or None."""
+    for line in details:
+        match = re.match(r"CodeDirectory v=\S+ .*\bflags=(0x[0-9a-f]+)\(", line)
+        if match:
+            return int(match.group(1), 16)
+    return None
 
 
 def macho_files(app):
@@ -312,24 +335,32 @@ def developer_id_problem(path, team=RELEASE_TEAM_IDENTIFIER):
         re.search(r"\bflags=0x[0-9a-f]+\([^)]*\b(adhoc|linker-signed)\b", line) for line in details)
     if adhoc or f"TeamIdentifier={team}" not in details:
         return "is not signed by the Developer ID"
+    flags = code_directory_flags(details)
+    if flags is None or not flags & HARDENED_RUNTIME_FLAG:
+        return "is signed without the hardened runtime"
     return None
 
 
 def entitlement_problem(path):
-    """None when `path`'s signature leaves get-task-allow absent or false."""
+    """None when `path`'s signature leaves get-task-allow absent or false and
+    carries no hardened-runtime exception."""
     result = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", str(path)], capture_output=True)
     if result.returncode != 0:
         return "is not signed"
     value = plistlib.loads(result.stdout) if result.stdout.strip() else {}
     if not isinstance(value, dict) or debug_task_allowed(value):
         return "enables or malforms get-task-allow"
+    exceptions = runtime_exceptions(value)
+    if exceptions:
+        return "carries a hardened-runtime exception: " + ", ".join(exceptions)
     return None
 
 
 def bundle_entitlements(arguments):
     """Fails unless every executable in the signed app (the CLI, the enclave and
     fan helpers, the cluster worker and plan, and any other Mach-O file) is
-    signed by the Developer ID and leaves get-task-allow absent or false."""
+    signed by the Developer ID with the hardened runtime, leaves get-task-allow
+    absent or false, and carries no hardened-runtime exception entitlement."""
     app = arguments.app
     with (app / "Contents/Info.plist").open("rb") as source:
         main = app / "Contents/MacOS" / plistlib.load(source)["CFBundleExecutable"]
@@ -343,7 +374,8 @@ def bundle_entitlements(arguments):
         if problem:
             refused.append(f"{name} {problem}")
             continue
-        print(f"{name}: signed by the Developer ID, get-task-allow absent")
+        print(f"{name}: signed by the Developer ID with the hardened runtime, get-task-allow absent, "
+              "no runtime exception")
     if refused:
         raise ValueError("; ".join(refused))
 

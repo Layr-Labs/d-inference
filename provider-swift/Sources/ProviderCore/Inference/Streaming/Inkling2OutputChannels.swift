@@ -566,14 +566,20 @@ struct Inkling2OutputChannels {
     }
 
     /// `{"name": NAME, "args": {...}}`, exactly the two keys the template
-    /// renders. Nesting is bounded before this runs.
+    /// renders, or `{"name": NAME, "arguments": {...}}`, the OpenAI shape,
+    /// written inside the model's own call frame.
+    /// Exactly two keys, `name` and ONE of `args` / `arguments`, holding an
+    /// object; anything else (both, neither, another key, arguments that are
+    /// not an object) is `wrongShape`. Only a native call frame reaches this;
+    /// answer text shaped like a call stays text. Nesting is bounded before
+    /// this runs.
     static func parseCall(body: [UInt8], header: [UInt8]) -> Result<ToolCall, Inkling2ToolFrameFailure> {
         guard let object = try? JSONSerialization.jsonObject(with: Data(body)) else {
             return .failure(.invalidJSON)
         }
         guard let root = object as? [String: Any], root.count == 2,
             let name = root["name"] as? String, !name.isEmpty,
-            let arguments = root["args"] as? [String: Any]
+            let arguments = (root["args"] ?? root["arguments"]) as? [String: Any]
         else { return .failure(.wrongShape) }
         if !header.isEmpty, String(decoding: header, as: UTF8.self) != name {
             return .failure(.nameMismatch)

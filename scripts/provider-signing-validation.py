@@ -3,6 +3,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import plistlib
 import re
@@ -36,9 +37,12 @@ MACHO_MAGICS = {bytes.fromhex(magic) for magic in ("cffaedfe", "cefaedfe", "feed
                                                   "cafebabe", "bebafeca", "cafebabf", "bfbafeca")}
 # The only files in Contents/MacOS or Contents/Helpers that are not thin arm64
 # executables: the Metal library and paged-attention source the CLI and the
-# cluster helpers load. Each must be a regular file with no execute bit.
-REVIEWED_DATA_FILES = frozenset({"Contents/MacOS/mlx.metallib", "Contents/Helpers/mlx.metallib",
-                                 "Contents/Helpers/pagedattention.metal"})
+# cluster helpers load. Each must be a regular file with no execute bit and its
+# own form, never a Mach-O file; both Metal libraries must be present.
+METALLIB_MAGIC = b"MTLB"
+REVIEWED_DATA_FILES = {"Contents/MacOS/mlx.metallib": "metallib", "Contents/Helpers/mlx.metallib": "metallib",
+                       "Contents/Helpers/pagedattention.metal": "source"}
+REQUIRED_DATA_FILES = ("Contents/MacOS/mlx.metallib", "Contents/Helpers/mlx.metallib")
 DEBUG_TASK_ENTITLEMENTS = ("get-task-allow", "com.apple.security.get-task-allow")
 # The hardened runtime's exception entitlements (allow-jit,
 # allow-unsigned-executable-memory, allow-dyld-environment-variables,
@@ -319,6 +323,47 @@ def code_directory_flags(details):
     return None
 
 
+def data_file_problem(path, form):
+    """None when a reviewed data file is a regular, non-executable file of its
+    form: a Metal library by its magic, or UTF-8 source text, never Mach-O."""
+    if stat.S_IMODE(path.lstat().st_mode) & 0o111:
+        return "is a listed data file with an execute bit"
+    data = path.read_bytes()
+    if data[:4] in MACHO_MAGICS:
+        return "is a listed data file with a Mach-O header"
+    if form == "metallib" and data[:4] != METALLIB_MAGIC:
+        return "is a listed Metal library without the Metal library header"
+    if form == "source":
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            return "is a listed source file that is not UTF-8 text"
+        if b"\0" in data:
+            return "is a listed source file that is not UTF-8 text"
+    return None
+
+
+def symlink_problems(app):
+    """Every refused symbolic link in the app, in path order: any link in
+    Contents/MacOS or Contents/Helpers, and any link elsewhere that resolves
+    outside the app. The signature seals a link's target name, not the bytes it
+    reaches."""
+    root = Path(os.path.realpath(app))
+    problems = []
+    for directory, subdirectories, files in os.walk(app, followlinks=False):
+        for entry in sorted(subdirectories + files):
+            path = Path(directory) / entry
+            if not path.is_symlink():
+                continue
+            name = path.relative_to(app)
+            target = Path(os.path.realpath(path))
+            if name.parts[:2] in (("Contents", "MacOS"), ("Contents", "Helpers")):
+                problems.append(f"{name} is a symbolic link")
+            elif target != root and root not in target.parents:
+                problems.append(f"{name} is a symbolic link that resolves outside the app")
+    return sorted(problems)
+
+
 def bundle_files(app):
     """Every regular file in the app that the bundle check must account for: any
     Mach-O file by its header, any file with an execute bit, and every file in
@@ -399,12 +444,15 @@ def bundle_entitlements(arguments):
         main = app / "Contents/MacOS" / plistlib.load(source)["CFBundleExecutable"]
     if main not in macho_files(app):
         raise ValueError(f"{main.relative_to(app)} is not a Mach-O executable in the app")
-    refused = []
+    refused = symlink_problems(app)
+    refused += [f"{name} is missing" for name in REQUIRED_DATA_FILES
+                if not (app / name).is_file() or (app / name).is_symlink()]
     for path in bundle_files(app):
         name = str(path.relative_to(app))
         if name in REVIEWED_DATA_FILES:
-            if stat.S_IMODE(path.lstat().st_mode) & 0o111:
-                refused.append(f"{name} is a listed data file with an execute bit")
+            problem = data_file_problem(path, REVIEWED_DATA_FILES[name])
+            if problem:
+                refused.append(f"{name} {problem}")
             else:
                 print(f"{name}: listed data file, not executable")
             continue

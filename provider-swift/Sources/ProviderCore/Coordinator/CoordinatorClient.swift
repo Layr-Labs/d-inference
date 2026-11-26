@@ -64,6 +64,10 @@ public actor CoordinatorClient {
     /// immediately instead of `await`-ing each TCP ACK — that is what unblocks
     /// per-stream inference-chunk throughput under concurrent load.
     internal var nwConnection: NWConnection?
+    /// The connection a frame handler ended (`abandon(_:)`). Its frames read
+    /// before the cancel are not handled; weak, so it never outlives the
+    /// connection's own teardown.
+    internal weak var abandonedConnection: NWConnection?
     internal var appAttestResumeNonce: String?
     internal var appAttestResumeAnswered = false
     /// Captures the existing process key, never a key serialized in config.

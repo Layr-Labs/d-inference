@@ -14,7 +14,8 @@ enum Inkling2OutputPiece: Equatable, Sendable {
 enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable, CaseIterable {
     /// The body is not one JSON object.
     case invalidJSON
-    /// The object is not exactly `{"name": string, "args": object}`.
+    /// The object is not exactly `{"name": string, "args": object}` or
+    /// `{"name": string, "arguments": object}`.
     case wrongShape
     /// The header names a different function than the body.
     case nameMismatch
@@ -52,7 +53,8 @@ extension ProviderOperationalMessage {
 ///   are content (the response template's `content` field); consecutive
 ///   messages of one channel join with nothing between them.
 /// - `invoke_tool_json` is one call, `{"name":NAME,"args":{...}}`, the shape
-///   the template renders for history. A header name, when present, must equal
+///   the template renders for history, or `{"name":NAME,"arguments":{...}}`,
+///   the OpenAI shape (`parseCall`). A header name, when present, must equal
 ///   the body's name. With `callsAreText` (an `auto` request that declares no
 ///   tools, so its prompt has no `tool_declare`), no call can be valid and the
 ///   frame's body is content, as `invoke_tool_text` is; so is the text of a

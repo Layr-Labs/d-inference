@@ -294,7 +294,8 @@ struct NativeToolStreamRouter {
             ? .toolChoiceViolation(message) : .generationFailed(message)
     }
 
-    /// A native family's (MiMo, GLM, Flint) own call frame failed to parse.
+    /// A native family's (Inkling 2, MiMo, GLM, Flint) own call frame failed
+    /// to parse.
     /// An `auto` GLM suffix that `finishCompleteCalls` returned as text is not
     /// a failure; one the SDK refused while streaming still is.
     var hasNativeToolFailure: Bool {
@@ -334,9 +335,9 @@ struct NativeToolStreamRouter {
         // An Inkling 2 frame that does not parse is the model's answer breaking
         // its own call contract, whatever the request's choice: model
         // noncompliance (422 `tool_noncompliance`, `tool_check`
-        // `native_output`), as a forced choice's failure is. As an untyped 500
-        // it counted against the Mac that served it, although the frame is the
-        // model's output.
+        // `native_output`), as a forced choice's failure is. An untyped 500
+        // would count against the Mac that served it, although the frame is
+        // the model's output.
         if let failure = inklingToolFailure {
             // Which frame check failed, as a fixed public line (no content), so
             // a run of these failures names its kind without a code read.

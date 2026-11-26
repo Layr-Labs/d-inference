@@ -4936,10 +4936,11 @@ complete call encodes exactly as before
 `encodeToolCallsForHash`).
 
 Inkling 2 (`inkling2_loop`) reads a call from its own `invoke_tool_json` frame
-(`Inkling2OutputChannels.parseCall`): `{"name", "args"}`, or `{"name",
-"arguments"}` (the OpenAI shape), and nothing else (both keys, neither, another key, or arguments that are not an
-object are refused). A frame that does not parse is refused as the model's
-native noncompliance with any tool choice: 422 `tool_noncompliance`,
+(`Inkling2OutputChannels.parseCall`): `{"name", "args"}`, or
+`{"name", "arguments"}` (the OpenAI shape), and nothing else (both keys,
+neither, another key, or arguments that are not an object are refused). A
+frame that does not parse is refused as the model's native noncompliance
+with any tool choice: 422 `tool_noncompliance`,
 `tool_check` `native_output` (`NativeToolStreamRouter.checkNativeToolFailure`).
 After reasoning has streamed it is an in-band error, never a 500 counted against
 the serving Mac. A public log line names the failed frame check

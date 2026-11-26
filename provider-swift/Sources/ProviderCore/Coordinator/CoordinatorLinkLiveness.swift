@@ -110,13 +110,16 @@ struct CoordinatorLinkWatch {
 }
 
 /// Private WebSocket close codes (RFC 6455: 4000-4999) the provider sends just
-/// before it drops a link it judged dead or slept through, so the coordinator
-/// records why the session ended (`ws_close_4001`, `ws_close_4002`) instead of
-/// a frame-less read error. On a link that is really dead the frame is lost and
+/// before it drops a link it judged dead, slept through or could no longer
+/// keep up with, so the coordinator records why the session ended
+/// (`ws_close_4001`, `ws_close_4002`, `ws_close_4003`) instead of a frame-less
+/// read error. On a link that is really dead the frame is lost and
 /// nothing changes.
 enum CoordinatorLinkCloseCode: UInt16, Sendable {
     /// No inbound frame for longer than the bound (`CoordinatorLinkVerdict.dead`).
     case silentLink = 4001
     /// A ping tick `suspensionGap` or more late (`CoordinatorLinkVerdict.suspended`).
     case suspended = 4002
+    /// Frames read and not yet handled past a limit (`CoordinatorInboundBacklog`).
+    case inboundBacklog = 4003
 }

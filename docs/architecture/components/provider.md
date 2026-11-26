@@ -161,7 +161,15 @@ dropped a live link 6 to 8 s after the request came in. When
 the provider drops a link it judged dead it first sends a close frame with the
 private code 4001 (4002 after a suspension; `CoordinatorLinkCloseCode`), so the
 coordinator records `ws_close_4001` instead of a frame-less read error; on a
-link that is really dead the frame is lost. The ping task reads the
+link that is really dead the frame is lost. Because every frame read counts
+as liveness, a handler that stops would otherwise hide behind the frames
+still arriving while they pile up in memory. `CoordinatorFrameBacklog`
+(`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorFrameBacklog.swift`)
+counts the frames read and not yet handled, the one being handled included;
+past 768 MiB, 4,096 frames, or an oldest frame 20 s old
+(`CoordinatorInboundBacklog`), the reader stops reading and the ping task
+closes the link with the private code 4003 (`ws_close_4003`). No frame is
+dropped: the coordinator settles the requests of the closed link. The ping task reads the
 continuous clock: a tick that is `suspensionGap` late (the Mac slept) reconnects
 once, and a shorter late tick restarts the silence window instead of counting
 as missed pongs. Before the coordinator's first frame on a new connection the

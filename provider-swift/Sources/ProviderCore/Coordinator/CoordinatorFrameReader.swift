@@ -20,6 +20,11 @@ import Network
 /// message read before it; the close frame's code is recorded on `session`
 /// first, as before. Cancelling the consumer cancels the connection, so a read
 /// still pending on it returns at once.
+///
+/// Every message read is added to `backlog` before it is handed over. Once the
+/// backlog passes a size limit (`CoordinatorInboundBacklog`) the reader stops
+/// reading, and the ping task ends the link with close code 4003; no message
+/// is dropped.
 final class CoordinatorFrameReader: @unchecked Sendable {
     /// One application message and when its read completed.
     struct Frame: Sendable {
@@ -34,25 +39,28 @@ final class CoordinatorFrameReader: @unchecked Sendable {
     private let connection: NWConnection
     private let session: CoordinatorSessionRecorder
     private let activity: LinkActivityTracker
+    private let backlog: CoordinatorFrameBacklog
     private let continuation: AsyncThrowingStream<Frame, Error>.Continuation
 
     private init(connection: NWConnection, session: CoordinatorSessionRecorder, activity: LinkActivityTracker,
-                 continuation: AsyncThrowingStream<Frame, Error>.Continuation) {
+                 backlog: CoordinatorFrameBacklog, continuation: AsyncThrowingStream<Frame, Error>.Continuation) {
         self.connection = connection
         self.session = session
         self.activity = activity
+        self.backlog = backlog
         self.continuation = continuation
     }
 
     /// Starts reading `connection` and returns its application messages.
     static func frames(on connection: NWConnection, session: CoordinatorSessionRecorder,
-                       activity: LinkActivityTracker) -> AsyncThrowingStream<Frame, Error> {
+                       activity: LinkActivityTracker,
+                       backlog: CoordinatorFrameBacklog) -> AsyncThrowingStream<Frame, Error> {
         let (frames, continuation) = AsyncThrowingStream<Frame, Error>.makeStream()
         continuation.onTermination = { termination in
             if case .cancelled = termination { connection.cancel() }
         }
         CoordinatorFrameReader(connection: connection, session: session, activity: activity,
-                               continuation: continuation).read()
+                               backlog: backlog, continuation: continuation).read()
         return frames
     }
 
@@ -91,7 +99,10 @@ final class CoordinatorFrameReader: @unchecked Sendable {
                 continuation.finish(throwing: CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET)))
                 return
             case .message(let message):
+                let withinLimits = backlog.add(size: message.count, receivedAt: receivedAt)
                 continuation.yield(Frame(data: message, receivedAt: receivedAt, profileAnchor: profileAnchor))
+                // Past a size limit: read no more; the ping task ends the link.
+                guard withinLimits else { return }
             }
             read()
         }

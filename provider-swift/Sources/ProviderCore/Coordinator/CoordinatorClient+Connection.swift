@@ -273,6 +273,7 @@ extension CoordinatorClient {
         // lock is cheaper than an actor hop for a single Instant.
         let start = ContinuousClock.now
         let activity = LinkActivityTracker(start: start)
+        let backlog = CoordinatorFrameBacklog(limits: self.inboundBacklog)
         let pongQueue = self.connectionQueue
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -290,7 +291,8 @@ extension CoordinatorClient {
             // Task 1: Receive messages from coordinator
             group.addTask { [weak self] in
                 guard let self else { return }
-                try await self.receiveLoop(connection: connection, session: session, activity: activity)
+                try await self.receiveLoop(connection: connection, session: session, activity: activity,
+                                           backlog: backlog)
             }
 
             // Task 2: Forward outbound messages to coordinator
@@ -347,6 +349,12 @@ extension CoordinatorClient {
                         // probably dropped the session, so reconnect once now.
                         await Self.sendLinkClose(.suspended, on: connection)
                         throw CoordinatorError.suspensionDetected
+                    }
+                    // Frames read and not handled past a limit: a stuck handler,
+                    // which the frames' own liveness would otherwise hide.
+                    if let excess = backlog.excess(now: .now) {
+                        await Self.sendLinkClose(.inboundBacklog, on: connection)
+                        throw CoordinatorError.inboundBacklogExceeded(excess)
                     }
 
                     // Send a WebSocket ping; the matching pong refreshes the
@@ -422,7 +430,7 @@ extension CoordinatorClient {
     /// Sends a close frame with `code` and returns when it has been handed to
     /// the transport, or after `limit` on a link that takes nothing more. The
     /// caller then tears the session down: the coordinator records the code
-    /// (`ws_close_4001`, `ws_close_4002`) when the frame reaches it.
+    /// (`ws_close_4001`, `ws_close_4002`, `ws_close_4003`) when the frame reaches it.
     static func sendLinkClose(
         _ code: CoordinatorLinkCloseCode, on connection: NWConnection, within limit: Duration = .milliseconds(500)
     ) async {
@@ -449,12 +457,14 @@ extension CoordinatorClient {
     // MARK: - Receive Loop
 
     private func receiveLoop(
-        connection: NWConnection, session: CoordinatorSessionRecorder, activity: LinkActivityTracker
+        connection: NWConnection, session: CoordinatorSessionRecorder, activity: LinkActivityTracker,
+        backlog: CoordinatorFrameBacklog
     ) async throws {
         // The connection is read on its own queue (`CoordinatorFrameReader`),
         // not after each message is handled here: handling waits on this actor,
         // and a socket left unread meanwhile stops delivering pongs and frames.
-        let frames = CoordinatorFrameReader.frames(on: connection, session: session, activity: activity)
+        let frames = CoordinatorFrameReader.frames(on: connection, session: session, activity: activity,
+                                                   backlog: backlog)
         for try await frame in frames {
             if shutdownRequested { return }
             guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
@@ -469,6 +479,7 @@ extension CoordinatorClient {
             await handleIncomingFrame(
                 frame.data, receivedAt: frame.receivedAt, profileAnchor: frame.profileAnchor,
                 connection: connection)
+            backlog.finishOldest()
         }
         if shutdownRequested { return }
         throw CancellationError()

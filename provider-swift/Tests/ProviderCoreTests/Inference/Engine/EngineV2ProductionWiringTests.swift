@@ -30,6 +30,7 @@ import MLXNN
 import Testing
 
 @testable import ProviderCore
+@testable import ProviderCoreFoundation
 
 // MARK: - Scripted CBv2Engine stub (same shape as EngineV2BridgeTests)
 
@@ -122,6 +123,8 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
     /// (`…assistant\n<think>\n`) without touching the default per-id
     /// behavior the logprob assertions rely on.
     var decodeOverride: String?
+    /// Extra special-token ids the vocabulary resolves, beside `</s>`.
+    var tokenIds: [String: Int] = [:]
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         Array(repeating: 0, count: text.count)
@@ -132,7 +135,7 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
         if let decodeOverride { return decodeOverride }
         return tokenIds.map { "t\($0)" }.joined()
     }
-    func convertTokenToId(_ token: String) -> Int? { ["</s>": 2][token] }
+    func convertTokenToId(_ token: String) -> Int? { tokenIds[token] ?? ["</s>": 2][token] }
     func convertIdToToken(_ id: Int) -> String? {
         if id == 2 { return "</s>" }
         guard id >= 0, id < 128, let scalar = UnicodeScalar(id) else { return nil }
@@ -2598,5 +2601,86 @@ struct PrefillDeadlineProductionConfigTests {
             EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
                 configuredMode: .enforce,
                 environment: unsupportedWithLegacyOff))
+    }
+}
+
+// MARK: - Inkling 2 thinking off: answering at once
+
+/// With `Inkling2AnswerPrefill` switched on, a thinking-off Inkling 2 request
+/// that declares no tools submits its prompt with the open answer message
+/// appended and streams the reply as content from its first byte; switched
+/// off, with tools or with thinking on it submits exactly as before.
+@Suite("EngineV2 production wiring: Inkling 2 answering at once")
+struct EngineV2InklingAnswerPrefillWiringTests {
+    static let model = "thinkingmachines/Inkling-2-Mini"
+    static let openAnswer = [200_001, 200_004]
+    static let tools = #"[{"type":"function","function":{"name":"get_weather","#
+        + #""parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]"#
+
+    private static func tokenizer() -> TokenizerHandle {
+        TokenizerHandle(WiringStubTokenizer(tokenIds: ["<|message_model|>": 200_001, "<|content_text|>": 200_004]))
+    }
+
+    private static func request(_ extra: String) throws -> OpenAIChatCompletionRequest {
+        let body = Data((#"{"model":"thinkingmachines/Inkling-2-Mini","messages":[{"role":"user","content":"hi"}]"#
+            + extra + "}").utf8)
+        return try ProviderLoop.decodeOpenAIRequest(body, modelType: Inkling2ModelIdentity.modelType)
+    }
+
+    /// Submits `request` once and returns the submitted prompt and the content
+    /// the client received.
+    private static func run(_ request: OpenAIChatCompletionRequest, switchedOn: Bool, reply: String)
+        async throws -> (prompt: [Int], content: String)
+    {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: reply, tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 7, completionTokens: 1)),
+        ]))
+        let bridge = makeBridge(engine: engine, modelId: model)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [Self.model: .init(tokenizer: Self.tokenizer(), modelType: Inkling2ModelIdentity.modelType,
+                                   engineV2Bridge: bridge)]
+            })
+        let events = try await Inkling2AnswerPrefill.$switchedOn.withValue(switchedOn) {
+            try await recordServerStream(try await providerEngine.streamChatCompletion(request: request))
+        }
+        var content = ""
+        for event in events {
+            switch event {
+            case .parsed(let parsed): content += parsed.content
+            case .content(let text): content += text
+            default: break
+            }
+        }
+        return (engine.submitted.last?.promptTokens ?? [], content)
+    }
+
+    @Test("thinking off, no tools: the prompt ends with the open answer message; the reply is content")
+    func thinkingOffWithoutToolsAnswersAtOnce() async throws {
+        let off = try Self.request(#","reasoning":{"enabled":false}"#)
+        let reply = "Paris.<|end_message|><|content_model_end_sampling|>"
+        // Switched off: today's prompt, and the reply read from the boundary.
+        let today = try await Self.run(off, switchedOn: false,
+            reply: "<|message_model|><|content_text|>" + reply)
+        #expect(!today.prompt.isEmpty)
+        #expect(Array(today.prompt.suffix(2)) != Self.openAnswer)
+        #expect(today.content == "Paris.")
+        let on = try await Self.run(off, switchedOn: true, reply: reply)
+        #expect(on.prompt == today.prompt + Self.openAnswer)
+        #expect(on.content == "Paris.")
+    }
+
+    @Test("tools, or thinking on: the prompt is unchanged")
+    func toolsAndThinkingOnAreUnchanged() async throws {
+        let reply = "<|message_model|><|content_text|>Paris.<|end_message|><|content_model_end_sampling|>"
+        for extra in [#","reasoning":{"enabled":false},"tools":"# + Self.tools, #","reasoning":{"enabled":true}"#] {
+            let request = try Self.request(extra)
+            let off = try await Self.run(request, switchedOn: false, reply: reply)
+            let on = try await Self.run(request, switchedOn: true, reply: reply)
+            #expect(on.prompt == off.prompt, "\(extra)")
+            #expect(Array(on.prompt.suffix(2)) != Self.openAnswer, "\(extra)")
+            #expect(on.content == "Paris.", "\(extra)")
+        }
     }
 }

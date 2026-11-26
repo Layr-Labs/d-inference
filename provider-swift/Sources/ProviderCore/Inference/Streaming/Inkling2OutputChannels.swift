@@ -63,6 +63,9 @@ enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
 /// Only the answer's first bytes are held for this, up to 64 name characters,
 /// and released with the text that follows them as one piece.
 ///
+/// With `startsInAnswer` (a prompt that ends with an open answer message,
+/// `Inkling2AnswerPrefill`), the output starts inside that answer's body.
+///
 /// The lexer reads detokenized text with special tokens kept (the CBv2
 /// detokenizer's default), so a marker spelled out from ordinary tokens reads
 /// like the special token. Every bound is fixed: the header, a call's body and
@@ -164,10 +167,12 @@ struct Inkling2OutputChannels {
     /// Some reasoning text was published.
     private(set) var hasReasoning = false
 
-    init(limits: Limits = Limits(), callsAreText: Bool = false, readsCallOpeningAnswer: Bool = false) {
+    init(limits: Limits = Limits(), callsAreText: Bool = false, readsCallOpeningAnswer: Bool = false,
+         startsInAnswer: Bool = false) {
         self.limits = limits
         self.callsAreText = callsAreText
         self.readsCallOpeningAnswer = readsCallOpeningAnswer && !callsAreText
+        if startsInAnswer { state = self.readsCallOpeningAnswer ? .answerStart : .body(.content) }
     }
 
     /// The channel of the message being read, if any.

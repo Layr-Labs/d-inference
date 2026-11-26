@@ -1091,6 +1091,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
         defer { preparation?.end() }
 
+        // Inkling 2 with thinking off and no tools may answer at once: its
+        // prompt then ends with an open answer message (`Inkling2AnswerPrefill`).
+        let answerPrefill = Inkling2AnswerPrefill.applies(
+            request, controls: templateControls, modelType: modelType, prepared: prepared,
+            logprobs: engineV2Logprobs != nil)
+            ? Inkling2AnswerPrefill.tokens(tokenToId: { tokenizer.inner.convertTokenToId($0) }) : nil
         let promptTokens: [Int]
         let prepTiming: ProviderPromptContractPipeline.PrepTiming
         do {
@@ -1108,7 +1114,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // The prompt-token piece cache keeps a prompt's token IDs past
                 // the request, so a memory_only request does not use it.
                 promptCacheScope: cacheEnabled && cachePolicy == .default ? requestCacheScope : nil)
-            promptTokens = measured.tokens
+            promptTokens = measured.tokens + (answerPrefill ?? [])
             prepTiming = measured.timing
             try checkFirstContentDeadline()
         } catch {
@@ -1275,8 +1281,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
             exitThinking: exitThinking)
-        let stopStringScope = Inkling2PromptContract.stopStringScope(
-            modelType: modelType, prepared: prepared) ?? ReasoningStopScope.scope(
+        let stopStringScope = (answerPrefill == nil ? nil : Inkling2AnswerPrefill.stopStringScope)
+            ?? Inkling2PromptContract.stopStringScope(modelType: modelType, prepared: prepared)
+            ?? ReasoningStopScope.scope(
             reasoningParser: request.reasoningParser, reasoningPrefix: reasoningPrefix,
             parsesToolCalls: toolHandler != nil)
 
@@ -1506,6 +1513,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeInklingChannels: Inkling2PromptContract.applies(modelType: modelType),
             inklingStreamsCalls: Inkling2PromptContract.applies(modelType: modelType)
                 && ToolStreamPreparation.streamsInklingCalls(request: request, prepared: prepared),
+            inklingStartsInAnswer: answerPrefill != nil,
             harmonyCallRecovery: GPTOSSToolCallRecovery.make(modelType: modelType, format: toolHandler?.format,
                 prepared: prepared, loopExit: loopGuard == nil ? nil : exitThinking?.record,
                 enabled: GPTOSSToolCallRecovery.enabled)
@@ -1895,6 +1903,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         rewriteHarmonyFinalHeaders: Bool = false,
         nativeInklingChannels: Bool = false,
         inklingStreamsCalls: Bool = false,
+        inklingStartsInAnswer: Bool = false,
         harmonyCallRecovery: GPTOSSToolCallRecovery? = nil
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
@@ -1929,6 +1938,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders,
                 nativeInklingChannels: nativeInklingChannels,
                 inklingStreamsCalls: inklingStreamsCalls,
+                inklingStartsInAnswer: inklingStartsInAnswer,
                 harmonyCallRecovery: harmonyCallRecovery)
             try checkFirstContentDeadline()
             return stream
@@ -1972,6 +1982,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         rewriteHarmonyFinalHeaders: Bool = false,
         nativeInklingChannels: Bool = false,
         inklingStreamsCalls: Bool = false,
+        inklingStartsInAnswer: Bool = false,
         harmonyCallRecovery: GPTOSSToolCallRecovery? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // Read where the stream starts, inside the coordinator path's scope.
@@ -2008,6 +2019,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     withholdReasoning: withholdReasoning, streamedCalls: prepared,
                     streamsGLMCalls: streamsGLMCalls,
                     nativeInklingChannels: nativeInklingChannels, inklingStreamsCalls: inklingStreamsCalls,
+                    inklingStartsInAnswer: inklingStartsInAnswer,
                     withheldReasoningHeartbeat: withheldReasoningHeartbeat)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which

@@ -114,7 +114,7 @@ struct Inkling2UndeclaredCallTextTests {
         ("parses (template shape)",
          #"<|message_model|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","args":{"city":"Paris"}}<|end_message|>"#,
          #"{"name":"get_weather","args":{"city":"Paris"}}"#),
-        ("malformed (the prompt's `arguments` shape)",
+        ("the prompt's `arguments` shape",
          #"<|message_model|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","arguments":{"city":"Paris"}}<|end_message|>"#,
          #"{"name":"get_weather","arguments":{"city":"Paris"}}"#),
         ("malformed (not JSON)",
@@ -174,12 +174,25 @@ struct Inkling2UndeclaredCallTextTests {
         #expect(outcome.content.isEmpty)
     }
 
-    /// Declared tools, malformed frame: still refused (native noncompliance).
+    /// Declared tools, a frame that does not parse: still refused, as the
+    /// model's native noncompliance (422), never a 500.
     @Test func declaredToolsStillRefuseAMalformedFrame() throws {
-        let outcome = try Self.serve(Self.thought + Self.frames[1].frame + Self.eos,
+        let outcome = try Self.serve(Self.thought + Self.frames[2].frame + Self.eos,
             request: Self.request(clientStreams: false, tools: Self.declared()), width: 7)
-        #expect(outcome.refusal?.contains("HTTP 500") == true)
+        #expect(outcome.refusal?.contains("HTTP 422") == true, "\(outcome.refusal ?? "nil")")
         #expect(outcome.calls.isEmpty)
+    }
+
+    /// Declared tools, the prompt's `arguments` shape in the model's call
+    /// frame: that call, held or streamed, with no refusal.
+    @Test("declared tools take the arguments shape as the call", arguments: [false, true])
+    func declaredToolsTakeTheArgumentsShape(clientStreams: Bool) throws {
+        let outcome = try Self.serve(Self.thought + Self.frames[1].frame + Self.eos,
+            request: Self.request(clientStreams: clientStreams, tools: Self.declared()), width: 7)
+        #expect(outcome.refusal == nil, "\(outcome.refusal ?? "")")
+        #expect(outcome.calls.map(\.function.name) == ["get_weather"])
+        #expect(outcome.calls.first?.function.arguments == ["city": .string("Paris")])
+        #expect(outcome.content.isEmpty)
     }
 
     /// Explicit `tool_choice: none` (with or without tools): a call is still refused.

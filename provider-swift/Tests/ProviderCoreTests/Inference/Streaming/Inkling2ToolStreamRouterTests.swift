@@ -193,7 +193,9 @@ struct Inkling2ToolStreamRouterTests {
     }
 
     /// A malformed call frame is native noncompliance: refused before any
-    /// later text leaves, as the forced or `auto` failure of its family.
+    /// later text leaves, `auto` or forced alike, as the model's own output
+    /// (422 `tool_noncompliance`, `native_output`), never a 500 that counts
+    /// against the Mac that served it.
     @Test func malformedFrameIsRefused() throws {
         let broken = #"<|message_model|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","args":[]}<|end_message|>"#
         for choice in [nil, OpenAIToolChoice.mode(.required)] {
@@ -203,11 +205,11 @@ struct Inkling2ToolStreamRouterTests {
                 _ = try router.process(broken + "<|message_model|><|content_text|>after<|end_message|>")
                 Issue.record("a malformed frame was accepted")
             } catch let error as MultiModelBatchSchedulerEngineError {
-                switch (choice, error) {
-                case (nil, .generationFailed(let message)): #expect(message.contains("Inkling"))
-                case (.some, .toolChoiceViolation(let message)): #expect(message.contains("Inkling"))
-                default: Issue.record("unexpected refusal \(error)")
+                guard case .toolChoiceViolation(let message) = error else {
+                    Issue.record("unexpected refusal \(error)"); continue
                 }
+                #expect(message.contains("Inkling"))
+                Self.expectModelNoncompliance(error)
             }
             #expect(router.hasNativeToolFailure)
             #expect(router.inklingToolFailure == .wrongShape)
@@ -291,7 +293,7 @@ struct Inkling2ToolStreamRouterTests {
 
     /// Frames the model writes when no tool is declared, and the text each
     /// one answers with: a call in the template's shape, the shape the prompt
-    /// asked for (`arguments`, which does not parse as Inkling's call), and
+    /// asked for (`arguments`, which also parses as Inkling's call), and
     /// arguments alone.
     static let undeclaredFrames: [(frame: String, text: String)] = [
         (call, #"{"name":"get_weather","args":{"location":"Paris"}}"#),
@@ -351,8 +353,8 @@ struct Inkling2ToolStreamRouterTests {
     }
 
     /// `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0` restores D2 (19b0784d69):
-    /// a call that parses is refused as undeclared (422), one that does not
-    /// fails generation (500). This is the #200 failure.
+    /// a call that parses is refused as undeclared (422), and one that does
+    /// not as the model's native noncompliance (422).
     @Test func switchOffRestoresTheRefusals() throws {
         #expect(Inkling2OutputChannels.undeclaredCallTextEnvironmentKey == "DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT")
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(Inkling2OutputChannels.undeclaredCallTextEnvironmentKey))
@@ -373,13 +375,124 @@ struct Inkling2ToolStreamRouterTests {
 
         var unparsed = Self.router(prepared, streams: false, undeclaredCallsAreText: false)
         do {
-            _ = try Self.feed(&unparsed, Self.thought + Self.undeclaredFrames[1].frame, width: 4096)
+            _ = try Self.feed(&unparsed, Self.thought
+                + #"<|message_model|>get_weather<|content_invoke_tool_json|>get_weather(city="Paris")<|end_message|>"#,
+                width: 4096)
             Issue.record("an unparsed frame was accepted")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            guard case .generationFailed(let message) = error else { Issue.record("unexpected \(error)"); return }
+            guard case .toolChoiceViolation(let message) = error else { Issue.record("unexpected \(error)"); return }
             #expect(message.contains("Inkling"))
+            Self.expectModelNoncompliance(error)
+        }
+        #expect(unparsed.inklingToolFailure == .invalidJSON)
+    }
+
+    // MARK: - Unparsed frames and the `arguments` shape
+
+    /// What the coordinator sees for a refusal: model noncompliance, which no
+    /// Mac is blamed for, with its check, at 422.
+    static func expectModelNoncompliance(_ error: Error, sourceLocation: SourceLocation = #_sourceLocation) {
+        #expect(classifyInferenceErrorReason(error) == .toolNoncompliance, sourceLocation: sourceLocation)
+        #expect(classifyToolNoncomplianceCheck(error) == .nativeOutput, sourceLocation: sourceLocation)
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422, sourceLocation: sourceLocation)
+    }
+
+    /// A thought of a few hundred tokens, then a frame that does not parse,
+    /// to a client that streams with tools declared and `auto`: the reasoning
+    /// has left, and the refusal is the model's noncompliance, not a 500.
+    @Test func unparsableFrameAfterALongThoughtIsModelNoncompliance() throws {
+        let thought = "<|message_model|><|content_thinking|>"
+            + String(repeating: "Check the request, then plan the call. ", count: 50) + "<|end_message|>"
+        let broken = #"<|message_model|>get_weather<|content_invoke_tool_json|>get_weather(location="Paris")<|end_message|>"#
+        for width in [1, 7, 4096] {
+            let (_, prepared) = try Self.prepared(clientStreams: true)
+            var router = Self.router(prepared, streams: true)
+            var routed = Routed([])
+            do {
+                // The thought, then the frame, each in chunks of `width`.
+                for part in [thought, broken] {
+                    let characters = Array(part)
+                    for start in stride(from: 0, to: characters.count, by: width) {
+                        let events = Routed(try router.process(
+                            String(characters[start..<min(start + width, characters.count)])))
+                        routed.reasoning += events.reasoning
+                        routed.content += events.content
+                    }
+                }
+                Issue.record("an unparsable frame was accepted (width \(width))")
+            } catch {
+                guard let engineError = error as? MultiModelBatchSchedulerEngineError,
+                    case .toolChoiceViolation(_) = engineError
+                else {
+                    Issue.record("unexpected refusal \(error)"); continue
+                }
+                Self.expectModelNoncompliance(error)
+            }
+            #expect(routed.reasoning.hasPrefix("Check the request"), "the thought left first (width \(width))")
+            #expect(routed.content.isEmpty)
+            #expect(router.inklingToolFailure == .invalidJSON)
+        }
+    }
+
+    /// A failure that is not the model's output keeps its untyped refusal:
+    /// no reason, a 500, as before.
+    @Test func untypedEngineFailureStillHasNoReason() {
+        for error: Error in [
+            MultiModelBatchSchedulerEngineError.generationFailed("engine row failed"),
+            MultiModelBatchSchedulerEngineError.fromSchedulerMessage("engine row aborted"),
+        ] {
+            #expect(classifyInferenceErrorReason(error) == nil)
+            #expect(classifyToolNoncomplianceCheck(error) == nil)
             #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 500)
         }
-        #expect(unparsed.inklingToolFailure == .wrongShape)
+    }
+
+    /// The OpenAI `{"name", "arguments"}` shape inside Inkling's own call
+    /// frame is that call: held to the end, or streamed when its frame closes,
+    /// and the answer finishes with its calls and no refusal.
+    @Test func argumentsShapeCompletesAsACall() throws {
+        let frame = #"<|message_model|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","arguments":{"location":"Paris"}}<|end_message|>"#
+        for width in [1, 5, 4096] {
+            let (_, heldPrepared) = try Self.prepared(clientStreams: false)
+            var held = Self.router(heldPrepared, streams: false)
+            let routed = Routed(try Self.feed(&held, Self.thought + frame, width: width))
+            #expect(routed.content.isEmpty)
+            #expect(!held.hasNativeToolFailure)
+            try held.checkNativeToolFailure()
+            let finished = try held.finishCompleteCalls(truncated: false)
+            #expect(finished.calls.map(\.function.name) == ["get_weather"], "\(width)")
+            #expect(finished.calls.first?.function.arguments == ["location": .string("Paris")])
+            try ToolConstraintValidation.validate(finished.calls, prepared: heldPrepared)
+
+            let (_, streamedPrepared) = try Self.prepared()
+            var streamed = Self.router(streamedPrepared, streams: true)
+            let events = Routed(try Self.feed(&streamed, Self.thought + frame, width: width))
+            #expect(events.deltas.count == 1, "\(width)")
+            #expect(try streamed.finishToolCalls(truncated: false).isEmpty)
+            try streamed.checkNativeToolFailure()
+            #expect(streamed.completedToolCalls.map(\.function.name) == ["get_weather"])
+            #expect(streamed.completedToolCalls.first?.function.arguments == ["location": .string("Paris")])
+        }
+    }
+
+    /// Answer text shaped like a call stays text: only the model's own call
+    /// frame is read as a call.
+    @Test func answerTextShapedLikeACallStaysText() throws {
+        let text = #"{"name":"get_weather","arguments":{"location":"Paris"}}"#
+        let (_, prepared) = try Self.prepared(clientStreams: false)
+        var router = Self.router(prepared, streams: false)
+        let routed = Routed(try Self.feed(&router,
+            Self.thought + "<|message_model|><|content_text|>" + text + "<|end_message|>", width: 4096))
+        #expect(routed.content == text)
+        #expect(try router.finishCompleteCalls(truncated: false).calls.isEmpty)
+        #expect(!router.hasNativeToolFailure)
+    }
+
+    /// Each frame check has its own fixed public line, which names the check
+    /// and nothing of the frame.
+    @Test func everyFrameFailureHasItsOwnPublicLine() {
+        let lines = Inkling2ToolFrameFailure.allCases.map { ProviderOperationalMessage(inklingToolFrameFailure: $0) }
+        #expect(Set(lines).count == Inkling2ToolFrameFailure.allCases.count)
+        #expect(lines.allSatisfy { $0.rawValue.hasPrefix("Inference failure: Inkling tool frame (") })
     }
 }

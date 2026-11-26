@@ -783,8 +783,8 @@ sys.stdout.write(signed[path])
             app = self.write_signed_app(Path(temporary))
             clean = {name: network for name in executables} | {"Helpers/darkbloom-fan-helper": ""}
             for name in executables:
-                # Universal (either byte order) and a thin x86_64 file.
-                for header in ("cafebabe", "bebafeca", "cffaedfe07000001"):
+                # Universal (32- and 64-bit, either byte order) and a thin x86_64 file.
+                for header in ("cafebabe", "bebafeca", "cafebabf", "bfbafeca", "cffaedfe07000001"):
                     with self.subTest(executable=name, header=header):
                         path = app / "Contents" / name
                         original = path.read_bytes()
@@ -795,6 +795,39 @@ sys.stdout.write(signed[path])
                                 self.check_bundle_with_stub(app, clean)
                         finally:
                             path.write_bytes(original)
+
+    def test_bundle_entitlements_account_for_every_file_that_could_run(self):
+        # Discovery rests on the header, the execute bit and the location: a file
+        # cannot leave the check by its header alone.
+        network = plistlib.dumps({"com.apple.security.network.client": True}).decode()
+        executables = ["MacOS/darkbloom", "MacOS/darkbloom-enclave", "Helpers/darkbloom-fan-helper",
+                       "Helpers/darkbloom-cluster-worker", "Helpers/darkbloom-cluster-plan"]
+        clean = {name: network for name in executables} | {"Helpers/darkbloom-fan-helper": ""}
+        cases = {
+            "an executable shell script in Helpers": ("Helpers/darkbloom-tool", b"#!/bin/sh\nexit 0\n", 0o755,
+                                                      "is not a thin arm64 Mach-O file"),
+            "an unknown header with the execute bit": ("Resources/tool", b"\x7fELF" + b"\0" * 28, 0o755,
+                                                       "is not a thin arm64 Mach-O file"),
+            "an extra 64-bit universal executable": ("Resources/extra", bytes.fromhex("cafebabf") + b"\0" * 28,
+                                                     0o644, "is not a thin arm64 Mach-O file"),
+            "an unlisted data file in MacOS": ("MacOS/notes.txt", b"text", 0o644,
+                                               "is not a thin arm64 Mach-O file"),
+            "a listed data file with an execute bit": ("Helpers/mlx.metallib", b"metal kernels", 0o755,
+                                                       "is a listed data file with an execute bit"),
+        }
+        for label, (name, data, mode, expected) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                app = self.write_signed_app(Path(temporary))
+                path = app / "Contents" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                path.chmod(mode)
+                with self.assertRaisesRegex(ValueError, re.escape(f"Contents/{name} ") + expected):
+                    self.check_bundle_with_stub(app, clean)
+        # The reviewed data files themselves, not executable, pass.
+        with tempfile.TemporaryDirectory() as temporary:
+            app = self.write_signed_app(Path(temporary))
+            self.check_bundle_with_stub(app, clean)
 
     def test_code_directory_flags_read_the_runtime_bit(self):
         cases = {"CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+7 location=embedded": 0x10000,

@@ -30,8 +30,15 @@ FAN_HELPER = "darkbloom-fan-helper"
 # installer refuse a fan helper with any other mode.
 EXECUTABLE_MODE = 0o755
 SIGNING_ENTITLEMENTS = ("entitlements.plist", "entitlements-enclave.plist", "entitlements-cluster-worker.plist")
-# The first four bytes of a thin (either byte order) or universal Mach-O file.
-MACHO_MAGICS = {bytes.fromhex(magic) for magic in ("cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca")}
+# The first four bytes of a thin (either byte order) or universal (32- or
+# 64-bit, either byte order) Mach-O file.
+MACHO_MAGICS = {bytes.fromhex(magic) for magic in ("cffaedfe", "cefaedfe", "feedfacf", "feedface",
+                                                  "cafebabe", "bebafeca", "cafebabf", "bfbafeca")}
+# The only files in Contents/MacOS or Contents/Helpers that are not thin arm64
+# executables: the Metal library and paged-attention source the CLI and the
+# cluster helpers load. Each must be a regular file with no execute bit.
+REVIEWED_DATA_FILES = frozenset({"Contents/MacOS/mlx.metallib", "Contents/Helpers/mlx.metallib",
+                                 "Contents/Helpers/pagedattention.metal"})
 DEBUG_TASK_ENTITLEMENTS = ("get-task-allow", "com.apple.security.get-task-allow")
 # The hardened runtime's exception entitlements (allow-jit,
 # allow-unsigned-executable-memory, allow-dyld-environment-variables,
@@ -312,6 +319,23 @@ def code_directory_flags(details):
     return None
 
 
+def bundle_files(app):
+    """Every regular file in the app that the bundle check must account for: any
+    Mach-O file by its header, any file with an execute bit, and every file in
+    Contents/MacOS or Contents/Helpers, in path order."""
+    found = []
+    for path in sorted(app.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        with path.open("rb") as source:
+            macho = source.read(4) in MACHO_MAGICS
+        executable = bool(stat.S_IMODE(path.lstat().st_mode) & 0o111)
+        located = path.relative_to(app).parts[:2] in (("Contents", "MacOS"), ("Contents", "Helpers"))
+        if macho or executable or located:
+            found.append(path)
+    return found
+
+
 def macho_files(app):
     """Every regular Mach-O file in the app bundle, in path order."""
     found = []
@@ -364,18 +388,26 @@ def entitlement_problem(path):
 
 def bundle_entitlements(arguments):
     """Fails unless every executable in the signed app (the CLI, the enclave and
-    fan helpers, the cluster worker and plan, and any other Mach-O file) is
-    signed by the Developer ID with the hardened runtime, leaves get-task-allow
-    absent or false, and carries no hardened-runtime exception entitlement."""
+    fan helpers, the cluster worker and plan, and any other Mach-O file, file
+    with an execute bit or file in Contents/MacOS or Contents/Helpers) is a thin
+    arm64 Mach-O file signed by the Developer ID with the hardened runtime,
+    leaves get-task-allow absent or false, and carries no hardened-runtime
+    exception entitlement. The reviewed data files are the only exception, and
+    they must not be executable."""
     app = arguments.app
     with (app / "Contents/Info.plist").open("rb") as source:
         main = app / "Contents/MacOS" / plistlib.load(source)["CFBundleExecutable"]
-    found = macho_files(app)
-    if main not in found:
+    if main not in macho_files(app):
         raise ValueError(f"{main.relative_to(app)} is not a Mach-O executable in the app")
     refused = []
-    for path in found:
+    for path in bundle_files(app):
         name = str(path.relative_to(app))
+        if name in REVIEWED_DATA_FILES:
+            if stat.S_IMODE(path.lstat().st_mode) & 0o111:
+                refused.append(f"{name} is a listed data file with an execute bit")
+            else:
+                print(f"{name}: listed data file, not executable")
+            continue
         problem = architecture_problem(path) or developer_id_problem(path) or entitlement_problem(path)
         if problem:
             refused.append(f"{name} {problem}")

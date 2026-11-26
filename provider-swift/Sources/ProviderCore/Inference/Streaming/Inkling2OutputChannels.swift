@@ -11,7 +11,7 @@ enum Inkling2OutputPiece: Equatable, Sendable {
 }
 
 /// Why a `<|content_invoke_tool_json|>` frame is not a call.
-enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
+enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable, CaseIterable {
     /// The body is not one JSON object.
     case invalidJSON
     /// The object is not exactly `{"name": string, "args": object}`.
@@ -24,6 +24,20 @@ enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
     case bodyTooLarge
     /// Generation ended inside the frame.
     case unterminated
+}
+
+extension ProviderOperationalMessage {
+    /// The fixed public line for one Inkling 2 frame check.
+    init(inklingToolFrameFailure failure: Inkling2ToolFrameFailure) {
+        self = switch failure {
+        case .invalidJSON: .inklingToolFrameInvalidJSON
+        case .wrongShape: .inklingToolFrameWrongShape
+        case .nameMismatch: .inklingToolFrameNameMismatch
+        case .nestingTooDeep: .inklingToolFrameNestingTooDeep
+        case .bodyTooLarge: .inklingToolFrameBodyTooLarge
+        case .unterminated: .inklingToolFrameUnterminated
+        }
+    }
 }
 
 /// Lexer for Inkling 2's native output protocol, pinned to

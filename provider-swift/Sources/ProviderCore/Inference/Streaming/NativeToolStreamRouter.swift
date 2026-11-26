@@ -123,7 +123,8 @@ struct NativeToolStreamRouter {
         if nativeInklingChannels {
             // An `auto` request that declares no tools renders no
             // `tool_declare`, so no call can be valid: a frame is answer text,
-            // never a refusal (422 `undeclared_name`, or 500 unparsed).
+            // never a refusal (422 `undeclared_name`, or 422 `native_output`
+            // unparsed).
             // Client stops follow (`Inkling2PromptContract.stopStringScope`).
             inklingParser = Inkling2OutputChannels(
                 callsAreText: inklingUndeclaredCallsAreText && autoToolChoice && tools?.isEmpty != false,
@@ -305,6 +306,10 @@ struct NativeToolStreamRouter {
     /// The first Inkling 2 call frame that did not parse, for telemetry.
     var inklingToolFailure: Inkling2ToolFrameFailure? { inklingParser?.toolFailures.first }
 
+    /// The public line naming an Inkling 2 frame failure (`checkNativeToolFailure`).
+    private static let frameFailureLogger = ProviderLogger(
+        subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "inference")
+
     /// Streamed path: a native frame that failed to parse before any of it
     /// was exposed comes back as text; refuse it before that text leaves, as
     /// the complete-call path does. An exposed call that failed is refused by
@@ -326,7 +331,18 @@ struct NativeToolStreamRouter {
         let model = inklingParser != nil ? "Inkling"
             : handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
         let message = "native \(model) tool output is invalid"
-        if requiresToolCall || nativeMiMoRequiresConstraint {
+        // An Inkling 2 frame that does not parse is the model's answer breaking
+        // its own call contract, whatever the request's choice: model
+        // noncompliance (422 `tool_noncompliance`, `tool_check`
+        // `native_output`), as a forced choice's failure is. As an untyped 500
+        // it counted against the Mac that served it, although the frame is the
+        // model's output.
+        if let failure = inklingToolFailure {
+            // Which frame check failed, as a fixed public line (no content), so
+            // a run of these failures names its kind without a code read.
+            Self.frameFailureLogger.error(ProviderOperationalMessage(inklingToolFrameFailure: failure))
+        }
+        if requiresToolCall || nativeMiMoRequiresConstraint || inklingParser != nil {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
         }
         throw MultiModelBatchSchedulerEngineError.generationFailed(message)

@@ -458,6 +458,12 @@ extension CoordinatorClient {
         for try await frame in frames {
             if shutdownRequested { return }
             guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
+            // A handler can cancel the connection (a native-pair frame that
+            // breaks the contract). Frames read before that are not handled:
+            // the old loop's next read failed on the cancelled connection.
+            if case .cancelled = connection.state {
+                throw CoordinatorError.connectionClosed(NWError.posix(.ECANCELED))
+            }
             await handleIncomingFrame(
                 frame.data, receivedAt: frame.receivedAt, profileAnchor: frame.profileAnchor,
                 connection: connection)

@@ -172,7 +172,9 @@ struct Inkling2OutputChannels {
         self.limits = limits
         self.callsAreText = callsAreText
         self.readsCallOpeningAnswer = readsCallOpeningAnswer && !callsAreText
-        if startsInAnswer { state = self.readsCallOpeningAnswer ? .answerStart : .body(.content) }
+        // The prompt's `<|content_text|>` opened the answer: read on as after
+        // that marker.
+        if startsInAnswer { enter(.content) }
     }
 
     /// The channel of the message being read, if any.

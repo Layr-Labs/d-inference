@@ -60,7 +60,7 @@ struct Inkling2AnswerPrefillTests {
 
     /// The scheduler reads the switch once per process (`switchedOn`); a task
     /// can set it around one request.
-    @Test func theSwitchIsReadOnceAndCanBeSetPerTask() {
+    @Test func aTaskCanSetTheSwitch() {
         Inkling2AnswerPrefill.$switchedOn.withValue(true) { #expect(Inkling2AnswerPrefill.switchedOn) }
         Inkling2AnswerPrefill.$switchedOn.withValue(false) { #expect(!Inkling2AnswerPrefill.switchedOn) }
     }
@@ -82,7 +82,7 @@ struct Inkling2AnswerPrefillTests {
         }
     }
 
-    /// Declared tools (auto or forced), media and logprobs keep today's prompt:
+    /// Declared tools (auto or forced), media and logprobs keep the prompt as before:
     /// the open answer message would leave no place for a call, and the media
     /// and logprob paths read the output from its first frame.
     @Test func toolsMediaAndLogprobsAreUnchanged() throws {
@@ -122,17 +122,17 @@ struct Inkling2AnswerPrefillTests {
         ], effort: effort)
         #expect(next.hasPrefix(prompt))
         #expect(next.dropFirst(prompt.count).hasPrefix("Paris.<|end_message|><|content_model_end_sampling|>"))
-        // Today's prompt ends between messages, one boundary earlier.
+        // Without the prefill the prompt ends between messages, one boundary earlier.
         #expect(prompt.hasSuffix("<|end_message|>" + Self.openAnswer))
     }
 
     // MARK: - The output
 
     /// The content and the reasoning one reply reads as.
-    static func read(_ text: String, startsInAnswer: Bool) -> [String] {
+    static func read(_ reply: String, startsInAnswer: Bool) -> [String] {
         var lexer = Inkling2OutputChannels(callsAreText: true, startsInAnswer: startsInAnswer)
         var content = "", reasoning = ""
-        for piece in lexer.parse(text) + lexer.finish() {
+        for piece in lexer.parse(reply) + lexer.finish() {
             switch piece {
             case .content(let text): content += text
             case .reasoning(let text): reasoning += text
@@ -143,8 +143,8 @@ struct Inkling2AnswerPrefillTests {
     }
 
     /// From inside the answer the reply is content up to `<|end_message|>`;
-    /// read from the boundary, as today, the same bytes are outside every
-    /// message and dropped.
+    /// read from the boundary, as with the switch off, the same bytes are
+    /// outside every message and dropped.
     @Test func theLexerStartsInsideTheAnswer() {
         let reply = "Paris.<|end_message|><|content_model_end_sampling|>"
         #expect(Self.read(reply, startsInAnswer: true) == ["Paris.", ""])
@@ -152,6 +152,24 @@ struct Inkling2AnswerPrefillTests {
         // A thought the model still opens after its answer is reasoning.
         let after = "Paris.<|end_message|><|message_model|><|content_thinking|>ok<|end_message|>"
         #expect(Self.read(after, startsInAnswer: true) == ["Paris.", "ok"])
+    }
+
+    /// Starting inside the answer reads a reply exactly as the lexer reads it
+    /// after `<|content_text|>`, including an answer that opens with a call
+    /// where calls can open answers (`readsCallOpeningAnswer`).
+    @Test func startingInsideTheAnswerReadsAsAfterItsMarker() {
+        let call = #"get_weather<|content_invoke_tool_json|>{"name":"get_weather","args":{"city":"Paris"}}"#
+        for reply in ["Paris.<|end_message|>", call + "<|end_message|>", "Par"] {
+            for readsCallOpeningAnswer in [false, true] {
+                var started = Inkling2OutputChannels(readsCallOpeningAnswer: readsCallOpeningAnswer,
+                                                     startsInAnswer: true)
+                var marked = Inkling2OutputChannels(readsCallOpeningAnswer: readsCallOpeningAnswer)
+                let fromStart = started.parse(reply) + started.finish()
+                let afterMarker = marked.parse("<|content_text|>" + reply) + marked.finish()
+                #expect(fromStart == afterMarker, "\(reply), \(readsCallOpeningAnswer)")
+                #expect(started.unterminatedChannel == marked.unterminatedChannel, "\(reply)")
+            }
+        }
     }
 
     /// The router publishes the answer's first bytes as they arrive, with the

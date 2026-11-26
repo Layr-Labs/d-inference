@@ -9,16 +9,17 @@ import MLXLMServer
 /// (`Inkling2PromptContract.templateEffort`), at which the model may still
 /// write a thought before its answer, and `NativeToolStreamRouter` withholds
 /// it. The client then receives nothing visible until the thought ends. With
-/// the switch on, the rendered prompt of a thinking-off request that declares
-/// no tools ends with an open answer message (`<|message_model|><|content_text|>`),
-/// so the model writes its answer from the first token, and the output lexer
-/// starts inside that message (`Inkling2OutputChannels`, `startsInAnswer`).
+/// the switch on, the rendered prompt of a thinking-off request with no tools
+/// in it (none declared, or `tool_choice` `none`) ends with an open answer
+/// message (`<|message_model|><|content_text|>`), so the model writes its
+/// answer from the first token, and the output lexer starts inside that
+/// message (`Inkling2OutputChannels`, `startsInAnswer`).
 ///
 /// The two tokens are where the next turn's history renders this reply
 /// (`<|message_model|><|content_text|>ANSWER<|end_message|>…`), so the prompt
 /// stays a prefix of the next turn's and prefix reuse is unchanged. Requests
-/// with thinking on, with tools, with media or with logprobs, other models
-/// and the switch off are unchanged.
+/// with thinking on, with tools in the prompt (`auto` or forced), with media
+/// or with logprobs, other models and the switch off are unchanged.
 enum Inkling2AnswerPrefill {
     /// `DARKBLOOM_INKLING_THINKING_OFF_ANSWER_PREFILL`.
     static let environmentKey = "DARKBLOOM_INKLING_THINKING_OFF_ANSWER_PREFILL"
@@ -30,7 +31,7 @@ enum Inkling2AnswerPrefill {
 
     /// The switch as this process read it, once, at first use. Task-local so a
     /// test can set it around one request.
-    @TaskLocal static var switchedOn = enabled()
+    @TaskLocal static var switchedOn: Bool = enabled()
 
     /// On for `1`, `true`, `yes` or `on`; off for `0`, `false`, `no` or `off`
     /// (trimmed, any letter case); unset or anything else keeps the default.

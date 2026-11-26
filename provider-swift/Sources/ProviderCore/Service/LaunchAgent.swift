@@ -518,7 +518,7 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_INKLING_FORCED_TOOLS`: Inkling 2 frames forced tool calls in
     /// the sampler by default; an off word restores prompt-forced calls alone.
     /// `DARKBLOOM_INKLING_THINKING_OFF_ANSWER_PREFILL`: an Inkling 2 request
-    /// that turns thinking off and declares no tools answers at once, its
+    /// that turns thinking off with no tools in its prompt answers at once, its
     /// prompt ending with an open answer message (off by default; `1` turns it on).
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)

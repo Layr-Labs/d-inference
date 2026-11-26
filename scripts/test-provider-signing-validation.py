@@ -34,13 +34,13 @@ RUNTIME_EXCEPTIONS = tuple("com.apple.security.cs." + name for name in (
     "allow-jit", "disable-executable-page-protection", "debugger", "some-later-exception"))
 
 
-def write_app_with_cluster_helpers(app, omit=None, metallib=b"metal kernels", paged=b"paged source"):
+def write_app_with_cluster_helpers(app, omit=None, metallib=b"MTLB metal kernels", paged=b"paged source"):
     """A synthetic app with the cluster helpers the release must ship."""
     contents = app / "Contents"
     (contents / "MacOS").mkdir(parents=True, exist_ok=True)
     (contents / "Helpers").mkdir(parents=True, exist_ok=True)
     (contents / "Resources/mlx-swift-lm_MLXLMCommon.bundle").mkdir(parents=True, exist_ok=True)
-    (contents / "MacOS/mlx.metallib").write_bytes(b"metal kernels")
+    (contents / "MacOS/mlx.metallib").write_bytes(b"MTLB metal kernels")
     (contents / "Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal").write_bytes(b"paged source")
     files = {"darkbloom-cluster-worker": MACHO_ARM64, "darkbloom-cluster-plan": MACHO_ARM64,
              "mlx.metallib": metallib, "pagedattention.metal": paged}
@@ -206,7 +206,7 @@ class SigningValidationTests(unittest.TestCase):
         for scenario in ["metallib", "paged", "not-macho", "not-executable", "symlink"]:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 app = Path(temporary) / "Darkbloom.app"
-                write_app_with_cluster_helpers(app, metallib=b"other kernels" if scenario == "metallib" else b"metal kernels",
+                write_app_with_cluster_helpers(app, metallib=b"MTLB other kernels" if scenario == "metallib" else b"MTLB metal kernels",
                                                paged=b"other source" if scenario == "paged" else b"paged source")
                 worker = app / "Contents/Helpers/darkbloom-cluster-worker"
                 if scenario == "not-macho":
@@ -812,8 +812,18 @@ sys.stdout.write(signed[path])
                                                      0o644, "is not a thin arm64 Mach-O file"),
             "an unlisted data file in MacOS": ("MacOS/notes.txt", b"text", 0o644,
                                                "is not a thin arm64 Mach-O file"),
-            "a listed data file with an execute bit": ("Helpers/mlx.metallib", b"metal kernels", 0o755,
+            "a listed data file with an execute bit": ("Helpers/mlx.metallib", b"MTLB metal kernels", 0o755,
                                                        "is a listed data file with an execute bit"),
+            "a dylib at a listed path": ("Helpers/pagedattention.metal", MACHO_ARM64, 0o644,
+                                         "is a listed data file with a Mach-O header"),
+            "a dylib at a listed Metal library path": ("MacOS/mlx.metallib", MACHO_ARM64, 0o644,
+                                                       "is a listed data file with a Mach-O header"),
+            "a listed Metal library without its header": ("Helpers/mlx.metallib", b"metal kernels", 0o644,
+                                                          "is a listed Metal library without the Metal library header"),
+            "a listed source file that is not text": ("Helpers/pagedattention.metal", b"\xff\xfe\x00binary", 0o644,
+                                                      "is a listed source file that is not UTF-8 text"),
+            "a listed source file with a NUL byte": ("Helpers/pagedattention.metal", b"kernel\x00void", 0o644,
+                                                     "is a listed source file that is not UTF-8 text"),
         }
         for label, (name, data, mode, expected) in cases.items():
             with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
@@ -824,9 +834,36 @@ sys.stdout.write(signed[path])
                 path.chmod(mode)
                 with self.assertRaisesRegex(ValueError, re.escape(f"Contents/{name} ") + expected):
                     self.check_bundle_with_stub(app, clean)
-        # The reviewed data files themselves, not executable, pass.
+        # A missing listed Metal library: the app cannot run without it.
+        for name in ("MacOS/mlx.metallib", "Helpers/mlx.metallib"):
+            with self.subTest(missing=name), tempfile.TemporaryDirectory() as temporary:
+                app = self.write_signed_app(Path(temporary))
+                (app / "Contents" / name).unlink()
+                with self.assertRaisesRegex(ValueError, re.escape(f"Contents/{name} is missing")):
+                    self.check_bundle_with_stub(app, clean)
+        # Symbolic links: none in MacOS or Helpers, and none elsewhere that leaves the app.
+        links = {
+            "a link in Helpers": ("Helpers/darkbloom-link", lambda app, outside: "darkbloom-fan-helper",
+                                  "is a symbolic link"),
+            "a link in MacOS": ("MacOS/mlx-link.metallib", lambda app, outside: "mlx.metallib",
+                                "is a symbolic link"),
+            "a link in Resources that leaves the app": ("Resources/tool", lambda app, outside: str(outside),
+                                                        "is a symbolic link that resolves outside the app"),
+        }
+        for label, (name, target, expected) in links.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                app = self.write_signed_app(Path(temporary))
+                outside = Path(temporary) / "outside-tool"
+                outside.write_bytes(MACHO_ARM64)
+                link = app / "Contents" / name
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(target(app, outside))
+                with self.assertRaisesRegex(ValueError, re.escape(f"Contents/{name} ") + expected):
+                    self.check_bundle_with_stub(app, clean)
+        # The reviewed data files themselves, and a link in Resources that stays inside the app, pass.
         with tempfile.TemporaryDirectory() as temporary:
             app = self.write_signed_app(Path(temporary))
+            (app / "Contents/Resources/Current").symlink_to("mlx-swift-lm_MLXLMCommon.bundle")
             self.check_bundle_with_stub(app, clean)
 
     def test_code_directory_flags_read_the_runtime_bit(self):

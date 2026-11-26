@@ -16,6 +16,9 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
         /// Reads every message and records the code of each close frame, but
         /// never answers a ping and never sends.
         case recordsCloses
+        /// Sends `frame` every `interval` as `streams` does, and reads and
+        /// records closes as `recordsCloses` does; never answers a ping.
+        case streamsAndRecordsCloses(frame: Data, interval: DispatchTimeInterval)
     }
 
     private let listener: NWListener
@@ -109,17 +112,24 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
         case .recordsCloses:
             readAndRecordCloses(connection)
         case .streams(let frame, let interval):
-            let timer = DispatchSource.makeTimerSource(queue: queue)
-            timer.schedule(deadline: .now(), repeating: interval)
-            timer.setEventHandler {
-                let text = NWProtocolWebSocket.Metadata(opcode: .text)
-                let context = NWConnection.ContentContext(identifier: "stream", metadata: [text])
-                connection.send(content: frame, contentContext: context, isComplete: true,
-                                completion: .contentProcessed { _ in })
-            }
-            lock.withLock { timers.append(timer) }
-            timer.resume()
+            stream(frame, every: interval, on: connection)
+        case .streamsAndRecordsCloses(let frame, let interval):
+            stream(frame, every: interval, on: connection)
+            readAndRecordCloses(connection)
         }
+    }
+
+    private func stream(_ frame: Data, every interval: DispatchTimeInterval, on connection: NWConnection) {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: interval)
+        timer.setEventHandler {
+            let text = NWProtocolWebSocket.Metadata(opcode: .text)
+            let context = NWConnection.ContentContext(identifier: "stream", metadata: [text])
+            connection.send(content: frame, contentContext: context, isComplete: true,
+                            completion: .contentProcessed { _ in })
+        }
+        lock.withLock { timers.append(timer) }
+        timer.resume()
     }
 
     private func readAndRecordCloses(_ connection: NWConnection) {

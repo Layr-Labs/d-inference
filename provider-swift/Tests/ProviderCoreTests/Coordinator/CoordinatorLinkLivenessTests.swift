@@ -42,6 +42,49 @@ struct CoordinatorLinkLivenessTests {
             == "Process suspension detected (timer gap); forcing reconnect")
     }
 
+    /// 768 MiB is the coordinator's highest in-flight cap (24 requests) times
+    /// the provider's 32 MiB message limit, so no admitted backlog reaches it;
+    /// the age limit is the 20 s dead bound.
+    @Test("the inbound backlog limits are 768 MiB, 4,096 frames and 20 s, and passing one reads in the log")
+    func inboundBacklogProductionValues() {
+        let production = CoordinatorInboundBacklog()
+        #expect(production.maxBytes == 768 * 1024 * 1024)
+        #expect(production.maxFrames == 4_096)
+        #expect(production.maxAge == .seconds(20))
+        #expect(CoordinatorLinkCloseCode.inboundBacklog.rawValue == 4003)
+        #expect(CoordinatorError.inboundBacklogExceeded(.age(.seconds(21))).localizedDescription
+            == "Coordinator frames not handled in time (a frame waited 21s for its handling); link closed")
+    }
+
+    @Test("the backlog passes each limit, a size limit stays passed, and handled frames leave it")
+    func backlogPassesEachLimit() {
+        let start = ContinuousClock.now
+
+        let bytes = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxBytes: 100))
+        #expect(bytes.add(size: 60, receivedAt: start))
+        #expect(!bytes.add(size: 60, receivedAt: start))
+        bytes.finishOldest()
+        bytes.finishOldest()
+        #expect(bytes.excess(now: start) == .bytes(120))
+
+        let frames = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxFrames: 2))
+        #expect(frames.add(size: 1, receivedAt: start))
+        #expect(frames.add(size: 1, receivedAt: start))
+        #expect(!frames.add(size: 1, receivedAt: start))
+        #expect(frames.excess(now: start) == .frames(3))
+
+        // The age is the oldest frame's, until its handling returns.
+        let age = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxAge: .seconds(1)))
+        #expect(age.add(size: 1, receivedAt: start))
+        #expect(age.add(size: 1, receivedAt: start + .milliseconds(800)))
+        #expect(age.excess(now: start + .seconds(1)) == nil)
+        #expect(age.excess(now: start + .milliseconds(1_100)) == .age(.milliseconds(1_100)))
+        age.finishOldest()
+        #expect(age.excess(now: start + .milliseconds(1_100)) == nil)
+        age.finishOldest()
+        #expect(age.excess(now: start + .seconds(60)) == nil)
+    }
+
     @Test("a peer that answered and went silent is declared dead after the bound and before bound plus one ping interval")
     func silentPeerIsDeadWithinTheBound() throws {
         var watch = CoordinatorLinkWatch(liveness: Self.liveness, start: Self.start)

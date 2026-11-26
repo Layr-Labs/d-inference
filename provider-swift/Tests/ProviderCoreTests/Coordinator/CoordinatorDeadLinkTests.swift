@@ -155,6 +155,106 @@ struct CoordinatorDeadLinkTests {
         #expect(handled.isEmpty, "cancels handled after the connection ended: \(handled)")
     }
 
+    /// Reading no longer waits on handling, so a handler that stops would let
+    /// frames pile up while each of them still counts as liveness. Past a limit
+    /// of the inbound backlog the provider closes the link with its private
+    /// code 4003 and reconnects. Each row lowers one limit and holds the
+    /// client's actor while the peer streams.
+    @Test("frames read and not handled past the byte limit close the link with 4003", .timeLimit(.minutes(1)))
+    func backlogPastTheByteLimitClosesTheLink() async throws {
+        try await expectBacklogClose(CoordinatorInboundBacklog(maxBytes: 1 << 20),
+                                     streaming: Self.ignoredFrame(paddedTo: 64 << 10), every: .milliseconds(5))
+    }
+
+    @Test("frames read and not handled past the frame limit close the link with 4003", .timeLimit(.minutes(1)))
+    func backlogPastTheFrameLimitClosesTheLink() async throws {
+        try await expectBacklogClose(CoordinatorInboundBacklog(maxFrames: 64),
+                                     streaming: Self.ignoredFrame(paddedTo: 0), every: .milliseconds(2))
+    }
+
+    @Test("a frame waiting for its handling past the age limit closes the link with 4003", .timeLimit(.minutes(1)))
+    func backlogPastTheAgeLimitClosesTheLink() async throws {
+        try await expectBacklogClose(CoordinatorInboundBacklog(maxAge: .milliseconds(500)),
+                                     streaming: Self.ignoredFrame(paddedTo: 0), every: .milliseconds(50))
+    }
+
+    /// Under the limits nothing is dropped: every frame read while a handling
+    /// holds the client is handled afterwards, in order, on the same link.
+    @Test("frames read while a handling holds the client are all handled, in order, on the same link",
+          .timeLimit(.minutes(1)))
+    func framesReadDuringAHoldAreAllHandledInOrder() async throws {
+        let peer = try LoopbackWebSocketPeer(behavior: .answersPings)
+        let port = try await peer.start()
+        defer { peer.stop() }
+        let client = makeDeadLinkClient(port: port)
+        let (events, _) = await client.start()
+        let sent = (0..<200).map { "held-\($0)" }
+        let cancels = Task { () -> [String] in
+            var requestIDs: [String] = []
+            for await event in events {
+                if case .cancel(let requestID, _) = event { requestIDs.append(requestID) }
+                if requestIDs.count == sent.count { break }
+            }
+            return requestIDs
+        }
+        let giveUp = Task {
+            try await Task.sleep(for: .seconds(10))
+            cancels.cancel()
+        }
+        defer {
+            giveUp.cancel()
+            cancels.cancel()
+            Task { await client.shutdown() }
+        }
+
+        _ = try await waitForAccepts(1, on: peer, within: .seconds(10))
+        try await Task.sleep(for: .milliseconds(300))
+        // Half the dead bound, so no link watch reacts to the hold.
+        let hold = Task { await holdActor(client, for: .milliseconds(300)) }
+        try await Task.sleep(for: .milliseconds(50))
+        peer.send(sent.map { Data(#"{"type":"cancel","request_id":"\#($0)"}"#.utf8) })
+        await hold.value
+
+        let handled = await cancels.value
+        #expect(handled == sent, "handled \(handled.count) of \(sent.count), first \(handled.prefix(3))")
+        #expect(peer.accepted.count == 1, "the client reconnected \(peer.accepted.count - 1) times")
+    }
+
+    /// Streams `frame` every `interval`, holds the client's actor for 2 s, and
+    /// expects the peer to read close code 4003 and the client to reconnect.
+    private func expectBacklogClose(_ backlog: CoordinatorInboundBacklog, streaming frame: Data,
+                                    every interval: DispatchTimeInterval) async throws {
+        let peer = try LoopbackWebSocketPeer(behavior: .streamsAndRecordsCloses(frame: frame, interval: interval))
+        let port = try await peer.start()
+        defer { peer.stop() }
+        let client = makeDeadLinkClient(
+            port: port, reconnectPolicy: CoordinatorReconnectPolicy(stableSessionDuration: .milliseconds(200)),
+            inboundBacklog: backlog)
+        let (events, _) = await client.start()
+        let drain = Task { for await _ in events {} }
+        defer {
+            drain.cancel()
+            Task { await client.shutdown() }
+        }
+
+        _ = try await waitForAccepts(1, on: peer, within: .seconds(10))
+        try await Task.sleep(for: .milliseconds(300))
+        // One handling holds the client while frames keep coming: the backlog grows.
+        await holdActor(client, for: .seconds(2))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while ContinuousClock.now < deadline, !peer.closeCodes.contains(4003) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(peer.closeCodes.contains(4003), "close codes read: \(peer.closeCodes)")
+        _ = try await waitForAccepts(2, on: peer, within: .seconds(10))
+    }
+
+    /// A message the client reads and ignores (no drain barrier waits on its
+    /// id), its id padded with `padding` bytes.
+    private static func ignoredFrame(paddedTo padding: Int) -> Data {
+        Data(#"{"type":"drain_ack","id":"x\#(String(repeating: "x", count: padding))"}"#.utf8)
+    }
+
     /// Connects a client to `peer` and checks that it keeps its first
     /// connection for four times the bound.
     private func expectLinkKept(by peer: LoopbackWebSocketPeer) async throws {
@@ -175,7 +275,8 @@ struct CoordinatorDeadLinkTests {
 
     private func makeDeadLinkClient(
         port: UInt16, reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy(),
-        executionRole: ProviderExecutionRole = .solo
+        executionRole: ProviderExecutionRole = .solo,
+        inboundBacklog: CoordinatorInboundBacklog = CoordinatorInboundBacklog()
     ) -> CoordinatorClient {
         CoordinatorClient(
             config: CoordinatorClientConfig(
@@ -195,7 +296,8 @@ struct CoordinatorDeadLinkTests {
             state: ProviderState(),
             liveAPNsToken: { nil },
             reconnectPolicy: reconnectPolicy,
-            linkLiveness: Self.liveness)
+            linkLiveness: Self.liveness,
+            inboundBacklog: inboundBacklog)
     }
 
     /// Returns the accept times once `peer` accepted `count` connections.

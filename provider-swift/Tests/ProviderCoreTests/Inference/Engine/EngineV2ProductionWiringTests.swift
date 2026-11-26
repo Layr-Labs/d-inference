@@ -2606,10 +2606,11 @@ struct PrefillDeadlineProductionConfigTests {
 
 // MARK: - Inkling 2 thinking off: answering at once
 
-/// With `Inkling2AnswerPrefill` switched on, a thinking-off Inkling 2 request
-/// that declares no tools submits its prompt with the open answer message
-/// appended and streams the reply as content from its first byte; switched
-/// off, with tools or with thinking on it submits exactly as before.
+/// With the coordinator's hint (or this Mac's override on), a thinking-off
+/// Inkling 2 request with no tools in its prompt submits its prompt with the
+/// open answer message appended and streams the reply as content from its
+/// first byte; without the hint, with the override off, with tools or with
+/// thinking on it submits exactly as before.
 @Suite("EngineV2 production wiring: Inkling 2 answering at once")
 struct EngineV2InklingAnswerPrefillWiringTests {
     static let model = Inkling2ModelIdentity.upstreamModelID
@@ -2629,9 +2630,11 @@ struct EngineV2InklingAnswerPrefillWiringTests {
         return try ProviderLoop.decodeOpenAIRequest(body, modelType: Inkling2ModelIdentity.modelType)
     }
 
-    /// Submits `request` once and returns the submitted prompt and the content
-    /// the client received.
-    private static func run(_ request: OpenAIChatCompletionRequest, switchedOn: Bool, reply: String)
+    /// Submits `request` once, with the coordinator's hint (`hint`) under this
+    /// Mac's override (`local`), and returns the submitted prompt and the
+    /// content the client received.
+    private static func run(_ request: OpenAIChatCompletionRequest, hint: Bool,
+                            local: Inkling2AnswerPrefill.Override = .followsHint, reply: String)
         async throws -> (prompt: [Int], content: String)
     {
         let engine = WiringScriptedEngine(script: .stream([
@@ -2643,8 +2646,10 @@ struct EngineV2InklingAnswerPrefillWiringTests {
             registryProvider: { @Sendable in
                 [Self.model: .init(tokenizer: Self.tokenizer(), modelType: Inkling2ModelIdentity.modelType,
                                    engineV2Bridge: bridge)]
-            })
-        let events = try await Inkling2AnswerPrefill.$switchedOn.withValue(switchedOn) {
+            },
+            templateControls: ChatTemplateControls().servingCoordinatorRequest(
+                planned: false, gemmaPromptContract: nil, answerPrefill: hint))
+        let events = try await Inkling2AnswerPrefill.$localOverride.withValue(local) {
             try await recordServerStream(try await providerEngine.streamChatCompletion(request: request))
         }
         var content = ""
@@ -2658,19 +2663,27 @@ struct EngineV2InklingAnswerPrefillWiringTests {
         return (engine.submitted.last?.promptTokens ?? [], content)
     }
 
-    @Test("thinking off, no tools: the prompt ends with the open answer message; the reply is content")
+    @Test("thinking off, no tools, hinted: the prompt ends with the open answer message; the reply is content")
     func thinkingOffWithoutToolsAnswersAtOnce() async throws {
         let thinkingOff = try Self.request(#","reasoning":{"enabled":false}"#)
         let reply = "Paris.<|end_message|><|content_model_end_sampling|>"
-        // Switched off: the prompt as before, with the reply read from the boundary.
-        let before = try await Self.run(thinkingOff, switchedOn: false,
-            reply: "<|message_model|><|content_text|>" + reply)
+        let asBefore = "<|message_model|><|content_text|>" + reply
+        // No hint: the prompt as before, with the reply read from the boundary.
+        let before = try await Self.run(thinkingOff, hint: false, reply: asBefore)
         #expect(!before.prompt.isEmpty)
         #expect(Array(before.prompt.suffix(2)) != Self.openAnswer)
         #expect(before.content == "Paris.")
-        let prefilled = try await Self.run(thinkingOff, switchedOn: true, reply: reply)
+        // The coordinator's hint, followed by default.
+        let prefilled = try await Self.run(thinkingOff, hint: true, reply: reply)
         #expect(prefilled.prompt == before.prompt + Self.openAnswer)
         #expect(prefilled.content == "Paris.")
+        // This Mac's override wins either way.
+        let refused = try await Self.run(thinkingOff, hint: true, local: .off, reply: asBefore)
+        #expect(refused.prompt == before.prompt)
+        #expect(refused.content == "Paris.")
+        let forced = try await Self.run(thinkingOff, hint: false, local: .on, reply: reply)
+        #expect(forced.prompt == before.prompt + Self.openAnswer)
+        #expect(forced.content == "Paris.")
     }
 
     @Test("tools, or thinking on: the prompt is unchanged")
@@ -2678,8 +2691,8 @@ struct EngineV2InklingAnswerPrefillWiringTests {
         let reply = "<|message_model|><|content_text|>Paris.<|end_message|><|content_model_end_sampling|>"
         for extra in [#","reasoning":{"enabled":false},"tools":"# + Self.tools, #","reasoning":{"enabled":true}"#] {
             let request = try Self.request(extra)
-            let off = try await Self.run(request, switchedOn: false, reply: reply)
-            let on = try await Self.run(request, switchedOn: true, reply: reply)
+            let off = try await Self.run(request, hint: false, reply: reply)
+            let on = try await Self.run(request, hint: true, local: .on, reply: reply)
             #expect(on.prompt == off.prompt, "\(extra)")
             #expect(Array(on.prompt.suffix(2)) != Self.openAnswer, "\(extra)")
             #expect(on.content == "Paris.", "\(extra)")

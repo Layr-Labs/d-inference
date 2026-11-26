@@ -25,6 +25,9 @@ profile's optional tool-call counts, `tool_calls` and
 `tool_calls_breaking_declaration` ([profile counts](protocol-messages.md)):
 counts only, absent when a response returned no call, and ignored by a
 coordinator that does not read them.
+So does the profile's optional `answer_prefill_applied`: `true` when the
+request answered at once (its prompt ended with an open answer message,
+[`answer_prefill`](protocol-messages.md#inference_request)), absent otherwise.
 
 Durable cache statistics use optional typed heartbeat objects, not event
 `fields`: [`slots[].prefix_cache`](protocol-messages.md#slotsprefix_cache) and

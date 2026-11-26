@@ -157,7 +157,7 @@ struct CoordinatorIntegrationTests {
                 switch event {
                 case .inferenceRequest(
                     let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _, _,
-                    let firstContentDeadline, _, _, let reservationID, _, let gemmaPromptContract, _
+                    let firstContentDeadline, _, _, let reservationID, _, let gemmaPromptContract, _, _
                 ):
                     #expect(rid == requestId)
                     // The frame's Gemma prompt contract reaches the loop's event.

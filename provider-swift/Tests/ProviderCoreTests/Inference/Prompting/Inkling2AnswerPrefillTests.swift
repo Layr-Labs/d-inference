@@ -9,10 +9,11 @@ import Testing
 @testable import ProviderCore
 @testable import ProviderCoreFoundation
 
-/// Inkling 2 with thinking off, answering at once: with
-/// `DARKBLOOM_INKLING_THINKING_OFF_ANSWER_PREFILL` on, a thinking-off request
-/// that declares no tools has its prompt end with an open answer message and
-/// its output read from inside that message; everything else is unchanged.
+/// Inkling 2 with thinking off, answering at once: asked for by the
+/// coordinator's `answer_prefill` hint (or this Mac's override), a thinking-off
+/// request with no tools in its prompt has its prompt end with an open answer
+/// message and its output read from inside that message; everything else is
+/// unchanged.
 @Suite("Inkling 2 thinking off answering at once")
 struct Inkling2AnswerPrefillTests {
     static let type = Inkling2ModelIdentity.modelType
@@ -31,11 +32,15 @@ struct Inkling2AnswerPrefillTests {
                 try ToolChoicePromptPolicy.prepare(decoded, modelType: type))
     }
 
+    /// Whether a request answers at once, asked for by the coordinator's hint
+    /// (`hint`) under this Mac's override (`local`).
     static func applies(_ json: String, content: String = #""hi""#, modelType: String? = type,
-                        logprobs: Bool = false, switchedOn: Bool = true) throws -> Bool {
+                        logprobs: Bool = false, hint: Bool = true,
+                        local: Inkling2AnswerPrefill.Override = .followsHint) throws -> Bool {
         let (decoded, controls, prepared) = try request(json, content: content)
-        return Inkling2AnswerPrefill.applies(decoded, controls: controls, modelType: modelType, prepared: prepared,
-                                             logprobs: logprobs, switchedOn: switchedOn)
+        return Inkling2AnswerPrefill.applies(decoded, controls: controls.askingAnswerPrefill(hint),
+                                             modelType: modelType, prepared: prepared, logprobs: logprobs,
+                                             localOverride: local)
     }
 
     // MARK: - The switch
@@ -48,21 +53,69 @@ struct Inkling2AnswerPrefillTests {
         #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
     }
 
-    @Test func theSwitchIsOffUnlessAnOnWordIsSet() {
-        #expect(!Inkling2AnswerPrefill.prefillsByDefault)
-        #expect(!Inkling2AnswerPrefill.enabled(environment: [:]))
-        for (raw, on) in [("1", true), (" ON ", true), ("yes", true), ("true", true),
-                          ("0", false), ("off", false), ("No", false), ("2", false), ("", false)] {
-            #expect(Inkling2AnswerPrefill.enabled(environment: [Inkling2AnswerPrefill.environmentKey: raw]) == on,
-                    "\(raw)")
+    /// Unset, or any other value, follows the coordinator's hint; an on word
+    /// or an off word overrides it.
+    @Test func theSwitchFollowsTheHintUnlessSet() {
+        #expect(Inkling2AnswerPrefill.override(environment: [:]) == .followsHint)
+        for (raw, expected) in [("1", .on), (" ON ", .on), ("yes", .on), ("true", .on),
+                                ("0", .off), ("off", .off), ("No", .off),
+                                ("2", .followsHint), ("", .followsHint)] as [(String, Inkling2AnswerPrefill.Override)] {
+            #expect(Inkling2AnswerPrefill.override(environment: [Inkling2AnswerPrefill.environmentKey: raw])
+                    == expected, "\(raw)")
         }
     }
 
-    /// The scheduler reads the switch once per process (`switchedOn`); a task
-    /// can set it around one request.
-    @Test func aTaskCanSetTheSwitch() {
-        Inkling2AnswerPrefill.$switchedOn.withValue(true) { #expect(Inkling2AnswerPrefill.switchedOn) }
-        Inkling2AnswerPrefill.$switchedOn.withValue(false) { #expect(!Inkling2AnswerPrefill.switchedOn) }
+    /// The scheduler reads the override once per process (`localOverride`); a
+    /// task can set it around one request.
+    @Test func aTaskCanSetTheOverride() {
+        Inkling2AnswerPrefill.$localOverride.withValue(.on) { #expect(Inkling2AnswerPrefill.localOverride == .on) }
+        Inkling2AnswerPrefill.$localOverride.withValue(.off) { #expect(Inkling2AnswerPrefill.localOverride == .off) }
+    }
+
+    // MARK: - The coordinator's hint
+
+    /// The hint reaches the controls only from the coordinator frame: a body
+    /// cannot set it, and the frame's absent or false hint asks nothing.
+    @Test func onlyTheFrameSetsTheHint() throws {
+        let (_, controls, _) = try Self.request(#","reasoning":{"enabled":false},"answer_prefill":true"#)
+        #expect(!controls.answerPrefillHint)
+        #expect(controls.servingCoordinatorRequest(planned: false, gemmaPromptContract: nil,
+                                                   answerPrefill: true).answerPrefillHint)
+        #expect(!controls.servingCoordinatorRequest(planned: false, gemmaPromptContract: nil).answerPrefillHint)
+    }
+
+    /// The frame carries `answer_prefill` only when true; a decoder reads only
+    /// a boolean true as asking, and a frame without it (an older
+    /// coordinator) asks nothing.
+    @Test func theFrameHintRoundTrips() throws {
+        let asked = CoordinatorMessage.inferenceRequest(.init(requestId: "r", answerPrefill: true))
+        let data = try ProviderProtocolCodec.encodeCoordinatorMessage(asked)
+        #expect(String(decoding: data, as: UTF8.self).contains(#""answer_prefill":true"#))
+        #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == asked)
+        let plain = try ProviderProtocolCodec.encodeCoordinatorMessage(.inferenceRequest(.init(requestId: "r")))
+        #expect(!String(decoding: plain, as: UTF8.self).contains("answer_prefill"))
+        for (frame, expected) in [
+            (#"{"type":"inference_request","request_id":"r","body":null}"#, false),
+            (#"{"type":"inference_request","request_id":"r","body":null,"answer_prefill":true}"#, true),
+            (#"{"type":"inference_request","request_id":"r","body":null,"answer_prefill":false}"#, false),
+            (#"{"type":"inference_request","request_id":"r","body":null,"answer_prefill":"yes"}"#, false),
+        ] {
+            guard case .inferenceRequest(let request) = try ProviderProtocolCodec.decodeCoordinatorMessage(from: frame)
+            else {
+                Issue.record("not an inference request: \(frame)")
+                continue
+            }
+            #expect(request.answerPrefill == expected, "\(frame)")
+        }
+    }
+
+    /// Unset, the hint decides; the override wins either way.
+    @Test func theOverrideDecidesOverTheHint() throws {
+        let off = #","reasoning":{"enabled":false}"#
+        #expect(try Self.applies(off, hint: true))
+        #expect(try !Self.applies(off, hint: false))
+        #expect(try Self.applies(off, hint: false, local: .on))
+        #expect(try !Self.applies(off, hint: true, local: .off))
     }
 
     // MARK: - Which requests
@@ -77,7 +130,8 @@ struct Inkling2AnswerPrefillTests {
             (#","reasoning":{"enabled":true},"reasoning_effort":"none""#, false),
         ] {
             #expect(try Self.applies(json) == off, "\(json)")
-            #expect(try !Self.applies(json, switchedOn: false), "\(json)")
+            #expect(try !Self.applies(json, hint: false), "\(json)")
+            #expect(try Self.applies(json, hint: false, local: .on) == off, "\(json)")
             #expect(try !Self.applies(json, modelType: "gemma4"), "\(json)")
         }
     }

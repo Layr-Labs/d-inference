@@ -47,6 +47,10 @@ public struct ChatTemplateControls: Sendable, Equatable {
     /// (`askingGemmaPromptContract`): 2 renders the template's text parts
     /// (`GemmaPromptContract`); nil renders version 1, as before.
     private(set) var gemmaPromptContract: Int?
+    /// The coordinator asked this request to answer at once
+    /// (`InferenceRequest.answerPrefill`, `Inkling2AnswerPrefill`). Only the
+    /// authenticated coordinator frame sets it, never a body.
+    private(set) var answerPrefillHint = false
 
     public init(
         reasoningEffort: String? = nil,
@@ -136,12 +140,22 @@ public struct ChatTemplateControls: Sendable, Equatable {
     /// its plan was made for, in the Gemma 4 prompt contract the frame asks
     /// for, with the request's date.
     func servingCoordinatorRequest(
-        planned: Bool, gemmaPromptContract: Int?,
+        planned: Bool, gemmaPromptContract: Int?, answerPrefill: Bool = false,
         enabled: Bool = GemmaPromptContract.enabled, at now: Date = Date()
     ) -> Self {
         servingCoordinatorRequest(planned: planned)
             .askingGemmaPromptContract(gemmaPromptContract, enabled: enabled)
+            .askingAnswerPrefill(answerPrefill)
             .resolvingPromptDate(at: now)
+    }
+
+    /// The controls with the coordinator's answer-at-once hint
+    /// (`InferenceRequest.answerPrefill`).
+    func askingAnswerPrefill(_ hint: Bool) -> Self {
+        guard hint else { return self }
+        var copy = self
+        copy.answerPrefillHint = true
+        return copy
     }
 
     /// The controls with the Gemma 4 prompt contract a coordinator request

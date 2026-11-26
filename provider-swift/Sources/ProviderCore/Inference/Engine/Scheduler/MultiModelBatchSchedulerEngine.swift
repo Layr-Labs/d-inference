@@ -1128,9 +1128,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         var prepLine = Self.promptPrepMetadata(promptTokens: promptTokens.count, timing: prepTiming)
         if let profile {
             let promptTokenCount = Int64(promptTokens.count)
+            let answeredAtOnce = answerPrefill != nil
             profile.update { f, now in
                 f.mark(.promptPrepEnd, offsetUs: now)
                 f.set(.promptTokens, promptTokenCount)
+                if answeredAtOnce { f.set(.answerPrefillApplied, true) }
                 prepLine.merge(Self.promptPrepStamps(f)) { first, _ in first }
             }
         }

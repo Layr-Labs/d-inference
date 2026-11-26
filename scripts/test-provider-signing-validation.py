@@ -775,7 +775,7 @@ sys.stdout.write(signed[path])
                         with self.assertRaisesRegex(ValueError, f"Contents/{name} is signed without the hardened runtime"):
                             self.check_bundle_with_stub(app, clean, {name: kind})
 
-    def test_bundle_entitlements_refuse_a_universal_executable(self):
+    def test_bundle_entitlements_refuse_anything_but_thin_arm64(self):
         network = plistlib.dumps({"com.apple.security.network.client": True}).decode()
         executables = ["MacOS/darkbloom", "MacOS/darkbloom-enclave", "Helpers/darkbloom-fan-helper",
                        "Helpers/darkbloom-cluster-worker", "Helpers/darkbloom-cluster-plan"]
@@ -783,13 +783,15 @@ sys.stdout.write(signed[path])
             app = self.write_signed_app(Path(temporary))
             clean = {name: network for name in executables} | {"Helpers/darkbloom-fan-helper": ""}
             for name in executables:
-                for magic in ("cafebabe", "bebafeca"):
-                    with self.subTest(executable=name, magic=magic):
+                # Universal (either byte order) and a thin x86_64 file.
+                for header in ("cafebabe", "bebafeca", "cffaedfe07000001"):
+                    with self.subTest(executable=name, header=header):
                         path = app / "Contents" / name
                         original = path.read_bytes()
-                        path.write_bytes(bytes.fromhex(magic) + original[4:])
+                        prefix = bytes.fromhex(header)
+                        path.write_bytes(prefix + original[len(prefix):])
                         try:
-                            with self.assertRaisesRegex(ValueError, f"Contents/{name} is a universal Mach-O file"):
+                            with self.assertRaisesRegex(ValueError, f"Contents/{name} is not a thin arm64 Mach-O file"):
                                 self.check_bundle_with_stub(app, clean)
                         finally:
                             path.write_bytes(original)

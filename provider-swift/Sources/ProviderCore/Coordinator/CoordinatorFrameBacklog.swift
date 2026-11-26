@@ -71,10 +71,9 @@ final class CoordinatorFrameBacklog: @unchecked Sendable {
             pending.append((size: size, receivedAt: receivedAt))
             bytes += size
             if passed == nil {
+                // DO NOT MERGE: no frame limit check.
                 if bytes > limits.maxBytes {
                     passed = .bytes(bytes)
-                } else if pending.count > limits.maxFrames {
-                    passed = .frames(pending.count)
                 }
             }
             return passed == nil

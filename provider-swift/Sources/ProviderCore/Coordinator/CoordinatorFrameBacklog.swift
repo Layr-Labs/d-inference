@@ -93,9 +93,8 @@ final class CoordinatorFrameBacklog: @unchecked Sendable {
     func excess(now: ContinuousClock.Instant) -> CoordinatorBacklogExcess? {
         lock.withLock {
             if let passed { return passed }
-            guard let oldest = pending.first else { return nil }
-            let age = now - oldest.receivedAt
-            return age > limits.maxAge ? .age(age) : nil
+            // DO NOT MERGE: no age limit check.
+            return nil
         }
     }
 }

@@ -9,10 +9,17 @@ import Foundation
 /// A node that is hard-reset or a path that is dropped ends the WebSocket with
 /// no TCP reset and no close frame; only silence shows it. The coordinator edge
 /// answers WebSocket pings from its read loop, so a pong normally comes back in
-/// milliseconds. An edge stall or heavy backpressure delays that pong. For this
-/// reason every inbound frame counts as liveness (a pong, a ping from the
-/// coordinator, any message), and the bound covers about three ping intervals.
-/// A busy stream never trips it, and one late pong does not.
+/// milliseconds. An edge stall or heavy backpressure delays that pong: the edge
+/// writes a large request body in fragments under the connection's write lock,
+/// a pong waits for the fragment being written, and the edge itself gives a
+/// body up to `size / 2 MiB/s` (at least 5 s, at most 30 s) before it drops the
+/// connection. For this reason every inbound frame counts as liveness
+/// (a pong, a ping from the coordinator, any message), and the bound, 20 s,
+/// is longer than the edge's own write budget for the largest request body
+/// (about 10.5 s for 21 MiB). A busy stream never trips it, and nor do late
+/// pongs behind a large body. A hard-reset node is still found in 20 to 22 s
+/// (6 to 8 s with the former 6 s bound; 30 to 40 s with the 10 s pings and 30 s
+/// pong timeout before it).
 ///
 /// - `pingInterval`: the wait between two pings.
 /// - `deadAfter`: no inbound frame for longer than this declares the link dead.
@@ -37,7 +44,7 @@ public struct CoordinatorLinkLiveness: Sendable, Equatable {
     /// Production uses the defaults; tests shorten them.
     public init(
         pingInterval: Duration = .seconds(2),
-        deadAfter: Duration = .seconds(6),
+        deadAfter: Duration = .seconds(20),
         suspensionGap: Duration = .seconds(30),
         firstFrameGrace: Duration = .seconds(30)
     ) {
@@ -100,4 +107,19 @@ struct CoordinatorLinkWatch {
     func silenceBound(lastInbound: ContinuousClock.Instant) -> Duration {
         lastInbound > start ? liveness.deadAfter : liveness.firstFrameGrace
     }
+}
+
+/// Private WebSocket close codes (RFC 6455: 4000-4999) the provider sends just
+/// before it drops a link it judged dead, slept through or could no longer
+/// keep up with, so the coordinator records why the session ended
+/// (`ws_close_4001`, `ws_close_4002`, `ws_close_4003`) instead of a frame-less
+/// read error. On a link that is really dead the frame is lost and
+/// nothing changes.
+enum CoordinatorLinkCloseCode: UInt16, Sendable {
+    /// No inbound frame for longer than the bound (`CoordinatorLinkVerdict.dead`).
+    case silentLink = 4001
+    /// A ping tick `suspensionGap` or more late (`CoordinatorLinkVerdict.suspended`).
+    case suspended = 4002
+    /// Frames read and not yet handled past a limit (`CoordinatorInboundBacklog`).
+    case inboundBacklog = 4003
 }

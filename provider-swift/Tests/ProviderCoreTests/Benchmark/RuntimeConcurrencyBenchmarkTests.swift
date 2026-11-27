@@ -17,6 +17,29 @@ struct RuntimeConcurrencyBenchmarkTests {
         }
     }
 
+    @Test func rowSamplingFieldsAndLimits() {
+        let greedy = RuntimeConcurrencyBenchmark.RowSampling()
+        #expect(greedy.isValid)
+        #expect(greedy.bodyFields(row: 0)["temperature"] as? Double == 0)
+        #expect(greedy.bodyFields(row: 0)["seed"] as? Int == 1)
+        #expect(greedy.bodyFields(row: 0)["top_p"] == nil)
+        #expect(greedy.bodyFields(row: 0)["logit_bias"] == nil)
+        let sampled = RuntimeConcurrencyBenchmark.RowSampling(temperature: 0.7, topP: 0.95, biasRows: 2)
+        #expect(sampled.isValid)
+        #expect(sampled.bodyFields(row: 3)["temperature"] as? Double == 0.7)
+        #expect(sampled.bodyFields(row: 3)["seed"] as? Int == 4)
+        #expect(sampled.bodyFields(row: 3)["top_p"] as? Double == 0.95)
+        #expect(sampled.bodyFields(row: 1)["logit_bias"] as? [String: Int] == ["0": 0])
+        #expect(sampled.bodyFields(row: 2)["logit_bias"] == nil)
+        for bad in [
+            RuntimeConcurrencyBenchmark.RowSampling(temperature: -1),
+            .init(temperature: .nan), .init(temperature: 3), .init(topP: 0), .init(topP: 1.5),
+            .init(biasRows: -1), .init(biasRows: 65),
+        ] {
+            #expect(!bad.isValid, "\(bad)")
+        }
+    }
+
     @Test func staggeredQuotasAreDistinctOrRefused() {
         func quotas(_ maxTokens: Int, _ batchSize: Int, staggered: Bool = true) -> [Int]? {
             RuntimeConcurrencyBenchmark.rowMaxTokens(

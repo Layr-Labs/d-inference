@@ -132,6 +132,15 @@ struct Benchmark: AsyncParsableCommand {
     @Flag(name: .long, help: "Runtime concurrency: row i of a B-row batch stops after max-tokens*(B-i)/B tokens (max-tokens must be at least 3*B), so the decode cohort shrinks to one row.")
     var runtimeStagger = false
 
+    @Option(name: .long, help: "Runtime concurrency: sampling temperature for every row (default 0, greedy). Rows above 0 are seeded per row, so paired runs draw the same tokens.")
+    var runtimeTemperature: Double = 0
+
+    @Option(name: .long, help: "Runtime concurrency: top_p for sampled rows (default 1, off).")
+    var runtimeTopP: Double = 1
+
+    @Option(name: .long, help: "Runtime concurrency: the first N rows of each batch carry a zero logit_bias on token 0. It changes no token but, without the logit-bias row opt-in, keeps the row from drafting.")
+    var runtimeBiasRows = 0
+
     @Option(name: .long, help: "Runtime generation: fixed UTC template date YYYY-MM-DD for paired runs.")
     var runtimePromptDate = PromptRenderDate.capture().value
 
@@ -348,7 +357,9 @@ struct Benchmark: AsyncParsableCommand {
                     mtpEnabled: runtimeMtp,
                     assistantDirectory: runtimeAssistantDirectory.map { URL(fileURLWithPath: $0) },
                     renderDate: runtimePromptDate,
-                    checkpointQuantizationConfig: checkpointPrecision.rawValue)
+                    checkpointQuantizationConfig: checkpointPrecision.rawValue,
+                    sampling: .init(
+                        temperature: runtimeTemperature, topP: runtimeTopP, biasRows: runtimeBiasRows))
                 print(result.json)
                 if !result.succeeded { throw ExitCode(2) }
                 return

@@ -65,6 +65,8 @@ extension RuntimeConcurrencyBenchmark {
         let warmupMaxTokens: Int
         let cells: [Cell]
         let refusedCells: [RefusedCell]
+        /// Per-row sampling; the default is the historical greedy row.
+        var sampling = RowSampling()
     }
 
     struct Measured: Sendable {

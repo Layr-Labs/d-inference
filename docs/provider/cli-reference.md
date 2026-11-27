@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-26
+> Last updated: 2026-11-27
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -3591,6 +3591,9 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--runtime-assistant-directory <path>` | Offline local Gemma assistant for `--runtime-generation --runtime-mtp`; normal artifact and target checks apply, with assistant hashes in the report |
 | `--runtime-concurrency <sizes>` | Comma-separated batch sizes from 1 to 64 (for example `1,2,4,8`) for `--runtime-generation`; an empty, non-numeric or out-of-range entry refuses the whole list (`RuntimeConcurrencyBenchmark.batchSizes`). One production slot per size, warmed by one identical batch, then distinct greedy rows; a slot whose model policy lowers its width below the size is listed in `refusedCells` instead of measured. JSON carries the verified model hash, prompt hash, render date and per-row prompt-token hashes; per cell, the resolved backend, KV precisions, MTP state and assistant identity; per-row tokens, arrival times of the first, third and first eight tokens, decode rates, chained steps (measured batch) and MTP metrics (warmup included). Exit status 2 when a cell is refused or a row does not end with `length` at its quota or a configured stop token within it (`provider-swift/Sources/ProviderBenchmark/RuntimeConcurrencyBenchmarkReport.swift`, `RuntimeConcurrencyBenchmark.rowFailure`) |
 | `--runtime-stagger` | With `--runtime-concurrency`: row i of a B-row batch stops after `max-tokens*(B-i)/B` tokens, so the decode cohort shrinks to one row (speculation resuming as concurrency drops). `--max-tokens` must be at least 3×B for every size, keeping the quotas distinct and at least 3 (`RuntimeConcurrencyBenchmark.rowMaxTokens`); a row that stops before its quota fails the cell |
+| `--runtime-temperature <t>` | With `--runtime-concurrency`: the sampling temperature of every row, from 0 to 2 (default 0, greedy). Rows above 0 are seeded per row, so paired runs draw the same tokens |
+| `--runtime-top-p <p>` | With `--runtime-concurrency`: `top_p` for every row, above 0 and at most 1 (default 1, off) |
+| `--runtime-bias-rows <n>` | With `--runtime-concurrency`: the first `n` rows of each batch carry a zero `logit_bias` on token 0, which changes no token. Without the logit-bias row opt-in (`DARKBLOOM_MTP_LOGIT_BIAS_ROWS`) such a row stays target-only. From 0 to 64 (default 0) |
 | `--kv-quantization <precision>` | Live `balanced`, `k8v4`, `k8v8` or `native`; overrides config/environment, otherwise the provider default is native |
 | `--kv-checkpoint-quantization <precision>` | Independent complete-checkpoint request with the same values; overrides config/environment, otherwise defaults to balanced (native for Nemotron 3.5 Lightning); does not enable a cache or change the live backend |
 

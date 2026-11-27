@@ -194,16 +194,19 @@ extension RuntimeGenerationBenchmark {
             isVLM: loaded.isVLM, tokenizer: tokenizer)
     }
 
-    /// One greedy, seeded user turn through the production prompt pipeline.
+    /// One seeded user turn through the production prompt pipeline: greedy,
+    /// unless `sampling` replaces those body fields (temperature, seed, top_p,
+    /// logit_bias).
     static func preparedPrompt(
         _ content: String, modelID: String, maxTokens: Int, target: VerifiedTarget,
-        date: PromptRenderDate
+        date: PromptRenderDate, sampling: [String: Any] = [:]
     ) throws -> EngineV2Factory.BenchmarkPrompt {
-        let body = try JSONSerialization.data(
-            withJSONObject: [
-                "model": modelID, "messages": [["role": "user", "content": content]],
-                "temperature": 0, "seed": 1, "max_tokens": maxTokens,
-            ] as [String: Any])
+        var fields: [String: Any] = [
+            "model": modelID, "messages": [["role": "user", "content": content]],
+            "temperature": 0, "seed": 1, "max_tokens": maxTokens,
+        ]
+        fields.merge(sampling) { _, row in row }
+        let body = try JSONSerialization.data(withJSONObject: fields)
         return try EngineV2Factory.benchmarkPrompt(
             body: body, tokenizer: target.tokenizer.inner, modelType: target.modelType,
             defaultDate: date)

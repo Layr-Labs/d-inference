@@ -85,6 +85,13 @@ public enum SDKFeatureDefaults {
     /// `DARKBLOOM_MTP_LOGPROB_ROWS=0` still wins. Exact served ids.
     static let logprobRowBuilds: Set<String> = Inkling2ModelIdentity.servedModelIDs
 
+    /// SDK logit-bias MTP rows: rows with a `logit_bias` speculate on Inkling 2
+    /// Mini. Every verify position adds the row's bias before its other
+    /// transforms, as ordinary decode does, so committed tokens equal
+    /// drafter-off's; such rows accept exactly. The SDK's process kill switch
+    /// `DARKBLOOM_MTP_LOGIT_BIAS_ROWS=0` still wins. Exact served ids.
+    static let logitBiasRowBuilds: Set<String> = Inkling2ModelIdentity.servedModelIDs
+
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper, .mimoV26]
 
@@ -157,7 +164,8 @@ public enum SDKFeatureDefaults {
         penaltyBuilds: Set<String> = penaltyRowBuilds,
         repetitionPenaltyBuilds: Set<String> = repetitionPenaltyRowBuilds,
         stopStringBuilds: Set<String> = stopStringRowBuilds,
-        logprobBuilds: Set<String> = logprobRowBuilds
+        logprobBuilds: Set<String> = logprobRowBuilds,
+        logitBiasBuilds: Set<String> = logitBiasRowBuilds
     ) -> [String] {
         func unset(_ key: String) -> Bool {
             followsDefault(key, in: environment, injected: [])
@@ -199,6 +207,11 @@ public enum SDKFeatureDefaults {
         if logprobBuilds.contains(modelId) {
             config.logprobSpeculation = true
             if CBv2MTPConfig.envLogprobSpeculation { on.append(MTPLogprobRows.environmentKey) }
+        }
+        // Same kill-switch-only shape (`CBv2MTPConfig.effectiveLogitBiasSpeculation`).
+        if logitBiasBuilds.contains(modelId) {
+            config.logitBiasSpeculation = true
+            if CBv2MTPConfig.envLogitBiasSpeculation { on.append(MTPLogitBiasRows.environmentKey) }
         }
         return on
     }
@@ -279,7 +292,8 @@ public enum SDKFeatureDefaults {
                 repetitionPenaltyBuilds: CBv2MTPConfig.envRepetitionPenaltySpeculation
                     ? repetitionPenaltyRowBuilds : [],
                 stopStringBuilds: CBv2MTPConfig.envStopStringSpeculation ? stopStringRowBuilds : [],
-                logprobBuilds: CBv2MTPConfig.envLogprobSpeculation ? logprobRowBuilds : [])
+                logprobBuilds: CBv2MTPConfig.envLogprobSpeculation ? logprobRowBuilds : [],
+                logitBiasBuilds: CBv2MTPConfig.envLogitBiasSpeculation ? logitBiasRowBuilds : [])
     }
 
     static func summary(environment: [String: String], injected: Set<String>,
@@ -288,7 +302,8 @@ public enum SDKFeatureDefaults {
                         penaltyBuilds: Set<String> = [],
                         repetitionPenaltyBuilds: Set<String> = [],
                         stopStringBuilds: Set<String> = [],
-                        logprobBuilds: Set<String> = []) -> String? {
+                        logprobBuilds: Set<String> = [],
+                        logitBiasBuilds: Set<String> = []) -> String? {
         var on = injected.sorted().map { key in
             key == NativeReasoningBudget.environmentKey
                 ? "\(key) (\(reasoningBudgetFamilies.map { "\($0)" }.sorted().joined(separator: ", ")))" : key
@@ -312,6 +327,9 @@ public enum SDKFeatureDefaults {
         }
         if !logprobBuilds.isEmpty {
             on.append("\(MTPLogprobRows.environmentKey) (\(logprobBuilds.sorted().joined(separator: ", ")))")
+        }
+        if !logitBiasBuilds.isEmpty {
+            on.append("\(MTPLogitBiasRows.environmentKey) (\(logitBiasBuilds.sorted().joined(separator: ", ")))")
         }
         return on.isEmpty ? nil : "SDK feature defaults on: \(on.joined(separator: "; "))"
     }

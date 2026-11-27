@@ -122,3 +122,13 @@ public enum MTPStopStringRows {
 public enum MTPLogprobRows {
     public static let environmentKey = "DARKBLOOM_MTP_LOGPROB_ROWS"
 }
+
+/// On the builds in `SDKFeatureDefaults.logitBiasRowBuilds` (Inkling 2 Mini),
+/// rows with a `logit_bias` speculate; every verify position adds the row's
+/// bias before its other transforms, as ordinary decode does, always with
+/// exact acceptance. The SDK reads the switch once per process
+/// (`CBv2MTPConfig.envLogitBiasSpeculation`); the LaunchAgent forwards it.
+/// `0`, `false`, `no` or `off` keeps such rows target-only.
+public enum MTPLogitBiasRows {
+    public static let environmentKey = "DARKBLOOM_MTP_LOGIT_BIAS_ROWS"
+}

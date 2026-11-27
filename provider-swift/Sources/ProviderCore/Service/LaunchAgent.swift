@@ -659,6 +659,13 @@ public enum LaunchAgent: Sendable {
         // that request logprobs speculate on the builds that opt in; `0`, `false`,
         // `no` or `off` keeps them target-only.
         MTPLogprobRows.environmentKey,
+        // SDK-read (`CBv2MTPConfig.envLogitBiasSpeculation`, once per process): rows
+        // with a `logit_bias` speculate on the builds that opt in; `0`, `false`,
+        // `no` or `off` keeps them target-only.
+        MTPLogitBiasRows.environmentKey,
+        // SDK-read (`CBv2MTPConfig.envBatchDepth` in `CBv2MTPRoundDriver`): `0`
+        // restores the minimum of the rows' own MTP depths for a batch.
+        "DARKBLOOM_CBV2_MTP_BATCH_DEPTH",
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",

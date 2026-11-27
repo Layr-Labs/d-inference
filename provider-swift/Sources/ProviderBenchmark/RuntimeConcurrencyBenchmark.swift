@@ -35,17 +35,46 @@ public enum RuntimeConcurrencyBenchmark {
         return (0 ..< batchSize).map { maxTokens * (batchSize - $0) / batchSize }
     }
 
+    /// Per-row sampling of a run. The default is the historical greedy row.
+    /// Sampled rows are seeded by row, so paired runs draw the same tokens.
+    /// The first `biasRows` rows carry a zero `logit_bias` on token 0: no token
+    /// changes, but such a row drafts only under the logit-bias row opt-in.
+    public struct RowSampling: Codable, Equatable, Sendable {
+        public var temperature: Double
+        public var topP: Double
+        public var biasRows: Int
+
+        public init(temperature: Double = 0, topP: Double = 1, biasRows: Int = 0) {
+            self.temperature = temperature
+            self.topP = topP
+            self.biasRows = biasRows
+        }
+
+        var isValid: Bool {
+            temperature.isFinite && temperature >= 0 && temperature <= 2 && topP.isFinite
+                && topP > 0 && topP <= 1 && biasRows >= 0 && biasRows <= batchSizeRange.upperBound
+        }
+
+        /// The OpenAI body fields of row `row`, beside the prompt's own.
+        func bodyFields(row: Int) -> [String: Any] {
+            var fields: [String: Any] = ["temperature": temperature, "seed": row + 1]
+            if topP < 1 { fields["top_p"] = topP }
+            if row < biasRows { fields["logit_bias"] = ["0": 0] }
+            return fields
+        }
+    }
+
     public static func run(
         modelID: String, modelDirectory: URL, prompt: String, batchSizes: [Int],
         maxTokens: Int, staggered: Bool = false, warmupMaxTokens: Int = 32, backend: String,
         mtpEnabled: Bool, assistantDirectory: URL? = nil, renderDate: String,
-        checkpointQuantizationConfig: String = "balanced"
+        checkpointQuantizationConfig: String = "balanced", sampling: RowSampling = RowSampling()
     ) async throws -> (json: String, succeeded: Bool) {
         guard maxTokens > 2, maxTokens <= 131_072, prompt.utf8.count <= 4 << 20,
             let widest = batchSizes.max(), batchSizes.allSatisfy(batchSizeRange.contains),
             let date = PromptRenderDate(renderDate),
             ["auto", "paged", "contiguous"].contains(backend),
-            assistantDirectory == nil || mtpEnabled
+            assistantDirectory == nil || mtpEnabled, sampling.isValid
         else { throw RuntimeGenerationBenchmark.Failure.invalidArguments }
         let cellQuotas = try batchSizes.map { batchSize in
             guard let quotas = rowMaxTokens(
@@ -58,11 +87,11 @@ public enum RuntimeConcurrencyBenchmark {
         // An unproven native retirement keeps the container's resources.
         var retirementUnproven = false
         do {
-            // Distinct public prompts per row; greedy, so each row is reproducible.
+            // Distinct public prompts per row; greedy or seeded, so each row is reproducible.
             let prompts = try (0 ..< widest).map { row in
                 try RuntimeGenerationBenchmark.preparedPrompt(
                     "Request \(row + 1). \(prompt)", modelID: modelID, maxTokens: maxTokens,
-                    target: target, date: date)
+                    target: target, date: date, sampling: sampling.bodyFields(row: row))
             }
             let environment = RuntimeGenerationBenchmark.prefixCacheDisabledEnvironment()
             var cells: [Cell] = []
@@ -113,7 +142,7 @@ public enum RuntimeConcurrencyBenchmark {
                 promptSHA256: RuntimeGenerationBenchmark.sha256Hex(Data(prompt.utf8)),
                 renderDate: prompts[0].renderDate, mtpRequested: mtpEnabled,
                 maxTokens: maxTokens, staggered: staggered, warmupMaxTokens: warmupMaxTokens,
-                cells: cells, refusedCells: refusedCells)
+                cells: cells, refusedCells: refusedCells, sampling: sampling)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let json = String(decoding: try encoder.encode(report), as: UTF8.self)

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-26
+> Last updated: 2026-11-27
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3567,8 +3567,19 @@ them target-only. Rows that request logprobs speculate on the builds in
 which the SDK honours only on a `.rectangularExact` target under exact acceptance: each
 committed token's logprob and top logprobs are gathered from the verify window's raw
 logits, which on that target equal a one-token decode step's, so they are drafter-off's
-bit for bit; `DARKBLOOM_MTP_LOGPROB_ROWS=0` keeps them target-only. Bias, token
-constraints and logprobs on other builds retain their ordinary-decode exclusions.
+bit for bit; `DARKBLOOM_MTP_LOGPROB_ROWS=0` keeps them target-only. Rows with a
+`logit_bias` speculate on the builds in `SDKFeatureDefaults.logitBiasRowBuilds` (Inkling 2
+Mini; `CBv2MTPConfig.logitBiasSpeculation`): every verify position adds the row's bias
+before its other transforms, as ordinary decode's first stage does, and such rows accept
+exactly (`CBv2DefaultSampler.verifyWindow`); `DARKBLOOM_MTP_LOGIT_BIAS_ROWS=0` keeps them
+target-only. Bias on other builds, token constraints and logprobs on other builds retain
+their ordinary-decode exclusions. When several rows draft in one round on a drafter that
+commits each row's own accepted prefix, the round's depth is the one with the most
+committed tokens per round cost over all its rows, not the smallest of the rows' own
+choices, and each target-only step moves a row's acceptance estimate back toward the prior
+(`CBv2MTPMarginalDepthPolicy.selectBatchDepthByCost`, `relaxTowardPrior`). Drafters that
+commit a common width keep their old cadence (`CBv2MTPRoundDriver.batchDepthApplies`).
+`DARKBLOOM_CBV2_MTP_BATCH_DEPTH=0` restores the smallest-of-rows depth.
 Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,

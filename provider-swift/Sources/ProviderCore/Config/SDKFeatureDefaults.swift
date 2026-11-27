@@ -90,7 +90,7 @@ public enum SDKFeatureDefaults {
     /// transforms, as ordinary decode does, so committed tokens equal
     /// drafter-off's; such rows accept exactly. The SDK's process kill switch
     /// `DARKBLOOM_MTP_LOGIT_BIAS_ROWS=0` still wins. Exact served ids.
-    static let logitBiasRowBuilds: Set<String> = Inkling2ModelIdentity.servedModelIDs
+    static let logitBiasRowBuilds: Set<String> = []  // RED CONTROL (never merge)
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper, .mimoV26]

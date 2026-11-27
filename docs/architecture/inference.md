@@ -5365,7 +5365,8 @@ holds `<`, so no control token reaches the answer. Client stop strings apply eve
 request, since the model's usual stop scope covers only `<|content_text|>`.
 Requests that declare tools, and `required`, named or `none` tool choices,
 still validate every frame. `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0`
-restores the refusal (422, or 500 for a frame that does not parse).
+restores the refusal: 422 for a call that parses, and 422
+`tool_noncompliance` / `native_output` for a frame that does not.
 Source: `Inkling2OutputChannels` (`callsAreText`) and
 `Inkling2PromptContract.stopStringScope` in
 `provider-swift/Sources/ProviderCore/Inference/`.

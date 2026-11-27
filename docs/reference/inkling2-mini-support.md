@@ -1,6 +1,6 @@
 # Inkling 2 Mini provider contract reference
 
-> Last updated: 2026-11-25
+> Last updated: 2026-11-26
 
 Reference for the provider's side of Thinking Machines' Inkling 2 Mini (`inkling2_loop`): identity, prompt, output, cache and drafter contracts read from the pinned checkpoint `thinkingmachines/Inkling-2-Mini` at `6e7c8248f75265bdd4fbab5273304243b5d8c2cb`. The native model lives in the SDK (`Inkling2Model`, and the `Inkling2VLM` wrapper with its vision tower); nothing here publishes a model, approves a catalog entry or qualifies hardware.
 
@@ -57,7 +57,7 @@ Output after the prompt is a run of `[<|message_model|>NAME]<|content_KIND|>BODY
 |---|---|---|---|
 | `thinking` | reasoning | Ends only at `<|end_message|>`: a call drafted inside stays reasoning | `provider-swift/Sources/ProviderCore/Inference/Streaming/Inkling2OutputChannels.swift` |
 | `text`, `tool_error`, `invoke_tool_text` | content | Refused for a forced choice | `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift` (`routeInkling`) |
-| `invoke_tool_json` | one call | Exactly `{"name": NAME, "args": {...}}`; a header name must match; `<|end_message|>` inside a JSON string is data; body, header and nesting are bounded; a malformed frame is refused as native tool output | `Inkling2OutputChannels.parseCall`; `NativeToolStreamRouter.checkNativeToolFailure` |
+| `invoke_tool_json` | one call | Exactly `{"name": NAME, "args": {...}}`, or `{"name": NAME, "arguments": {...}}` (the OpenAI shape): `name` and one of the two, holding an object, and nothing else; a header name must match; `<|end_message|>` inside a JSON string is data; body, header and nesting are bounded; a malformed frame is refused as the model's native noncompliance (422 `tool_noncompliance`, `tool_check` `native_output`, with any tool choice), and a public log line names the failed check (`Inference failure: Inkling tool frame (…)`) | `Inkling2OutputChannels.parseCall`; `NativeToolStreamRouter.checkNativeToolFailure` |
 | `image`, `xml`, text outside messages | none | Dropped and counted, as the response template ignores them | `Inkling2OutputChannels` (`droppedBytes`) |
 
 Calls leave complete when their message closes to a client that streams, else at the end of generation (`provider-swift/Sources/ProviderCore/Inference/ToolStreamPreparation.swift`, `streamsInklingCalls`). No text tool parser reads the output (`makeHandler`).

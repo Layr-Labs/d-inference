@@ -99,6 +99,7 @@ public final class RequestProfileBuilder: @unchecked Sendable {
         case loadParked
         case mtpActive
         case lowPowerMode
+        case answerPrefillApplied
     }
 
     /// Mutable view handed to `update` so a multi-field site pays ONE lock.
@@ -464,6 +465,7 @@ public final class RequestProfileBuilder: @unchecked Sendable {
         p.loadParked = snapshot.flags[FlagField.loadParked.rawValue]
         p.mtpActive = snapshot.flags[FlagField.mtpActive.rawValue]
         p.lowPowerMode = snapshot.flags[FlagField.lowPowerMode.rawValue]
+        p.answerPrefillApplied = snapshot.flags[FlagField.answerPrefillApplied.rawValue]
 
         p.deadlineMode = snapshot.deadlineMode
         p.thermalState = snapshot.thermalState

@@ -95,6 +95,7 @@ struct NativeToolStreamRouter {
          harmonyAutoToolGrammar: Bool = GPTOSSAutoToolGrammar.enabled,
          nativeInklingChannels: Bool = false, inklingStreamsCalls: Bool = false,
          inklingUndeclaredCallsAreText: Bool = Inkling2OutputChannels.undeclaredCallsAreTextByDefault,
+         inklingStartsInAnswer: Bool = false,
          withheldReasoningHeartbeat: Bool = false) {
         self.handler = handler
         self.withholdReasoning = withholdReasoning
@@ -125,9 +126,12 @@ struct NativeToolStreamRouter {
             // `tool_declare`, so no call can be valid: a frame is answer text,
             // never a refusal (422 `undeclared_name`, or 500 unparsed).
             // Client stops follow (`Inkling2PromptContract.stopStringScope`).
+            // A prompt that ends with an open answer message
+            // (`Inkling2AnswerPrefill`) starts the output inside it.
             inklingParser = Inkling2OutputChannels(
                 callsAreText: inklingUndeclaredCallsAreText && autoToolChoice && tools?.isEmpty != false,
-                readsCallOpeningAnswer: tools?.isEmpty == false)
+                readsCallOpeningAnswer: tools?.isEmpty == false,
+                startsInAnswer: inklingStartsInAnswer)
         } else if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {

@@ -1576,6 +1576,7 @@ private func fullInferenceProfile() -> InferenceProfile {
     p.mlxActiveBytesAtFinish = maxBytes
     p.mlxPeakBytes = maxBytes
     p.lowPowerMode = true
+    p.answerPrefillApplied = true
     p.tokensAfterCancel = maxCount
     p.toolCalls = maxCount
     p.toolCallsBreakingDeclaration = maxCount
@@ -2011,8 +2012,8 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     assertNoStrings(try #require(profile.deadlineDecision), label: "DeadlineDecisionProfile")
     assertNoStrings(fullSlotTelemetry(), label: "SlotTelemetry")
     assertNoStrings(fullCapacityTelemetry(), label: "CapacityTelemetry")
-    // 2 anchors + 20 offsets + 7 durations + 25 counts/flags + 3 enums + engine + deadline decision.
-    #expect(Mirror(reflecting: profile).children.count == 59)
+    // 2 anchors + 20 offsets + 7 durations + 26 counts/flags + 3 enums + engine + deadline decision.
+    #expect(Mirror(reflecting: profile).children.count == 60)
     #expect(Mirror(reflecting: try #require(profile.engine)).children.count == 30)
 }
 

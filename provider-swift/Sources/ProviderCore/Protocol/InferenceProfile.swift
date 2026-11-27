@@ -241,6 +241,9 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
     public var mlxActiveBytesAtFinish: Int64?
     public var mlxPeakBytes: Int64?
     public var lowPowerMode: Bool?
+    /// The request answered at once (`Inkling2AnswerPrefill`): its prompt
+    /// ended with an open answer message. Absent otherwise.
+    public var answerPrefillApplied: Bool?
     public var tokensAfterCancel: Int64?
     /// Tool calls the response returned, and how many of them break the
     /// request's declaration (an undeclared function or arguments its schema
@@ -309,6 +312,7 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
         case mlxActiveBytesAtFinish = "mlx_active_bytes_at_finish"
         case mlxPeakBytes = "mlx_peak_bytes"
         case lowPowerMode = "low_power_mode"
+        case answerPrefillApplied = "answer_prefill_applied"
         case tokensAfterCancel = "tokens_after_cancel"
         case toolCalls = "tool_calls"
         case toolCallsBreakingDeclaration = "tool_calls_breaking_declaration"

@@ -201,6 +201,7 @@ extension ProviderLoop {
         promptWork: PromptWork? = nil,
         gemmaPromptContract: Int? = nil,
         frameCachePolicy: RequestCachePolicy = .default,
+        answerPrefill: Bool = false,
         send: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
     ) async {
@@ -452,9 +453,10 @@ extension ProviderLoop {
         // vision, and both prompt-token recount paths. A request planned for
         // the coordinator's prompt cache renders the prompt of its plan, in
         // the Gemma 4 prompt contract the coordinator planned and counted it with.
+        // The frame's answer-at-once hint reaches the controls only here.
         let templateControls = inbound.extensions.templateControls.servingCoordinatorRequest(
             planned: plannedCache.scope != nil || plannedCache.receiptNonce != nil,
-            gemmaPromptContract: gemmaPromptContract)
+            gemmaPromptContract: gemmaPromptContract, answerPrefill: answerPrefill)
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
         // honored by the EngineV2 path (see EngineV2Logprobs.swift).

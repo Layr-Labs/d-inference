@@ -11,10 +11,11 @@ enum Inkling2OutputPiece: Equatable, Sendable {
 }
 
 /// Why a `<|content_invoke_tool_json|>` frame is not a call.
-enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
+enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable, CaseIterable {
     /// The body is not one JSON object.
     case invalidJSON
-    /// The object is not exactly `{"name": string, "args": object}`.
+    /// The object is not exactly `{"name": string, "args": object}` or
+    /// `{"name": string, "arguments": object}`.
     case wrongShape
     /// The header names a different function than the body.
     case nameMismatch
@@ -24,6 +25,20 @@ enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
     case bodyTooLarge
     /// Generation ended inside the frame.
     case unterminated
+}
+
+extension ProviderOperationalMessage {
+    /// The fixed public line for one Inkling 2 frame check.
+    init(inklingToolFrameFailure failure: Inkling2ToolFrameFailure) {
+        self = switch failure {
+        case .invalidJSON: .inklingToolFrameInvalidJSON
+        case .wrongShape: .inklingToolFrameWrongShape
+        case .nameMismatch: .inklingToolFrameNameMismatch
+        case .nestingTooDeep: .inklingToolFrameNestingTooDeep
+        case .bodyTooLarge: .inklingToolFrameBodyTooLarge
+        case .unterminated: .inklingToolFrameUnterminated
+        }
+    }
 }
 
 /// Lexer for Inkling 2's native output protocol, pinned to
@@ -38,7 +53,8 @@ enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
 ///   are content (the response template's `content` field); consecutive
 ///   messages of one channel join with nothing between them.
 /// - `invoke_tool_json` is one call, `{"name":NAME,"args":{...}}`, the shape
-///   the template renders for history. A header name, when present, must equal
+///   the template renders for history, or `{"name":NAME,"arguments":{...}}`,
+///   the OpenAI shape (`parseCall`). A header name, when present, must equal
 ///   the body's name. With `callsAreText` (an `auto` request that declares no
 ///   tools, so its prompt has no `tool_declare`), no call can be valid and the
 ///   frame's body is content, as `invoke_tool_text` is; so is the text of a
@@ -62,6 +78,9 @@ enum Inkling2ToolFrameFailure: String, Error, Equatable, Sendable {
 /// that call: the model opened a text message where the call's header belongs.
 /// Only the answer's first bytes are held for this, up to 64 name characters,
 /// and released with the text that follows them as one piece.
+///
+/// With `startsInAnswer` (a prompt that ends with an open answer message,
+/// `Inkling2AnswerPrefill`), the output starts inside that answer's body.
 ///
 /// The lexer reads detokenized text with special tokens kept (the CBv2
 /// detokenizer's default), so a marker spelled out from ordinary tokens reads
@@ -87,7 +106,8 @@ struct Inkling2OutputChannels {
 
     /// `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT`: a call frame in the answer to
     /// an `auto` request that declares no tools is text by default; exact `0`
-    /// restores its refusal (422 `undeclared_name`, or 500 when it does not parse).
+    /// restores its refusal: 422 `undeclared_name` for a call that parses, and
+    /// 422 `tool_noncompliance` / `native_output` for one that does not.
     static let undeclaredCallTextEnvironmentKey = "DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT"
     static let undeclaredCallsAreTextByDefault =
         ProcessInfo.processInfo.environment[undeclaredCallTextEnvironmentKey] != "0"
@@ -164,10 +184,14 @@ struct Inkling2OutputChannels {
     /// Some reasoning text was published.
     private(set) var hasReasoning = false
 
-    init(limits: Limits = Limits(), callsAreText: Bool = false, readsCallOpeningAnswer: Bool = false) {
+    init(limits: Limits = Limits(), callsAreText: Bool = false, readsCallOpeningAnswer: Bool = false,
+         startsInAnswer: Bool = false) {
         self.limits = limits
         self.callsAreText = callsAreText
         self.readsCallOpeningAnswer = readsCallOpeningAnswer && !callsAreText
+        // The prompt's `<|content_text|>` opened the answer: read on as after
+        // that marker.
+        if startsInAnswer { enter(.content) }
     }
 
     /// The channel of the message being read, if any.
@@ -552,14 +576,20 @@ struct Inkling2OutputChannels {
     }
 
     /// `{"name": NAME, "args": {...}}`, exactly the two keys the template
-    /// renders. Nesting is bounded before this runs.
+    /// renders, or `{"name": NAME, "arguments": {...}}`, the OpenAI shape,
+    /// written inside the model's own call frame.
+    /// Exactly two keys, `name` and ONE of `args` / `arguments`, holding an
+    /// object; anything else (both, neither, another key, arguments that are
+    /// not an object) is `wrongShape`. Only a native call frame reaches this;
+    /// answer text shaped like a call stays text. Nesting is bounded before
+    /// this runs.
     static func parseCall(body: [UInt8], header: [UInt8]) -> Result<ToolCall, Inkling2ToolFrameFailure> {
         guard let object = try? JSONSerialization.jsonObject(with: Data(body)) else {
             return .failure(.invalidJSON)
         }
         guard let root = object as? [String: Any], root.count == 2,
             let name = root["name"] as? String, !name.isEmpty,
-            let arguments = root["args"] as? [String: Any]
+            let arguments = (root["args"] ?? root["arguments"]) as? [String: Any]
         else { return .failure(.wrongShape) }
         if !header.isEmpty, String(decoding: header, as: UTF8.self) != name {
             return .failure(.nameMismatch)

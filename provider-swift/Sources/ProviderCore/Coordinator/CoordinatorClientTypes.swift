@@ -121,7 +121,9 @@ public enum CoordinatorEvent: Sendable {
         /// See `InferenceRequest.gemmaPromptContract`; nil keeps version 1.
         gemmaPromptContract: Int? = nil,
         /// See `InferenceRequest.frameCachePolicy`; it can only narrow.
-        frameCachePolicy: RequestCachePolicy = .default
+        frameCachePolicy: RequestCachePolicy = .default,
+        /// See `InferenceRequest.answerPrefill`.
+        answerPrefill: Bool = false
     )
     /// `reason` is nil from a coordinator that sends none.
     case cancel(requestId: String, reason: CoordinatorCancelReason? = nil)
@@ -411,6 +413,7 @@ public enum CoordinatorError: LocalizedError, CustomStringConvertible {
     case connectionClosed(Error)
     case suspensionDetected
     case handshakeTimeout(seconds: TimeInterval)
+    case inboundBacklogExceeded(CoordinatorBacklogExcess)
 
     public var description: String {
         switch self {
@@ -420,6 +423,7 @@ public enum CoordinatorError: LocalizedError, CustomStringConvertible {
         case .connectionClosed(let err): return "WebSocket connection closed: \(err.localizedDescription)"
         case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
         case .handshakeTimeout(let seconds): return "WebSocket handshake did not complete in \(Int(seconds))s"
+        case .inboundBacklogExceeded(let excess): return "Coordinator frames not handled in time (\(excess)); link closed"
         }
     }
 

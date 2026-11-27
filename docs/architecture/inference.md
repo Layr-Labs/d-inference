@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-25
+> Last updated: 2026-11-26
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -55,7 +55,9 @@ The scheduler limits entries to the requested alternatives and drops those of
 withheld reasoning (`WithheldReasoningLogprobsFilter` for `<think>` spans;
 `InklingWithheldReasoningLogprobsFilter` for Inkling 2, which classifies each
 entry by the message its token lands in, as `Inkling2OutputChannels` reads the
-output, and also drops the frame markers) before either encoder sees them. One exception keeps the vLLM-style contract on the coordinator relay: for
+output, and also drops the frame markers) before either encoder sees them. An Inkling 2 thinking-off request that answers at once
+(`Inkling2AnswerPrefill`, when the coordinator's `answer_prefill` or this Mac's override asks) has no logprobs: the prefill applies only
+without them, so this filter always reads the output from its first frame. One exception keeps the vLLM-style contract on the coordinator relay: for
 GLM5-Next and the Nemotron Super owner (`ProviderLoop.logprobsCoverReasoning`)
 the scheduler or the owner appends entries to an `EngineV2LogprobsChannel` before
 the text they precede, and the frames loop splices them into reasoning and content
@@ -4935,6 +4937,18 @@ complete call encodes exactly as before
 (`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
 `encodeToolCallsForHash`).
 
+Inkling 2 (`inkling2_loop`) reads a call from its own `invoke_tool_json` frame
+(`Inkling2OutputChannels.parseCall`): `{"name", "args"}`, or
+`{"name", "arguments"}` (the OpenAI shape), and nothing else (both keys,
+neither, another key, or arguments that are not an object are refused). A
+frame that does not parse is refused as the model's native noncompliance
+with any tool choice: 422 `tool_noncompliance`,
+`tool_check` `native_output` (`NativeToolStreamRouter.checkNativeToolFailure`).
+After reasoning has streamed it is an in-band error, never a 500 counted against
+the serving Mac. A public log line names the failed frame check
+(`Inference failure: Inkling tool frame (…)`). Answer text shaped like a call
+stays text.
+
 ### GPT-OSS auto tool-call grammar
 
 GPT-OSS (`gpt_oss`) `auto` requests that declare tools are sampled under
@@ -5365,7 +5379,8 @@ holds `<`, so no control token reaches the answer. Client stop strings apply eve
 request, since the model's usual stop scope covers only `<|content_text|>`.
 Requests that declare tools, and `required`, named or `none` tool choices,
 still validate every frame. `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT=0`
-restores the refusal (422, or 500 for a frame that does not parse).
+restores the refusal: 422 for a call that parses, and 422
+`tool_noncompliance` / `native_output` for a frame that does not.
 Source: `Inkling2OutputChannels` (`callsAreText`) and
 `Inkling2PromptContract.stopStringScope` in
 `provider-swift/Sources/ProviderCore/Inference/`.

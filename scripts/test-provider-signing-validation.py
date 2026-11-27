@@ -29,15 +29,18 @@ PROD_NAMES, DEV_NAMES, STAGING_NAMES = (release_identity.identity(v) for v in (P
 
 
 MACHO_ARM64 = bytes.fromhex("cffaedfe0c000001") + b"\0" * 24
+RUNTIME_EXCEPTIONS = tuple("com.apple.security.cs." + name for name in (
+    "allow-dyld-environment-variables", "disable-library-validation", "allow-unsigned-executable-memory",
+    "allow-jit", "disable-executable-page-protection", "debugger", "some-later-exception"))
 
 
-def write_app_with_cluster_helpers(app, omit=None, metallib=b"metal kernels", paged=b"paged source"):
+def write_app_with_cluster_helpers(app, omit=None, metallib=b"MTLB metal kernels", paged=b"paged source"):
     """A synthetic app with the cluster helpers the release must ship."""
     contents = app / "Contents"
     (contents / "MacOS").mkdir(parents=True, exist_ok=True)
     (contents / "Helpers").mkdir(parents=True, exist_ok=True)
     (contents / "Resources/mlx-swift-lm_MLXLMCommon.bundle").mkdir(parents=True, exist_ok=True)
-    (contents / "MacOS/mlx.metallib").write_bytes(b"metal kernels")
+    (contents / "MacOS/mlx.metallib").write_bytes(b"MTLB metal kernels")
     (contents / "Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal").write_bytes(b"paged source")
     files = {"darkbloom-cluster-worker": MACHO_ARM64, "darkbloom-cluster-plan": MACHO_ARM64,
              "mlx.metallib": metallib, "pagedattention.metal": paged}
@@ -203,7 +206,7 @@ class SigningValidationTests(unittest.TestCase):
         for scenario in ["metallib", "paged", "not-macho", "not-executable", "symlink"]:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 app = Path(temporary) / "Darkbloom.app"
-                write_app_with_cluster_helpers(app, metallib=b"other kernels" if scenario == "metallib" else b"metal kernels",
+                write_app_with_cluster_helpers(app, metallib=b"MTLB other kernels" if scenario == "metallib" else b"MTLB metal kernels",
                                                paged=b"other source" if scenario == "paged" else b"paged source")
                 worker = app / "Contents/Helpers/darkbloom-cluster-worker"
                 if scenario == "not-macho":
@@ -606,7 +609,8 @@ class SigningValidationTests(unittest.TestCase):
                         source_sha="unused", version="unused"))
 
     def test_signed_cli_entitlements_require_group_push_and_no_debug_task(self):
-        for scenario in ["valid", "missing-group", "wrong-aps", "debug", "legacy-debug", "malformed-debug"]:
+        for scenario in ["valid", "missing-group", "wrong-aps", "debug", "legacy-debug", "malformed-debug",
+                         *RUNTIME_EXCEPTIONS]:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 value = {"keychain-access-groups": [VALIDATION.TEAM + "." + VALIDATION.APP_ID],
                          "com.apple.developer.aps-environment": "production"}
@@ -615,11 +619,16 @@ class SigningValidationTests(unittest.TestCase):
                 if scenario == "debug": value["com.apple.security.get-task-allow"] = True
                 if scenario == "legacy-debug": value["get-task-allow"] = True
                 if scenario == "malformed-debug": value["get-task-allow"] = "false"
+                # Refused whatever its value, false included.
+                if scenario in RUNTIME_EXCEPTIONS: value[scenario] = False
                 path = Path(temporary) / "entitlements.plist"
                 with path.open("wb") as output:
                     plistlib.dump(value, output)
                 if scenario == "valid":
                     VALIDATION.cli_entitlements(argparse.Namespace(plist=path))
+                elif scenario in RUNTIME_EXCEPTIONS:
+                    with self.assertRaisesRegex(ValueError, "hardened-runtime exception: " + re.escape(scenario)):
+                        VALIDATION.cli_entitlements(argparse.Namespace(plist=path))
                 else:
                     with self.assertRaises(ValueError):
                         VALIDATION.cli_entitlements(argparse.Namespace(plist=path))
@@ -686,13 +695,14 @@ if path not in signed:
     sys.exit("code object is not signed at all")
 if "-dv" in sys.argv:
     directory = {"developer-id": "flags=0x10000(runtime)", "other-team": "flags=0x10000(runtime)",
+                 "no-runtime": "flags=0x0(none)", "kill-only": "flags=0x200(kill)",
                  "adhoc": "flags=0x2(adhoc)", "linker-signed": "flags=0x20002(adhoc,linker-signed)"}
     kind = kinds.get(path, "developer-id")
     lines = ["Executable=" + path, "CodeDirectory v=20500 size=1 " + directory[kind] + " hashes=1+7 location=embedded"]
     if kind in ("adhoc", "linker-signed"):
         lines += ["Signature=adhoc", "TeamIdentifier=not set"]
     else:
-        lines += ["Authority=Developer ID Application", "TeamIdentifier=" + ("SLDQ2GJ6TL" if kind == "developer-id" else "OTHERTEAM1")]
+        lines += ["Authority=Developer ID Application", "TeamIdentifier=" + ("OTHERTEAM1" if kind == "other-team" else "SLDQ2GJ6TL")]
     sys.stderr.write("\\n".join(lines) + "\\n")
     sys.exit(0)
 sys.stdout.write(signed[path])
@@ -730,7 +740,10 @@ sys.stdout.write(signed[path])
         refused = [("debug", plistlib.dumps({"com.apple.security.get-task-allow": True}).decode()),
                    ("legacy-debug", plistlib.dumps({"get-task-allow": True}).decode()),
                    ("malformed-debug", plistlib.dumps({"get-task-allow": "false"}).decode()),
-                   ("unsigned", None)]
+                   ("unsigned", None),
+                   # Each hardened-runtime exception, beside an ordinary entitlement, whatever its value.
+                   *((key, plistlib.dumps({"com.apple.security.network.client": True, key: value}).decode())
+                     for key in RUNTIME_EXCEPTIONS for value in (True, False))]
         with tempfile.TemporaryDirectory() as temporary:
             app = self.write_signed_app(Path(temporary))
             # The fan helper is signed with no entitlements at all.
@@ -743,6 +756,9 @@ sys.stdout.write(signed[path])
                         if value is None:
                             del entitlements[name]
                             expected = "is not signed"
+                        elif scenario in RUNTIME_EXCEPTIONS:
+                            entitlements[name] = value
+                            expected = "carries a hardened-runtime exception: " + re.escape(scenario)
                         else:
                             entitlements[name] = value
                             expected = "enables or malforms get-task-allow"
@@ -753,6 +769,111 @@ sys.stdout.write(signed[path])
                     with self.subTest(executable=name, signature=kind):
                         with self.assertRaisesRegex(ValueError, f"Contents/{name} is not signed by the Developer ID"):
                             self.check_bundle_with_stub(app, clean, {name: kind})
+                # The team's Developer ID without the hardened runtime flag.
+                for kind in ("no-runtime", "kill-only"):
+                    with self.subTest(executable=name, signature=kind):
+                        with self.assertRaisesRegex(ValueError, f"Contents/{name} is signed without the hardened runtime"):
+                            self.check_bundle_with_stub(app, clean, {name: kind})
+
+    def test_bundle_entitlements_refuse_anything_but_thin_arm64(self):
+        network = plistlib.dumps({"com.apple.security.network.client": True}).decode()
+        executables = ["MacOS/darkbloom", "MacOS/darkbloom-enclave", "Helpers/darkbloom-fan-helper",
+                       "Helpers/darkbloom-cluster-worker", "Helpers/darkbloom-cluster-plan"]
+        with tempfile.TemporaryDirectory() as temporary:
+            app = self.write_signed_app(Path(temporary))
+            clean = {name: network for name in executables} | {"Helpers/darkbloom-fan-helper": ""}
+            for name in executables:
+                # Universal (32- and 64-bit, either byte order) and a thin x86_64 file.
+                for header in ("cafebabe", "bebafeca", "cafebabf", "bfbafeca", "cffaedfe07000001"):
+                    with self.subTest(executable=name, header=header):
+                        path = app / "Contents" / name
+                        original = path.read_bytes()
+                        prefix = bytes.fromhex(header)
+                        path.write_bytes(prefix + original[len(prefix):])
+                        try:
+                            with self.assertRaisesRegex(ValueError, f"Contents/{name} is not a thin arm64 Mach-O file"):
+                                self.check_bundle_with_stub(app, clean)
+                        finally:
+                            path.write_bytes(original)
+
+    def test_bundle_entitlements_account_for_every_file_that_could_run(self):
+        # Discovery rests on the header, the execute bit and the location: a file
+        # cannot leave the check by its header alone.
+        network = plistlib.dumps({"com.apple.security.network.client": True}).decode()
+        executables = ["MacOS/darkbloom", "MacOS/darkbloom-enclave", "Helpers/darkbloom-fan-helper",
+                       "Helpers/darkbloom-cluster-worker", "Helpers/darkbloom-cluster-plan"]
+        clean = {name: network for name in executables} | {"Helpers/darkbloom-fan-helper": ""}
+        cases = {
+            "an executable shell script in Helpers": ("Helpers/darkbloom-tool", b"#!/bin/sh\nexit 0\n", 0o755,
+                                                      "is not a thin arm64 Mach-O file"),
+            "an unknown header with the execute bit": ("Resources/tool", b"\x7fELF" + b"\0" * 28, 0o755,
+                                                       "is not a thin arm64 Mach-O file"),
+            "an extra 64-bit universal executable": ("Resources/extra", bytes.fromhex("cafebabf") + b"\0" * 28,
+                                                     0o644, "is not a thin arm64 Mach-O file"),
+            "an unlisted data file in MacOS": ("MacOS/notes.txt", b"text", 0o644,
+                                               "is not a thin arm64 Mach-O file"),
+            "a listed data file with an execute bit": ("Helpers/mlx.metallib", b"MTLB metal kernels", 0o755,
+                                                       "is a listed data file with an execute bit"),
+            "a dylib at a listed path": ("Helpers/pagedattention.metal", MACHO_ARM64, 0o644,
+                                         "is a listed data file with a Mach-O header"),
+            "a dylib at a listed Metal library path": ("MacOS/mlx.metallib", MACHO_ARM64, 0o644,
+                                                       "is a listed data file with a Mach-O header"),
+            "a listed Metal library without its header": ("Helpers/mlx.metallib", b"metal kernels", 0o644,
+                                                          "is a listed Metal library without the Metal library header"),
+            "a listed source file that is not text": ("Helpers/pagedattention.metal", b"\xff\xfe\x00binary", 0o644,
+                                                      "is a listed source file that is not UTF-8 text"),
+            "a listed source file with a NUL byte": ("Helpers/pagedattention.metal", b"kernel\x00void", 0o644,
+                                                     "is a listed source file that is not UTF-8 text"),
+        }
+        for label, (name, data, mode, expected) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                app = self.write_signed_app(Path(temporary))
+                path = app / "Contents" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                path.chmod(mode)
+                with self.assertRaisesRegex(ValueError, re.escape(f"Contents/{name} ") + expected):
+                    self.check_bundle_with_stub(app, clean)
+        # A missing listed Metal library: the app cannot run without it.
+        for name in ("MacOS/mlx.metallib", "Helpers/mlx.metallib"):
+            with self.subTest(missing=name), tempfile.TemporaryDirectory() as temporary:
+                app = self.write_signed_app(Path(temporary))
+                (app / "Contents" / name).unlink()
+                with self.assertRaisesRegex(ValueError, re.escape(f"Contents/{name} is missing")):
+                    self.check_bundle_with_stub(app, clean)
+        # Symbolic links: none in MacOS or Helpers, and none elsewhere that leaves the app.
+        links = {
+            "a link in Helpers": ("Helpers/darkbloom-link", lambda app, outside: "darkbloom-fan-helper",
+                                  "is a symbolic link"),
+            "a link in MacOS": ("MacOS/mlx-link.metallib", lambda app, outside: "mlx.metallib",
+                                "is a symbolic link"),
+            "a link in Resources that leaves the app": ("Resources/tool", lambda app, outside: str(outside),
+                                                        "is a symbolic link that resolves outside the app"),
+        }
+        for label, (name, target, expected) in links.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                app = self.write_signed_app(Path(temporary))
+                outside = Path(temporary) / "outside-tool"
+                outside.write_bytes(MACHO_ARM64)
+                link = app / "Contents" / name
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(target(app, outside))
+                with self.assertRaisesRegex(ValueError, re.escape(f"Contents/{name} ") + expected):
+                    self.check_bundle_with_stub(app, clean)
+        # The reviewed data files themselves, and a link in Resources that stays inside the app, pass.
+        with tempfile.TemporaryDirectory() as temporary:
+            app = self.write_signed_app(Path(temporary))
+            (app / "Contents/Resources/Current").symlink_to("mlx-swift-lm_MLXLMCommon.bundle")
+            self.check_bundle_with_stub(app, clean)
+
+    def test_code_directory_flags_read_the_runtime_bit(self):
+        cases = {"CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+7 location=embedded": 0x10000,
+                 "CodeDirectory v=20500 size=1 flags=0x10200(kill,runtime) hashes=1+7 location=embedded": 0x10200,
+                 "CodeDirectory v=20400 size=1 flags=0x0(none) hashes=1+7 location=embedded": 0,
+                 "Executable=/tmp/x": None, "Signature=adhoc": None}
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(VALIDATION.code_directory_flags(["Executable=/tmp/x", line]), expected)
 
     def test_bundle_entitlements_require_the_main_executable(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -786,6 +907,19 @@ sys.stdout.write(signed[path])
                            check=True, capture_output=True)
             self.assertEqual(VALIDATION.developer_id_problem(worker), "is not signed by the Developer ID")
             self.assertIsNone(VALIDATION.entitlement_problem(worker))
+            def flags(path):
+                shown = subprocess.run(["codesign", "-dv", "--verbose=2", str(path)], capture_output=True, text=True)
+                return VALIDATION.code_directory_flags((shown.stderr + shown.stdout).splitlines())
+            self.assertTrue(flags(worker) & VALIDATION.HARDENED_RUNTIME_FLAG)
+            plan = app / "Contents/Helpers/darkbloom-cluster-plan"
+            subprocess.run(["codesign", "--force", "--sign", "-", str(plan)], check=True, capture_output=True)
+            self.assertFalse(flags(plan) & VALIDATION.HARDENED_RUNTIME_FLAG)
+            exception = root / "exception.plist"
+            exception.write_bytes(plistlib.dumps({"com.apple.security.cs.allow-jit": True}))
+            subprocess.run(["codesign", "--force", "--options", "runtime", "--entitlements", str(exception),
+                            "--sign", "-", str(plan)], check=True, capture_output=True)
+            self.assertEqual(VALIDATION.entitlement_problem(plan),
+                             "carries a hardened-runtime exception: com.apple.security.cs.allow-jit")
             subprocess.run(["codesign", "--force", "--options", "runtime", "--entitlements", str(debug),
                             "--sign", "-", str(worker)], check=True, capture_output=True)
             self.assertEqual(VALIDATION.entitlement_problem(worker), "enables or malforms get-task-allow")

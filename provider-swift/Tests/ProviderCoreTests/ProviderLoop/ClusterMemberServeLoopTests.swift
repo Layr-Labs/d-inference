@@ -287,18 +287,31 @@ struct ClusterMemberServeLoopTests {
     @Test func aCoordinatorThatClosesTheMemberConnectionStillRefusesIt() async throws {
         try await withMemberServeLoop(stopOnDisconnect: true, negotiationWindow: .seconds(2)) { fixture, _ in
             let started = ContinuousClock.now
+            // Report only, as in the test above: an answer pushed after the window has closed the connection finds
+            // no WebSocket, so every failure shows where the time went.
+            let timeline = NegotiationTimeline(started: started, mock: fixture.mock)
             let coordinator = Task {
                 _ = try await fixture.awaitRegistration()
-                try await fixture.mock.pushDesiredModels([])
+                timeline.mark("test saw register")
+                do { try await fixture.mock.pushDesiredModels([]) } catch {
+                    timeline.mark("push failed (\(error))")
+                    throw error
+                }
+                timeline.mark("answer pushed")
                 await fixture.mock.dropActiveWebSocket()
+                timeline.mark("mock dropped the connection")
             }
             var ended: Error?
             do { try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .seconds(2))) } catch { ended = error }
-            let error = try #require(ended as? ClusterMemberControlError)
-            #expect(error != .roleUnsupported && error != .coordinatorUnreachable, "a closed member connection read as \(error)")
-            #expect(!ClusterLocalServing.servesLocally(after: error))
-            try await coordinator.value
-            #expect(await fixture.loop.memberConnectionID == nil)
+            timeline.mark("wait ended")
+            let error = try #require(ended as? ClusterMemberControlError, "\(timeline)")
+            #expect(error != .roleUnsupported && error != .coordinatorUnreachable, "a closed member connection read as \(error); \(timeline)")
+            #expect(!ClusterLocalServing.servesLocally(after: error), "\(timeline)")
+            do { try await coordinator.value } catch let failure {
+                print("negotiation timeline: \(timeline)")
+                throw failure
+            }
+            #expect(await fixture.loop.memberConnectionID == nil, "\(timeline)")
         }
     }
 

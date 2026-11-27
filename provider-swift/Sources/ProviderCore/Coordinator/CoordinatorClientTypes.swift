@@ -121,7 +121,9 @@ public enum CoordinatorEvent: Sendable {
         /// See `InferenceRequest.gemmaPromptContract`; nil keeps version 1.
         gemmaPromptContract: Int? = nil,
         /// See `InferenceRequest.frameCachePolicy`; it can only narrow.
-        frameCachePolicy: RequestCachePolicy = .default
+        frameCachePolicy: RequestCachePolicy = .default,
+        /// See `InferenceRequest.answerPrefill`.
+        answerPrefill: Bool = false
     )
     /// `reason` is nil from a coordinator that sends none.
     case cancel(requestId: String, reason: CoordinatorCancelReason? = nil)

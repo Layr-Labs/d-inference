@@ -4,6 +4,7 @@
 
 import Foundation
 import Network
+import os
 import Sodium
 
 extension CoordinatorClient {
@@ -272,6 +273,7 @@ extension CoordinatorClient {
         // lock is cheaper than an actor hop for a single Instant.
         let start = ContinuousClock.now
         let activity = LinkActivityTracker(start: start)
+        let backlog = CoordinatorFrameBacklog(limits: self.inboundBacklog)
         let pongQueue = self.connectionQueue
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -289,7 +291,8 @@ extension CoordinatorClient {
             // Task 1: Receive messages from coordinator
             group.addTask { [weak self] in
                 guard let self else { return }
-                try await self.receiveLoop(connection: connection, session: session, activity: activity)
+                try await self.receiveLoop(connection: connection, session: session, activity: activity,
+                                           backlog: backlog)
             }
 
             // Task 2: Forward outbound messages to coordinator
@@ -339,11 +342,19 @@ extension CoordinatorClient {
                     case .alive:
                         break
                     case .dead:
+                        await Self.sendLinkClose(.silentLink, on: connection)
                         throw CoordinatorError.pongTimeout(after: watch.silenceBound(lastInbound: lastInbound))
                     case .suspended:
                         // Sleep or a long suspension: the coordinator has
                         // probably dropped the session, so reconnect once now.
+                        await Self.sendLinkClose(.suspended, on: connection)
                         throw CoordinatorError.suspensionDetected
+                    }
+                    // Frames read and not handled past a limit: a stuck handler,
+                    // which the frames' own liveness would otherwise hide.
+                    if let excess = backlog.excess(now: .now) {
+                        await Self.sendLinkClose(.inboundBacklog, on: connection)
+                        throw CoordinatorError.inboundBacklogExceeded(excess)
                     }
 
                     // Send a WebSocket ping; the matching pong refreshes the
@@ -416,83 +427,45 @@ extension CoordinatorClient {
         )
     }
 
+    /// Sends a close frame with `code` and returns when it has been handed to
+    /// the transport, or after `limit` on a link that takes nothing more. The
+    /// caller then tears the session down: the coordinator records the code
+    /// (`ws_close_4001`, `ws_close_4002`, `ws_close_4003`) when the frame reaches it.
+    static func sendLinkClose(
+        _ code: CoordinatorLinkCloseCode, on connection: NWConnection, within limit: Duration = .milliseconds(500)
+    ) async {
+        // RED CONTROL, never merge: no close frame; the link is dropped without one, as before.
+    }
+
     // MARK: - Receive Loop
 
     private func receiveLoop(
-        connection: NWConnection, session: CoordinatorSessionRecorder, activity: LinkActivityTracker
+        connection: NWConnection, session: CoordinatorSessionRecorder, activity: LinkActivityTracker,
+        backlog: CoordinatorFrameBacklog
     ) async throws {
-        while !shutdownRequested {
+        // The connection is read on its own queue (`CoordinatorFrameReader`),
+        // not after each message is handled here: handling waits on this actor,
+        // and a socket left unread meanwhile stops delivering pongs and frames.
+        let frames = CoordinatorFrameReader.frames(on: connection, session: session, activity: activity,
+                                                   backlog: backlog)
+        for try await frame in frames {
+            if shutdownRequested { return }
             guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
-            // NWProtocolWebSocket delivers one complete WebSocket message per
-            // receiveMessage call. Wrap the callback in a continuation so the loop
-            // reads sequentially, matching the old `try await ws.receive()` shape.
-            //
-            // Cancellation handler: when the task group cancels this child (e.g.
-            // pong timeout or suspension detected), the pending receiveMessage
-            // callback won't fire until the connection is cancelled. Cancel it
-            // here so the continuation unblocks and the reconnect loop proceeds
-            // immediately instead of hanging until the transport times out.
-            let (data, wsMeta, receivedAt, profileAnchor):
-                (Data?, NWProtocolWebSocket.Metadata?, ContinuousClock.Instant,
-                 SuspendingClock.Instant) =
-                try await withTaskCancellationHandler {
-                    try await withCheckedThrowingContinuation { cont in
-                        connection.receiveMessage { data, context, _isComplete, error in
-                            // Stamp at the transport callback before executor
-                            // scheduling or any UTF-8/String materialization can
-                            // consume the coordinator's relative deadline.
-                            let receivedAt = ContinuousClock.now
-                            // Profiler anchor `t0p` on the suspending clock
-                            // (mach_absolute_time, the engine's DispatchTime
-                            // domain). Taken beside — never instead of — the
-                            // continuous deadline stamp (plan v2 P3).
-                            let profileAnchor = SuspendingClock.now
-                            // WS metadata for opcode inspection.
-                            let wsMeta = context?.protocolMetadata(
-                                definition: NWProtocolWebSocket.definition
-                            ) as? NWProtocolWebSocket.Metadata
-                            // Record a close frame's code here, on connectionQueue,
-                            // also when the receive ends with an error: the transport
-                            // state change that follows the frame can end the session
-                            // before this task reads the frame.
-                            if let wsMeta, wsMeta.opcode == .close,
-                               let closeCode = wsMeta.sentCloseCode(content: data) {
-                                session.recordCloseCode(closeCode)
-                            }
-                            if let error {
-                                cont.resume(throwing: CoordinatorError.connectionClosed(error))
-                                return
-                            }
-                            // Any frame proves the link is alive, so a busy
-                            // stream never waits on a pong.
-                            activity.recordInbound()
-                            cont.resume(returning: (data, wsMeta, receivedAt, profileAnchor))
-                        }
-                    }
-                } onCancel: {
-                    connection.cancel()
-                }
-
-            guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
-
-            // A WebSocket close frame arrives as a message tagged `.close`. Its
-            // content, if any, is the close payload, not a JSON message: surface
-            // it as a connection close so runLoop reconnects.
-            if let wsMeta, wsMeta.opcode == .close {
-                throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
-            }
-
-            switch Self.inboundFrame(data: data, opcode: wsMeta?.opcode) {
-            case .control:
-                continue
-            case .transportClosed:
-                throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
-            case .message(let data):
-                await handleIncomingFrame(
-                    data, receivedAt: receivedAt, profileAnchor: profileAnchor,
-                    connection: connection)
-            }
+            // A handler can end the connection (`abandon(_:)`: a native-pair
+            // frame that breaks the contract, a refused member negotiation).
+            // Frames read before that are not handled: the old loop's next read
+            // failed on the cancelled connection. The state check covers a
+            // cancel from elsewhere once the connection's queue has seen it.
+            var ended = abandonedConnection === connection
+            if case .cancelled = connection.state { ended = true }
+            if ended { throw CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)) }
+            await handleIncomingFrame(
+                frame.data, receivedAt: frame.receivedAt, profileAnchor: frame.profileAnchor,
+                connection: connection)
+            backlog.finishOldest()
         }
+        if shutdownRequested { return }
+        throw CancellationError()
     }
 
     /// What one received WebSocket message (other than a close frame) is to

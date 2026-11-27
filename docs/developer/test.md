@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-22
+> Last updated: 2026-11-26
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -2639,7 +2639,10 @@ keychain password that never reaches the output, the `-x` import for
 fails while the keychain file or the identity is still there. It needs Bash,
 `base64` and `openssl`, and touches no keychain.
 `scripts/test-provider-signing-validation.py` pins the same order in
-`.github/workflows/provider-signing-validation.yml`, and
+`.github/workflows/provider-signing-validation.yml`. Its bundle rows refuse each
+executable signed without the hardened runtime and each one that carries a
+hardened-runtime exception entitlement (`com.apple.security.cs.*`, whatever its
+value), and on macOS they read both from real ad-hoc signatures; and
 `scripts/test-provider-release-resume.py` its source gate: a dispatch on
 `master` and a verified commit on `master`'s ancestry.
 A pull request into `dev` runs these five release-lane tests, and the two

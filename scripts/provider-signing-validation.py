@@ -3,6 +3,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import plistlib
 import re
@@ -30,9 +31,26 @@ FAN_HELPER = "darkbloom-fan-helper"
 # installer refuse a fan helper with any other mode.
 EXECUTABLE_MODE = 0o755
 SIGNING_ENTITLEMENTS = ("entitlements.plist", "entitlements-enclave.plist", "entitlements-cluster-worker.plist")
-# The first four bytes of a thin (either byte order) or universal Mach-O file.
-MACHO_MAGICS = {bytes.fromhex(magic) for magic in ("cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca")}
+# The first four bytes of a thin (either byte order) or universal (32- or
+# 64-bit, either byte order) Mach-O file.
+MACHO_MAGICS = {bytes.fromhex(magic) for magic in ("cffaedfe", "cefaedfe", "feedfacf", "feedface",
+                                                  "cafebabe", "bebafeca", "cafebabf", "bfbafeca")}
+# The only files in Contents/MacOS or Contents/Helpers that are not thin arm64
+# executables: the Metal library and paged-attention source the CLI and the
+# cluster helpers load. Each must be a regular file with no execute bit and its
+# own form, never a Mach-O file; both Metal libraries must be present.
+METALLIB_MAGIC = b"MTLB"
+REVIEWED_DATA_FILES = {"Contents/MacOS/mlx.metallib": "metallib", "Contents/Helpers/mlx.metallib": "metallib",
+                       "Contents/Helpers/pagedattention.metal": "source"}
+REQUIRED_DATA_FILES = ("Contents/MacOS/mlx.metallib", "Contents/Helpers/mlx.metallib")
 DEBUG_TASK_ENTITLEMENTS = ("get-task-allow", "com.apple.security.get-task-allow")
+# The hardened runtime's exception entitlements (allow-jit,
+# allow-unsigned-executable-memory, allow-dyld-environment-variables,
+# disable-library-validation, disable-executable-page-protection, debugger and
+# any later one) all share this prefix. No shipped executable may carry one.
+RUNTIME_EXCEPTION_PREFIX = "com.apple.security.cs."
+# The hardened runtime's CodeDirectory flag (CS_RUNTIME).
+HARDENED_RUNTIME_FLAG = 0x10000
 # The Developer ID team every shipped executable is signed by (dev, staging and production).
 RELEASE_TEAM_IDENTIFIER = "SLDQ2GJ6TL"
 
@@ -282,11 +300,85 @@ def cli_entitlements(arguments):
         raise ValueError("Signed CLI lacks the required APNs entitlement")
     if debug_task_allowed(value):
         raise ValueError("Signed CLI enables or malforms get-task-allow")
+    if runtime_exceptions(value):
+        raise ValueError("Signed CLI carries a hardened-runtime exception: " + ", ".join(runtime_exceptions(value)))
 
 
 def debug_task_allowed(entitlements):
     """True unless every get-task-allow spelling is absent or false."""
     return any(entitlements.get(key, False) is not False for key in DEBUG_TASK_ENTITLEMENTS)
+
+
+def runtime_exceptions(entitlements):
+    """The hardened-runtime exception entitlements present, whatever their value."""
+    return sorted(key for key in entitlements if key.startswith(RUNTIME_EXCEPTION_PREFIX))
+
+
+def code_directory_flags(details):
+    """The CodeDirectory flags of `codesign -dv` output lines, or None."""
+    for line in details:
+        match = re.match(r"CodeDirectory v=\S+ .*\bflags=(0x[0-9a-f]+)\(", line)
+        if match:
+            return int(match.group(1), 16)
+    return None
+
+
+def data_file_problem(path, form):
+    """None when a reviewed data file is a regular, non-executable file of its
+    form: a Metal library by its magic, or UTF-8 source text, never Mach-O."""
+    if stat.S_IMODE(path.lstat().st_mode) & 0o111:
+        return "is a listed data file with an execute bit"
+    data = path.read_bytes()
+    if data[:4] in MACHO_MAGICS:
+        return "is a listed data file with a Mach-O header"
+    if form == "metallib" and data[:4] != METALLIB_MAGIC:
+        return "is a listed Metal library without the Metal library header"
+    if form == "source":
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            return "is a listed source file that is not UTF-8 text"
+        if b"\0" in data:
+            return "is a listed source file that is not UTF-8 text"
+    return None
+
+
+def symlink_problems(app):
+    """Every refused symbolic link in the app, in path order: any link in
+    Contents/MacOS or Contents/Helpers, and any link elsewhere that resolves
+    outside the app. The signature seals a link's target name, not the bytes it
+    reaches."""
+    root = Path(os.path.realpath(app))
+    problems = []
+    for directory, subdirectories, files in os.walk(app, followlinks=False):
+        for entry in sorted(subdirectories + files):
+            path = Path(directory) / entry
+            if not path.is_symlink():
+                continue
+            name = path.relative_to(app)
+            target = Path(os.path.realpath(path))
+            if name.parts[:2] in (("Contents", "MacOS"), ("Contents", "Helpers")):
+                problems.append(f"{name} is a symbolic link")
+            elif target != root and root not in target.parents:
+                problems.append(f"{name} is a symbolic link that resolves outside the app")
+    return sorted(problems)
+
+
+def bundle_files(app):
+    """Every regular file in the app that the bundle check must account for: any
+    Mach-O file by its header, any file with an execute bit, and every file in
+    Contents/MacOS or Contents/Helpers, in path order."""
+    found = []
+    for path in sorted(app.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        with path.open("rb") as source:
+            macho = source.read(4) in MACHO_MAGICS
+        executable = bool(stat.S_IMODE(path.lstat().st_mode) & 0o111)
+        located = path.relative_to(app).parts[:2] in (("Contents", "MacOS"), ("Contents", "Helpers"))
+        if macho or executable or located:
+            found.append(path)
+    return found
 
 
 def macho_files(app):
@@ -298,6 +390,12 @@ def macho_files(app):
                 if source.read(4) in MACHO_MAGICS:
                     found.append(path)
     return found
+
+
+def architecture_problem(path):
+    """None for a thin arm64 Mach-O file. Every shipped executable is one; a
+    universal file is refused too, since codesign reports one slice of it."""
+    return None if is_arm64_macho(path) else "is not a thin arm64 Mach-O file"
 
 
 def developer_id_problem(path, team=RELEASE_TEAM_IDENTIFIER):
@@ -312,38 +410,58 @@ def developer_id_problem(path, team=RELEASE_TEAM_IDENTIFIER):
         re.search(r"\bflags=0x[0-9a-f]+\([^)]*\b(adhoc|linker-signed)\b", line) for line in details)
     if adhoc or f"TeamIdentifier={team}" not in details:
         return "is not signed by the Developer ID"
+    flags = code_directory_flags(details)
+    if flags is None or not flags & HARDENED_RUNTIME_FLAG:
+        return "is signed without the hardened runtime"
     return None
 
 
 def entitlement_problem(path):
-    """None when `path`'s signature leaves get-task-allow absent or false."""
+    """None when `path`'s signature leaves get-task-allow absent or false and
+    carries no hardened-runtime exception."""
     result = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", str(path)], capture_output=True)
     if result.returncode != 0:
         return "is not signed"
     value = plistlib.loads(result.stdout) if result.stdout.strip() else {}
     if not isinstance(value, dict) or debug_task_allowed(value):
         return "enables or malforms get-task-allow"
+    exceptions = runtime_exceptions(value)
+    if exceptions:
+        return "carries a hardened-runtime exception: " + ", ".join(exceptions)
     return None
 
 
 def bundle_entitlements(arguments):
     """Fails unless every executable in the signed app (the CLI, the enclave and
-    fan helpers, the cluster worker and plan, and any other Mach-O file) is
-    signed by the Developer ID and leaves get-task-allow absent or false."""
+    fan helpers, the cluster worker and plan, and any other Mach-O file, file
+    with an execute bit or file in Contents/MacOS or Contents/Helpers) is a thin
+    arm64 Mach-O file signed by the Developer ID with the hardened runtime,
+    leaves get-task-allow absent or false, and carries no hardened-runtime
+    exception entitlement. The reviewed data files are the only exception, and
+    they must not be executable."""
     app = arguments.app
     with (app / "Contents/Info.plist").open("rb") as source:
         main = app / "Contents/MacOS" / plistlib.load(source)["CFBundleExecutable"]
-    found = macho_files(app)
-    if main not in found:
+    if main not in macho_files(app):
         raise ValueError(f"{main.relative_to(app)} is not a Mach-O executable in the app")
-    refused = []
-    for path in found:
+    refused = symlink_problems(app)
+    refused += [f"{name} is missing" for name in REQUIRED_DATA_FILES
+                if not (app / name).is_file() or (app / name).is_symlink()]
+    for path in bundle_files(app):
         name = str(path.relative_to(app))
-        problem = developer_id_problem(path) or entitlement_problem(path)
+        if name in REVIEWED_DATA_FILES:
+            problem = data_file_problem(path, REVIEWED_DATA_FILES[name])
+            if problem:
+                refused.append(f"{name} {problem}")
+            else:
+                print(f"{name}: listed data file, not executable")
+            continue
+        problem = architecture_problem(path) or developer_id_problem(path) or entitlement_problem(path)
         if problem:
             refused.append(f"{name} {problem}")
             continue
-        print(f"{name}: signed by the Developer ID, get-task-allow absent")
+        print(f"{name}: signed by the Developer ID with the hardened runtime, get-task-allow absent, "
+              "no runtime exception")
     if refused:
         raise ValueError("; ".join(refused))
 

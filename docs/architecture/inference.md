@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-25
+> Last updated: 2026-11-26
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4934,6 +4934,18 @@ The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before
 (`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
 `encodeToolCallsForHash`).
+
+Inkling 2 (`inkling2_loop`) reads a call from its own `invoke_tool_json` frame
+(`Inkling2OutputChannels.parseCall`): `{"name", "args"}`, or
+`{"name", "arguments"}` (the OpenAI shape), and nothing else (both keys,
+neither, another key, or arguments that are not an object are refused). A
+frame that does not parse is refused as the model's native noncompliance
+with any tool choice: 422 `tool_noncompliance`,
+`tool_check` `native_output` (`NativeToolStreamRouter.checkNativeToolFailure`).
+After reasoning has streamed it is an in-band error, never a 500 counted against
+the serving Mac. A public log line names the failed frame check
+(`Inference failure: Inkling tool frame (…)`). Answer text shaped like a call
+stays text.
 
 ### GPT-OSS auto tool-call grammar
 

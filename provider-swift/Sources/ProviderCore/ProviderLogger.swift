@@ -188,6 +188,15 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case inferenceFailureGeneration = "Inference failure: generation"
     case inferenceFailureInternal = "Inference failure: internal"
 
+    // Which check an Inkling 2 call frame failed (`Inkling2ToolFrameFailure`):
+    // the check's name only, never the frame.
+    case inklingToolFrameInvalidJSON = "Inference failure: Inkling tool frame (invalid JSON)"
+    case inklingToolFrameWrongShape = "Inference failure: Inkling tool frame (wrong shape)"
+    case inklingToolFrameNameMismatch = "Inference failure: Inkling tool frame (name mismatch)"
+    case inklingToolFrameNestingTooDeep = "Inference failure: Inkling tool frame (nesting too deep)"
+    case inklingToolFrameBodyTooLarge = "Inference failure: Inkling tool frame (body too large)"
+    case inklingToolFrameUnterminated = "Inference failure: Inkling tool frame (unterminated)"
+
     // Closed reasons for client refusals before the inference task or while
     // the prompt is prepared (`InferenceRefusalReason`).
     case refusalMissingSenderKey = "Inference failure: invalid request (missing sender key)"

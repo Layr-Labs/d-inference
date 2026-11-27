@@ -112,6 +112,24 @@ struct Inkling2OutputChannelsTests {
         #expect(declared.calls.map(\.function.name) == ["get_weather"])
     }
 
+    /// The frame bodies a call is read from: the template's `args`, and
+    /// `arguments` (the OpenAI shape), each alone beside `name`. Every other
+    /// shape is refused (`malformedFrameIsNoCall`).
+    @Test(arguments: [
+        #"{"name":"get_weather","args":{"location":"Paris"}}"#,
+        #"{"name":"get_weather","arguments":{"location":"Paris"}}"#,
+        #"{"arguments":{"location":"Paris"},"name":"get_weather"}"#,
+    ])
+    func callBodyShapesThatParse(body: String) throws {
+        let (reading, lexer) = Self.read(Self.thought + "Need weather." + Self.end + Self.call("get_weather", body))
+        #expect(lexer.toolFailures.isEmpty)
+        let call = try #require(reading.calls.first)
+        #expect(reading.calls.count == 1)
+        #expect(call.function.name == "get_weather")
+        #expect(call.function.arguments == ["location": .string("Paris")])
+        #expect(reading.content.isEmpty)
+    }
+
     @Test func toolCallArgumentsKeepTheirValues() throws {
         let body = #"{"name":"get_weather","args":{"b":true,"days":[1,2],"f":1.5,"location":"Paris, France","n":null,"opts":{"unit":"celsius"},"z":0}}"#
         let (reading, lexer) = Self.read(Self.thought + "Need weather." + Self.end + Self.call("get_weather", body))
@@ -325,6 +343,13 @@ struct Inkling2OutputChannelsTests {
         (#"{"name":"","args":{}}"#, .wrongShape),
         (#"{"name":7,"args":{}}"#, .wrongShape),
         (#"{"name":"g","args":{}}"#, .nameMismatch),
+        // The `arguments` shape: still exactly one of the two keys, holding an object.
+        (#"{"name":"f","args":{},"arguments":{}}"#, .wrongShape),
+        (#"{"name":"f","arguments":[]}"#, .wrongShape),
+        (#"{"name":"f","arguments":"{}"}"#, .wrongShape),
+        (#"{"name":"f","arguments":null}"#, .wrongShape),
+        (#"{"name":"f","parameters":{}}"#, .wrongShape),
+        (#"{"name":"f","arguments":{},"id":"x"}"#, .wrongShape),
     ])
     func malformedFrameIsNoCall(body: String, failure: Inkling2ToolFrameFailure) {
         let (reading, lexer) = Self.read(Self.call("f", body) + Self.answer + "after" + Self.end)

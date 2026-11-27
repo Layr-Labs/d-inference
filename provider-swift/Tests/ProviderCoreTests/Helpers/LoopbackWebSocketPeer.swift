@@ -13,6 +13,12 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
         /// Never reads and never answers a ping, but sends `frame` as a text
         /// message every `interval`: a busy stream whose pongs never come.
         case streams(frame: Data, interval: DispatchTimeInterval)
+        /// Reads every message and records the code of each close frame, but
+        /// never answers a ping and never sends.
+        case recordsCloses
+        /// Sends `frame` every `interval` as `streams` does, and reads and
+        /// records closes as `recordsCloses` does; never answers a ping.
+        case streamsAndRecordsCloses(frame: Data, interval: DispatchTimeInterval)
     }
 
     private let listener: NWListener
@@ -22,6 +28,7 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
     private var connections: [NWConnection] = []
     private var acceptTimes: [ContinuousClock.Instant] = []
     private var timers: [DispatchSourceTimer] = []
+    private var receivedCloseCodes: [UInt16] = []
 
     init(behavior: Behavior) throws {
         self.behavior = behavior
@@ -35,6 +42,9 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
 
     /// When each connection was accepted, in order.
     var accepted: [ContinuousClock.Instant] { lock.withLock { acceptTimes } }
+
+    /// The codes of the close frames read (`recordsCloses`), in order.
+    var closeCodes: [UInt16] { lock.withLock { receivedCloseCodes } }
 
     func start() async throws -> UInt16 {
         listener.newConnectionHandler = { [weak self] connection in
@@ -74,6 +84,18 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
         }
     }
 
+    /// Sends `messages` as text messages, in order and back to back, on the
+    /// connection accepted last.
+    func send(_ messages: [Data]) {
+        guard let connection = lock.withLock({ connections.last }) else { return }
+        for message in messages {
+            let text = NWProtocolWebSocket.Metadata(opcode: .text)
+            let context = NWConnection.ContentContext(identifier: "message", metadata: [text])
+            connection.send(content: message, contentContext: context, isComplete: true,
+                            completion: .contentProcessed { _ in })
+        }
+    }
+
     func stop() {
         listener.cancel()
         let (connections, timers) = lock.withLock { (self.connections, self.timers) }
@@ -87,17 +109,43 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
             break
         case .answersPings:
             readAndDrop(connection)
+        case .recordsCloses:
+            readAndRecordCloses(connection)
         case .streams(let frame, let interval):
-            let timer = DispatchSource.makeTimerSource(queue: queue)
-            timer.schedule(deadline: .now(), repeating: interval)
-            timer.setEventHandler {
-                let text = NWProtocolWebSocket.Metadata(opcode: .text)
-                let context = NWConnection.ContentContext(identifier: "stream", metadata: [text])
-                connection.send(content: frame, contentContext: context, isComplete: true,
-                                completion: .contentProcessed { _ in })
+            stream(frame, every: interval, on: connection)
+        case .streamsAndRecordsCloses(let frame, let interval):
+            stream(frame, every: interval, on: connection)
+            readAndRecordCloses(connection)
+        }
+    }
+
+    private func stream(_ frame: Data, every interval: DispatchTimeInterval, on connection: NWConnection) {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: interval)
+        timer.setEventHandler {
+            let text = NWProtocolWebSocket.Metadata(opcode: .text)
+            let context = NWConnection.ContentContext(identifier: "stream", metadata: [text])
+            connection.send(content: frame, contentContext: context, isComplete: true,
+                            completion: .contentProcessed { _ in })
+        }
+        lock.withLock { timers.append(timer) }
+        timer.resume()
+    }
+
+    private func readAndRecordCloses(_ connection: NWConnection) {
+        connection.receiveMessage { [weak self] _, context, _, error in
+            guard let self else { return }
+            if let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
+                as? NWProtocolWebSocket.Metadata, metadata.opcode == .close {
+                let code: UInt16? = switch metadata.closeCode {
+                case .protocolCode(let defined): defined.rawValue
+                case .applicationCode(let value), .privateCode(let value): value
+                @unknown default: nil
+                }
+                if let code { self.lock.withLock { self.receivedCloseCodes.append(code) } }
             }
-            lock.withLock { timers.append(timer) }
-            timer.resume()
+            guard error == nil else { return }
+            self.readAndRecordCloses(connection)
         }
     }
 

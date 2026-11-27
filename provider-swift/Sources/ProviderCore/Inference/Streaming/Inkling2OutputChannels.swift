@@ -106,7 +106,8 @@ struct Inkling2OutputChannels {
 
     /// `DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT`: a call frame in the answer to
     /// an `auto` request that declares no tools is text by default; exact `0`
-    /// restores its refusal (422 `undeclared_name`, or 500 when it does not parse).
+    /// restores its refusal: 422 `undeclared_name` for a call that parses, and
+    /// 422 `tool_noncompliance` / `native_output` for one that does not.
     static let undeclaredCallTextEnvironmentKey = "DARKBLOOM_INKLING_UNDECLARED_CALL_TEXT"
     static let undeclaredCallsAreTextByDefault =
         ProcessInfo.processInfo.environment[undeclaredCallTextEnvironmentKey] != "0"

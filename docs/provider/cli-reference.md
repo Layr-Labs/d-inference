@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-25
+> Last updated: 2026-11-26
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -4452,9 +4452,11 @@ Set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before `darkbloom start`, or before inst
 | Backoff reset after a stable session | `stableSessionDuration = .seconds(60)`, counted from the `register` frame | same |
 | Reconnect wait after close code `1001` (going away) or `1012` (service restart) | `fleetCloseDelayRange = 0...15` s, drawn at random; the backoff does not grow. The server side sends these codes to every provider at once, so the wait spreads the fleet's reconnects | same |
 | First reconnect wait after a stable session (any other end) | `stableSessionRetryRange = 0...0.25` s, drawn at random; the backoff does not grow | same |
-| WebSocket ping interval / dead-link bound | `pingInterval = .seconds(2)` / `deadAfter = .seconds(6)`: no inbound frame (pong, ping or message) for more than 6 s declares the link dead, checked at each ping | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorLinkLiveness.swift` (`CoordinatorLinkLiveness`) |
+| WebSocket ping interval / dead-link bound | `pingInterval = .seconds(2)` / `deadAfter = .seconds(20)` (6 s in 0.10.13 to 0.10.19): no inbound frame (pong, ping or message) for more than 20 s declares the link dead, checked at each ping; the connection is read while a message is being handled (`CoordinatorFrameReader`) | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorLinkLiveness.swift` (`CoordinatorLinkLiveness`) |
+| Close code before dropping a link the provider judged dead | `CoordinatorLinkCloseCode`: 4001 after the dead-link bound, 4002 after a suspension, 4003 past the inbound backlog limits; sent with at most 0.5 s wait before the socket is closed | same |
+| Inbound backlog limits (frames read and not yet handled, the one being handled included) | `CoordinatorInboundBacklog`: `maxBytes` 768 MiB, `maxFrames` 4,096, `maxAge` 20 s for the oldest; past any of them the reader stops reading and the link is closed with 4003, no frame dropped | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorFrameBacklog.swift` |
 | Suspension gap | `suspensionGap = .seconds(30)`: a ping tick this late (sleep) reconnects once; a shorter late tick restarts the silence window | same |
-| Silence allowed before the coordinator's first frame | `firstFrameGrace = .seconds(30)`: a new connection is declared dead only after 30 s without any inbound frame; after the first frame the 6 s bound applies | same |
+| Silence allowed before the coordinator's first frame | `firstFrameGrace = .seconds(30)`: a new connection is declared dead only after 30 s without any inbound frame; after the first frame the 20 s bound applies | same |
 | Coordinator handshake deadline (TCP, TLS and WebSocket upgrade to `.ready`) | `defaultTimeout = 30` s; a stalled handshake is cancelled and retried with the reconnect backoff | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorConnectionHandshake.swift` (`CoordinatorConnectionHandshake`) |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |

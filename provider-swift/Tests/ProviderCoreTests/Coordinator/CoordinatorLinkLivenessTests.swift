@@ -1,5 +1,6 @@
-/// Dead-link rows for the production values (2 s pings, 6 s bound, 30 s
-/// suspension gap, 30 s before the coordinator's first frame). `CoordinatorLinkWatch`
+/// Dead-link rows for 2 s pings, a 6 s bound, a 30 s suspension gap and 30 s
+/// before the coordinator's first frame (the production bound is 20 s; the
+/// rows keep 6 s so each timeline stays short). `CoordinatorLinkWatch`
 /// takes the time of each tick and of the last inbound frame as arguments, so
 /// each row plays a whole timeline without sleeping. A last inbound frame at or
 /// before the watch's start means the coordinator has not answered yet.
@@ -11,19 +12,26 @@ import Testing
 
 @Suite("Coordinator link liveness")
 struct CoordinatorLinkLivenessTests {
-    private static let liveness = CoordinatorLinkLiveness()
+    private static let liveness = CoordinatorLinkLiveness(
+        pingInterval: .seconds(2), deadAfter: .seconds(6), suspensionGap: .seconds(30), firstFrameGrace: .seconds(30))
     private static let start = ContinuousClock.now
 
     private static func at(_ seconds: Double) -> ContinuousClock.Instant {
         start.advanced(by: .milliseconds(Int64((seconds * 1000).rounded())))
     }
 
-    @Test("the production values are 2 s pings, a 6 s bound, a 30 s suspension gap and 30 s for the first frame")
+    /// The bound outlasts the coordinator edge's own write budget for the
+    /// largest request body (21 MiB at its 2 MiB/s floor: about 10.5 s), so a
+    /// body the edge still writes, with pongs behind it, never ends the link.
+    @Test("the production values are 2 s pings, a 20 s bound, a 30 s suspension gap and 30 s for the first frame")
     func productionValues() {
-        #expect(Self.liveness.pingInterval == .seconds(2))
-        #expect(Self.liveness.deadAfter == .seconds(6))
-        #expect(Self.liveness.suspensionGap == .seconds(30))
-        #expect(Self.liveness.firstFrameGrace == .seconds(30))
+        let production = CoordinatorLinkLiveness()
+        #expect(production.pingInterval == .seconds(2))
+        #expect(production.deadAfter == .seconds(20))
+        #expect(production.suspensionGap == .seconds(30))
+        #expect(production.firstFrameGrace == .seconds(30))
+        #expect(CoordinatorError.pongTimeout(after: production.deadAfter).localizedDescription
+            == "WebSocket pong timeout (no frame from the coordinator in 20s)")
     }
 
     @Test("the reconnect log gives the dead-link reason, not a generic error number")
@@ -32,6 +40,55 @@ struct CoordinatorLinkLivenessTests {
         #expect(error.localizedDescription == "WebSocket pong timeout (no frame from the coordinator in 6s)")
         #expect(CoordinatorError.suspensionDetected.localizedDescription
             == "Process suspension detected (timer gap); forcing reconnect")
+    }
+
+    /// 768 MiB is the coordinator's highest in-flight cap (24 requests) times
+    /// the provider's 32 MiB message limit, so no admitted backlog reaches it;
+    /// the age limit is the 20 s dead bound.
+    @Test("the inbound backlog limits are 768 MiB, 4,096 frames and 20 s, and passing one reads in the log")
+    func inboundBacklogProductionValues() {
+        let production = CoordinatorInboundBacklog()
+        #expect(production.maxBytes == 768 * 1024 * 1024)
+        #expect(production.maxFrames == 4_096)
+        #expect(production.maxAge == .seconds(20))
+        #expect(CoordinatorLinkCloseCode.inboundBacklog.rawValue == 4003)
+        #expect(CoordinatorError.inboundBacklogExceeded(.age(.seconds(21))).localizedDescription
+            == "Coordinator frames not handled in time (a frame waited 21s for its handling); link closed")
+    }
+
+    @Test("the backlog passes its byte limit, which stays passed while its frames are handled")
+    func backlogPassesTheByteLimit() {
+        let start = ContinuousClock.now
+        let backlog = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxBytes: 100))
+        #expect(backlog.add(size: 60, receivedAt: start))
+        #expect(!backlog.add(size: 60, receivedAt: start))
+        backlog.finishOldest()
+        backlog.finishOldest()
+        #expect(backlog.excess(now: start) == .bytes(120))
+    }
+
+    @Test("the backlog passes its frame limit")
+    func backlogPassesTheFrameLimit() {
+        let start = ContinuousClock.now
+        let backlog = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxFrames: 2))
+        #expect(backlog.add(size: 1, receivedAt: start))
+        #expect(backlog.add(size: 1, receivedAt: start))
+        #expect(!backlog.add(size: 1, receivedAt: start))
+        #expect(backlog.excess(now: start) == .frames(3))
+    }
+
+    @Test("the oldest frame passes the age limit until its handling returns")
+    func backlogPassesTheAgeLimit() {
+        let start = ContinuousClock.now
+        let backlog = CoordinatorFrameBacklog(limits: CoordinatorInboundBacklog(maxAge: .seconds(1)))
+        #expect(backlog.add(size: 1, receivedAt: start))
+        #expect(backlog.add(size: 1, receivedAt: start + .milliseconds(800)))
+        #expect(backlog.excess(now: start + .seconds(1)) == nil)
+        #expect(backlog.excess(now: start + .milliseconds(1_100)) == .age(.milliseconds(1_100)))
+        backlog.finishOldest()
+        #expect(backlog.excess(now: start + .milliseconds(1_100)) == nil)
+        backlog.finishOldest()
+        #expect(backlog.excess(now: start + .seconds(60)) == nil)
     }
 
     @Test("a peer that answered and went silent is declared dead after the bound and before bound plus one ping interval")

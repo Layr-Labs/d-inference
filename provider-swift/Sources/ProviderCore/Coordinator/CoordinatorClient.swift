@@ -174,6 +174,8 @@ public actor CoordinatorClient {
     internal let reconnectPolicy: CoordinatorReconnectPolicy
     /// Ping interval and dead-link bound of every session.
     internal let linkLiveness: CoordinatorLinkLiveness
+    /// How much a connection may hold read but not yet handled (`CoordinatorFrameBacklog`).
+    internal let inboundBacklog: CoordinatorInboundBacklog
 
     public init(
         config: CoordinatorClientConfig,
@@ -182,7 +184,8 @@ public actor CoordinatorClient {
         liveAPNsToken: (@Sendable () -> String?)? = nil,
         appAttestResumeResponder: (@Sendable (AppAttestResumeChallenge, String) throws -> AppAttestResumeResponse)? = nil,
         reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy(),
-        linkLiveness: CoordinatorLinkLiveness = CoordinatorLinkLiveness()
+        linkLiveness: CoordinatorLinkLiveness = CoordinatorLinkLiveness(),
+        inboundBacklog: CoordinatorInboundBacklog = CoordinatorInboundBacklog()
     ) {
         self.config = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
@@ -193,6 +196,7 @@ public actor CoordinatorClient {
         self.appAttestResumeResponder = appAttestResumeResponder
         self.reconnectPolicy = reconnectPolicy
         self.linkLiveness = linkLiveness
+        self.inboundBacklog = inboundBacklog
 
         // Inference-chunk fast path. The encode closure is the same pure static
         // codec the control path uses; on the (effectively impossible) encode

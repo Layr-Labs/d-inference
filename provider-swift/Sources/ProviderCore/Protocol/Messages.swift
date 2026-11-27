@@ -1749,6 +1749,11 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// one (the policy is sealed in `_darkbloom_cache`); when present it
         /// can only narrow the sealed policy (`RequestCachePolicy.narrowed`).
         public var frameCachePolicy: RequestCachePolicy
+        /// `answer_prefill`: the coordinator asks this request to answer at
+        /// once (`Inkling2AnswerPrefill`); absent or false asks nothing. The
+        /// provider's own eligibility and this Mac's override still apply. It
+        /// changes only how an eligible reply's answer opens.
+        public var answerPrefill: Bool
 
         public init(
             requestId: String,
@@ -1764,8 +1769,10 @@ public enum CoordinatorMessage: Sendable, Equatable {
             promptWork: PromptWork? = nil,
             gemmaPromptContract: Int? = nil,
             coordinatorSignature: CoordinatorRequestSignature? = nil,
-            frameCachePolicy: RequestCachePolicy = .default
+            frameCachePolicy: RequestCachePolicy = .default,
+            answerPrefill: Bool = false
         ) {
+            self.answerPrefill = answerPrefill
             self.gemmaPromptContract = gemmaPromptContract
             self.coordinatorSignature = coordinatorSignature
             self.frameCachePolicy = frameCachePolicy
@@ -1983,6 +1990,7 @@ extension CoordinatorMessage: Codable {
         case gemmaPromptContract = "gemma_prompt_contract"
         case coordinatorSignature = "coordinator_signature"
         case cachePolicy = "cache_policy"
+        case answerPrefill = "answer_prefill"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload
@@ -2042,6 +2050,9 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.coordinatorSignature, forKey: .coordinatorSignature)
             if r.frameCachePolicy != .default {
                 try container.encode(r.frameCachePolicy.rawValue, forKey: .cachePolicy)
+            }
+            if r.answerPrefill {
+                try container.encode(true, forKey: .answerPrefill)
             }
 
         case .cancel(let c):
@@ -2175,7 +2186,9 @@ extension CoordinatorMessage: Codable {
                 // The policy belongs in the sealed body only. A plaintext key,
                 // which no signature covers, may only narrow the request: any
                 // value but "default", a malformed one included, is memory_only.
-                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy)
+                frameCachePolicy: RequestCachePolicy(decoding: container, forKey: .cachePolicy),
+                // Only a boolean true asks; anything else, malformed included, asks nothing.
+                answerPrefill: (try? container.decodeIfPresent(Bool.self, forKey: .answerPrefill)) == true
             ))
 
         case .cancel:
